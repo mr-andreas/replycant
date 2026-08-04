@@ -1,6 +1,9 @@
 name: iOS TestFlight Release
 
 on:
+  push:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
@@ -64,11 +67,13 @@ jobs:
       - name: Compute build metadata
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          TAG_NAME: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
+          MARKETING_VERSION="${INPUT_VERSION:-${TAG_NAME#v}}"
           BUILD_NUMBER="$(date +%Y%m%d%H%M)"
           {
             echo "BUILD_NUMBER=$BUILD_NUMBER"
-            echo "MARKETING_VERSION=$INPUT_VERSION"
+            echo "MARKETING_VERSION=$MARKETING_VERSION"
           } >> "$GITHUB_ENV"
 
       - name: Archive app
