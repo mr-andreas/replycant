@@ -1,0 +1,15 @@
+---
+description: Require relevant tests before committing
+alwaysApply: true
+---
+
+# Commit Test Verification
+
+Before running `git commit`, execute the relevant test suite for the changes.
+
+For non-iOS changes, run `make test` from the repository root unless a more
+specific test command is clearly more appropriate for the touched area.
+
+For changes under `iosapp/`, do not run the iOS test suite before committing.
+Those tests are too slow for the agent workflow and will be run manually by a
+developer instead.

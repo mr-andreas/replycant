@@ -1,0 +1,17 @@
+# Default docker-compose storage paths. These hold the user's own photo library
+# and the server's CA/TLS private keys, so they must never be committable when
+# the stack is run from inside a checkout.
+/replycant-data
+/replycant-lfs
+
+# Deployment configuration, in every component directory rather than only the
+# repo root, since that is where secrets tend to accumulate.
+.env
+.env.*
+!.env.example
+
+.DS_Store
+
+# Personal source photos used only to generate sanitized ScreenshotMedia fixtures.
+# These often contain GPS/EXIF and must never be committed.
+/demoimages

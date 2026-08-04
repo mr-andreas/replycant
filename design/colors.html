@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Replycant Color Manual</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-0: #16092b;
+      --bg-1: #2d1050;
+      --bg-2: #7b2db8;
+      --panel: rgba(233, 214, 255, 0.08);
+      --panel-border: rgba(233, 214, 255, 0.18);
+      --text-main: #f4ebff;
+      --text-muted: #c8b0e8;
+      --accent: #b86de0;
+      --ok: #2ed4a7;
+      --warn: #ffb347;
+      --err: #ff5c8a;
+      --shadow: 0 20px 80px rgba(12, 4, 24, 0.55);
+      --grain: radial-gradient(circle at 20% 10%, rgba(212, 160, 232, 0.16), transparent 35%),
+               radial-gradient(circle at 80% 30%, rgba(155, 77, 202, 0.18), transparent 38%),
+               radial-gradient(circle at 30% 90%, rgba(122, 45, 184, 0.2), transparent 40%),
+               linear-gradient(140deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2));
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--text-main);
+      background: var(--grain);
+      min-height: 100vh;
+      font-family: "Outfit", sans-serif;
+      letter-spacing: 0.01em;
+    }
+
+    .wrap {
+      width: min(1120px, 92vw);
+      margin: 42px auto 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 120px 1fr auto;
+      gap: 20px;
+      align-items: center;
+      margin-bottom: 28px;
+      padding: 22px;
+      border-radius: 24px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(6px);
+    }
+
+    .hero img {
+      width: 120px;
+      height: 120px;
+      border-radius: 28px;
+      box-shadow: 0 14px 42px rgba(9, 2, 20, 0.6);
+    }
+
+    h1 {
+      margin: 0;
+      font: 800 2rem/1.05 "Syne", sans-serif;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .sub {
+      margin: 8px 0 0;
+      color: var(--text-muted);
+      font-size: 0.98rem;
+      max-width: 58ch;
+    }
+
+    .toggle {
+      border: 1px solid var(--panel-border);
+      background: rgba(233, 214, 255, 0.12);
+      color: var(--text-main);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font: 700 0.82rem/1 "Outfit", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: 120ms ease;
+    }
+
+    .toggle:hover {
+      transform: translateY(-1px);
+      background: rgba(233, 214, 255, 0.2);
+    }
+
+    .section {
+      margin-top: 22px;
+      padding: 18px;
+      border-radius: 20px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font: 750 1.22rem/1 "Syne", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--panel-border);
+      background: rgba(6, 3, 14, 0.25);
+      border-radius: 14px;
+      overflow: hidden;
+      transition: transform 120ms ease;
+      cursor: pointer;
+    }
+
+    .card:hover { transform: translateY(-2px); }
+
+    .swatch {
+      height: 90px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .meta {
+      padding: 10px 12px 11px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .name {
+      font: 700 0.95rem/1.1 "Outfit", sans-serif;
+      letter-spacing: 0.01em;
+    }
+
+    .small {
+      color: var(--text-muted);
+      font: 500 0.8rem/1.2 "Outfit", sans-serif;
+    }
+
+    .semantic-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .semantic-item {
+      display: grid;
+      grid-template-columns: 110px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(9, 4, 19, 0.32);
+    }
+
+    .chip {
+      border-radius: 10px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      font: 700 0.8rem/1 "Outfit", sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .guide { color: var(--text-muted); font-size: 0.9rem; }
+
+    .contrast {
+      font: 700 0.82rem/1 "Outfit", sans-serif;
+      color: var(--text-main);
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(233, 214, 255, 0.08);
+    }
+
+    .preview {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .mock {
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      overflow: hidden;
+      min-height: 220px;
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.08);
+    }
+
+    .mock-head {
+      padding: 12px;
+      font: 700 0.95rem/1 "Outfit", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .mock-body {
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px;
+      font: 700 0.86rem/1 "Outfit", sans-serif;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 22px;
+      right: 20px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--panel-border);
+      background: rgba(16, 7, 33, 0.9);
+      color: var(--text-main);
+      font: 600 0.85rem/1 "Outfit", sans-serif;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: 120ms ease;
+      pointer-events: none;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .foot {
+      margin-top: 16px;
+      color: var(--text-muted);
+      font-size: 0.86rem;
+    }
+
+    body.light {
+      --bg-0: #f8f4ff;
+      --bg-1: #efe7fb;
+      --bg-2: #dcc7f5;
+      --panel: rgba(255, 255, 255, 0.74);
+      --panel-border: rgba(94, 47, 148, 0.2);
+      --text-main: #2d1050;
+      --text-muted: #5e3a88;
+      --shadow: 0 18px 60px rgba(80, 45, 132, 0.18);
+      --grain: radial-gradient(circle at 16% 8%, rgba(184, 109, 224, 0.16), transparent 35%),
+               radial-gradient(circle at 83% 22%, rgba(122, 45, 184, 0.11), transparent 40%),
+               linear-gradient(145deg, var(--bg-0), var(--bg-1) 52%, var(--bg-2));
+    }
+
+    @media (max-width: 860px) {
+      .hero { grid-template-columns: 90px 1fr; }
+      .hero img { width: 90px; height: 90px; border-radius: 22px; }
+      .toggle { grid-column: span 2; justify-self: start; }
+      .preview { grid-template-columns: 1fr; }
+      .semantic-item { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <img src="./AppIcon-1024.png" alt="Replycant logo" />
+      <div>
+        <h1>Replycant Color Manual</h1>
+        <p class="sub">Core palette extracted from the logo with semantic roles for consistent color schemes across iOS, web, and backend-generated UI surfaces.</p>
+      </div>
+      <button id="modeToggle" class="toggle" type="button">Switch to Light Preview</button>
+    </header>
+
+    <section class="section">
+      <h2>Core Palette (Click To Copy)</h2>
+      <div id="coreGrid" class="grid"></div>
+    </section>
+
+    <section class="section">
+      <h2>Semantic Roles</h2>
+      <div id="semanticList" class="semantic-list"></div>
+    </section>
+
+    <section class="section">
+      <h2>Dark / Light UI Preview</h2>
+      <div class="preview">
+        <div class="mock" id="mockDark"></div>
+        <div class="mock" id="mockLight"></div>
+      </div>
+      <div class="foot">Accessibility baseline: body text should target at least 4.5:1 contrast; larger labels can target 3:1 minimum.</div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const corePalette = [
+      { name: "Deep Purple", hex: "#2D1050", source: "Background texture" },
+      { name: "Dark Purple", hex: "#3A1463", source: "Background gradient edge" },
+      { name: "Rich Purple", hex: "#7B2DB8", source: "Reel body shadow" },
+      { name: "Medium Purple", hex: "#9B4DCA", source: "Reel body midtone" },
+      { name: "Bright Purple", hex: "#B86DE0", source: "Reel highlight" },
+      { name: "Lavender", hex: "#D4A0E8", source: "Ring highlight" },
+      { name: "Near-White", hex: "#E8D8F0", source: "Center light accent" },
+      { name: "Shadow Purple", hex: "#1A0A30", source: "Cutout shadows" }
+    ];
+
+    const semanticRoles = [
+      { role: "Primary", color: "#9B4DCA", on: "#E8D8F0", use: "Buttons, links, active states" },
+      { role: "Primary Variant", color: "#7B2DB8", on: "#E8D8F0", use: "Hover, pressed, selected tabs" },
+      { role: "Secondary Accent", color: "#B86DE0", on: "#1A0A30", use: "Highlights, badges, focus rings" },
+      { role: "Background", color: "#2D1050", on: "#D4A0E8", use: "Page background" },
+      { role: "Surface", color: "#3A1463", on: "#D4A0E8", use: "Cards, panels, sheets" },
+      { role: "On-Primary", color: "#E8D8F0", on: "#2D1050", use: "Text/icons on primary elements" },
+      { role: "Error", color: "#FF5C8A", on: "#2D1050", use: "Critical actions, destructive alerts" },
+      { role: "Success", color: "#2ED4A7", on: "#1A0A30", use: "Positive states, completion messages" },
+      { role: "Warning", color: "#FFB347", on: "#1A0A30", use: "Caution messages, pending state" }
+    ];
+
+    const lightScheme = {
+      bg: "#F8F4FF",
+      surface: "#FFFFFF",
+      text: "#2D1050",
+      muted: "#5E3A88",
+      primary: "#7B2DB8",
+      accent: "#9B4DCA",
+      onPrimary: "#F8F4FF"
+    };
+
+    const darkScheme = {
+      bg: "#2D1050",
+      surface: "#3A1463",
+      text: "#E8D8F0",
+      muted: "#D4A0E8",
+      primary: "#9B4DCA",
+      accent: "#B86DE0",
+      onPrimary: "#1A0A30"
+    };
+
+    function hexToRgb(hex) {
+      const normalized = hex.replace("#", "");
+      const value = parseInt(normalized, 16);
+      return {
+        r: (value >> 16) & 255,
+        g: (value >> 8) & 255,
+        b: value & 255
+      };
+    }
+
+    function rgbToHsl({ r, g, b }) {
+      const rn = r / 255;
+      const gn = g / 255;
+      const bn = b / 255;
+      const max = Math.max(rn, gn, bn);
+      const min = Math.min(rn, gn, bn);
+      const delta = max - min;
+      let h = 0;
+      let s = 0;
+      const l = (max + min) / 2;
+
+      if (delta) {
+        s = delta / (1 - Math.abs(2 * l - 1));
+        if (max === rn) h = ((gn - bn) / delta) % 6;
+        else if (max === gn) h = (bn - rn) / delta + 2;
+        else h = (rn - gn) / delta + 4;
+        h *= 60;
+        if (h < 0) h += 360;
+      }
+      return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
+    }
+
+    function luminance(hex) {
+      const { r, g, b } = hexToRgb(hex);
+      const srgb = [r, g, b].map((v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+    }
+
+    function contrastRatio(foreground, background) {
+      const l1 = luminance(foreground);
+      const l2 = luminance(background);
+      const lighter = Math.max(l1, l2);
+      const darker = Math.min(l1, l2);
+      return ((lighter + 0.05) / (darker + 0.05)).toFixed(2);
+    }
+
+    function showToast(text) {
+      const el = document.getElementById("toast");
+      el.textContent = text;
+      el.classList.add("show");
+      window.setTimeout(() => el.classList.remove("show"), 1200);
+    }
+
+    async function copyColor(color) {
+      try {
+        await navigator.clipboard.writeText(color);
+        showToast(`Copied ${color}`);
+      } catch {
+        showToast(`Color ${color}`);
+      }
+    }
+
+    function renderCore() {
+      const parent = document.getElementById("coreGrid");
+      parent.innerHTML = "";
+      corePalette.forEach((entry) => {
+        const rgb = hexToRgb(entry.hex);
+        const hsl = rgbToHsl(rgb);
+        const card = document.createElement("article");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="swatch" style="background:${entry.hex}"></div>
+          <div class="meta">
+            <div class="name">${entry.name}</div>
+            <div class="small"><strong>${entry.hex}</strong></div>
+            <div class="small">rgb(${rgb.r}, ${rgb.g}, ${rgb.b})</div>
+            <div class="small">hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)</div>
+            <div class="small">${entry.source}</div>
+          </div>
+        `;
+        card.addEventListener("click", () => copyColor(entry.hex));
+        parent.appendChild(card);
+      });
+    }
+
+    function renderSemantic() {
+      const parent = document.getElementById("semanticList");
+      parent.innerHTML = "";
+      semanticRoles.forEach((entry) => {
+        const ratio = contrastRatio(entry.on, entry.color);
+        const item = document.createElement("article");
+        item.className = "semantic-item";
+        item.innerHTML = `
+          <div class="chip" style="background:${entry.color}; color:${entry.on}">${entry.role}</div>
+          <div>
+            <div class="name">${entry.color}</div>
+            <div class="guide">${entry.use}</div>
+          </div>
+          <div class="contrast">${ratio}:1</div>
+        `;
+        item.addEventListener("click", () => copyColor(entry.color));
+        parent.appendChild(item);
+      });
+    }
+
+    function renderMock(id, scheme, label) {
+      const el = document.getElementById(id);
+      el.style.background = scheme.bg;
+      el.style.color = scheme.text;
+      el.innerHTML = `
+        <div class="mock-head" style="background:${scheme.surface}; color:${scheme.text}; border-bottom:1px solid rgba(0,0,0,0.12)">
+          ${label}
+        </div>
+        <div class="mock-body">
+          <div style="padding:10px; border-radius:10px; background:${scheme.surface}; color:${scheme.text}; border:1px solid rgba(0,0,0,0.14)">
+            Base text color
+            <div style="margin-top:6px; color:${scheme.muted}; font-size:0.88rem">Muted support text</div>
+          </div>
+          <button class="btn" style="background:${scheme.primary}; color:${scheme.onPrimary}">Primary Action</button>
+          <button class="btn" style="background:${scheme.accent}; color:${scheme.onPrimary}">Accent Action</button>
+        </div>
+      `;
+    }
+
+    let lightMode = false;
+    const toggle = document.getElementById("modeToggle");
+    toggle.addEventListener("click", () => {
+      lightMode = !lightMode;
+      document.body.classList.toggle("light", lightMode);
+      toggle.textContent = lightMode ? "Switch to Dark Preview" : "Switch to Light Preview";
+    });
+
+    renderCore();
+    renderSemantic();
+    renderMock("mockDark", darkScheme, "Dark UI");
+    renderMock("mockLight", lightScheme, "Light UI");
+  </script>
+</body>
+</html>

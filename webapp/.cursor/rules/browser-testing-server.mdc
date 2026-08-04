@@ -1,0 +1,12 @@
+---
+description: Use port 5174 dev server for all browser testing
+alwaysApply: true
+---
+
+# Browser Testing Server
+
+All browser testing via @Browser MUST use the dev server on port 5174, which has a manually authenticated session.
+
+- Navigate to `http://localhost:5174` (never another port)
+- If the server is not running, start it on port 5174 without asking
+- If the server needs restarting, restart it on port 5174 without asking

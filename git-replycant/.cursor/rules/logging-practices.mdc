@@ -1,0 +1,5 @@
+---
+alwaysApply: false
+---
+- Always implement comprehensive logging for both informational events and errors in the app. For all git operations (repository initialization, adding files, commits, pushes, pulls, etc.), log the operation being performed and its result (success or error). Use appropriate log levels to distinguish between informational messages and errors.
+- Always implement comprehensive logging for both informational events and errors in the app. For all git operations (repository initialization, adding files, commits, pushes, pulls, etc.), log the operation being performed and its result (success or error). Use appropriate log levels to distinguish between informational messages and errors.

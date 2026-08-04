@@ -1,0 +1,14 @@
+Replycant is a self-hosted photo library and does not use a username/password login.
+
+Review flow:
+1. Launch the app.
+2. Tap "Connect to an existing library".
+3. Scan the review QR code (placeholder: add before submission).
+4. Grant photo library access when prompted.
+5. Verify timeline browsing and fullscreen playback with the seeded review data.
+
+Review server URL: [ADD_PUBLIC_REVIEW_SERVER_URL]
+Review QR code: [ATTACH_IN_APP_STORE_CONNECT]
+
+Camera permission is used only for QR setup scans.
+Photo library permission is used for syncing photos and videos.

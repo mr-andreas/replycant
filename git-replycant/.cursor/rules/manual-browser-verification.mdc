@@ -1,0 +1,13 @@
+---
+description: Require Browser verification before completion
+alwaysApply: true
+---
+
+# Manual Browser Verification
+
+Before considering any change complete, verify it in `@Browser`.
+
+- Open or reload the affected page in `@Browser`
+- Confirm the changed behavior works as intended
+- If it fails or regresses, fix it and re-verify in `@Browser`
+- Do not mark the task done until Browser verification passes

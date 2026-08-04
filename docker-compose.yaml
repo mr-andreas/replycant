@@ -1,0 +1,163 @@
+services:
+  # Run a one-shot container on the host network to detect the hostname.
+  hostname-detect:
+    image: alpine:3.23
+    volumes:
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname
+    command: sh -c "printf 'REPLYCANT_HOSTNAME=%s.local\\n' $(hostname) > /data/hostname/hostname.env"
+    network_mode: host
+
+  init-repo:
+    image: alpine/git:latest
+    volumes:
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo
+    entrypoint: /bin/sh
+    command: 
+      - -ec
+      - |
+        cd /data/repo
+        if [ -e HEAD ]; then
+          echo "Repo already exists"
+          exit 0
+        fi
+        git init --initial-branch=main --bare /data/repo
+
+  # Create a server key for gitd if it doesn't exist
+  server-key:
+    image: alpine/openssl:3.5.4
+    container_name: server-key
+    volumes:
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/:/data/
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
+    depends_on:
+      hostname-detect:
+        condition: service_completed_successfully
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        . /data/hostname/hostname.env
+
+        cd /data/
+        if [ -f server.key ]; then
+          echo 'Server key already exists'
+          exit 0
+        fi
+
+        # Create OpenSSL config for CA extensions
+        cat > ca.cnf << CAEOF
+        [req]
+        distinguished_name = req_dn
+        x509_extensions = v3_ca
+        prompt = no
+
+        [req_dn]
+        CN = $$REPLYCANT_HOSTNAME
+
+        [v3_ca]
+        basicConstraints = critical, CA:TRUE
+        keyUsage = critical, keyCertSign, cRLSign
+        subjectKeyIdentifier = hash
+        CAEOF
+
+        # Generate CA key and self-signed certificate with CA extensions (P-256/prime256v1)
+        openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out ca.key
+        openssl req -new -x509 -key ca.key -out ca.crt -days 3650 -config ca.cnf
+
+        # Generate server key and certificate with SAN so Go TLS clients (git-lfs) accept the hostname
+        openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out server.key
+        openssl req -new -key server.key -out server.csr \
+          -subj "/CN=$$REPLYCANT_HOSTNAME" \
+          -addext "subjectAltName=DNS:$$REPLYCANT_HOSTNAME"
+        openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
+          -out server.crt -days 3650 -CAcreateserial -copy_extensions copyall
+
+  gitd:
+    depends_on:
+      server-key:
+        condition: service_completed_successfully
+      hostname-detect:
+        condition: service_completed_successfully
+      init-repo:
+        condition: service_completed_successfully
+      decryptd:
+        condition: service_started
+      transcoded:
+        condition: service_started
+    image: ${REPLYCANT_GITD_IMAGE:-gitd:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gitd
+    container_name: gitd
+    ports:
+      - "8443:8443"
+      - "8080:8080"
+    volumes:
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/server.crt:/data/server.crt:ro
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/server.key:/data/server.key:ro
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
+    entrypoint: /bin/sh
+    command:
+      - -xec
+      - |
+        . /data/hostname/hostname.env
+        exec gitd --repo=/data/repo --addr=:8443 --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-url=http://admin:admin@lfs:8083 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082
+
+  lfs:
+    image: golang:1.25.5-alpine3.23
+    container_name: lfs
+    volumes:
+      - ${REPLYCANT_LFS_DIR:-./replycant-lfs}:/data/
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
+    depends_on:
+      hostname-detect:
+        condition: service_completed_successfully
+    environment:
+      LFS_CONTENTPATH: /data/lfs-content
+      LFS_METADB: /data/lfs.db
+      LFS_ADMINUSER: admin
+      LFS_ADMINPASS: admin
+      LFS_LISTEN: tcp://:8083
+    entrypoint: /bin/sh
+    command:
+      - -xec
+      - |
+        . /data/hostname/hostname.env
+        LFS_HOST=$$REPLYCANT_HOSTNAME:8443 exec go run github.com/git-lfs/lfs-test-server@latest
+
+  # Decrypts encrypted LFS objects on the fly. Reachable only through gitd's
+  # mTLS-authenticated /decryptd route, so no host port is published.
+  decryptd:
+    image: ${REPLYCANT_DECRYPTD_IMAGE:-decryptd:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: decryptd
+    depends_on:
+      - lfs
+    command:
+      - --upstream=http://admin:admin@lfs:8083
+      - --listen=:8084
+
+  # Run transcoded with GPU acceleration support. Reachable only through gitd's
+  # mTLS-authenticated /transcoded route, so no host port is published.
+  transcoded:
+    image: ${REPLYCANT_TRANSCODED_IMAGE:-transcoded:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: transcoded
+    depends_on:
+      - decryptd
+    command:
+      - --upstream=http://decryptd:8084
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video]

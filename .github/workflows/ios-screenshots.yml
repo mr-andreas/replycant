@@ -1,0 +1,88 @@
+name: iOS App Store Screenshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_app_store:
+        description: Upload screenshots to the editable App Store Connect version
+        required: false
+        type: boolean
+        default: false
+      upload_metadata:
+        description: Upload metadata from iosapp/fastlane/metadata
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    name: Capture and optionally upload screenshots
+    runs-on: macos-26
+    env:
+      # Single source for the toolchain, so the Xcode selection and the
+      # dependency cache key can never disagree about which Xcode built them.
+      XCODE_VERSION: "26.5"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Cache screenshot Swift package checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            iosapp/build/screenshot-derived-data/SourcePackages
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-xcode-${{ env.XCODE_VERSION }}-screenshot-spm-${{ hashFiles('iosapp/iosapp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Capture and frame screenshots
+        run: |
+          cd iosapp
+          fastlane screenshots
+
+      - name: Upload screenshot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-screenshots
+          path: |
+            iosapp/fastlane/screenshots/en-US
+          if-no-files-found: error
+
+      - name: Prepare App Store Connect key
+        if: ${{ inputs.upload_to_app_store || inputs.upload_metadata }}
+        env:
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          : "${ASC_KEY_BASE64:?Set ASC_KEY_BASE64 secret}"
+          : "${ASC_KEY_ID:?Set ASC_KEY_ID secret}"
+          : "${ASC_ISSUER_ID:?Set ASC_ISSUER_ID secret}"
+          ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          python3 -c 'import base64, os, sys; open(sys.argv[1], "wb").write(base64.b64decode(os.environ["ASC_KEY_BASE64"]))' "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          {
+            echo "ASC_KEY_PATH=$ASC_KEY_PATH"
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Upload screenshots to App Store Connect
+        if: ${{ inputs.upload_to_app_store }}
+        run: |
+          cd iosapp
+          fastlane upload_screenshots
+
+      - name: Upload metadata to App Store Connect
+        if: ${{ inputs.upload_metadata }}
+        run: |
+          cd iosapp
+          fastlane upload_metadata

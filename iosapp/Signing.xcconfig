@@ -1,0 +1,6 @@
+// Apple Developer team used to sign device builds. The value is deliberately
+// not committed: it binds a build to one Apple Developer account and a fork
+// cannot use it. Put DEVELOPMENT_TEAM in Signing.local.xcconfig, which is
+// gitignored. Simulator builds work without it; device builds, archives and
+// TestFlight uploads do not.
+#include? "Signing.local.xcconfig"

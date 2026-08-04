@@ -1,0 +1,51 @@
+---
+alwaysApply: true
+---
+# Architecture Decision Records (ADR) Compliance
+
+This project uses Architecture Decision Records (ADRs) to document significant architectural decisions.
+
+## Rules
+
+1. **All architectural decisions MUST be documented as ADRs** in the `/adr` directory
+2. **ADRs MUST be followed strictly** - any deviation requires a new ADR superseding the previous one
+3. **Before making architectural changes**, check existing ADRs for relevant decisions
+4. **ADRs are immutable** - to change a decision, create a new ADR that supersedes the old one
+5. **ADR numbering** follows the format `XXXX-title-of-decision.md` starting from 0001
+
+## ADR Format
+
+Each ADR must include:
+- **Status**: Accepted, Proposed, Deprecated, or Superseded
+- **Context**: The situation requiring a decision
+- **Decision**: The choice that was made
+- **Consequences**: Positive and negative outcomes of the decision
+
+## Location
+
+All ADRs are stored in `/adr` at the project root.
+
+# Architecture Decision Records (ADR) Compliance
+
+This project uses Architecture Decision Records (ADRs) to document significant architectural decisions.
+
+## Rules
+
+1. **All architectural decisions MUST be documented as ADRs** in the `/adr` directory
+2. **ADRs MUST be followed strictly** - any deviation requires a new ADR superseding the previous one
+3. **Before making architectural changes**, check existing ADRs for relevant decisions
+4. **ADRs are immutable** - to change a decision, create a new ADR that supersedes the old one
+5. **ADR numbering** follows the format `XXXX-title-of-decision.md` starting from 0001
+
+## ADR Format
+
+Each ADR must include:
+- **Status**: Accepted, Proposed, Deprecated, or Superseded
+- **Context**: The situation requiring a decision
+- **Decision**: The choice that was made
+- **Consequences**: Positive and negative outcomes of the decision
+
+## Location
+
+All ADRs are stored in `/adr` at the project root.
+

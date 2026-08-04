@@ -1,0 +1,27 @@
+{
+  "default": {
+    "padding": 32,
+    "show_complete_frame": true,
+    "stack_title": true,
+    "use_platform": "IOS",
+    "title": {
+      "color": "#FFFFFF"
+    }
+  },
+  "data": [
+    {
+      "filter": "iPhone 17 Pro Max",
+      "background": "../frame_backgrounds/iphone-6-9.png"
+    },
+    {
+      "filter": "iPad Pro 13-inch (M5)",
+      "background": "../frame_backgrounds/ipad-13.png"
+    },
+    {
+      "filter": "01-timeline",
+      "title": {
+        "en-US": "Your photos. Your server."
+      }
+    }
+  ]
+}

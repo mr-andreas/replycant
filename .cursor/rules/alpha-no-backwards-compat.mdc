@@ -1,0 +1,10 @@
+---
+description: Alpha stage product - no backwards compatibility concerns
+alwaysApply: true
+---
+
+# Alpha Stage: No Backwards Compatibility
+
+This product is in alpha. Never preserve backwards compatibility. Breaking any API, schema, data format, or protocol is fine as long as the change is applied consistently across the entire repo.
+
+Existing app installations have no migration path. Users will wipe all state and start fresh. Do not write migration code, versioned schemas, or deprecation shims.

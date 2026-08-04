@@ -1,0 +1,150 @@
+{
+  "name": "replycant-webapp",
+  "version": "1.0.0",
+  "description": "Replycant webapp",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -b",
+    "build": "tsc -b && vite build",
+    "build:desktop:runtime": "tsup electron/main.ts electron/dev-main.ts --format esm --platform node --target node20 --clean --out-dir dist-electron --external electron && tsup electron/preload.ts --format cjs --platform node --target node20 --out-dir dist-electron --external electron",
+    "desktop:build": "npm run build && npm run build:desktop:runtime",
+    "desktop:pack": "npm run desktop:build && electron-builder --dir",
+    "desktop:dist": "npm run desktop:build && electron-builder --publish never",
+    "desktop:dist:linux": "npm run desktop:build && electron-builder --linux --publish never",
+    "desktop:dist:mac": "npm run desktop:build && electron-builder --mac --publish never && npm run desktop:notarize:dmg",
+    "desktop:notarize:dmg": "bash -lc 'set -euo pipefail; shopt -s nullglob; dmgs=(release/*.dmg); if [ ${#dmgs[@]} -eq 0 ]; then echo \"No DMG artifacts found in release/\"; exit 1; fi; for dmg in \"${dmgs[@]}\"; do xcrun notarytool submit \"$dmg\" --key \"$APPLE_API_KEY\" --key-id \"$APPLE_API_KEY_ID\" --issuer \"$APPLE_API_ISSUER\" --wait; xcrun stapler staple \"$dmg\"; done'",
+    "desktop:dist:win": "npm run desktop:build && electron-builder --win --publish never",
+    "desktop:dev": "concurrently -k -n web,desktop \"cross-env VITE_PORT=5180 vite --strictPort\" \"wait-on tcp:5180 && npm run build:desktop:runtime && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5180 electron --no-sandbox dist-electron/dev-main.js\"",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"server/**/*.ts\"",
+    "bench:gitpull": "playwright test src/benchmarks/gitPull.benchmark.spec.ts",
+    "bench:gitpull:chrome": "playwright test src/benchmarks/gitPull.benchmark.spec.ts --project=chrome",
+    "bench:gitpull:firefox": "playwright test src/benchmarks/gitPull.benchmark.spec.ts --project=firefox",
+    "bench:initialsync": "playwright test src/benchmarks/initialSync.benchmark.spec.ts",
+    "bench:initialsync:chrome": "playwright test src/benchmarks/initialSync.benchmark.spec.ts --project=chrome",
+    "bench:initialsync:firefox": "playwright test src/benchmarks/initialSync.benchmark.spec.ts --project=firefox",
+    "bench:manifestdecrypt": "playwright test src/benchmarks/manifestDecrypt.benchmark.spec.ts",
+    "bench:manifestdecrypt:chrome": "playwright test src/benchmarks/manifestDecrypt.benchmark.spec.ts --project=chrome",
+    "bench:manifestdecrypt:firefox": "playwright test src/benchmarks/manifestDecrypt.benchmark.spec.ts --project=firefox",
+    "bench:gitpull:install-browsers": "playwright install chromium firefox",
+    "e2e": "playwright test --config playwright.e2e.config.ts --grep-invert @integration",
+    "e2e:integration": "playwright test --config playwright.e2e.config.ts --grep @integration --workers=1",
+    "e2e:timeline-scroll": "playwright test --config playwright.e2e.config.ts src/e2e/timeline-scroll-indexeddb.e2e.spec.ts",
+    "e2e:install-browsers": "playwright install chromium firefox"
+  },
+  "keywords": [
+    "replycant",
+    "webapp"
+  ],
+  "author": {
+    "name": "replycant",
+    "email": "replycant@example.com"
+  },
+  "license": "GPL-2.0-only",
+  "homepage": "https://github.com/mr-andreas/replycant",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mr-andreas/replycant.git"
+  },
+  "dependencies": {
+    "@isomorphic-git/lightning-fs": "^4.6.2",
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@peculiar/x509": "^1.14.3",
+    "@scure/base": "^2.0.0",
+    "age-encryption": "^0.3.0",
+    "buffer": "^6.0.3",
+    "express": "^5.2.1",
+    "hls.js": "^1.6.15",
+    "idb": "^8.0.3",
+    "isomorphic-git": "^1.37.1",
+    "js-yaml": "^4.1.1",
+    "libheif-js": "^1.19.8",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/express": "^5.0.6",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.2.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/supertest": "^6.0.3",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "@vitest/ui": "^4.0.18",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "42.4.1",
+    "electron-builder": "^26.8.1",
+    "eslint": "^10.0.0",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^28.1.0",
+    "supertest": "^7.2.2",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18",
+    "wait-on": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.replycant.desktop",
+    "productName": "Replycant",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "mac": {
+      "icon": "build/icons/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "target": [
+        "dmg"
+      ]
+    },
+    "dmg": {
+      "sign": true
+    },
+    "linux": {
+      "icon": "build/icons",
+      "maintainer": "replycant <replycant@example.com>",
+      "category": "Utility",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "win": {
+      "icon": "build/icons/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico",
+      "artifactName": "replycant-desktop-setup-v${version}-${arch}.${ext}"
+    },
+    "artifactName": "replycant-desktop-v${version}-${arch}.${ext}"
+  }
+}

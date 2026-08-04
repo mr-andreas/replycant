@@ -1,0 +1,15 @@
+---
+description: Document significant architecture decisions in Docusaurus at a high level
+alwaysApply: true
+---
+
+# High-Level Architecture Docs
+
+When a change introduces or materially changes architectural details of significant value, document them in the relevant Docusaurus section.
+
+Keep this documentation high level. Focus on how the system is composed, which parts are involved, and how they fit together. Do not turn it into low-level implementation notes or code commentary unless the user asks for that depth.
+
+Examples of details worth documenting:
+- How encryption works in `gitdb`, including which keys are used and how the pieces fit together
+- How the timeline works in the webapp
+- How the SQL database works in the iOS app, including the underlying git repo DB, how delta changes are written in transactions, and how pubsub broadcasts changes

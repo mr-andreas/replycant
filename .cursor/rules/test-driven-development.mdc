@@ -1,0 +1,18 @@
+---
+description: Require test-driven development for code changes
+alwaysApply: true
+---
+
+# Test-Driven Development
+
+When writing code, including bugfixes, work test-first:
+
+1. Create focused tests for the intended behavior before implementation.
+2. Run the tests and verify they fail in the expected way.
+3. Implement the smallest change that satisfies the tests.
+4. Run the tests again and verify they pass.
+
+Treat tests as being just as important as the implementation. Take the same
+care to document why each test exists and exactly what behavior it verifies.
+
+Skip this only when tests are clearly not viable, and state why.

@@ -1,0 +1,18 @@
+Replycant is an open-source, self-hosted photo library for people who want control over where personal media is stored.
+
+Connect the app to your own Replycant server, sync photos and videos from Apple Photos, and browse your library in a chronological timeline on iPhone or iPad.
+
+Features:
+- Sync photos and videos from Apple Photos
+- Browse a chronological photo and video timeline
+- View photos and play videos full screen
+- Encrypt stored media and metadata
+- Store library data using Git and Git LFS
+- Link additional devices securely with QR codes
+- Configure sync cadence, playback, and cache behavior
+- No ads, no behavioral tracking
+
+Self-hosted:
+Replycant does not provide a hosted storage service. A compatible Replycant server is required, and you are responsible for operating and backing up that server.
+
+Replycant is open source. Source code and setup instructions are available on GitHub.

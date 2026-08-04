@@ -1,0 +1,12 @@
+**/.DS_Store
+docs/
+iosapp/
+webapp/
+Dockerfile
+docker-compose.yaml
+# Runtime storage paths. Keeping them out of the build context stops a user's
+# photo library from being copied into a published image if they build from a
+# checkout they have already run the stack in.
+/replycant-data
+/replycant-lfs
+/.*

@@ -1,0 +1,120 @@
+name: iOS TestFlight Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: iOS marketing version (for example 1.2.3)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-ios:
+    name: Build and upload to TestFlight
+    runs-on: macos-26
+    env:
+      IOS_SCHEME: iosapp
+      IOS_PROJECT: iosapp/iosapp.xcodeproj
+      IOS_BUILD_DIR: iosapp/build/release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure code signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID secret}"
+          printf 'DEVELOPMENT_TEAM = %s\n' "$APPLE_TEAM_ID" > iosapp/Signing.local.xcconfig
+          echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Prepare App Store Connect key
+        env:
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          : "${ASC_KEY_BASE64:?Set ASC_KEY_BASE64 secret}"
+          : "${ASC_KEY_ID:?Set ASC_KEY_ID secret}"
+          : "${ASC_ISSUER_ID:?Set ASC_ISSUER_ID secret}"
+          ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          python3 -c 'import base64, os, sys; open(sys.argv[1], "wb").write(base64.b64decode(os.environ["ASC_KEY_BASE64"]))' "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          {
+            echo "ASC_KEY_PATH=$ASC_KEY_PATH"
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve Swift package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$IOS_PROJECT" \
+            -scheme "$IOS_SCHEME"
+
+      - name: Compute build metadata
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          BUILD_NUMBER="$(date +%Y%m%d%H%M)"
+          {
+            echo "BUILD_NUMBER=$BUILD_NUMBER"
+            echo "MARKETING_VERSION=$INPUT_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Archive app
+        run: |
+          rm -rf "$IOS_BUILD_DIR"
+          ARGS=(
+            -project "$IOS_PROJECT"
+            -scheme "$IOS_SCHEME"
+            -configuration Release
+            -destination "generic/platform=iOS"
+            -archivePath "$IOS_BUILD_DIR/iosapp.xcarchive"
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+            # Export-compliance exemption: shipped crypto stays on Apple stacks
+            # (CryptoKit/CommonCrypto + SecureTransport-backed libgit2).
+            # Revisit if a non-Apple crypto backend is introduced.
+            INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO
+            -authenticationKeyPath "$ASC_KEY_PATH"
+            -authenticationKeyID "$ASC_KEY_ID"
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+            -allowProvisioningUpdates
+            archive
+          )
+          if [ -n "$MARKETING_VERSION" ]; then
+            ARGS+=(MARKETING_VERSION="$MARKETING_VERSION")
+          fi
+          xcodebuild "${ARGS[@]}"
+
+      - name: Assert archive excludes screenshot demo media
+        run: |
+          PRODUCTS="$IOS_BUILD_DIR/iosapp.xcarchive/Products"
+          if find "$PRODUCTS" \
+              \( -name 'ScreenshotMedia' -o -name 'demo-*.jpg' -o -name 'demo-*.jpeg' \) \
+              -print -quit | grep -q .; then
+            echo "Screenshot demo media must not be present in App Store build"
+            exit 1
+          fi
+
+      - name: Export archive and upload to TestFlight
+        run: |
+          make ios-export-options DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+          xcodebuild -exportArchive \
+            -archivePath "$IOS_BUILD_DIR/iosapp.xcarchive" \
+            -exportOptionsPlist "$IOS_BUILD_DIR/ExportOptions.plist" \
+            -exportPath "$IOS_BUILD_DIR/export" \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            -allowProvisioningUpdates
+

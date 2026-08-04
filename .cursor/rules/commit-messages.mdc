@@ -1,0 +1,38 @@
+---
+description: Replycant commit message conventions
+alwaysApply: true
+---
+
+# Commit Message Convention
+
+Use this format when writing git commits in this repository.
+
+## Subject line
+
+- Default format: `<component>: <lowercase imperative summary>`
+- Components used in this repo: `iosapp`, `webapp`, `server`, `caserver`,
+  `gitdb`, `git-replycant`
+- For cross-cutting or repo-root changes, omit the component prefix
+- Use imperative wording (`add`, `fix`, `remove`, `replace`, `keep`)
+- Do not add a trailing period
+- Do not use conventional commit prefixes (`feat:`, `chore:`, `fix:`)
+- `wip` is allowed only for explicit work-in-progress checkpoints
+
+## Body
+
+- Optional for trivial changes
+- Required for non-trivial changes
+- Put one blank line between subject and body
+- Explain why the change exists and key trade-offs
+- Wrap lines to about 72-80 characters
+
+## Agent trailer
+
+- Include `Co-authored-by: Cursor <cursoragent@cursor.com>` in agent commits
+
+## Examples
+
+- Good: `iosapp: prioritize interactive LFS image loads`
+- Good: `Derive transcoded URL host from git server config`
+- Bad: `feat: add image cache`
+- Bad: `webapp: Fixed timeline seek race.`

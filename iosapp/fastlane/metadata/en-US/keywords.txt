@@ -1,0 +1,1 @@
+self-hosted,photos,videos,encryption,privacy,git,lfs,timeline,sync,backup

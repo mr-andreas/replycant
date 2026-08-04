@@ -1,0 +1,24 @@
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.DS_Store
+Signing.local.xcconfig
+
+# Local-only simulator mTLS / Age credentials (never commit)
+iosapp/Resources/SimulatorCredentials/
+Resources/SimulatorCredentials/
+
+# libgit2 build artifacts
+build-temp/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+build/
+# Only the project-level lockfile is authoritative for app builds.
+LibGit2Package/Package.resolved
+GitDBPackage/Package.resolved
+
+# Docusaurus
+/docs

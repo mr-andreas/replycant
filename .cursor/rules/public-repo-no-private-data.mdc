@@ -1,0 +1,32 @@
+---
+description: Public repository - never commit private or sensitive material
+alwaysApply: true
+---
+
+# Public Repository
+
+This repository is public. Anything committed is visible to everyone, and
+git history is permanent. Never commit private material.
+
+Do not commit:
+
+- Secrets: API keys, tokens, passwords, private keys, certificates,
+  `.env` files, service account credentials
+- Personal data: real user emails, phone numbers, addresses, device
+  identifiers, account IDs, or real user content
+- Private infrastructure detail: internal hostnames, IP addresses,
+  non-public endpoints
+- Internal-only documents: security audits, incident reports, unpublished
+  business or legal material
+
+Instead:
+
+- Use obvious placeholders (`EXAMPLE_API_KEY`), `example.com` domains, and
+  synthetic fixture data in code, tests, and docs
+- Keep real values in untracked local files and make sure they are covered
+  by `.gitignore`
+- When unsure whether something is private, ask before committing it
+
+Deleting a leaked value in a later commit does not undo the exposure. If
+private material does reach the repo, say so immediately and treat the
+value as compromised so it can be rotated.

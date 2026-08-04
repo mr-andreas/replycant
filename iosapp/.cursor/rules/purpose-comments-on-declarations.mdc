@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+# Purpose Comments on Declarations
+
+- You MUST include a brief purpose comment immediately above any created or modified protocol, struct, class, enum, extension, or function. The comment MUST explain why it exists and what requirement/problem it addresses.
+
+- The goal is to document the purpose, not the implementation. Describe how it works only when behavior is non‑trivial, surprising, or critical to safe use.
+

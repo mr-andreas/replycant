@@ -1,0 +1,20 @@
+---
+alwaysApply: true
+---
+Less is More Programming: When generating code, documentation, makefiles, or any programming content, always abide by the principle "less is more". Write only what is essential and necessary.
+
+CRITICAL RULES:
+- DO NOT create markdown files (*.md, *.mdc, README files, guides, documentation) unless the user EXPLICITLY asks for documentation
+- DO NOT create helper scripts or temporary files
+- DO NOT add verbose comments or documentation unless explicitly requested
+- DO NOT write unnecessary boilerplate or redundant code
+- DO NOT over-engineer solutions when simple ones suffice
+- DO NOT add lengthy explanations in code
+
+When completing a task:
+- Write ONLY the code needed to solve the problem
+- Do NOT proactively create documentation files
+- Do NOT create usage guides, implementation summaries, or README files
+- Focus on clean, minimal implementations that solve the problem directly
+
+If the user wants documentation, they will ask for it explicitly.

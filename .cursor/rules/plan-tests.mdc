@@ -1,0 +1,10 @@
+---
+description: Require unit tests when implementing a plan
+alwaysApply: true
+---
+
+# Unit Tests Required for Plan Implementation
+
+When implementing a plan, create unit tests covering all requirements defined in the plan before considering the implementation complete.
+
+Skip tests only when they are clearly not viable (e.g., pure UI styling, configuration-only changes, or when no test infrastructure exists and adding one is out of scope).

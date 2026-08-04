@@ -1,0 +1,13 @@
+---
+description: Require manual browser verification after any change
+alwaysApply: true
+---
+
+# Manual Browser Verification
+
+After making any change to the webapp, you MUST verify it manually in the Browser before considering the task done.
+
+- Open (or reload) the affected page in the Browser
+- Visually confirm the change works as intended
+- If the change breaks something, fix it and re-verify
+- A task is NOT complete until browser verification passes

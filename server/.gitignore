@@ -1,0 +1,5 @@
+/data
+
+# Local keygen output next to the replycant CLI (never commit)
+bin/replycant/device.key
+bin/replycant/device.crt

@@ -1,0 +1,42 @@
+---
+description: Maintain changelog entries for significant changes
+alwaysApply: true
+---
+
+# Maintain a changelog
+
+When a change is significant, update `CHANGELOG.md` in the same commit.
+
+## Structure
+
+- Keep entries under `## Unreleased` until a release is tagged.
+- Use these categories in this exact order:
+  - `### Breaking changes`
+  - `### Features`
+  - `### Fixes`
+- On release, rename `## Unreleased` to `## <version> - <date>` and add a new
+  empty `## Unreleased` section at the top.
+
+## Entry format
+
+- Use `- <component>: <lowercase user-facing summary>`.
+- Components: `iosapp`, `webapp`, `server`, `caserver`, `gitdb`,
+  `git-replycant`.
+- For cross-cutting entries, omit the component prefix.
+- Within each category, keep entries sorted by component so related changes
+  stay adjacent. Put cross-cutting entries first.
+
+## What to include
+
+- Include user-visible behavior changes, new capabilities, breaking
+  API/schema/protocol/data format changes, security fixes, and notable bug
+  fixes.
+- Skip refactors, test-only changes, docs, CI tweaks, formatting, and internal
+  cleanups with no observable effect.
+
+## Writing guidance
+
+- Write for users, not reviewers.
+- Describe impact and outcomes, not implementation details.
+- For breaking changes, state what breaks and what users must do next. In alpha
+  stage, wiping state is an acceptable instruction.

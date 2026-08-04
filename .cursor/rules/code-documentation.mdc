@@ -1,0 +1,65 @@
+---
+alwaysApply: true
+---
+# Code Documentation Rule
+
+## Purpose Over Function
+
+All new code should be documented with comments that explain the
+**purpose** rather than the **function**. Use a maximum line width of
+80 characters for documentation comments when it is practical and does
+not make the text harder to read.
+
+### Good Documentation (Purpose-Focused)
+```swift
+// Manages photo synchronization to prevent data loss when users switch
+// devices. This addresses the critical user need to preserve memories
+// across the ecosystem.
+class PhotoSyncManager {
+    
+    // Tracks sync state to provide accurate progress feedback and enable
+    // recovery from interrupted syncs, which users reported as their top
+    // frustration.
+    private var syncState: SyncState
+}
+```
+
+### Bad Documentation (Function-Focused)
+```swift
+// This class handles photo sync operations
+class PhotoSyncManager {
+    
+    // Stores the current sync state
+    private var syncState: SyncState
+}
+```
+
+### Guidelines
+
+- **Why, not What**: Explain why the code exists, what problem it solves,
+  or what requirement it fulfills
+- **Context**: Provide business context, user needs, or architectural
+  decisions that led to this implementation
+- **Trade-offs**: Document why you chose this approach over alternatives
+  when relevant
+- **Assumptions**: Note any assumptions or constraints that influenced
+  the design
+
+### When to Document
+
+- Classes/Structs: Purpose, role in the system, key responsibilities
+- Functions/Methods: Why this operation is needed, what problem it solves
+- Complex Logic: Business reason for the complexity, not line-by-line notes
+- Public APIs: Contract with callers, guarantees, and expectations
+
+### Documentation Depth
+
+Avoid defaulting to a single-line comment for complex functions,
+classes, modules, hooks, or public APIs. Prefer a concise multi-line
+documentation block when the reader needs more context.
+
+Include the useful parts of the contract: why the code exists, caller
+expectations, important invariants, side effects, failure modes,
+ordering requirements, and meaningful trade-offs. Skip redundant
+parameter descriptions when the type already makes them obvious.
+

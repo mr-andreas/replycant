@@ -1,0 +1,25 @@
+---
+alwaysApply: true
+---
+
+# Git Commit Restriction
+
+## Rule: No Git Commits Without Explicit User Permission
+
+**CRITICAL**: The `git commit` command may **NEVER** be executed from Cursor without the user **explicitly** requesting it.
+
+### Prohibited Actions
+- Running `git commit` commands
+- Automatically committing changes
+- Suggesting or offering to commit changes
+- Any form of automatic version control commits
+
+### Required Behavior
+- Only commit when the user explicitly asks for it
+- Each git commit requires a fresh, explicit request from the user
+- Previous explicit requests do not carry over to subsequent commits
+- Always confirm the commit message and changes before proceeding
+- Never assume commit permission based on context or workflow
+
+### Rationale
+Git commits are irreversible changes to version history that should only be made with explicit user intent and oversight.

@@ -1,0 +1,5 @@
+module Clibgit2 {
+    umbrella header "include/libgit2.h"
+    export *
+}
+

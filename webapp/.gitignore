@@ -1,0 +1,19 @@
+node_modules/
+dist/
+dist-electron/
+release/
+*.tsbuildinfo
+
+# Local runtime cert/key material for dev mTLS.
+device.key
+device.p12
+device.crt
+server.crt
+
+# Local editor/project metadata.
+node_modules/
+dist/
+.vite/
+bench-results/
+test-results/
+playwright-report/

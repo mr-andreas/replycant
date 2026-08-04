@@ -1,0 +1,20 @@
+scheme("iosappScreenshots")
+devices([
+  "iPhone 17 Pro Max",
+  "iPad Pro 13-inch (M5)"
+])
+ios_version("26.2")
+languages([
+  "en-US"
+])
+output_directory("./fastlane/screenshots")
+derived_data_path(File.expand_path("build/screenshot-derived-data"))
+clear_previous_screenshots(true)
+skip_open_summary(true)
+# Avoid erase races on iOS 26 simulators that leave the device in an invalid state.
+erase_simulator(false)
+reinstall_app(false)
+concurrent_simulators(true)
+number_of_retries(0)
+launch_arguments(["--screenshots"])
+only_testing(["iosappUITests/ScreenshotUITests"])
