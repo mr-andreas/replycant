@@ -29,7 +29,9 @@ The `iosappScreenshots` scheme isolates screenshot tests from unit tests.
 ## Safety Guardrails
 
 - Screenshot media is excluded from `iphoneos` builds:
-  `EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*] = ScreenshotMedia/*`.
+  `EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*] = ScreenshotMedia`.
+- The exclusion targets the folder reference itself. Xcode copies folder
+  references as a unit, so per-file globs under that folder do not apply.
 - Release builds verify the archive payload excludes `ScreenshotMedia` before
   uploading to TestFlight.
 - `ScreenshotMediaTests` verify the same `iosapp/iosapp/ScreenshotMedia/`

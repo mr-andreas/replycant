@@ -445,7 +445,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
-				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = "ScreenshotMedia/* demo-*.jpg demo-*.jpeg";
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = ScreenshotMedia;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Replycant;
@@ -477,7 +477,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
-				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = "ScreenshotMedia/* demo-*.jpg demo-*.jpeg";
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = ScreenshotMedia;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Replycant;
