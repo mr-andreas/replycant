@@ -604,7 +604,14 @@ final class TimelineManager: ObservableObject {
     }
 
     // Clears cached LFS dependencies and triggers a forced timeline reload so current sessions switch endpoints immediately.
+    //
+    // A manager that never opened a repository holds nothing endpoint-specific
+    // to invalidate, and the forced reload would fail for lack of a repository.
+    // Resetting anyway discarded timeline state that could not be rebuilt, so
+    // such managers stay untouched and pick up the new endpoint when they are
+    // first configured.
     private func handleLFSURLDidChange() {
+        guard manifestLoader != nil || repository != nil else { return }
         lfsClient = nil
         manifestLoader = nil
         repository = nil
@@ -784,15 +791,6 @@ final class TimelineManager: ObservableObject {
         preloadCancellables.removeAll()
         rebuildItemIndex()
         updateRegionCursors()
-    }
-
-    /// Applies the coalesced preload pass immediately so unit tests can
-    /// assert post-debounce viewport state without waiting on MainActor
-    /// timer delivery, which is unreliable under contended CI runners.
-    func flushPreloadUpdateForTesting() {
-        preloadUpdateTask?.cancel()
-        preloadUpdateTask = nil
-        updatePreloadRange()
     }
 
     // Resets loaded items/cursors/caches so sparse state can be rebuilt from a new jump position.

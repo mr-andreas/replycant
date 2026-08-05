@@ -48,6 +48,23 @@ struct TimelinePreloadThrottleTests {
         CacheSettingsManager.shared.imagesAfterViewport = 100
     }
 
+    /// Waits for the trailing-edge debounce to run its coalesced preload
+    /// pass. Polls rather than sleeping one fixed budget because a loaded
+    /// CI runner can delay the main-actor continuation far past the 150 ms
+    /// debounce window, while a healthy machine finishes almost at once.
+    private func waitForPreload(
+        _ manager: TimelineManager,
+        at index: Int,
+        attempts: Int = 200,
+        sleepNanoseconds: UInt64 = 20_000_000
+    ) async throws {
+        var tries = 0
+        while tries < attempts && !manager.shouldPreloadItem(at: index) {
+            tries += 1
+            try await Task.sleep(nanoseconds: sleepNanoseconds)
+        }
+    }
+
     /// Preload does not fire synchronously — rapid appear calls are
     /// coalesced via a trailing-edge debounce.
     @Test func preloadIsNotImmediateAfterAppear() {
@@ -68,7 +85,7 @@ struct TimelinePreloadThrottleTests {
 
     /// After the coalesced preload pass runs, items within the
     /// configured preload range become eligible.
-    @Test func preloadFiresAfterDebounceWindow() {
+    @Test func preloadFiresAfterDebounceWindow() async throws {
         ensurePreloadWindow()
         let manager = TimelineManager()
         let items = makeItems(count: 20)
@@ -79,15 +96,13 @@ struct TimelinePreloadThrottleTests {
         }
 
         #expect(manager.shouldPreloadItem(at: 12) == false)
-        // Flush instead of sleeping: CI MainActor contention can delay
-        // the trailing Task far beyond any fixed wait budget.
-        manager.flushPreloadUpdateForTesting()
+        try await waitForPreload(manager, at: 12)
         #expect(manager.shouldPreloadItem(at: 12) == true)
     }
 
     /// Multiple rapid appear/disappear cycles result in only one
     /// final preload pass reflecting the last stable viewport state.
-    @Test func rapidAppearDisappearCoalescesIntoOnePass() {
+    @Test func rapidAppearDisappearCoalescesIntoOnePass() async throws {
         ensurePreloadWindow()
         let manager = TimelineManager()
         let items = makeItems(count: 50)
@@ -102,7 +117,7 @@ struct TimelinePreloadThrottleTests {
         // Immediately: no preload from the old viewport range
         #expect(manager.shouldPreloadItem(at: 3) == false)
 
-        manager.flushPreloadUpdateForTesting()
+        try await waitForPreload(manager, at: 3)
 
         // After the coalesced pass, preload reflects the final viewport
         // (9-17), not the initial one (0-8).

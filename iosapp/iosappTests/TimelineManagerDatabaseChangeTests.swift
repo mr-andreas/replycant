@@ -49,6 +49,36 @@ struct TimelineManagerDatabaseChangeTests {
         "\(original.metadata.deviceSpace)/media.replycant.com/v1alpha1/Original/\(original.metadata.name)"
     }
 
+    // Ensures a manager that never opened a repository ignores LFS endpoint
+    // broadcasts. Every live TimelineManager subscribes to the global
+    // notification, so an unconditional reset threw away timeline state that
+    // could not be rebuilt: the follow-up forced reload has no repository to
+    // read from and bails out, leaving an empty grid and no month selection.
+    @Test func lfsURLChangeKeepsStateWhenRepositoryUnavailable() async throws {
+        let manager = TimelineManager()
+        let original = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
+        manager.seedLoadedRegionForTesting(
+            offset: 0,
+            items: [TimelineItem(original: original)],
+            totalCount: 1
+        )
+        manager.updateCurrentMonth(for: 0, force: true)
+        let selectedMonth = manager.currentYearMonth
+        #expect(selectedMonth != nil)
+
+        NotificationCenter.default.post(
+            name: ServerConfigurationManager.lfsURLDidChangeNotification,
+            object: nil
+        )
+        // The observer hops through the main queue before reacting, so give it
+        // a window to run rather than asserting on the same turn.
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        #expect(manager.loadedItems.map(\.id) == ["a"])
+        #expect(manager.totalCount == 1)
+        #expect(manager.currentYearMonth == selectedMonth)
+    }
+
     // Ensures incremental additions keep already-loaded sparse items in memory instead of clearing the window.
     @Test func incrementalAdditionKeepsLoadedItems() {
         let manager = TimelineManager()
