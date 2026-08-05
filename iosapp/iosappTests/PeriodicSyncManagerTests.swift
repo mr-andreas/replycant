@@ -3,6 +3,26 @@ import Testing
 @testable import iosapp
 import LibGit2
 
+// Shares lock-held state across unstructured tasks without MainActor coupling.
+private final class LockHeldFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    // Marks the repository mutation lock as acquired by the holder task.
+    func mark() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    // Reads whether the holder has entered the mutation lock.
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 // Verifies periodic sync lifecycle and lock behavior for safe background git scheduling.
 @MainActor
 @Suite(.serialized)
@@ -115,12 +135,22 @@ struct PeriodicSyncManagerTests {
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
         let repository = try Repository.create(at: root, bare: false)
 
+        // Signal after acquire so CI executor delay cannot make
+        // tryWithMutationLock win the race before the holder starts.
+        let held = LockHeldFlag()
         let holdingTask = Task {
             try await repository.withMutationLock {
-                try await Task.sleep(nanoseconds: 200_000_000)
+                held.mark()
+                try await Task.sleep(nanoseconds: 300_000_000)
             }
         }
-        try await Task.sleep(nanoseconds: 50_000_000)
+
+        var spins = 0
+        while !held.isSet && spins < 200 {
+            spins += 1
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(held.isSet)
 
         let secondAcquire = try await repository.tryWithMutationLock { true }
         #expect(secondAcquire == nil)

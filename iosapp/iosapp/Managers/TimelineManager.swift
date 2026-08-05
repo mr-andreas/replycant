@@ -786,6 +786,15 @@ final class TimelineManager: ObservableObject {
         updateRegionCursors()
     }
 
+    /// Applies the coalesced preload pass immediately so unit tests can
+    /// assert post-debounce viewport state without waiting on MainActor
+    /// timer delivery, which is unreliable under contended CI runners.
+    func flushPreloadUpdateForTesting() {
+        preloadUpdateTask?.cancel()
+        preloadUpdateTask = nil
+        updatePreloadRange()
+    }
+
     // Resets loaded items/cursors/caches so sparse state can be rebuilt from a new jump position.
     private func resetLoadedRegion(clearVisibleIndices: Bool, clearCurrentMonth: Bool = true) {
         loadedOffset = 0

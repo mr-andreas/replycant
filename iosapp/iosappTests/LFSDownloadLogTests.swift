@@ -259,13 +259,18 @@ struct LFSDownloadLogTests {
             }
         }
 
+        // Match the missing oid so chatty LFS lines from parallel upload
+        // suites (e.g. "Batch response status: 200") cannot be selected.
         let lfsLines = output
             .components(separatedBy: "\n")
-            .filter { $0.hasPrefix("LFS:") && !$0.isEmpty }
+            .filter {
+                $0.hasPrefix("LFS:")
+                    && $0.contains("oid=\(missingOID)")
+                    && !$0.isEmpty
+            }
         #expect(!lfsLines.isEmpty, "Failure path should still log")
 
         let failLine = try #require(lfsLines.first)
         #expect(failLine.contains("failed"))
-        #expect(failLine.contains("oid=\(missingOID)"))
     }
 }
