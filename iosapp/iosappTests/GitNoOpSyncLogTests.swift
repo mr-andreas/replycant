@@ -6,32 +6,21 @@ import LibGit2
 // logs only signal actual state changes or failures.
 @Suite("Git No-Op Sync Log Tests", .serialized)
 struct GitNoOpSyncLogTests {
-    // Captures stdout for one async block so tests can assert exact log levels.
-    private func captureStdout(
-        during work: () async throws -> Void
-    ) async throws -> String {
-        let pipe = Pipe()
-        let originalFd = dup(STDOUT_FILENO)
-        setvbuf(stdout, nil, _IONBF, 0)
-        dup2(pipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO)
-
-        do {
-            try await work()
-        } catch {
-            fflush(stdout)
-            dup2(originalFd, STDOUT_FILENO)
-            close(originalFd)
-            pipe.fileHandleForWriting.closeFile()
-            throw error
+    // Asserts a no-op operation stayed quiet at the routine levels. Warnings
+    // and errors are left alone so a genuine failure surfaces as itself rather
+    // than as a log-noise regression.
+    private func expectNoRoutineLogs(
+        _ lines: [String],
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        let routine = lines.filter {
+            $0.contains("[INFO][Git]") || $0.contains("[DEBUG][Git]")
         }
-
-        fflush(stdout)
-        dup2(originalFd, STDOUT_FILENO)
-        close(originalFd)
-        pipe.fileHandleForWriting.closeFile()
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        #expect(
+            routine.isEmpty,
+            Comment(rawValue: "unexpected routine log output: \(routine)"),
+            sourceLocation: sourceLocation
+        )
     }
 
     // Builds a local branch state where push exits early because origin/main
@@ -77,28 +66,26 @@ struct GitNoOpSyncLogTests {
     }
 
     // Ensures no-op push produces no visible log output at the default INFO level.
-    @Test func pushNoOpEmitsNoInfoGitLogs() async throws {
+    @Test func pushNoOpEmitsNoInfoGitLogs() throws {
         let (repo, rootPath) = try setupPushNoOpRepository()
         defer { try? FileManager.default.removeItem(atPath: rootPath) }
 
-        let output = try await captureStdout {
+        let (_, lines) = try withGitLogCapture {
             try repo.push(remoteName: "origin", branchName: "main")
         }
 
-        #expect(!output.contains("[INFO][Git]"))
-        #expect(!output.contains("[DEBUG][Git]"))
+        expectNoRoutineLogs(lines)
     }
 
     // Ensures no-op pull-rebase produces no visible log output at the default INFO level.
-    @Test func pullRebaseNoOpEmitsNoInfoGitLogs() async throws {
+    @Test func pullRebaseNoOpEmitsNoInfoGitLogs() throws {
         let (repo, rootPath) = try setupPullNoOpRepository()
         defer { try? FileManager.default.removeItem(atPath: rootPath) }
 
-        let output = try await captureStdout {
+        let (_, lines) = try withGitLogCapture {
             try repo.pullRebase(remoteName: "origin", branchName: "main")
         }
 
-        #expect(!output.contains("[INFO][Git]"))
-        #expect(!output.contains("[DEBUG][Git]"))
+        expectNoRoutineLogs(lines)
     }
 }

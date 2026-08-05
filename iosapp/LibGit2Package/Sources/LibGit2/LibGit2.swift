@@ -11,11 +11,42 @@ internal var logMinLevel: String = "INFO"
 
 private let levelOrder = ["DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3]
 
+// Accumulates log lines for one capture scope. A reference type so the
+// scope can read what nested calls appended.
+private final class LogCaptureBuffer {
+    var lines: [String] = []
+}
+
+private let logCaptureKey = "com.replycant.libgit2.logCapture"
+
+// Collects the log lines the calling thread emits inside `body` instead of
+// printing them.
+//
+// Exists so tests can assert which lines a Git operation produces. Capture is
+// scoped to the calling thread rather than the process because the test bundle
+// runs suites concurrently: redirecting stdout mixed unrelated suites' output
+// into the assertion, which failed these tests for lines they never emitted.
+// A thread cannot run two tasks at once, so a synchronous `body` sees only its
+// own output.
+public func withGitLogCapture<T>(_ body: () throws -> T) rethrows -> (value: T, lines: [String]) {
+    let buffer = LogCaptureBuffer()
+    let threadDictionary = Thread.current.threadDictionary
+    threadDictionary[logCaptureKey] = buffer
+    defer { threadDictionary.removeObject(forKey: logCaptureKey) }
+    let value = try body()
+    return (value, buffer.lines)
+}
+
 // Simple logging utility for the LibGit2 package
 internal func log(_ message: String, context: String = "Git", level: String = "INFO") {
     guard (levelOrder[level] ?? 1) >= (levelOrder[logMinLevel] ?? 1) else { return }
     let timestamp = timestamp()
-    Swift.print("[\(timestamp)][\(level)][\(context)] \(message)")
+    let line = "[\(timestamp)][\(level)][\(context)] \(message)"
+    if let buffer = Thread.current.threadDictionary[logCaptureKey] as? LogCaptureBuffer {
+        buffer.lines.append(line)
+        return
+    }
+    Swift.print(line)
 }
 
 // Returns a timestamp string in format HH:mm:ss.SSS for consistent logging
