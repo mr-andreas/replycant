@@ -81,13 +81,14 @@ func sliceContains(values []string, needle string) bool {
 	return false
 }
 
-// TestMain skips integration-heavy tests when ffmpeg or ffprobe are unavailable.
+// TestMain fails fast when required media tools are missing so CI does not
+// report a false-green run with zero importer coverage.
 func TestMain(m *testing.M) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		os.Exit(0)
-	}
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		os.Exit(0)
+	for _, tool := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			fmt.Fprintf(os.Stderr, "%s is required for replycant-importer tests\n", tool)
+			os.Exit(1)
+		}
 	}
 	os.Exit(m.Run())
 }
