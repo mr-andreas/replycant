@@ -142,7 +142,7 @@ services:
       - --upstream=http://admin:admin@lfs:8083
       - --listen=:8084
 
-  # Run transcoded with GPU acceleration support. Reachable only through gitd's
+  # Run transcoded for on-demand video segments. Reachable only through gitd's
   # mTLS-authenticated /transcoded route, so no host port is published.
   transcoded:
     image: ${REPLYCANT_TRANSCODED_IMAGE:-transcoded:local}
@@ -154,10 +154,3 @@ services:
       - decryptd
     command:
       - --upstream=http://decryptd:8084
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu, video]

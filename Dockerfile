@@ -28,8 +28,9 @@ ENTRYPOINT ["/usr/local/bin/gitd"]
 EXPOSE 8443
 EXPOSE 8080
 
-# Run transcoded on NVIDIA CUDA base for GPU-accelerated video transcoding
-FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS transcoded
+# Run transcoded on a plain Debian base because the active transcoding path
+# is software-only and does not require CUDA runtime dependencies.
+FROM debian:trixie AS transcoded
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
