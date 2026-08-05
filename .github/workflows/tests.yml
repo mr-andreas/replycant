@@ -26,11 +26,21 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install ffmpeg
+      - name: Install test dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg git-lfs
+
+      # Git commits in tests need committer identity; --author alone is not
+      # enough because git still requires user.name/user.email for the
+      # committer. git-lfs is required by server/repo.Init.
+      - name: Configure git for tests
+        run: |
+          set -euo pipefail
+          git config --global user.email "ci@replycant.local"
+          git config --global user.name "replycant-ci"
+          git lfs install --skip-repo
 
       - name: Run Go tests
         run: go test ./... -tags integration -timeout 30m

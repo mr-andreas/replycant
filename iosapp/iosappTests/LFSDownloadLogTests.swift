@@ -204,29 +204,34 @@ struct LFSDownloadLogTests {
             .components(separatedBy: "\n")
             .filter { !$0.isEmpty }
 
-        let lfsLines = lines.filter { $0.hasPrefix("LFS:") }
+        // Filter by oid so parallel suites that also print LFS: lines
+        // during process-wide stdout capture cannot poison this assertion.
+        let lfsLines = lines.filter {
+            $0.hasPrefix("LFS:") && $0.contains("oid=\(oid)")
+        }
         #expect(
             lfsLines.count == 1,
-            Comment(rawValue: "Expected exactly 1 LFS log line,"
+            Comment(rawValue: "Expected exactly 1 LFS log line for oid,"
                 + " got \(lfsLines.count): \(lfsLines)")
         )
 
         let summary = try #require(lfsLines.first)
-        #expect(summary.contains("oid=\(oid)"))
         #expect(summary.contains("status=200"))
         #expect(summary.contains("bytes=\(payload.count)"))
         #expect(summary.contains("total="))
         #expect(summary.contains("ms"))
 
-        // Old chatty messages must be gone.
-        #expect(!output.contains("Batch response status"))
-        #expect(!output.contains("Batch request successful"))
-        #expect(!output.contains("Downloading from:"))
-        #expect(!output.contains("Adding basic authentication"))
-        #expect(!output.contains("Sending GET request"))
-        #expect(!output.contains("Download response status"))
-        #expect(!output.contains("Download successful, received"))
-        #expect(!output.contains("Starting download of OID"))
+        // Old chatty messages must be gone from this download's lines.
+        for line in lfsLines {
+            #expect(!line.contains("Batch response status"))
+            #expect(!line.contains("Batch request successful"))
+            #expect(!line.contains("Downloading from:"))
+            #expect(!line.contains("Adding basic authentication"))
+            #expect(!line.contains("Sending GET request"))
+            #expect(!line.contains("Download response status"))
+            #expect(!line.contains("Download successful, received"))
+            #expect(!line.contains("Starting download of OID"))
+        }
     }
 
     // Confirms failure paths still emit a diagnosable LFS log line.

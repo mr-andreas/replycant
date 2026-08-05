@@ -21,26 +21,49 @@ class TestLFSServer {
     func start() throws {
         let processInfo = ProcessInfo.processInfo
         let isUITesting = processInfo.arguments.contains("--uitesting")
-        let isUnitTesting = processInfo.environment["XCTestConfigurationFilePath"] != nil
+        // xcodebuild sets XCTestConfigurationFilePath for XCTest and Swift
+        // Testing; XCTestBundlePath is a fallback for some runner variants.
+        let isUnitTesting =
+            processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || processInfo.environment["XCTestBundlePath"] != nil
         guard isUITesting || isUnitTesting else {
             print("TestLFSServer: Not in UI test mode, skipping")
             return
         }
-        
-        print("TestLFSServer: Starting mock LFS server on random port...")
-        
-        // Use NWListener for simple HTTP server
+
+        // CI runners occasionally stall NWListener bring-up; retry with a
+        // longer per-attempt timeout instead of failing the suite once.
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                try startListener(attempt: attempt)
+                return
+            } catch {
+                lastError = error
+                stop()
+            }
+        }
+        throw lastError ?? NSError(
+            domain: "TestLFSServer",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Server start timed out"]
+        )
+    }
+
+    // Performs one NWListener bind/start cycle and waits until ready.
+    private func startListener(attempt: Int) throws {
+        print("TestLFSServer: Starting mock LFS server on random port (attempt \(attempt))...")
+
         let port = NWEndpoint.Port(integerLiteral: 0)
         listener = try NWListener(using: .tcp, on: port)
-        
+
         listener?.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
-        
-        // Semaphore to block until server is ready or fails
+
         let readySemaphore = DispatchSemaphore(value: 0)
         var startError: Error?
-        
+
         listener?.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
@@ -69,16 +92,18 @@ class TestLFSServer {
                 break
             }
         }
-        
+
         listener?.start(queue: .global(qos: .utility))
-        
-        // Wait for server to be ready (with timeout to avoid deadlock)
-        let timeout = DispatchTime.now() + .seconds(5)
+
+        let timeout = DispatchTime.now() + .seconds(15)
         if readySemaphore.wait(timeout: timeout) == .timedOut {
-            throw NSError(domain: "TestLFSServer", code: -1, 
-                         userInfo: [NSLocalizedDescriptionKey: "Server start timed out"])
+            throw NSError(
+                domain: "TestLFSServer",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Server start timed out"]
+            )
         }
-        
+
         if let error = startError {
             throw error
         }

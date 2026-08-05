@@ -328,8 +328,8 @@ final class TimelineManager: ObservableObject {
         monthSelection.isGridScrolling = isScrolling
         if !isScrolling {
             updateCurrentMonth(for: pendingMonthIndex, force: true)
-            preloadUpdateWorkItem?.cancel()
-            preloadUpdateWorkItem = nil
+            preloadUpdateTask?.cancel()
+            preloadUpdateTask = nil
             updatePreloadRange()
         }
     }
@@ -465,7 +465,10 @@ final class TimelineManager: ObservableObject {
         schedulePreloadUpdate()
     }
 
-    private var preloadUpdateWorkItem: DispatchWorkItem?
+    // Task-based debounce so Swift Testing / MainActor waits observe the
+    // same scheduler as production, instead of GCD timers that may not
+    // fire while cooperative tests are suspended on the main actor.
+    private var preloadUpdateTask: Task<Void, Never>?
 
     /// Coalesces rapid appear/disappear calls into a single preload
     /// pass. During fast scrolling dozens of cells cycle per frame;
@@ -475,12 +478,12 @@ final class TimelineManager: ObservableObject {
     /// immediately when scrolling settles via setGridScrolling(false).
     private func schedulePreloadUpdate() {
         guard !isGridScrolling else { return }
-        preloadUpdateWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
+        preloadUpdateTask?.cancel()
+        preloadUpdateTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
             self?.updatePreloadRange()
         }
-        preloadUpdateWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
     
     // Checks if an item should be preloaded based on current viewport position.

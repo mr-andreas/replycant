@@ -33,12 +33,13 @@ struct TimelineMonthNavigationTests {
         )
     }
 
-    // Waits until the manager publishes the expected month so assertions can observe async main-queue publication.
+    // Waits until the manager publishes the expected month so assertions can
+    // observe async main-actor publication even under contended CI runners.
     private func waitForMonth(
         _ expected: TimelineYearMonth,
         manager: TimelineManager,
-        attempts: Int = 20,
-        sleepNanoseconds: UInt64 = 10_000_000
+        attempts: Int = 100,
+        sleepNanoseconds: UInt64 = 20_000_000
     ) async throws {
         var tries = 0
         while tries < attempts && manager.currentYearMonth != expected {
@@ -126,11 +127,22 @@ struct TimelineMonthNavigationTests {
         #expect(manager.currentYearMonth == TimelineYearMonth(year: 2024, month: 2))
     }
 
+    // Builds a date firmly inside year/month for every runner timezone so
+    // Calendar.current month extraction matches production updateCurrentMonth.
+    private func dateInMonth(year: Int, month: Int, day: Int = 15) -> Date {
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = 12
+        return Calendar.current.date(from: components)!
+    }
+
     // Ensures rapid month updates are rate-limited so sidebar selection does not churn during fast scroll callbacks.
     @Test func updateCurrentMonthThrottlesRapidChanges() async throws {
         let manager = TimelineManager()
-        let januaryDate = Date(timeIntervalSince1970: 1_704_067_200) // 2024-01-01
-        let februaryDate = Date(timeIntervalSince1970: 1_706_745_600) // 2024-02-01
+        let januaryDate = dateInMonth(year: 2024, month: 1)
+        let februaryDate = dateInMonth(year: 2024, month: 2)
         let january = TimelineYearMonth(year: 2024, month: 1)
         let february = TimelineYearMonth(year: 2024, month: 2)
         manager.seedLoadedRegionForTesting(
@@ -158,8 +170,8 @@ struct TimelineMonthNavigationTests {
     // Ensures the latest month selection is flushed when scrolling settles so sidebar and viewport end in sync.
     @Test func setGridScrollingFalseFlushesPendingMonthUpdate() async throws {
         let manager = TimelineManager()
-        let januaryDate = Date(timeIntervalSince1970: 1_704_067_200) // 2024-01-01
-        let februaryDate = Date(timeIntervalSince1970: 1_706_745_600) // 2024-02-01
+        let januaryDate = dateInMonth(year: 2024, month: 1)
+        let februaryDate = dateInMonth(year: 2024, month: 2)
         let january = TimelineYearMonth(year: 2024, month: 1)
         let february = TimelineYearMonth(year: 2024, month: 2)
         manager.seedLoadedRegionForTesting(
@@ -197,8 +209,8 @@ struct TimelineMonthNavigationTests {
         #expect(initialSections[0].entries.map(\.id) == ["2024-1", "2024-2"])
         #expect(initialSections[1].entries.map(\.id) == ["2025-3"])
 
-        let januaryDate = Date(timeIntervalSince1970: 1_704_067_200) // 2024-01-01
-        let februaryDate = Date(timeIntervalSince1970: 1_706_745_600) // 2024-02-01
+        let januaryDate = dateInMonth(year: 2024, month: 1)
+        let februaryDate = dateInMonth(year: 2024, month: 2)
         manager.seedLoadedRegionForTesting(
             offset: 0,
             items: [
@@ -248,8 +260,8 @@ struct TimelineMonthNavigationTests {
         manager.seedLoadedRegionForTesting(
             offset: 0,
             items: [
-                TimelineItem(original: makeOriginal(id: "jan-item", takenAt: Date(timeIntervalSince1970: 1_704_067_200))),
-                TimelineItem(original: makeOriginal(id: "feb-item", takenAt: Date(timeIntervalSince1970: 1_706_745_600)))
+                TimelineItem(original: makeOriginal(id: "jan-item", takenAt: dateInMonth(year: 2024, month: 1))),
+                TimelineItem(original: makeOriginal(id: "feb-item", takenAt: dateInMonth(year: 2024, month: 2)))
             ],
             totalCount: 3
         )

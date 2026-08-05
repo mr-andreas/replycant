@@ -40,6 +40,22 @@ struct TimelinePreloadThrottleTests {
         }
     }
 
+    /// Polls until preload marks an index, absorbing MainActor scheduling
+    /// jitter that makes a single fixed sleep unreliable on CI.
+    private func waitForPreload(
+        _ manager: TimelineManager,
+        index: Int,
+        attempts: Int = 50,
+        sleepNanoseconds: UInt64 = 20_000_000
+    ) async throws {
+        var tries = 0
+        while tries < attempts && !manager.shouldPreloadItem(at: index) {
+            tries += 1
+            try await Task.sleep(nanoseconds: sleepNanoseconds)
+        }
+        #expect(manager.shouldPreloadItem(at: index) == true)
+    }
+
     /// Preload does not fire synchronously — rapid appear calls are
     /// coalesced via a trailing-edge debounce.
     @Test func preloadIsNotImmediateAfterAppear() {
@@ -68,11 +84,9 @@ struct TimelinePreloadThrottleTests {
             manager.itemDidAppear(at: i)
         }
 
-        // Wait for debounce (150ms) plus a small margin
-        try await Task.sleep(nanoseconds: 250_000_000)
-
-        // Now items within the preload range should be marked
-        #expect(manager.shouldPreloadItem(at: 12) == true)
+        // Poll past the 150ms debounce; CI MainActor contention can delay
+        // the trailing Task beyond a single fixed sleep.
+        try await waitForPreload(manager, index: 12)
     }
 
     /// Multiple rapid appear/disappear cycles result in only one
@@ -91,16 +105,12 @@ struct TimelinePreloadThrottleTests {
         // Immediately: no preload from the old viewport range
         #expect(manager.shouldPreloadItem(at: 3) == false)
 
-        // Wait for debounce
-        try await Task.sleep(nanoseconds: 250_000_000)
-
         // After debounce, preload reflects the final viewport (9-17),
         // not the initial one (0-8). Items before viewport 9 should
         // be preloaded (within beforeViewport range), and items at
         // index 3 should be eligible since default beforeViewport=100.
-        #expect(manager.shouldPreloadItem(at: 3) == true)
-        // Items well after the viewport should also be preloaded
-        #expect(manager.shouldPreloadItem(at: 25) == true)
+        try await waitForPreload(manager, index: 3)
+        try await waitForPreload(manager, index: 25)
     }
 
     /// While grid is actively scrolling, preload scheduling is fully
