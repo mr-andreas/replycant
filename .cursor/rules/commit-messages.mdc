@@ -26,10 +26,6 @@ Use this format when writing git commits in this repository.
 - Explain why the change exists and key trade-offs
 - Wrap lines to about 72-80 characters
 
-## Agent trailer
-
-- Include `Co-authored-by: Cursor <cursoragent@cursor.com>` in agent commits
-
 ## Examples
 
 - Good: `iosapp: prioritize interactive LFS image loads`
