@@ -43,6 +43,17 @@ ios-test:
 	  -skip-testing:iosappUITests/ScreenshotUITests
 .PHONY: ios-test
 
+ios-integration-test:
+	@set -euo pipefail; \
+	  trap 'bash integration/container.sh stop' EXIT; \
+	  bash integration/container.sh start >/dev/null; \
+	  TEST_RUNNER_REPLYCANT_INTEGRATION_CTL=http://localhost:18447 \
+	  xcodebuild test -project $(IOS_PROJECT) -scheme $(IOS_SCHEME) \
+	    -destination '$(IOS_TEST_DESTINATION)' \
+	    -derivedDataPath iosapp/build/integration-derived-data \
+	    -only-testing:iosappTests/GitdIntegrationTests
+.PHONY: ios-integration-test
+
 # Create these once in App Store Connect:
 # Users and Access -> Integrations -> App Store Connect API -> Generate API Key.
 # Export ASC_KEY_ID (Key ID), ASC_ISSUER_ID (Issuer ID), and ASC_KEY_PATH

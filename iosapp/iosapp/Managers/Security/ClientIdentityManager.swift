@@ -80,6 +80,21 @@ final class ClientIdentityManager {
         log("Loaded bundled simulator identity from PEM resources", context: "ClientIdentity")
         #endif
     }
+
+    // Clears mTLS and age identity material so integration tests can force deterministic first-run onboarding.
+    func resetIdentityForTesting() throws {
+        #if DEBUG
+        try deleteIdentityForSimulatorOverride()
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: agePrivateKeyTag
+        ]
+        let deleteStatus = SecItemDelete(deleteQuery as CFDictionary)
+        if deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound {
+            throw IdentityError.keychainError(deleteStatus)
+        }
+        #endif
+    }
     
     // Returns the SSH-format public key for committing to pubkeys/ directory.
     // Format: "ecdsa-sha2-nistp256 AAAA... comment"
