@@ -11,9 +11,6 @@ final class ScreenshotUITests: XCTestCase {
         app = XCUIApplication()
         UITestFixtures.configureApp(app)
         app.launchArguments.append("--screenshots")
-        // Regular UI tests use a dummy TEST_GIT_URL; screenshot captures need the
-        // in-process TestLFSServer localhost origin so thumbnails actually load.
-        app.launchEnvironment.removeValue(forKey: "TEST_GIT_URL")
         setupSnapshot(app)
         app.launch()
 

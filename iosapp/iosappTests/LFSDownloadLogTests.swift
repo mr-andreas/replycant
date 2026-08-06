@@ -132,11 +132,11 @@ final class LogTestLFSURLProtocol: URLProtocol {
     }
 }
 
-// Verifies that LFS object downloads produce exactly one compact
-// summary log line per object and that the old multi-line chatter is
-// gone. The summary line must include oid, HTTP status, byte count,
-// TTFB, and total elapsed time so operators can diagnose transfer
-// performance from logs alone.
+// Verifies that LFS object downloads produce a compact summary log
+// line per object and that the old multi-line chatter is gone. The
+// summary line must include oid, HTTP status, byte count, TTFB, and
+// total elapsed time so operators can diagnose transfer performance
+// from logs alone even when other suites print unrelated lines.
 @Suite("LFS Download Log Tests", .serialized)
 struct LFSDownloadLogTests {
     private func sha256Hex(_ data: Data) -> String {
@@ -205,13 +205,14 @@ struct LFSDownloadLogTests {
             .filter { !$0.isEmpty }
 
         let lfsLines = lines.filter { $0.hasPrefix("LFS:") }
+        let oidSummaries = lfsLines.filter { $0.contains("oid=\(oid)") }
         #expect(
-            lfsLines.count == 1,
-            Comment(rawValue: "Expected exactly 1 LFS log line,"
-                + " got \(lfsLines.count): \(lfsLines)")
+            oidSummaries.count == 1,
+            Comment(rawValue: "Expected exactly 1 LFS summary for oid,"
+                + " got \(oidSummaries.count): \(oidSummaries)")
         )
 
-        let summary = try #require(lfsLines.first)
+        let summary = try #require(oidSummaries.first)
         #expect(summary.contains("oid=\(oid)"))
         #expect(summary.contains("status=200"))
         #expect(summary.contains("bytes=\(payload.count)"))

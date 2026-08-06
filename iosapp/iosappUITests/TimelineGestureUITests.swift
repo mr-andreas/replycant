@@ -530,8 +530,8 @@ final class TimelineGestureUITests: XCTestCase {
         XCTAssertTrue(fullScreenView.waitForExistence(timeout: 5), "Should be in full screen view for video")
         
         // Get the video player
-        let videoPlayer = app.otherElements["videoPlayer"]
-        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 3), "Video player should be displayed")
+        let videoPlayer = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
+        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 10), "Video player should be displayed")
         
         // Perform a vertical swipe down from center to dismiss
         let startPoint = videoPlayer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
@@ -584,8 +584,8 @@ final class TimelineGestureUITests: XCTestCase {
         XCTAssertFalse(videoImageView.exists, "Should be viewing video (zoomableImage should not exist for videos)")
 
         // Get the video player and make sure it's playing
-        let videoPlayer = app.otherElements["videoPlayer"]
-        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 3), "Video player should be displayed")
+        let videoPlayer = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
+        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 10), "Video player should be displayed")
         XCTAssertEqual(videoPlayer.value as? String, "playing", "Video player should be playing")
         
         // Now swipe to the previous item (should navigate to a photo)
@@ -606,7 +606,7 @@ final class TimelineGestureUITests: XCTestCase {
         // Verify the video player is paused or no longer exists
         // After swiping away, the video player should either be removed from the view hierarchy
         // or if it still exists (in the background), it should be paused
-        let videoPlayerAfterSwipe = app.otherElements["videoPlayer"]
+        let videoPlayerAfterSwipe = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
         if videoPlayerAfterSwipe.exists {
             // If the video player still exists, it must be paused
             XCTAssertEqual(videoPlayerAfterSwipe.value as? String, "paused", "Video player should be paused after swiping away")

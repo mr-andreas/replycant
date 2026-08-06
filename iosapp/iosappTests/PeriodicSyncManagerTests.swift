@@ -7,6 +7,29 @@ import LibGit2
 @MainActor
 @Suite(.serialized)
 struct PeriodicSyncManagerTests {
+    // Coordinates lock-acquired timing so mutation-lock tests avoid scheduler races.
+    private actor MutationLockAcquireSignal {
+        private var isAcquired = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        // Marks that the holder entered the critical section before competing acquires run.
+        func markAcquired() {
+            isAcquired = true
+            continuation?.resume()
+            continuation = nil
+        }
+
+        // Waits until the holder confirms lock ownership.
+        func waitUntilAcquired() async {
+            if isAcquired {
+                return
+            }
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+    }
+
     // Resets sync defaults so singleton manager starts from deterministic configuration.
     private func resetSyncDefaults() {
         UserDefaults.standard.removeObject(forKey: "syncPushEnabled")
@@ -114,13 +137,15 @@ struct PeriodicSyncManagerTests {
 
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
         let repository = try Repository.create(at: root, bare: false)
+        let acquireSignal = MutationLockAcquireSignal()
 
         let holdingTask = Task {
             try await repository.withMutationLock {
+                await acquireSignal.markAcquired()
                 try await Task.sleep(nanoseconds: 200_000_000)
             }
         }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await acquireSignal.waitUntilAcquired()
 
         let secondAcquire = try await repository.tryWithMutationLock { true }
         #expect(secondAcquire == nil)

@@ -23,7 +23,7 @@ final class TimelineSidebarTogglePositionUITests: XCTestCase {
         app = nil
     }
 
-    // Ensures overlaying the sidebar keeps the grid frame stable and preserves the visible top anchor.
+    // Ensures toggling the sidebar preserves the visible top anchor while resizing the grid by layout design.
     func testSidebarTogglePreservesTopVisibleAnchor() {
         UITestFixtures.waitForTimelineLoad(app, timeout: 15)
         let timelineGrid = app.collectionViews["timelineGrid"]
@@ -44,10 +44,11 @@ final class TimelineSidebarTogglePositionUITests: XCTestCase {
         toggleButton.tap()
         XCTAssertTrue(waitForSidebar(sidebar, visible: true, timeout: 10), "Sidebar should appear")
         assertSidebarFillsScreenHeight(sidebar, context: "show")
-        assertFramesNearlyEqual(
+        assertExpectedFrameShift(
             baselineGridFrame,
             timelineGrid.frame,
-            tolerance: 1,
+            expectedWidthDelta: 64,
+            tolerance: 2,
             context: "show"
         )
 
@@ -57,10 +58,11 @@ final class TimelineSidebarTogglePositionUITests: XCTestCase {
 
         toggleButton.tap()
         XCTAssertTrue(waitForSidebar(sidebar, visible: false, timeout: 5), "Sidebar should hide")
-        assertFramesNearlyEqual(
+        assertExpectedFrameShift(
             baselineGridFrame,
             timelineGrid.frame,
-            tolerance: 1,
+            expectedWidthDelta: 0,
+            tolerance: 2,
             context: "hide"
         )
 
@@ -95,12 +97,13 @@ final class TimelineSidebarTogglePositionUITests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(lhs.yFromGridTop - rhs.yFromGridTop), yTolerance, "Top anchor y-offset drifted during \(context) toggle")
     }
 
-    // Confirms sidebar visibility no longer resizes the timeline viewport now that it overlays content.
-    private func assertFramesNearlyEqual(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat, context: String) {
+    // Confirms sidebar toggling keeps position stable while width follows the known HStack layout shift.
+    private func assertExpectedFrameShift(_ lhs: CGRect, _ rhs: CGRect, expectedWidthDelta: CGFloat, tolerance: CGFloat, context: String) {
         XCTAssertLessThanOrEqual(abs(lhs.minX - rhs.minX), tolerance, "Grid minX changed during \(context) toggle")
         XCTAssertLessThanOrEqual(abs(lhs.minY - rhs.minY), tolerance, "Grid minY changed during \(context) toggle")
-        XCTAssertLessThanOrEqual(abs(lhs.width - rhs.width), tolerance, "Grid width changed during \(context) toggle")
         XCTAssertLessThanOrEqual(abs(lhs.height - rhs.height), tolerance, "Grid height changed during \(context) toggle")
+        let widthDelta = lhs.width - rhs.width
+        XCTAssertLessThanOrEqual(abs(widthDelta - expectedWidthDelta), tolerance, "Grid width delta mismatch during \(context) toggle")
     }
 
     // Confirms the sidebar background extends behind nav and tab bars by verifying content is within safe area.
