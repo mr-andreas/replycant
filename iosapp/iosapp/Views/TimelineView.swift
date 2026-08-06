@@ -100,6 +100,14 @@ struct TimelineView: View {
             }
             .task {
                 guard previewState == nil else { return }
+                // Waits for UITest fixture sync so the first load opens the
+                // hydrated database instead of an empty connection that setup
+                // deletes and replaces after launch.
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--uitesting") {
+                    await TestSupport.waitForFixtureHydration()
+                }
+                #endif
                 TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
                 await timelineManager.loadTimeline()
             }
@@ -167,7 +175,9 @@ struct TimelineView: View {
     
     // Presents a sparse UICollectionView-backed grid so 80k timeline items remain randomly seekable.
     private var timelineList: some View {
-        HStack(spacing: 0) {
+        // Overlay the month navigator so toggling it does not resize the
+        // grid viewport and shift the visible anchor under the user's finger.
+        ZStack(alignment: .trailing) {
             TimelineCollectionView(
                 timelineManager: timelineManager,
                 selectedItemId: Binding(

@@ -12,9 +12,8 @@ class UITestFixtures {
         // Pass test repository path via environment
         app.launchEnvironment["TEST_MODE"] = "1"
         app.launchEnvironment["SKIP_ONBOARDING"] = "1"
-        
-        // Configure test git URL
-        app.launchEnvironment["TEST_GIT_URL"] = "test://repository.git"
+        // Leave TEST_GIT_URL unset so TestSupport points git/LFS at the
+        // in-process TestLFSServer instead of an unreachable placeholder.
     }
     
     // Creates test repository in app's documents directory

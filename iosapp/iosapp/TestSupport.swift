@@ -5,9 +5,64 @@ import UIKit
 import GitDB
 
 #if DEBUG
+extension Notification.Name {
+    // Signals UITest fixture SQL hydration finished so timeline can open the
+    // final database instead of a connection that setup is about to replace.
+    static let uitestFixturesHydrated = Notification.Name("TestSupport.uitestFixturesHydrated")
+}
+
 // Test support code for UI testing
 // This exists to keep UITest-only fixture setup out of shipped builds.
 class TestSupport {
+    // MainActor-gated so timeline startup and fixture sync share one readiness
+    // latch without process-wide locks in async contexts.
+    @MainActor private static var hydrationComplete = false
+    @MainActor private static var hydrationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    // Lets TimelineView delay its first load until fixture sync has replaced
+    // any transient database created during app startup.
+    @MainActor
+    static func waitForFixtureHydration() async {
+        if hydrationComplete {
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            hydrationWaiters.append(continuation)
+        }
+    }
+
+    // Resets the hydration gate so each UITest process starts from an unset
+    // fixture-ready state even if static storage somehow survives.
+    @MainActor
+    static func resetFixtureHydrationGateForTesting() {
+        hydrationComplete = false
+        let waiters = hydrationWaiters
+        hydrationWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    // Publishes hydration completion so waiting timeline loads and tests share
+    // one readiness signal after syncToHead finishes.
+    @MainActor
+    private static func noteFixtureHydrationComplete() {
+        hydrationComplete = true
+        let waiters = hydrationWaiters
+        hydrationWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+        NotificationCenter.default.post(name: .uitestFixturesHydrated, object: nil)
+    }
+
+    // Test-only hook so unit tests can exercise waiter wake-up without building
+    // a full UITest repository.
+    @MainActor
+    static func noteFixtureHydrationCompleteForTesting() {
+        noteFixtureHydrationComplete()
+    }
+
     // Keeps screenshot fixture media bytes and dimensions together so metadata and thumbnails stay consistent.
     struct ScreenshotFixturePhoto {
         let name: String
@@ -82,7 +137,7 @@ class TestSupport {
         }
         
         print("TestSupport: Running in UI test mode")
-        
+
         // Start test LFS server
         do {
             try TestLFSServer.shared.start()
@@ -367,7 +422,8 @@ class TestSupport {
             files: filesToCommit
         )
 
-        // Hydrates the shared manifest SQL cache asynchronously so timeline UI tests can load fixtures quickly.
+        // Hydrates the shared manifest SQL cache asynchronously so app launch is
+        // not blocked, then gates timeline loads until this sync finishes.
         Task { @MainActor in
             do {
                 RepositoryManager.shared.clearRepository()
@@ -376,6 +432,7 @@ class TestSupport {
                 try ManifestLoaderManager.shared.deleteDatabaseFile()
                 let gitDB = try GitDBManager.shared.getGitDB()
                 try await gitDB.syncToHead(progressHandler: nil)
+                noteFixtureHydrationComplete()
                 await markFixturesReady()
                 print("TestSupport: Manifest cache hydrated")
             } catch {
@@ -435,8 +492,11 @@ class TestSupport {
             fatalError("TestSupport: Test LFS server did not publish a valid listening port")
         }
         // Uses gitServerURL as the single source of truth; LFS URL is derived as {origin}/lfs.
+        // Prefer the live TestLFSServer port so thumbnails resolve during UITests.
         let testGitUrl = ProcessInfo.processInfo.environment["TEST_GIT_URL"] ?? "http://localhost:\(lfsPort)/repo.git"
         UserDefaults.standard.set(testGitUrl, forKey: "gitServerURL")
+        // Aligns timeline/upload device-space reads with the fixtures committed above.
+        UserDefaults.standard.set("test-device-uitest", forKey: "deviceSpaceIdentifier")
 
         print("TestSupport: Set Git URL to: \(testGitUrl)")
     }

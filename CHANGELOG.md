@@ -9,3 +9,5 @@
 ### Features
 
 ### Fixes
+
+- iosapp: keep the timeline month sidebar overlaid so toggling it no longer resizes the photo grid
