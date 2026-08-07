@@ -4,6 +4,16 @@ set -euo pipefail
 image="replycant-integration:test"
 id_file="/tmp/replycant-integration-container-id"
 
+# require_local_daemon fails fast when published ports would land on another host.
+# The iOS simulator reaches the stack over the Mac's loopback, so a remote
+# DOCKER_HOST leaves the container healthy but unreachable from the tests.
+require_local_daemon() {
+  if [[ -n "${DOCKER_HOST:-}" && "$DOCKER_HOST" != unix://* ]]; then
+    echo "DOCKER_HOST=$DOCKER_HOST publishes ports off this machine; unset it so the simulator can reach the stack" >&2
+    exit 1
+  fi
+}
+
 # remove_stale_containers keeps test startup deterministic after interrupted runs.
 remove_stale_containers() {
   local ids=""
@@ -20,7 +30,7 @@ wait_for_ready() {
 
   for _ in $(seq 1 "$deadline"); do
     if docker exec "$container_id" test -f /tmp/ready >/dev/null 2>&1; then
-      if docker exec "$container_id" curl -fsS "http://localhost:18447/healthz" >/dev/null 2>&1; then
+      if curl -fsS "http://localhost:18447/healthz" >/dev/null 2>&1; then
         return 0
       fi
     fi
@@ -34,6 +44,7 @@ wait_for_ready() {
 
 # start_container builds and starts the shared integration stack for iOS tests.
 start_container() {
+  require_local_daemon
   remove_stale_containers
   docker build -f integration/Dockerfile -t "$image" .
   local container_id

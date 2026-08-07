@@ -58,8 +58,15 @@ struct GitdIntegrationTests {
         let keyManager = KEKEpochManager(repository: repository)
         let kek = try keyManager.loadKEK(epoch: 1)
         #expect(!kek.isEmpty)
-        let seedManifest = try repository.readFile(at: "manifests/test/test.yaml")
-        #expect(seedManifest.contains("REPLYCANT-ENC-V1"))
+        // The Go seeder writes the envelope body as raw AES-GCM bytes rather than
+        // base64, so the blob is read as Data instead of a UTF-8 string.
+        let headOID = try #require(repository.headOID())
+        let seedBlob = try repository.readBlobDataAtCommit(
+            commitOid: headOID,
+            filepath: "manifests/test/test.yaml"
+        )
+        let seedManifest = try #require(seedBlob)
+        #expect(seedManifest.starts(with: Data("REPLYCANT-ENC-V1\n".utf8)))
     }
 
     // Confirms seeded media history sync populates GitDB-backed manifest SQL tables.

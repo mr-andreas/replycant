@@ -67,6 +67,37 @@ type thumbnailSetManifest struct {
 	Status     map[string]interface{} `yaml:"status"`
 }
 
+// seedFixtureManifest builds the bootstrap manifest committed alongside the
+// initial auth/encryption state. Clients hydrate by decoding every YAML under
+// manifests/, so this fixture has to satisfy the full Original schema rather
+// than being a token payload, otherwise one stray file aborts an entire sync.
+func seedFixtureManifest() originalManifest {
+	createdAt := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	return originalManifest{
+		APIVersion: apiVersion,
+		Kind:       "Original",
+		Metadata: map[string]string{
+			"name":        "seed",
+			"deviceSpace": "test",
+		},
+		Spec: map[string]interface{}{
+			"id":         "id-seed",
+			"sha256":     fmt.Sprintf("%064x", 0),
+			"path":       "/camera/seed.jpg",
+			"filesize":   1024,
+			"mediaType":  "image",
+			"mimeType":   "image/jpeg",
+			"width":      1200,
+			"height":     800,
+			"isFavorite": false,
+			"isHidden":   false,
+			"createdAt":  createdAt,
+			"takenAt":    createdAt,
+		},
+		Status: map[string]interface{}{},
+	}
+}
+
 // seedRepository supports full initialization and append-only media seeding for integration tests.
 func seedRepository(cfg seederConfig) error {
 	if cfg.addMediaOnly {
@@ -93,7 +124,10 @@ func initializeRepository(cfg seederConfig) error {
 	if err != nil {
 		return fmt.Errorf("wrap kek for age: %w", err)
 	}
-	manifestPlaintext := []byte("apiVersion: media.replycant.com/v1alpha1\nkind: Original\nmetadata:\n  seeded: true\n")
+	manifestPlaintext, err := yaml.Marshal(seedFixtureManifest())
+	if err != nil {
+		return fmt.Errorf("marshal seed manifest: %w", err)
+	}
 	manifestEncrypted, err := gitcrypt.EncryptManifestEnvelope(manifestPlaintext, kek, 1)
 	if err != nil {
 		return fmt.Errorf("encrypt manifest: %w", err)
