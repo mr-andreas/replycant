@@ -78,4 +78,53 @@ struct ManifestDatabaseInvalidationTests {
         }
         #expect(manager.totalCount == 0)
     }
+
+    // A reset deletes the database and immediately rebuilds it, so the reload
+    // this manager kicks off races that rebuild and SQLite reports the overlap
+    // as a transient I/O error. A single attempt would park the timeline on an
+    // error screen until the app restarts, which is how a CI-observed
+    // "disk I/O error - while executing BEGIN IMMEDIATE TRANSACTION" turned
+    // into a permanently blank timeline.
+    //
+    // Unconfiguring the server makes every attempt fail, which is what makes
+    // the retry observable without reaching into the manager.
+    @Test func timelineRetriesReloadWhileItKeepsFailing() async throws {
+        let serverURLKey = "gitServerURL"
+        let originalServerURL = UserDefaults.standard.string(forKey: serverURLKey)
+        UserDefaults.standard.removeObject(forKey: serverURLKey)
+        defer {
+            if let originalServerURL {
+                UserDefaults.standard.set(originalServerURL, forKey: serverURLKey)
+            }
+        }
+
+        let center = NotificationCenter()
+        let manager = TimelineManager(notificationCenter: center)
+
+        center.post(
+            name: ManifestLoaderManager.databaseDidInvalidateNotification,
+            object: nil
+        )
+        try await waitUntil(timeout: 5) { manager.errorMessage != nil }
+        #expect(manager.errorMessage != nil)
+
+        // Clearing the failure lets a later attempt announce itself by setting
+        // it again. The retry loop samples the error before this runs, so it
+        // cannot mistake the cleared value for a successful load.
+        manager.errorMessage = nil
+        try await waitUntil(timeout: 10) { manager.errorMessage != nil }
+        #expect(manager.errorMessage != nil)
+    }
+
+    // Polls a condition against a wall-clock budget, since these managers
+    // publish on the main queue after an async hop.
+    private func waitUntil(
+        timeout: TimeInterval,
+        _ condition: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
 }

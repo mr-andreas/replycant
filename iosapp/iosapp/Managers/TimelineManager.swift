@@ -115,6 +115,11 @@ final class TimelineManager: ObservableObject {
     private var lfsURLObserver: AnyCancellable?
     // Observes replacement of the shared manifest database so cached handles are rebound.
     private var databaseInvalidationObserver: AnyCancellable?
+    // Reload driven by database replacement, retained so a newer reset supersedes it.
+    private var databaseReloadTask: Task<Void, Never>?
+    // Spans a reset's rebuild without retrying long enough to hide a real failure.
+    private static let databaseReloadAttempts = 10
+    private static let databaseReloadRetryDelayNanoseconds: UInt64 = 1_000_000_000
     // Source of endpoint-change broadcasts.
     private let notificationCenter: NotificationCenter
 
@@ -631,28 +636,54 @@ final class TimelineManager: ObservableObject {
     // than left to render placeholders for items the grid can never fetch.
     private func handleDatabaseDidInvalidate() {
         totalCount = 0
-        discardCachedDependenciesAndReload()
+        discardCachedDependencies()
+        retryReloadUntilDatabaseIsUsable()
+    }
+
+    // Reloads until the replacement database can actually be read.
+    //
+    // A reset deletes the database and rebuilds it immediately afterwards, so
+    // this reload races that rebuild and SQLite reports the overlap as a
+    // transient error rather than a missing file. Attempting once would leave
+    // the timeline on an error screen until the app restarts, which is exactly
+    // how a rebuild that briefly returned "disk I/O error" produced a blank
+    // timeline. The budget is bounded so a genuinely unusable database still
+    // surfaces to the user instead of retrying forever.
+    private func retryReloadUntilDatabaseIsUsable() {
+        databaseReloadTask?.cancel()
+        databaseReloadTask = Task { [weak self] in
+            for attempt in 0..<Self.databaseReloadAttempts {
+                if attempt > 0 {
+                    try? await Task.sleep(nanoseconds: Self.databaseReloadRetryDelayNanoseconds)
+                }
+                guard let self, !Task.isCancelled else { return }
+                await self.loadTimeline(force: true)
+                if self.errorMessage == nil {
+                    return
+                }
+            }
+        }
     }
 
     // Clears cached LFS dependencies and triggers a forced timeline reload so current sessions switch endpoints immediately.
     private func handleLFSURLDidChange() {
-        discardCachedDependenciesAndReload()
+        discardCachedDependencies()
+        Task { [weak self] in
+            await self?.loadTimeline(force: true)
+        }
     }
 
     // Drops every handle derived from the repository, LFS endpoint, or manifest
-    // database, then reloads. Shared by endpoint changes and database
-    // replacement because both leave the same set of cached objects stale,
-    // including the change subscription bound to the old database instance.
-    private func discardCachedDependenciesAndReload() {
+    // database. Shared by endpoint changes and database replacement because
+    // both leave the same set of cached objects stale, including the change
+    // subscription bound to the old database instance.
+    private func discardCachedDependencies() {
         lfsClient = nil
         manifestLoader = nil
         repository = nil
         databaseChangeCancellable?.cancel()
         databaseChangeCancellable = nil
         resetLoadedRegion(clearVisibleIndices: false)
-        Task { [weak self] in
-            await self?.loadTimeline(force: true)
-        }
     }
 
     // Applies database change events to sparse timeline state so UI updates without full reloads.
