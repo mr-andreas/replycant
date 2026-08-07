@@ -42,7 +42,10 @@ final class TimelineSidebarTogglePositionUITests: XCTestCase {
         XCTAssertNotNil(beforeShow, "Expected a visible timeline anchor before showing sidebar")
 
         toggleButton.tap()
-        XCTAssertTrue(waitForSidebar(sidebar, visible: true, timeout: 10), "Sidebar should appear")
+        XCTAssertTrue(
+            waitForSidebar(sidebar, visible: true, timeout: UITestFixtures.uiSettleTimeout),
+            "Sidebar should appear"
+        )
         assertSidebarFillsScreenHeight(sidebar, context: "show")
         assertExpectedFrameShift(
             baselineGridFrame,
@@ -57,7 +60,10 @@ final class TimelineSidebarTogglePositionUITests: XCTestCase {
         assertAnchorsEqual(beforeShow!, afterShow!, yTolerance: 4, context: "show")
 
         toggleButton.tap()
-        XCTAssertTrue(waitForSidebar(sidebar, visible: false, timeout: 5), "Sidebar should hide")
+        XCTAssertTrue(
+            waitForSidebar(sidebar, visible: false, timeout: UITestFixtures.uiSettleTimeout),
+            "Sidebar should hide"
+        )
         assertExpectedFrameShift(
             baselineGridFrame,
             timelineGrid.frame,

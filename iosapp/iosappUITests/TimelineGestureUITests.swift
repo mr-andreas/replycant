@@ -43,7 +43,8 @@ final class TimelineGestureUITests: XCTestCase {
         let firstButton = app.buttons["timelinePhoto_i-1"]
         let firstCell = app.collectionViews.cells["timelinePhoto_i-1"]
         XCTAssertTrue(
-            firstButton.waitForExistence(timeout: 10) || firstCell.waitForExistence(timeout: 1),
+            firstButton.waitForExistence(timeout: UITestFixtures.uiSettleTimeout)
+                || firstCell.waitForExistence(timeout: 1),
             "First timeline fixture should exist"
         )
         if firstButton.exists && firstButton.isHittable {
@@ -81,7 +82,8 @@ final class TimelineGestureUITests: XCTestCase {
         let secondButton = app.buttons["timelinePhoto_i-2"]
         let secondCell = app.collectionViews.cells["timelinePhoto_i-2"]
         XCTAssertTrue(
-            secondButton.waitForExistence(timeout: 10) || secondCell.waitForExistence(timeout: 1),
+            secondButton.waitForExistence(timeout: UITestFixtures.uiSettleTimeout)
+                || secondCell.waitForExistence(timeout: 1),
             "Second timeline fixture should exist"
         )
         if secondButton.exists && secondButton.isHittable {

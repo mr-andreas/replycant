@@ -3,6 +3,16 @@ import XCTest
 
 // UI Test fixtures for setting up git repository and mock LFS server
 class UITestFixtures {
+    // Budget for waiting on a UI state change in these tests.
+    //
+    // Sized for the CI runner rather than a developer machine: there the
+    // simulator renders in software and a single accessibility snapshot can
+    // take several seconds, so a wait tuned locally leaves room for only one or
+    // two samples before it expires. Fixture seeding also rebuilds the manifest
+    // database after launch, which costs one more timeline load than a normal
+    // cold start performs.
+    static let uiSettleTimeout: TimeInterval = 30
+
     
     // Sets up app with test repository via launch arguments
     static func configureApp(_ app: XCUIApplication) {
