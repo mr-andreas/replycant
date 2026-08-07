@@ -6,6 +6,14 @@ import GitDB
 final class ManifestLoaderManager {
     static let shared = ManifestLoaderManager()
 
+    // Announces that the shared database was dropped so managers holding
+    // objects derived from it rebind. Writes reach a replacement instance
+    // through its own change stream, so a stale holder is not merely reading
+    // old rows, it stops receiving updates entirely.
+    static let databaseDidInvalidateNotification = Notification.Name(
+        "ManifestLoaderManager.databaseDidInvalidate"
+    )
+
     private var database: GitDB.ManifestDatabase?
     private var registry: GitDB.ManifestRegistry?
 
@@ -44,6 +52,7 @@ final class ManifestLoaderManager {
     func clearLoader() {
         database = nil
         registry = nil
+        broadcastInvalidation()
     }
 
     // Removes all cached rows while preserving the sqlite file and connection.
@@ -60,6 +69,14 @@ final class ManifestLoaderManager {
         }
         database = nil
         registry = nil
+        broadcastInvalidation()
+    }
+
+    private func broadcastInvalidation() {
+        NotificationCenter.default.post(
+            name: Self.databaseDidInvalidateNotification,
+            object: nil
+        )
     }
 
     // Exposes database lifecycle state for reset-flow tests.

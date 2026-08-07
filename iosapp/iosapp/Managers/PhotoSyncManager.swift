@@ -65,6 +65,8 @@ final class PhotoSyncManager: ObservableObject {
     private var syncGeneration: UInt64 = 0
     // Observes LFS endpoint changes so subsequent syncs rebuild clients with the updated server URL.
     private var lfsURLObserver: AnyCancellable?
+    // Observes replacement of the shared manifest database so syncs never write through a discarded instance.
+    private var databaseInvalidationObserver: AnyCancellable?
     
     // Injects dependencies so sync behavior can be exercised in tests.
     init(
@@ -78,6 +80,7 @@ final class PhotoSyncManager: ObservableObject {
         self.uploadedMediaCache = uploadedMediaCache
         self.idleTimer = idleTimer
         observeLFSURLChanges()
+        observeDatabaseInvalidation()
     }
 
     // Recreates manifest dependencies lazily, letting each sync run pick up the latest configured LFS endpoint.
@@ -129,6 +132,18 @@ final class PhotoSyncManager: ObservableObject {
     // Discards cached manifest state so the next sync uses a freshly constructed GitLFS client.
     private func handleLFSURLDidChange() {
         manifestManager = nil
+    }
+
+    // Drops the cached manifest manager when the shared database is replaced,
+    // so a sync started after a reset writes to the live database rather than a
+    // discarded instance whose rows nothing else will ever read.
+    private func observeDatabaseInvalidation() {
+        databaseInvalidationObserver = NotificationCenter.default
+            .publisher(for: ManifestLoaderManager.databaseDidInvalidateNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.manifestManager = nil
+            }
     }
     
     // Starts a new sync run and stamps it with a generation token so stale callbacks cannot update UI state.

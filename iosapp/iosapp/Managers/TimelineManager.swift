@@ -113,6 +113,8 @@ final class TimelineManager: ObservableObject {
     private var cacheSettingsObserver: AnyCancellable?
     // Observes LFS endpoint updates so timeline loaders rebuild clients against the new server.
     private var lfsURLObserver: AnyCancellable?
+    // Observes replacement of the shared manifest database so cached handles are rebound.
+    private var databaseInvalidationObserver: AnyCancellable?
     // Source of endpoint-change broadcasts.
     private let notificationCenter: NotificationCenter
 
@@ -134,6 +136,7 @@ final class TimelineManager: ObservableObject {
         self.photoLibrary = photoLibrary
         self.notificationCenter = notificationCenter
         observeLFSURLChanges()
+        observeDatabaseInvalidation()
     }
 
     // Exposes sidebar sections through manager API while keeping publish scope isolated to monthSelection.
@@ -610,8 +613,37 @@ final class TimelineManager: ObservableObject {
             }
     }
 
+    // Subscribes to replacement of the shared manifest database so a reset does
+    // not strand this manager on a discarded instance. The subscription is set
+    // up at init rather than during the first load, because a reset can land
+    // before the timeline has ever loaded and the broadcast is not replayed.
+    private func observeDatabaseInvalidation() {
+        databaseInvalidationObserver = notificationCenter
+            .publisher(for: ManifestLoaderManager.databaseDidInvalidateNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.handleDatabaseDidInvalidate()
+            }
+    }
+
+    // Rebinds after the backing database is replaced. The previous count
+    // described rows that are now unreachable, so it is dropped up front rather
+    // than left to render placeholders for items the grid can never fetch.
+    private func handleDatabaseDidInvalidate() {
+        totalCount = 0
+        discardCachedDependenciesAndReload()
+    }
+
     // Clears cached LFS dependencies and triggers a forced timeline reload so current sessions switch endpoints immediately.
     private func handleLFSURLDidChange() {
+        discardCachedDependenciesAndReload()
+    }
+
+    // Drops every handle derived from the repository, LFS endpoint, or manifest
+    // database, then reloads. Shared by endpoint changes and database
+    // replacement because both leave the same set of cached objects stale,
+    // including the change subscription bound to the old database instance.
+    private func discardCachedDependenciesAndReload() {
         lfsClient = nil
         manifestLoader = nil
         repository = nil
