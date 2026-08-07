@@ -9,3 +9,5 @@
 ### Features
 
 ### Fixes
+
+- server: commits no longer fail on hosts without a configured git user

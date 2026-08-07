@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"sync"
 
 	"github.com/go-git/go-billy/v5/osfs"
@@ -170,13 +171,20 @@ func (r *Repo) Commit(ops []Operation) error {
 	// 	return fmt.Errorf("commit: %w", err)
 	// }
 
+	// Supplies the committer identity explicitly rather than letting git fall
+	// back to the host's configuration. The server owns this identity, and
+	// hosts without a configured git user (containers, CI) cannot auto-detect
+	// one, which previously made commits fail outright.
 	cmd2 := exec.Command(
-		"git", "commit", "-m", "commit", "--author",
+		"git",
+		"-c", fmt.Sprintf("user.name=%s", r.author.Name),
+		"-c", fmt.Sprintf("user.email=%s", r.author.Email),
+		"commit", "-m", "commit", "--author",
 		fmt.Sprintf("%s <%s>", r.author.Name, r.author.Email),
 	)
 	cmd2.Dir = wt.Filesystem.Root()
-	if err := cmd2.Run(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+	if output, err := cmd2.CombinedOutput(); err != nil {
+		return fmt.Errorf("commit: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
 	// _, err := wt.Commit("commit", &git.CommitOptions{

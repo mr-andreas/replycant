@@ -113,6 +113,8 @@ final class TimelineManager: ObservableObject {
     private var cacheSettingsObserver: AnyCancellable?
     // Observes LFS endpoint updates so timeline loaders rebuild clients against the new server.
     private var lfsURLObserver: AnyCancellable?
+    // Source of endpoint-change broadcasts.
+    private let notificationCenter: NotificationCenter
 
     // Debounced tasks that warm disk caches with the newest
     // thumbnails so the first screen and recent browsing are
@@ -121,8 +123,16 @@ final class TimelineManager: ObservableObject {
     private var warmMainTask: Task<Void, Never>?
 
     // Injects photo library access so timeline thumbnail loaders can use local-device assets before LFS fallback.
-    init(photoLibrary: PhotoLibraryProviding = PhotoLibraryManager()) {
+    // The notification center is injectable so a test can subscribe to an
+    // isolated center. Endpoint-change broadcasts are process-wide, so an
+    // unrelated suite repointing the server would otherwise wipe this
+    // manager's loaded region and month selection mid-test.
+    init(
+        photoLibrary: PhotoLibraryProviding = PhotoLibraryManager(),
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.photoLibrary = photoLibrary
+        self.notificationCenter = notificationCenter
         observeLFSURLChanges()
     }
 
@@ -593,7 +603,7 @@ final class TimelineManager: ObservableObject {
 
     // Subscribes to LFS URL updates so timeline reloads immediately after repository settings repoints media traffic.
     private func observeLFSURLChanges() {
-        lfsURLObserver = NotificationCenter.default.publisher(for: ServerConfigurationManager.lfsURLDidChangeNotification)
+        lfsURLObserver = notificationCenter.publisher(for: ServerConfigurationManager.lfsURLDidChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.handleLFSURLDidChange()

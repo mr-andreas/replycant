@@ -9,6 +9,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMain pins a git identity for every git subprocess these tests spawn.
+// Configuring the clone enables diff.replycant-crypt.cachetextconv, and git
+// writes that cache through notes, so even a read-only `git diff` needs a
+// committer. Developer machines usually supply a fallback identity, while CI
+// runners do not, so tests must not depend on ambient git configuration.
+func TestMain(m *testing.M) {
+	identity := map[string]string{
+		"GIT_AUTHOR_NAME":     "test",
+		"GIT_AUTHOR_EMAIL":    "test@example.com",
+		"GIT_COMMITTER_NAME":  "test",
+		"GIT_COMMITTER_EMAIL": "test@example.com",
+	}
+	for key, value := range identity {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 // testInitRepo creates an isolated git repository so tests can exercise repo-scoped behavior safely.
 func testInitRepo(t *testing.T) string {
 	t.Helper()

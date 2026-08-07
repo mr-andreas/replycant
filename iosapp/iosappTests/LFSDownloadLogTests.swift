@@ -255,13 +255,14 @@ struct LFSDownloadLogTests {
             }
         }
 
-        let lfsLines = output
+        // Scope to this object's lines: stdout is process-wide, so suites
+        // running in parallel can interleave their own LFS output here.
+        let failLines = output
             .components(separatedBy: "\n")
-            .filter { $0.hasPrefix("LFS:") && !$0.isEmpty }
-        #expect(!lfsLines.isEmpty, "Failure path should still log")
+            .filter { $0.hasPrefix("LFS:") && $0.contains("oid=\(missingOID)") }
+        #expect(!failLines.isEmpty, "Failure path should still log")
 
-        let failLine = try #require(lfsLines.first)
+        let failLine = try #require(failLines.first)
         #expect(failLine.contains("failed"))
-        #expect(failLine.contains("oid=\(missingOID)"))
     }
 }
