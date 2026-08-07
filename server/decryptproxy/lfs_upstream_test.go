@@ -156,9 +156,12 @@ func (u *lfsTestServerUpstream) reset() {
 // Serving a small range must stay proportional to the range, not to the object.
 func TestServeRangeAgainstLfsTestServerDoesNotReadWholeObject(t *testing.T) {
 	dek := []byte("0123456789abcdef0123456789abcdef")
-	// 8 MiB is comfortably larger than kernel socket buffers, so a stream that
-	// decryptd abandons early cannot be mistaken for a whole-object read.
-	plaintext := make([]byte, 8<<20)
+	// The upstream streams to EOF, so abandoning the response still lets
+	// whatever fits in kernel socket buffers be read off disk first. That
+	// slack is an absolute size that varies by platform (Linux buffers more
+	// than macOS), so the object must be large enough that the slack stays a
+	// small fraction of it and the bound below keeps a stable meaning.
+	plaintext := make([]byte, 64<<20)
 	for i := range plaintext {
 		plaintext[i] = byte(i)
 	}
@@ -189,8 +192,9 @@ func TestServeRangeAgainstLfsTestServerDoesNotReadWholeObject(t *testing.T) {
 
 	// Serving 1 KiB should touch chunk 0 only. Allow generous slack for socket
 	// buffering on the abandoned stream, but stay far below the object size.
+	t.Logf("serving a 1 KiB range read %d of %d object bytes off disk", diskBytes, len(encrypted))
 	assert.Less(t, diskBytes, int64(len(encrypted))/4,
-		"serving a 1 KiB range read %d of %d object bytes off disk", diskBytes, len(encrypted))
+		"serving a 1 KiB range must not read a meaningful share of the object")
 }
 
 // TestObjectSizeComesFromLfsMetadataApi pins the mechanism that keeps start-up

@@ -113,6 +113,18 @@ final class TimelineManager: ObservableObject {
     private var cacheSettingsObserver: AnyCancellable?
     // Observes LFS endpoint updates so timeline loaders rebuild clients against the new server.
     private var lfsURLObserver: AnyCancellable?
+    // Observes replacement of the shared manifest database so cached handles are rebound.
+    private var databaseInvalidationObserver: AnyCancellable?
+    // Reload driven by database replacement, retained so a newer reset supersedes it.
+    private var databaseReloadTask: Task<Void, Never>?
+    // Spans the moment a reset's rebuild holds the database, without retrying
+    // long enough to hide a real failure. The window only has to outlast the
+    // rebuild's grip on the file, not the rebuild itself: once the reload binds
+    // successfully, remaining rows arrive through the change subscription.
+    private static let databaseReloadAttempts = 6
+    private static let databaseReloadRetryDelayNanoseconds: UInt64 = 500_000_000
+    // Source of endpoint-change broadcasts.
+    private let notificationCenter: NotificationCenter
 
     // Debounced tasks that warm disk caches with the newest
     // thumbnails so the first screen and recent browsing are
@@ -121,9 +133,18 @@ final class TimelineManager: ObservableObject {
     private var warmMainTask: Task<Void, Never>?
 
     // Injects photo library access so timeline thumbnail loaders can use local-device assets before LFS fallback.
-    init(photoLibrary: PhotoLibraryProviding = PhotoLibraryManager()) {
+    // The notification center is injectable so a test can subscribe to an
+    // isolated center. Endpoint-change broadcasts are process-wide, so an
+    // unrelated suite repointing the server would otherwise wipe this
+    // manager's loaded region and month selection mid-test.
+    init(
+        photoLibrary: PhotoLibraryProviding = PhotoLibraryManager(),
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.photoLibrary = photoLibrary
+        self.notificationCenter = notificationCenter
         observeLFSURLChanges()
+        observeDatabaseInvalidation()
     }
 
     // Exposes sidebar sections through manager API while keeping publish scope isolated to monthSelection.
@@ -593,24 +614,77 @@ final class TimelineManager: ObservableObject {
 
     // Subscribes to LFS URL updates so timeline reloads immediately after repository settings repoints media traffic.
     private func observeLFSURLChanges() {
-        lfsURLObserver = NotificationCenter.default.publisher(for: ServerConfigurationManager.lfsURLDidChangeNotification)
+        lfsURLObserver = notificationCenter.publisher(for: ServerConfigurationManager.lfsURLDidChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.handleLFSURLDidChange()
             }
     }
 
+    // Subscribes to replacement of the shared manifest database so a reset does
+    // not strand this manager on a discarded instance. The subscription is set
+    // up at init rather than during the first load, because a reset can land
+    // before the timeline has ever loaded and the broadcast is not replayed.
+    private func observeDatabaseInvalidation() {
+        databaseInvalidationObserver = notificationCenter
+            .publisher(for: ManifestLoaderManager.databaseDidInvalidateNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.handleDatabaseDidInvalidate()
+            }
+    }
+
+    // Rebinds after the backing database is replaced. The previous count
+    // described rows that are now unreachable, so it is dropped up front rather
+    // than left to render placeholders for items the grid can never fetch.
+    private func handleDatabaseDidInvalidate() {
+        totalCount = 0
+        discardCachedDependencies()
+        retryReloadUntilDatabaseIsUsable()
+    }
+
+    // Reloads until the replacement database can actually be read.
+    //
+    // A reset deletes the database and rebuilds it immediately afterwards, so
+    // this reload races that rebuild and SQLite reports the overlap as a
+    // transient error rather than a missing file. Attempting once would leave
+    // the timeline on an error screen until the app restarts, which is exactly
+    // how a rebuild that briefly returned "disk I/O error" produced a blank
+    // timeline. The budget is bounded so a genuinely unusable database still
+    // surfaces to the user instead of retrying forever.
+    private func retryReloadUntilDatabaseIsUsable() {
+        databaseReloadTask?.cancel()
+        databaseReloadTask = Task { [weak self] in
+            await RetryBudget.run(
+                attempts: Self.databaseReloadAttempts,
+                delayNanoseconds: Self.databaseReloadRetryDelayNanoseconds
+            ) { [weak self] in
+                guard let self else { return true }
+                await self.loadTimeline(force: true)
+                return self.errorMessage == nil
+            }
+        }
+    }
+
     // Clears cached LFS dependencies and triggers a forced timeline reload so current sessions switch endpoints immediately.
     private func handleLFSURLDidChange() {
+        discardCachedDependencies()
+        Task { [weak self] in
+            await self?.loadTimeline(force: true)
+        }
+    }
+
+    // Drops every handle derived from the repository, LFS endpoint, or manifest
+    // database. Shared by endpoint changes and database replacement because
+    // both leave the same set of cached objects stale, including the change
+    // subscription bound to the old database instance.
+    private func discardCachedDependencies() {
         lfsClient = nil
         manifestLoader = nil
         repository = nil
         databaseChangeCancellable?.cancel()
         databaseChangeCancellable = nil
         resetLoadedRegion(clearVisibleIndices: false)
-        Task { [weak self] in
-            await self?.loadTimeline(force: true)
-        }
     }
 
     // Applies database change events to sparse timeline state so UI updates without full reloads.

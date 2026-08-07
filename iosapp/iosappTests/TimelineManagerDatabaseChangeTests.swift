@@ -6,6 +6,13 @@ import Testing
 // Verifies timeline sparse-state mutation handling avoids destructive resets on incremental database updates.
 @MainActor
 struct TimelineManagerDatabaseChangeTests {
+    // Binds the manager to a private notification center. Reset and endpoint
+    // broadcasts are process-wide and clear the loaded region, so a manager on
+    // the default center can be wiped mid-test by an unrelated suite.
+    private func makeIsolatedManager() -> TimelineManager {
+        TimelineManager(notificationCenter: NotificationCenter())
+    }
+
     // Builds one timeline-visible original fixture with deterministic ordering fields for sparse-window assertions.
     private func makeOriginal(id: String, guessedTakenAt: Date, sha256: String, name: String? = nil) -> OriginalManifest {
         OriginalManifest(
@@ -51,7 +58,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures incremental additions keep already-loaded sparse items in memory instead of clearing the window.
     @Test func incrementalAdditionKeepsLoadedItems() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
         let second = makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
         manager.seedLoadedRegionForTesting(
@@ -72,7 +79,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures additions that sort before the sparse window shift loaded offset so global indices stay aligned.
     @Test func incrementalAdditionBeforeWindowAdjustsOffset() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let windowFirst = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
         let windowSecond = makeOriginal(id: "d", guessedTakenAt: Date(timeIntervalSince1970: 40), sha256: "sha-d")
         manager.seedLoadedRegionForTesting(
@@ -96,7 +103,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures additions that sort inside the sparse window are inserted in-memory in chronological order.
     @Test func incrementalAdditionWithinWindowInsertsInOrder() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
         let third = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
         manager.seedLoadedRegionForTesting(
@@ -119,7 +126,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures mixed additions across before/within/after regions preserve offset and only insert in-window rows.
     @Test func mixedIncrementalAdditionsMaintainWindowAlignment() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let first = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
         let third = makeOriginal(id: "e", guessedTakenAt: Date(timeIntervalSince1970: 50), sha256: "sha-e")
         manager.seedLoadedRegionForTesting(
@@ -151,7 +158,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures off-window additions do not trigger visible-cell reconfiguration work.
     @Test func offWindowIncrementalAdditionDoesNotBumpLoadGeneration() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
         let second = makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
         manager.seedLoadedRegionForTesting(
@@ -172,7 +179,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures incremental removals drop affected loaded entries and preserve global index alignment via offset adjustment.
     @Test func incrementalRemovalAdjustsWindowAndOffset() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let oldest = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
         let inWindowFirst = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
         let inWindowSecond = makeOriginal(id: "d", guessedTakenAt: Date(timeIntervalSince1970: 40), sha256: "sha-d")
@@ -201,7 +208,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures incremental updates replace loaded originals and refreshed thumbnails in-place without clearing the window.
     @Test func incrementalUpdateReplacesLoadedItemInPlace() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let original = makeOriginal(id: "x", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-old")
         let thumbOld = makeThumbnail(id: "x-thumb", originalRef: originalRef(for: original), sha256: "thumb-old")
         manager.seedLoadedRegionForTesting(
@@ -236,7 +243,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures loaded thumbnail updates bump generation so visible cells can reconfigure without full reload.
     @Test func loadedThumbnailUpdateBumpsLoadGeneration() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let original = makeOriginal(id: "x", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-old")
         let thumbOld = makeThumbnail(id: "x-thumb", originalRef: originalRef(for: original), sha256: "thumb-old")
         manager.seedLoadedRegionForTesting(
@@ -258,7 +265,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // Ensures full-replace events keep destructive reset behavior so clone/resync flows do not leave stale sparse state.
     @Test func fullReplaceStillClearsSparseState() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
         let second = makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
         manager.seedLoadedRegionForTesting(

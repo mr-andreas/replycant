@@ -18,6 +18,7 @@ clean:
 
 IOS_SCHEME := iosapp
 IOS_PROJECT := iosapp/iosapp.xcodeproj
+IOS_TEST_DESTINATION ?= platform=iOS Simulator,name=iPhone 17 Pro Max
 IOS_BUILD_DIR := iosapp/build/release
 IOS_SIGNING_LOCAL := iosapp/Signing.local.xcconfig
 IOS_EXPORT_OPTIONS := $(IOS_BUILD_DIR)/ExportOptions.plist
@@ -31,6 +32,16 @@ BUILD_NUMBER := $(shell date +%Y%m%d%H%M)
 # passing tests. Force a UTF-8 locale so shells that leave LANG unset still get
 # a usable run.
 FASTLANE_LOCALE := LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+ios-test:
+	xcodebuild test -project $(IOS_PROJECT) -scheme $(IOS_SCHEME) \
+	  -destination '$(IOS_TEST_DESTINATION)' \
+	  -derivedDataPath iosapp/build/test-derived-data
+	xcodebuild test -project $(IOS_PROJECT) -scheme iosappScreenshots \
+	  -destination '$(IOS_TEST_DESTINATION)' \
+	  -derivedDataPath iosapp/build/test-derived-data \
+	  -skip-testing:iosappUITests/ScreenshotUITests
+.PHONY: ios-test
 
 # Create these once in App Store Connect:
 # Users and Access -> Integrations -> App Store Connect API -> Generate API Key.

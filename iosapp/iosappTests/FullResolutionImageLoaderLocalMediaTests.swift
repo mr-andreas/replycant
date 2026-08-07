@@ -8,6 +8,13 @@ import UIKit
 @MainActor
 @Suite("FullResolutionImageLoader Local Media Tests", .serialized)
 struct FullResolutionImageLoaderLocalMediaTests {
+    // Binds the manager to a private notification center. Reset and endpoint
+    // broadcasts are process-wide and clear the loaded region, so a manager on
+    // the default center can be wiped mid-test by an unrelated suite.
+    private func makeIsolatedManager(photoLibrary: PhotoLibraryProviding) -> TimelineManager {
+        TimelineManager(photoLibrary: photoLibrary, notificationCenter: NotificationCenter())
+    }
+
     // Creates a minimal timeline item fixture with an optional local Photos identifier.
     private func makeItem(
         id: String = "item-1",
@@ -79,7 +86,7 @@ struct FullResolutionImageLoaderLocalMediaTests {
         let mockLibrary = MockPhotoLibraryProvider()
         mockLibrary.isAuthorized = true
         mockLibrary.localOriginalImageData[localID] = makeJPEGData()
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let loader = FullResolutionImageLoader(timelineManager: manager)
 
         loader.loadOriginal(for: makeItem(localID: localID), isVideo: false)
@@ -95,7 +102,7 @@ struct FullResolutionImageLoaderLocalMediaTests {
         let localID = "photo-local-id"
         let mockLibrary = MockPhotoLibraryProvider()
         mockLibrary.isAuthorized = true
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let loader = FullResolutionImageLoader(timelineManager: manager)
 
         loader.loadOriginal(for: makeItem(localID: localID), isVideo: false)
@@ -113,7 +120,7 @@ struct FullResolutionImageLoaderLocalMediaTests {
         mockLibrary.isAuthorized = true
         let videoURL = try makeTempVideoURL()
         mockLibrary.localVideoAssetURLs[localID] = videoURL
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let loader = FullResolutionImageLoader(timelineManager: manager)
 
         loader.loadOriginal(
@@ -134,7 +141,7 @@ struct FullResolutionImageLoaderLocalMediaTests {
         mockLibrary.isAuthorized = true
         let videoURL = try makeTempVideoURL()
         mockLibrary.localVideoAssetURLs[localID] = videoURL
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let loader = FullResolutionImageLoader(timelineManager: manager)
 
         loader.loadOriginal(

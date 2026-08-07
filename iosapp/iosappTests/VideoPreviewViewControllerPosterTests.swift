@@ -8,6 +8,13 @@ import UIKit
 @MainActor
 @Suite("VideoPreviewViewController Poster Tests", .serialized)
 struct VideoPreviewViewControllerPosterTests {
+    // Binds the manager to a private notification center. Reset and endpoint
+    // broadcasts are process-wide and clear the loaded region, so a manager on
+    // the default center can be wiped mid-test by an unrelated suite.
+    private func makeIsolatedManager() -> TimelineManager {
+        TimelineManager(notificationCenter: NotificationCenter())
+    }
+
     // Builds a video timeline item fixture so tests can isolate poster behavior
     // from repository/network setup.
     private func makeVideoItem(id: String = "video-1") -> TimelineItem {
@@ -51,7 +58,7 @@ struct VideoPreviewViewControllerPosterTests {
     // memory cache so users never see an empty black frame first.
     @Test func loadsPosterFromTimelineCacheOnViewLoad() {
         let item = makeVideoItem()
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let expectedImage = makeTestImage()
         manager.cacheImage(expectedImage, for: item.id)
         let controller = VideoPreviewViewController(
@@ -69,7 +76,7 @@ struct VideoPreviewViewControllerPosterTests {
     // buffering even when the poster thumbnail is already displayed.
     @Test func spinnerIsActiveOnViewLoad() {
         let item = makeVideoItem()
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.cacheImage(makeTestImage(), for: item.id)
         let controller = VideoPreviewViewController(
             item: item,
@@ -86,7 +93,7 @@ struct VideoPreviewViewControllerPosterTests {
     // since there is nothing to wait for readiness on.
     @Test func removesPosterWhenEmbeddingPlayerWithoutCurrentItem() {
         let item = makeVideoItem()
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.cacheImage(makeTestImage(), for: item.id)
         let controller = VideoPreviewViewController(
             item: item,
@@ -106,7 +113,7 @@ struct VideoPreviewViewControllerPosterTests {
     @Test func viewWillDisappearPausesActivePlayer() {
         let controller = VideoPreviewViewController(
             item: makeVideoItem(),
-            timelineManager: TimelineManager(),
+            timelineManager: makeIsolatedManager(),
             onDismiss: {}
         )
         let player = AVPlayer()
@@ -123,7 +130,7 @@ struct VideoPreviewViewControllerPosterTests {
     @Test func restartPlaybackSeeksToStartAndRequestsPlay() {
         let controller = VideoPreviewViewController(
             item: makeVideoItem(),
-            timelineManager: TimelineManager(),
+            timelineManager: makeIsolatedManager(),
             onDismiss: {}
         )
         let item = AVPlayerItem(url: URL(fileURLWithPath: "/dev/null"))
@@ -143,7 +150,7 @@ struct VideoPreviewViewControllerPosterTests {
     @Test func viewWillAppearRestartsPlaybackOnlyAfterFirstAppearance() {
         let controller = VideoPreviewViewController(
             item: makeVideoItem(),
-            timelineManager: TimelineManager(),
+            timelineManager: makeIsolatedManager(),
             onDismiss: {}
         )
         #expect(controller.testingRestartPlaybackCount == 0)
@@ -161,7 +168,7 @@ struct VideoPreviewViewControllerPosterTests {
     // consistent with initial fullscreen loading feedback.
     @Test func restartPlaybackReshowsPosterAndSpinner() {
         let item = makeVideoItem()
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.cacheImage(makeTestImage(), for: item.id)
         let controller = VideoPreviewViewController(
             item: item,

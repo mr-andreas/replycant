@@ -8,6 +8,13 @@ import UIKit
 @MainActor
 @Suite("ImageLoader Local Thumbnail Tests", .serialized)
 struct ImageLoaderLocalThumbnailTests {
+    // Binds the manager to a private notification center. Reset and endpoint
+    // broadcasts are process-wide and clear the loaded region, so a manager on
+    // the default center can be wiped mid-test by an unrelated suite.
+    private func makeIsolatedManager(photoLibrary: PhotoLibraryProviding) -> TimelineManager {
+        TimelineManager(photoLibrary: photoLibrary, notificationCenter: NotificationCenter())
+    }
+
     // Clears persisted toggle state so each test controls local-thumbnail behavior explicitly.
     private func clearLocalThumbnailSetting() {
         UserDefaults.standard.removeObject(forKey: "localThumbnailsEnabled")
@@ -56,7 +63,7 @@ struct ImageLoaderLocalThumbnailTests {
 
         let localID = "photo-local-id"
         let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let item = TimelineItem(original: makeOriginal(localID: localID))
         let loader = ImageLoader(item: item, timelineManager: manager)
 
@@ -75,7 +82,7 @@ struct ImageLoaderLocalThumbnailTests {
 
         let localID = "photo-local-id"
         let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let item = TimelineItem(original: makeOriginal(localID: localID))
         let loader = ImageLoader(item: item, timelineManager: manager)
 
@@ -92,7 +99,7 @@ struct ImageLoaderLocalThumbnailTests {
 
         let localID = "photo-local-id"
         let mockLibrary = MockPhotoLibraryProvider()
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let item = TimelineItem(original: makeOriginal(localID: localID))
         let loader = ImageLoader(item: item, timelineManager: manager)
 
@@ -111,7 +118,7 @@ struct ImageLoaderLocalThumbnailTests {
         let localID = "photo-local-id"
         let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
         mockLibrary.isAuthorized = false
-        let manager = TimelineManager(photoLibrary: mockLibrary)
+        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
         let item = TimelineItem(original: makeOriginal(localID: localID))
         let loader = ImageLoader(item: item, timelineManager: manager)
 

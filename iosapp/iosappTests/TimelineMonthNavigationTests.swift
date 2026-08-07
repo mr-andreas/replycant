@@ -7,6 +7,14 @@ import Combine
 // Verifies month-sidebar indexing logic maps grouped month data to stable jump targets.
 @MainActor
 struct TimelineMonthNavigationTests {
+    // Builds a manager bound to a private notification center. Server-endpoint
+    // changes are broadcast process-wide and reset the loaded region plus month
+    // selection, so a manager on the default center can be wiped mid-test by an
+    // unrelated suite running in parallel.
+    private func makeIsolatedManager() -> TimelineManager {
+        TimelineManager(notificationCenter: NotificationCenter())
+    }
+
     // Produces timeline originals with deterministic takenAt values so month-resolution tests can exercise date bucketing.
     private func makeOriginal(id: String, takenAt: Date) -> OriginalManifest {
         OriginalManifest(
@@ -33,16 +41,18 @@ struct TimelineMonthNavigationTests {
         )
     }
 
-    // Waits until the manager publishes the expected month so assertions can observe async main-queue publication.
+    // Waits until the manager publishes the expected month so assertions can
+    // observe async main-queue publication. The budget is wall-clock rather
+    // than a fixed attempt count so a contended CI machine, where each sleep
+    // can overshoot badly, does not fail on publication that simply arrived late.
     private func waitForMonth(
         _ expected: TimelineYearMonth,
         manager: TimelineManager,
-        attempts: Int = 20,
+        timeoutSeconds: TimeInterval = 5,
         sleepNanoseconds: UInt64 = 10_000_000
     ) async throws {
-        var tries = 0
-        while tries < attempts && manager.currentYearMonth != expected {
-            tries += 1
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while manager.currentYearMonth != expected && Date() < deadline {
             try await Task.sleep(nanoseconds: sleepNanoseconds)
         }
         #expect(manager.currentYearMonth == expected)
@@ -93,7 +103,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures selecting one month publishes the matching global target index for coordinator-driven collection scrolling.
     @Test func scrollToMonthPublishesTargetIndex() async throws {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.seedMonthIndexForTesting([
             TimelineMonthCount(year: 2024, month: 1, count: 2),
             TimelineMonthCount(year: 2024, month: 2, count: 4),
@@ -114,7 +124,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures viewport updates do not clear month selection when sparse loading temporarily has no top visible item.
     @Test func updateCurrentMonthDoesNotClearSelectionWhenIndexUnavailable() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.seedMonthIndexForTesting([
             TimelineMonthCount(year: 2024, month: 1, count: 2),
             TimelineMonthCount(year: 2024, month: 2, count: 4),
@@ -128,7 +138,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures rapid month updates are rate-limited so sidebar selection does not churn during fast scroll callbacks.
     @Test func updateCurrentMonthThrottlesRapidChanges() async throws {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let januaryDate = Date(timeIntervalSince1970: 1_704_067_200) // 2024-01-01
         let februaryDate = Date(timeIntervalSince1970: 1_706_745_600) // 2024-02-01
         let january = TimelineYearMonth(year: 2024, month: 1)
@@ -157,7 +167,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures the latest month selection is flushed when scrolling settles so sidebar and viewport end in sync.
     @Test func setGridScrollingFalseFlushesPendingMonthUpdate() async throws {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let januaryDate = Date(timeIntervalSince1970: 1_704_067_200) // 2024-01-01
         let februaryDate = Date(timeIntervalSince1970: 1_706_745_600) // 2024-02-01
         let january = TimelineYearMonth(year: 2024, month: 1)
@@ -185,7 +195,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures month sidebar sections are precomputed with month index changes and remain stable across viewport month updates.
     @Test func managerPublishesMonthSidebarSectionsFromMonthIndexChanges() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.seedMonthIndexForTesting([
             TimelineMonthCount(year: 2024, month: 1, count: 2),
             TimelineMonthCount(year: 2024, month: 2, count: 1),
@@ -240,7 +250,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures month updates invalidate only the month-selection model, not the full timeline manager.
     @Test func monthUpdatesDoNotEmitManagerObjectWillChange() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.seedMonthIndexForTesting([
             TimelineMonthCount(year: 2024, month: 1, count: 2),
             TimelineMonthCount(year: 2024, month: 2, count: 1),
@@ -273,7 +283,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures paging-window mutations do not invalidate the month-selection model.
     @Test func loadedRegionSeedDoesNotEmitMonthSelectionObjectWillChange() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         manager.seedMonthIndexForTesting([
             TimelineMonthCount(year: 2024, month: 1, count: 2),
         ])
@@ -294,7 +304,7 @@ struct TimelineMonthNavigationTests {
 
     // Ensures load-generation transitions are observable through the dedicated publisher after removing @Published loadGeneration.
     @Test func loadGenerationPublisherEmitsWhenGenerationIncrements() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let original = makeOriginal(id: "x", takenAt: Date(timeIntervalSince1970: 10))
         let thumbnailOld = ThumbnailSetManifest(
             originalRef: "\(original.metadata.deviceSpace)/media.replycant.com/v1alpha1/Original/\(original.metadata.name)",

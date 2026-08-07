@@ -32,6 +32,28 @@ final class TimelineGestureUITests: XCTestCase {
     }
     
     // MARK: - Helper Methods
+
+    // Reports which timeline state is on screen when a fixture wait expires.
+    //
+    // The app's own logging is not captured while UI tests run, and a missing
+    // cell looks identical whether the timeline is still loading, failed with
+    // an error, believes it has no photos, or rendered a grid that simply does
+    // not contain the expected item. Naming the state turns a bare timeout into
+    // something diagnosable from the CI log alone.
+    private func timelineStateDescription() -> String {
+        let states = [
+            "loading": app.staticTexts["Loading timeline..."].exists,
+            "error": app.staticTexts["Failed to load timeline"].exists,
+            "empty": app.staticTexts["No photos uploaded yet"].exists,
+            "grid": app.collectionViews["timelineGrid"].exists,
+        ]
+        let active = states.filter(\.value).keys.sorted().joined(separator: ",")
+        let labels = app.staticTexts.allElementsBoundByIndex
+            .map(\.label)
+            .prefix(8)
+            .joined(separator: " | ")
+        return "state=[\(active.isEmpty ? "none" : active)] labels=[\(labels)]"
+    }
     
     // Navigate to timeline and open first image
     func navigateToFirstImage() throws {
@@ -43,8 +65,9 @@ final class TimelineGestureUITests: XCTestCase {
         let firstButton = app.buttons["timelinePhoto_i-1"]
         let firstCell = app.collectionViews.cells["timelinePhoto_i-1"]
         XCTAssertTrue(
-            firstButton.waitForExistence(timeout: 10) || firstCell.waitForExistence(timeout: 1),
-            "First timeline fixture should exist"
+            firstButton.waitForExistence(timeout: UITestFixtures.uiSettleTimeout)
+                || firstCell.waitForExistence(timeout: 1),
+            "First timeline fixture should exist (\(timelineStateDescription()))"
         )
         if firstButton.exists && firstButton.isHittable {
             firstButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -81,8 +104,9 @@ final class TimelineGestureUITests: XCTestCase {
         let secondButton = app.buttons["timelinePhoto_i-2"]
         let secondCell = app.collectionViews.cells["timelinePhoto_i-2"]
         XCTAssertTrue(
-            secondButton.waitForExistence(timeout: 10) || secondCell.waitForExistence(timeout: 1),
-            "Second timeline fixture should exist"
+            secondButton.waitForExistence(timeout: UITestFixtures.uiSettleTimeout)
+                || secondCell.waitForExistence(timeout: 1),
+            "Second timeline fixture should exist (\(timelineStateDescription()))"
         )
         if secondButton.exists && secondButton.isHittable {
             secondButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -530,8 +554,8 @@ final class TimelineGestureUITests: XCTestCase {
         XCTAssertTrue(fullScreenView.waitForExistence(timeout: 5), "Should be in full screen view for video")
         
         // Get the video player
-        let videoPlayer = app.otherElements["videoPlayer"]
-        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 3), "Video player should be displayed")
+        let videoPlayer = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
+        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 10), "Video player should be displayed")
         
         // Perform a vertical swipe down from center to dismiss
         let startPoint = videoPlayer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
@@ -584,8 +608,8 @@ final class TimelineGestureUITests: XCTestCase {
         XCTAssertFalse(videoImageView.exists, "Should be viewing video (zoomableImage should not exist for videos)")
 
         // Get the video player and make sure it's playing
-        let videoPlayer = app.otherElements["videoPlayer"]
-        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 3), "Video player should be displayed")
+        let videoPlayer = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
+        XCTAssertTrue(videoPlayer.waitForExistence(timeout: 10), "Video player should be displayed")
         XCTAssertEqual(videoPlayer.value as? String, "playing", "Video player should be playing")
         
         // Now swipe to the previous item (should navigate to a photo)
@@ -606,7 +630,7 @@ final class TimelineGestureUITests: XCTestCase {
         // Verify the video player is paused or no longer exists
         // After swiping away, the video player should either be removed from the view hierarchy
         // or if it still exists (in the background), it should be paused
-        let videoPlayerAfterSwipe = app.otherElements["videoPlayer"]
+        let videoPlayerAfterSwipe = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
         if videoPlayerAfterSwipe.exists {
             // If the video player still exists, it must be paused
             XCTAssertEqual(videoPlayerAfterSwipe.value as? String, "paused", "Video player should be paused after swiping away")

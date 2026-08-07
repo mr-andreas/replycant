@@ -70,10 +70,15 @@ class TestLFSServer {
             }
         }
         
-        listener?.start(queue: .global(qos: .utility))
+        // Runs above utility priority so listener readiness is not starved
+        // behind lower-priority work while many test suites execute in
+        // parallel on a loaded CI machine.
+        listener?.start(queue: .global(qos: .userInitiated))
         
-        // Wait for server to be ready (with timeout to avoid deadlock)
-        let timeout = DispatchTime.now() + .seconds(5)
+        // Wait for server to be ready. The budget is generous because a
+        // contended CI runner can take far longer to bind than a developer
+        // machine, and a spurious timeout here fails otherwise-passing tests.
+        let timeout = DispatchTime.now() + .seconds(30)
         if readySemaphore.wait(timeout: timeout) == .timedOut {
             throw NSError(domain: "TestLFSServer", code: -1, 
                          userInfo: [NSLocalizedDescriptionKey: "Server start timed out"])

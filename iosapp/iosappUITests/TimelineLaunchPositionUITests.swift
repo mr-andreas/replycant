@@ -27,7 +27,10 @@ final class TimelineLaunchPositionUITests: XCTestCase {
     func testTimelineLaunchShowsNewestItems() throws {
         UITestFixtures.waitForTimelineLoad(app, timeout: 15)
 
-        let newestFixture = app.descendants(matching: .any)["timelinePhoto_v-1"]
+        let newestFixture = app.collectionViews["timelineGrid"]
+            .cells
+            .matching(identifier: "timelinePhoto_v-1")
+            .firstMatch
         XCTAssertTrue(
             newestFixture.waitForExistence(timeout: 10),
             "Newest fixture should be visible at launch"
@@ -44,11 +47,18 @@ final class TimelineLaunchPositionUITests: XCTestCase {
     func testTimelineLaunchBottomItemSitsAboveTabBar() throws {
         UITestFixtures.waitForTimelineLoad(app, timeout: 15)
 
-        let newestFixture = app.descendants(matching: .any)["timelinePhoto_v-1"]
-        XCTAssertTrue(
-            newestFixture.waitForExistence(timeout: 10),
-            "Newest fixture should be visible at launch"
-        )
+        let timelineGrid = app.collectionViews["timelineGrid"]
+        XCTAssertTrue(timelineGrid.waitForExistence(timeout: 10), "Expected timeline grid at launch")
+
+        let newestCandidates = timelineGrid.descendants(matching: .any)
+            .matching(identifier: "timelinePhoto_v-1")
+            .allElementsBoundByIndex
+            .filter { $0.exists && !$0.frame.isEmpty }
+        XCTAssertFalse(newestCandidates.isEmpty, "Newest fixture should be visible at launch")
+        guard let newestFixture = newestCandidates.max(by: { $0.frame.maxY < $1.frame.maxY }) else {
+            XCTFail("Expected at least one resolved newest fixture element")
+            return
+        }
 
         let tabBar = app.tabBars.firstMatch
         XCTAssertTrue(tabBar.waitForExistence(timeout: 5), "Expected tab bar to exist")

@@ -76,6 +76,18 @@ struct GitNoOpSyncLogTests {
         return (local, root)
     }
 
+    // Keeps only log lines naming this test's own repository.
+    //
+    // Redirecting STDOUT_FILENO captures the whole process, and suites that run
+    // in parallel log while the capture is installed, so an unrelated test
+    // creating a repository would otherwise be read as this push having logged.
+    private func linesAboutRepository(at rootPath: String, in output: String) -> [String] {
+        output
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { $0.contains(rootPath) }
+    }
+
     // Ensures no-op push produces no visible log output at the default INFO level.
     @Test func pushNoOpEmitsNoInfoGitLogs() async throws {
         let (repo, rootPath) = try setupPushNoOpRepository()
@@ -85,8 +97,9 @@ struct GitNoOpSyncLogTests {
             try repo.push(remoteName: "origin", branchName: "main")
         }
 
-        #expect(!output.contains("[INFO][Git]"))
-        #expect(!output.contains("[DEBUG][Git]"))
+        let ownLines = linesAboutRepository(at: rootPath, in: output)
+        #expect(!ownLines.contains { $0.contains("[INFO][Git]") })
+        #expect(!ownLines.contains { $0.contains("[DEBUG][Git]") })
     }
 
     // Ensures no-op pull-rebase produces no visible log output at the default INFO level.
@@ -98,7 +111,8 @@ struct GitNoOpSyncLogTests {
             try repo.pullRebase(remoteName: "origin", branchName: "main")
         }
 
-        #expect(!output.contains("[INFO][Git]"))
-        #expect(!output.contains("[DEBUG][Git]"))
+        let ownLines = linesAboutRepository(at: rootPath, in: output)
+        #expect(!ownLines.contains { $0.contains("[INFO][Git]") })
+        #expect(!ownLines.contains { $0.contains("[DEBUG][Git]") })
     }
 }
