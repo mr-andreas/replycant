@@ -8,6 +8,13 @@ import Testing
 /// expensive O(200) iteration on every callback.
 @MainActor
 struct TimelinePreloadThrottleTests {
+    // Binds the manager to a private notification center. Reset and endpoint
+    // broadcasts are process-wide and clear the loaded region, so a manager on
+    // the default center can be wiped mid-test by an unrelated suite.
+    private func makeIsolatedManager() -> TimelineManager {
+        TimelineManager(notificationCenter: NotificationCenter())
+    }
+
     private func makeOriginal(id: String, takenAt: Date) -> OriginalManifest {
         OriginalManifest(
             id: id,
@@ -43,7 +50,7 @@ struct TimelinePreloadThrottleTests {
     /// Preload does not fire synchronously — rapid appear calls are
     /// coalesced via a trailing-edge debounce.
     @Test func preloadIsNotImmediateAfterAppear() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let items = makeItems(count: 20)
         manager.seedLoadedRegionForTesting(offset: 0, items: items, totalCount: 20)
 
@@ -60,7 +67,7 @@ struct TimelinePreloadThrottleTests {
     /// After the debounce window elapses, the preload pass runs and
     /// items within the configured preload range become eligible.
     @Test func preloadFiresAfterDebounceWindow() async throws {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let items = makeItems(count: 20)
         manager.seedLoadedRegionForTesting(offset: 0, items: items, totalCount: 20)
 
@@ -78,7 +85,7 @@ struct TimelinePreloadThrottleTests {
     /// Multiple rapid appear/disappear cycles result in only one
     /// final preload pass reflecting the last stable viewport state.
     @Test func rapidAppearDisappearCoalescesIntoOnePass() async throws {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let items = makeItems(count: 50)
         manager.seedLoadedRegionForTesting(offset: 0, items: items, totalCount: 50)
 
@@ -106,7 +113,7 @@ struct TimelinePreloadThrottleTests {
     /// While grid is actively scrolling, preload scheduling is fully
     /// suppressed — no debounce timer fires.
     @Test func preloadSuppressedDuringActiveScroll() async throws {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let items = makeItems(count: 30)
         manager.seedLoadedRegionForTesting(offset: 0, items: items, totalCount: 30)
 
@@ -123,7 +130,7 @@ struct TimelinePreloadThrottleTests {
     /// When scrolling ends, preload fires immediately without waiting
     /// for the debounce delay.
     @Test func preloadFiresImmediatelyWhenScrollingEnds() {
-        let manager = TimelineManager()
+        let manager = makeIsolatedManager()
         let items = makeItems(count: 30)
         manager.seedLoadedRegionForTesting(offset: 0, items: items, totalCount: 30)
 

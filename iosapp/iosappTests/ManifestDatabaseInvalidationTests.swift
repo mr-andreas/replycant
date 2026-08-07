@@ -21,27 +21,35 @@ struct ManifestDatabaseInvalidationTests {
         var count = 0
     }
 
-    // Observes invalidation broadcasts for the duration of one action.
-    private func countInvalidations(during action: () throws -> Void) rethrows -> Int {
+    // Observes one loader's broadcasts on a center of its own.
+    //
+    // The loader under test is a fresh instance rather than the shared one:
+    // announcing invalidation on the default center makes every live manager in
+    // the process reload, which stampedes suites running in parallel.
+    private func countInvalidations(
+        during action: (ManifestLoaderManager) throws -> Void
+    ) rethrows -> Int {
+        let center = NotificationCenter()
+        let loader = ManifestLoaderManager(notificationCenter: center)
         let counter = InvalidationCounter()
-        let token = NotificationCenter.default.addObserver(
+        let token = center.addObserver(
             forName: ManifestLoaderManager.databaseDidInvalidateNotification,
             object: nil,
             queue: nil
         ) { _ in
             counter.count += 1
         }
-        defer { NotificationCenter.default.removeObserver(token) }
+        defer { center.removeObserver(token) }
 
-        try action()
+        try action(loader)
         return counter.count
     }
 
     // Dropping the shared instance must be announced: callers that already hold
     // the old database would otherwise keep using it indefinitely.
     @Test func clearLoaderBroadcastsInvalidation() {
-        let count = countInvalidations {
-            ManifestLoaderManager.shared.clearLoader()
+        let count = countInvalidations { loader in
+            loader.clearLoader()
         }
 
         #expect(count == 1)
@@ -50,8 +58,8 @@ struct ManifestDatabaseInvalidationTests {
     // Deleting the backing file is the destructive half of a reset, and is what
     // UITest fixture seeding uses before rebuilding the cache from HEAD.
     @Test func deleteDatabaseFileBroadcastsInvalidation() throws {
-        let count = try countInvalidations {
-            try ManifestLoaderManager.shared.deleteDatabaseFile()
+        let count = try countInvalidations { loader in
+            try loader.deleteDatabaseFile()
         }
 
         #expect(count == 1)
@@ -78,5 +86,4 @@ struct ManifestDatabaseInvalidationTests {
         }
         #expect(manager.totalCount == 0)
     }
-
 }

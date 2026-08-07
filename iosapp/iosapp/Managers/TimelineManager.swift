@@ -117,9 +117,12 @@ final class TimelineManager: ObservableObject {
     private var databaseInvalidationObserver: AnyCancellable?
     // Reload driven by database replacement, retained so a newer reset supersedes it.
     private var databaseReloadTask: Task<Void, Never>?
-    // Spans a reset's rebuild without retrying long enough to hide a real failure.
-    private static let databaseReloadAttempts = 10
-    private static let databaseReloadRetryDelayNanoseconds: UInt64 = 1_000_000_000
+    // Spans the moment a reset's rebuild holds the database, without retrying
+    // long enough to hide a real failure. The window only has to outlast the
+    // rebuild's grip on the file, not the rebuild itself: once the reload binds
+    // successfully, remaining rows arrive through the change subscription.
+    private static let databaseReloadAttempts = 6
+    private static let databaseReloadRetryDelayNanoseconds: UInt64 = 500_000_000
     // Source of endpoint-change broadcasts.
     private let notificationCenter: NotificationCenter
 

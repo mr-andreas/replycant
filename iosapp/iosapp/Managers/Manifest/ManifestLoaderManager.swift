@@ -16,8 +16,15 @@ final class ManifestLoaderManager {
 
     private var database: GitDB.ManifestDatabase?
     private var registry: GitDB.ManifestRegistry?
+    private let notificationCenter: NotificationCenter
 
-    private init() {}
+    // The notification center is injectable so a test can verify the broadcast
+    // on a private center. Every live manager in the process reacts to this
+    // notification by reloading, so announcing it on the default center from a
+    // test stampedes unrelated suites running in parallel.
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
+    }
 
     // Returns the shared manifest registry with app schema registrations.
     func getRegistry() -> GitDB.ManifestRegistry {
@@ -73,7 +80,7 @@ final class ManifestLoaderManager {
     }
 
     private func broadcastInvalidation() {
-        NotificationCenter.default.post(
+        notificationCenter.post(
             name: Self.databaseDidInvalidateNotification,
             object: nil
         )
