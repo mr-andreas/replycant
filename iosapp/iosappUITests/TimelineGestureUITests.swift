@@ -32,6 +32,28 @@ final class TimelineGestureUITests: XCTestCase {
     }
     
     // MARK: - Helper Methods
+
+    // Reports which timeline state is on screen when a fixture wait expires.
+    //
+    // The app's own logging is not captured while UI tests run, and a missing
+    // cell looks identical whether the timeline is still loading, failed with
+    // an error, believes it has no photos, or rendered a grid that simply does
+    // not contain the expected item. Naming the state turns a bare timeout into
+    // something diagnosable from the CI log alone.
+    private func timelineStateDescription() -> String {
+        let states = [
+            "loading": app.staticTexts["Loading timeline..."].exists,
+            "error": app.staticTexts["Failed to load timeline"].exists,
+            "empty": app.staticTexts["No photos uploaded yet"].exists,
+            "grid": app.collectionViews["timelineGrid"].exists,
+        ]
+        let active = states.filter(\.value).keys.sorted().joined(separator: ",")
+        let labels = app.staticTexts.allElementsBoundByIndex
+            .map(\.label)
+            .prefix(8)
+            .joined(separator: " | ")
+        return "state=[\(active.isEmpty ? "none" : active)] labels=[\(labels)]"
+    }
     
     // Navigate to timeline and open first image
     func navigateToFirstImage() throws {
@@ -45,7 +67,7 @@ final class TimelineGestureUITests: XCTestCase {
         XCTAssertTrue(
             firstButton.waitForExistence(timeout: UITestFixtures.uiSettleTimeout)
                 || firstCell.waitForExistence(timeout: 1),
-            "First timeline fixture should exist"
+            "First timeline fixture should exist (\(timelineStateDescription()))"
         )
         if firstButton.exists && firstButton.isHittable {
             firstButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -84,7 +106,7 @@ final class TimelineGestureUITests: XCTestCase {
         XCTAssertTrue(
             secondButton.waitForExistence(timeout: UITestFixtures.uiSettleTimeout)
                 || secondCell.waitForExistence(timeout: 1),
-            "Second timeline fixture should exist"
+            "Second timeline fixture should exist (\(timelineStateDescription()))"
         )
         if secondButton.exists && secondButton.isHittable {
             secondButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
