@@ -652,15 +652,13 @@ final class TimelineManager: ObservableObject {
     private func retryReloadUntilDatabaseIsUsable() {
         databaseReloadTask?.cancel()
         databaseReloadTask = Task { [weak self] in
-            for attempt in 0..<Self.databaseReloadAttempts {
-                if attempt > 0 {
-                    try? await Task.sleep(nanoseconds: Self.databaseReloadRetryDelayNanoseconds)
-                }
-                guard let self, !Task.isCancelled else { return }
+            await RetryBudget.run(
+                attempts: Self.databaseReloadAttempts,
+                delayNanoseconds: Self.databaseReloadRetryDelayNanoseconds
+            ) { [weak self] in
+                guard let self else { return true }
                 await self.loadTimeline(force: true)
-                if self.errorMessage == nil {
-                    return
-                }
+                return self.errorMessage == nil
             }
         }
     }
