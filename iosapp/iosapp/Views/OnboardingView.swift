@@ -12,7 +12,7 @@ struct OnboardingView: View {
     static let encryptionDisclaimerText = "Replycant encrypts both media files and metadata. Encryption keys are stored only on your devices and are never stored on the server. If these keys are lost, your entire library will be permanently inaccessible. Uninstalling the iOS app removes this device's keys and can cause permanent data loss unless another device has already been granted access."
     static let encryptionDisclaimerAcknowledgeLabel = "I understand"
     static let serverSetupGuideText = "Before you continue, set up a Replycant server and make sure it's reachable from this device. Follow the guide below, then return here to scan your server QR code."
-    static let serverSetupGuideURL = URL(string: "https://github.com/mr-andreas/replycant")!
+    static let serverSetupGuideURL = URL(string: "https://github.com/mr-andreas/replycant#getting-started")!
     
     @State private var currentStep: OnboardingStep
     @State private var introPageIndex: Int

@@ -37,7 +37,7 @@ struct OnboardingIntroFlowTests {
     // before the scanner step so required infrastructure is explicit.
     @Test func serverSetupGuideCopyAndTitleMatchExpectedText() {
         #expect(OnboardingView.serverSetupGuideText == "Before you continue, set up a Replycant server and make sure it's reachable from this device. Follow the guide below, then return here to scan your server QR code.")
-        #expect(OnboardingView.serverSetupGuideURL.absoluteString == "https://github.com/mr-andreas/replycant")
+        #expect(OnboardingView.serverSetupGuideURL.absoluteString == "https://github.com/mr-andreas/replycant#getting-started")
         #expect(OnboardingStep.serverSetupGuide.title == "Server Setup")
     }
 }
