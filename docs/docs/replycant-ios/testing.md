@@ -8,6 +8,39 @@ The iOS app includes specialized test infrastructure for Git LFS operations. Two
 |---------|-----------|
 | Unit tests | Run in same process, need fast synchronous access |
 | UI tests | Run in separate process, need realistic HTTP behavior |
+| Integration tests | Run on iOS Simulator against a real dockerized gitd stack |
+
+## Real gitd integration tests
+
+The iOS unit-test target now includes a gated `GitdIntegrationTests` suite under
+`iosappTests/Integration/`. It runs only when `REPLYCANT_INTEGRATION_CTL` is
+present, so normal Xcode test runs stay fast.
+
+### Prerequisites
+
+- Docker daemon running locally
+- iOS Simulator available for the configured destination
+
+### Run command
+
+```bash
+make ios-integration-test
+```
+
+This target:
+
+1. Builds and starts the integration container from `integration/Dockerfile`
+2. Exposes `caserver`, `gitd`, `lfs-test-server`, and a control endpoint
+3. Runs only `iosappTests/GitdIntegrationTests` via `xcodebuild test`
+4. Stops the container automatically on exit
+
+### What the suite validates
+
+- Bootstrap push from an unseeded repo to real gitd
+- Provision + clone + KEK epoch decrypt from a seeded repo
+- GitDB sync-to-SQL round trip after seeded media history
+- Real LFS upload/download through gitd's `/lfs` proxy
+- Unauthorized push rejection for non-provisioned identities
 
 ## MockLFSServer (Unit Tests)
 

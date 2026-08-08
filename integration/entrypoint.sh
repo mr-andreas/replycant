@@ -14,9 +14,7 @@ openssl x509 -req -in /tmp/pki/server.csr -CA /tmp/pki/ca.crt -CAkey /tmp/pki/ca
   -out /tmp/pki/server.crt -days 2 -CAcreateserial -copy_extensions copyall
 
 # Create and seed bare repository with authorized pubkey and encryption metadata.
-git init --initial-branch=main --bare /tmp/repo.git
-git -C /tmp/repo.git config http.receivepack true
-seeder --bare-repo=/tmp/repo.git --output-dir=/tmp/identity
+/usr/local/bin/reset-repo.sh true
 
 # Install git-lfs hooks from template for subsequent test repositories.
 git lfs install
@@ -29,6 +27,9 @@ LFS_METADB=/tmp/lfs.db \
 LFS_ADMINUSER=admin \
 LFS_ADMINPASS=admin \
 lfs-test-server >/tmp/lfs.log 2>&1 &
+
+# Start control server for host-driven integration lifecycle operations.
+ctl >/tmp/ctl.log 2>&1 &
 
 # Start gitd server. The media upstreams are required flags but unused here;
 # these integration tests only exercise Git and LFS, so nothing listens on them.

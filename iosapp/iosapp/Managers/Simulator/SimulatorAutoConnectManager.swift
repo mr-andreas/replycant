@@ -22,8 +22,11 @@ final class SimulatorAutoConnectManager {
         // Screenshot onboarding captures also need a clean first-run path without
         // bundled simulator credentials re-applying after TestSupport wipes state.
         let arguments = ProcessInfo.processInfo.arguments
+        let environment = ProcessInfo.processInfo.environment
+        let hasIntegrationControlEndpoint = !(environment["REPLYCANT_INTEGRATION_CTL"] ?? "").isEmpty
         guard !arguments.contains("--uitesting"),
-              !arguments.contains("--screenshots-onboarding") else {
+              !arguments.contains("--screenshots-onboarding"),
+              !hasIntegrationControlEndpoint else {
             log("Skipping simulator auto-connect during UI tests", context: "SimAutoConnect")
             return
         }
