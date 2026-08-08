@@ -55,6 +55,24 @@ func IsLFSPointer(raw []byte) bool {
 	return bytes.HasPrefix(raw, []byte(LFSPointerHeader))
 }
 
+// BuildLFSPointer produces a canonical three-line Git LFS pointer without shelling out to git-lfs.
+func BuildLFSPointer(oid string, size int64) []byte {
+	return []byte(fmt.Sprintf(
+		"version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n",
+		oid,
+		size,
+	))
+}
+
+// EncryptedSize returns the ciphertext length EncryptChunked would emit for a given plaintext size.
+func EncryptedSize(plaintextSize int64) int64 {
+	if plaintextSize <= 0 {
+		return 0
+	}
+	n := (plaintextSize + int64(ChunkSize) - 1) / int64(ChunkSize)
+	return plaintextSize + n*int64(ChunkOverheadBytes)
+}
+
 // ParseLFSPointer extracts standard LFS fields plus optional replycant encryption metadata.
 func ParseLFSPointer(raw []byte) (LFSPointer, error) {
 	if !IsLFSPointer(raw) {
@@ -226,6 +244,92 @@ func NewDEK() ([]byte, error) {
 		return nil, fmt.Errorf("failed to generate DEK: %w", err)
 	}
 	return dek, nil
+}
+
+// chunkedEncryptReader streams EncryptChunked output one frame at a time so large
+// media never needs to sit in RAM. Index-derived nonces make two independent
+// readers over the same plaintext and DEK produce identical ciphertext.
+type chunkedEncryptReader struct {
+	src           io.Reader
+	gcm           cipher.AEAD
+	remaining     int64
+	index         uint64
+	pending       []byte
+	pendingOffset int
+	err           error
+}
+
+// NewChunkedEncryptReader returns a reader that emits EncryptChunked-compatible
+// ciphertext while holding at most one 64 KiB plaintext chunk in memory.
+func NewChunkedEncryptReader(src io.Reader, plaintextSize int64, dek []byte) (io.Reader, error) {
+	if plaintextSize < 0 {
+		return nil, fmt.Errorf("invalid plaintext size %d", plaintextSize)
+	}
+	if src == nil {
+		return nil, fmt.Errorf("encrypt source is required")
+	}
+	block, err := aes.NewCipher(dek)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+	return &chunkedEncryptReader{
+		src:       src,
+		gcm:       gcm,
+		remaining: plaintextSize,
+	}, nil
+}
+
+func (r *chunkedEncryptReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.err != nil && len(r.pending) == 0 {
+		return 0, r.err
+	}
+	if r.pendingOffset < len(r.pending) {
+		n := copy(p, r.pending[r.pendingOffset:])
+		r.pendingOffset += n
+		if r.pendingOffset == len(r.pending) {
+			r.pending = nil
+			r.pendingOffset = 0
+		}
+		return n, nil
+	}
+	if r.remaining == 0 {
+		r.err = io.EOF
+		return 0, io.EOF
+	}
+
+	chunkLen := int64(ChunkSize)
+	if r.remaining < chunkLen {
+		chunkLen = r.remaining
+	}
+	buf := make([]byte, chunkLen)
+	if _, err := io.ReadFull(r.src, buf); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			r.err = fmt.Errorf("encrypt source ended early: expected %d more bytes", r.remaining)
+			return 0, r.err
+		}
+		r.err = err
+		return 0, err
+	}
+	r.remaining -= chunkLen
+	isLast := r.remaining == 0
+	sealed := r.gcm.Seal(nil, ChunkNonce(r.index), buf, ChunkAAD(r.index, isLast))
+	r.index++
+	r.pending = sealed
+	r.pendingOffset = 0
+	n := copy(p, r.pending)
+	r.pendingOffset = n
+	if r.pendingOffset == len(r.pending) {
+		r.pending = nil
+		r.pendingOffset = 0
+	}
+	return n, nil
 }
 
 // EncryptChunked writes ciphertext||tag frames with index-derived nonces and AAD

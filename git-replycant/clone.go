@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/lfsclient"
 	"github.com/mr-andreas/replycant/pkg/mdns"
 	"github.com/skip2/go-qrcode"
 )
@@ -211,19 +212,7 @@ func buildDiscoveryHTTPClient() *http.Client {
 
 // DeriveLFSURL ensures LFS traffic stays on the same origin as git by forcing the /lfs route.
 func DeriveLFSURL(gitURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(gitURL))
-	if err != nil {
-		return "", fmt.Errorf("invalid git URL %q: %w", strings.TrimSpace(gitURL), err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("invalid git URL %q", strings.TrimSpace(gitURL))
-	}
-	parsed.User = nil
-	parsed.Path = "/lfs"
-	parsed.RawPath = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String(), nil
+	return lfsclient.DeriveEndpointURL(gitURL)
 }
 
 // StartQRServer serves a local page with the onboarding QR payload so mobile authorization can proceed.

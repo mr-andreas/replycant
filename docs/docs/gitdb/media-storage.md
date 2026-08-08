@@ -88,22 +88,35 @@ size 4521890
 
 The actual binary data is stored on the LFS server and fetched on demand.
 
-## Upload Flow
+## Upload Paths
 
-1. **Hash Calculation**: Compute SHA-256 of the binary content
-2. **Binary Upload**: Upload binary data to LFS server via HTTP
-3. **Pointer Creation**: Generate LFS pointer file with OID and size
-4. **Manifest Creation**: Create Original manifest with all metadata
-5. **Atomic Commit**: Commit both pointer and manifest together
+Clients can reach the same on-disk layout through two different paths.
+
+### Interactive clients (iOS, normal `git-replycant` clones)
+
+1. Write plaintext media under `binary/**`
+2. On `git add`, the `replycant-crypt` clean filter encrypts the payload and
+   emits an LFS pointer with Replycant encryption headers
+3. On `git push`, the `git-replycant` pre-push hook uploads missing ciphertext
+   via the LFS batch API
+
+### Bulk importer (`replycant-importer`)
+
+Bulk import uses a `--no-lfs` clone and never stages plaintext under
+`binary/**`:
+
+1. Encrypt each original/thumbnail with a fresh DEK
+2. Upload ciphertext through the LFS batch API
+3. Write the pointer file into the worktree
+4. Commit pointer + manifests together
+
+The importer path avoids smudge/clean during rebase, which matters when
+importing large libraries with frequent concurrent remote advances.
 
 ### Commit Message Format
 
 ```
-Add photo: IMG_1234.JPG
-
-Captured: 2025-10-19T14:23:45Z
-Size: 4521890 bytes
-LFS OID: a3f8c92b1e4d5f67890ab12cd34ef5678901abc23def45678901234567890abc
+import: IMG_1234.JPG
 ```
 
 ## Content Addressing

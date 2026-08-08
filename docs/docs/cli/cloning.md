@@ -7,18 +7,20 @@ This tutorial shows how to clone a Replycant repository with
 
 - `git`
 - `git-replycant` on your `PATH`
-- A CA certificate file for your Replycant server
-- For LFS repos: `git-lfs`
+- For default (filter-driven) LFS clones: `git-lfs`
 
 Install `git-replycant` from the latest GitHub Release asset for your
 platform, then ensure the binary is executable and on your `PATH`.
 
-## Clone Without LFS
+## Clone With LFS Filters (default)
 
-Use this for repos that only contain manifest content.
+By default, `git-replycant clone` configures `binary/**` through the
+`replycant-crypt` filter and installs the pre-push hook that uploads
+encrypted LFS objects. Use this for interactive work where you edit
+files with normal git commands.
 
 ```bash
-git-replycant clone --ca-file /path/to/gitd-ca.pem https://git.example.com/my-repo.git
+git-replycant clone https://caserver.example.com/
 ```
 
 Optional arguments:
@@ -26,28 +28,16 @@ Optional arguments:
 - Set a local device name override with `--device-name`
 - Set a custom destination directory by adding it as the last argument
 
-Example:
+## Clone Without LFS Filters (`--no-lfs`)
+
+Use `--no-lfs` for bulk import with `replycant-importer`. The clone still
+gets manifest encryption filters and mTLS config, but it does not install
+`binary/**` filters, `lfs.url`, or the pre-push hook. The importer uploads
+LFS objects itself and writes pointer files directly.
 
 ```bash
-git-replycant clone \
-  --ca-file /path/to/gitd-ca.pem \
-  --device-name "laptop-linux" \
-  https://git.example.com/my-repo.git \
-  my-replycant-repo
+git-replycant clone --no-lfs https://caserver.example.com/ my-import-repo
 ```
-
-## Clone With LFS
-
-Use this when the repo contains `binary/**` content stored in Git LFS.
-
-```bash
-git-replycant clone \
-  --ca-file /path/to/gitd-ca.pem \
-  --lfs-url https://lfs.example.com/my-repo.git/info/lfs \
-  https://git.example.com/my-repo.git
-```
-
-With `--lfs-url`, `git-replycant` configures local LFS settings and installs the Replycant pre-push hook for LFS uploads.
 
 ## What Happens During Clone
 

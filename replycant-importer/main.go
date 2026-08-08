@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,8 @@ import (
 	"github.com/bep/imagemeta"
 	_ "github.com/gen2brain/heic"
 	"github.com/google/uuid"
+	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/lfsclient"
 	xdraw "golang.org/x/image/draw"
 	"gopkg.in/yaml.v3"
 )
@@ -53,7 +56,7 @@ type CLI struct {
 	DeviceSpace string `arg:"" help:"Target device space name."`
 	PushEvery   int    `name:"push-every" default:"0" help:"Push every N commits in the background. 0 disables periodic push."`
 	Workers     int    `name:"workers" default:"0" help:"Number of parallel import workers. 0 uses all CPUs."`
-	Verbose     bool   `name:"verbose" short:"v" help:"Mirror git push/fetch/rebase output, including pre-push LFS upload progress."`
+	Verbose     bool   `name:"verbose" short:"v" help:"Mirror git push/fetch/rebase output and LFS upload progress."`
 }
 
 // ManifestMetadata carries common metadata fields required by the protocol.
@@ -122,6 +125,10 @@ type ThumbnailSetManifest struct {
 	Status     map[string]any   `yaml:"status"`
 }
 
+// objectUploader uploads encrypted LFS payloads before pointer files are committed.
+// Tests inject a fake so unit coverage does not need a live LFS server.
+type objectUploader func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error
+
 // importer dependencies are injectable to make behavior testable end-to-end.
 type importer struct {
 	stderr io.Writer
@@ -133,8 +140,12 @@ type importer struct {
 	newUUID              func() string
 	now                  func() time.Time
 	extractPhotoMetadata func(path string) (string, *OriginalLocation, int)
-	gitMu                sync.Mutex
-	shaMu                sync.Mutex
+	// uploadObjects sends ciphertext to the LFS server; nil means boot constructs one.
+	uploadObjects objectUploader
+	kek           []byte
+	kekEpoch      int
+	gitMu         sync.Mutex
+	shaMu         sync.Mutex
 }
 
 // mediaMeta is normalized metadata from ffprobe needed for manifests/thumbnails.
@@ -223,6 +234,12 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 
 	_, _ = i.log("boot: validating repository %s\n", repoAbs)
 	if err := i.ensureGitRepo(repoAbs); err != nil {
+		return err
+	}
+	if err := i.ensureNoFullLFSClone(repoAbs); err != nil {
+		return err
+	}
+	if err := i.setupCryptoAndUploader(repoAbs); err != nil {
 		return err
 	}
 	_, _ = i.log("boot: repository ok\n")
@@ -409,6 +426,121 @@ func (i *importer) ensureGitRepo(repoPath string) error {
 	return nil
 }
 
+// ensureNoFullLFSClone rejects filter-driven clones so the importer can write
+// pointers itself without git-lfs clean rewriting multi-megabyte binaries.
+func (i *importer) ensureNoFullLFSClone(repoPath string) error {
+	out, err := i.runCmd(repoPath, "git", "rev-parse", "--git-dir")
+	if err != nil {
+		return fmt.Errorf("failed to resolve git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repoPath, gitDir)
+	}
+	attrPath := filepath.Join(gitDir, "info", "attributes")
+	if raw, readErr := os.ReadFile(attrPath); readErr == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "binary/** filter=replycant-crypt" {
+				return fmt.Errorf("repository has binary/** LFS filters configured; re-clone with git-replycant clone --no-lfs")
+			}
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return fmt.Errorf("failed reading %s: %w", attrPath, readErr)
+	}
+	if _, err := i.runCmd(repoPath, "git", "config", "--local", "--get", "lfs.url"); err == nil {
+		return fmt.Errorf("repository has lfs.url configured; re-clone with git-replycant clone --no-lfs")
+	}
+	return nil
+}
+
+// setupCryptoAndUploader loads repository encryption material and the LFS uploader
+// so every binary can be encrypted and pushed before its pointer is committed.
+func (i *importer) setupCryptoAndUploader(repoPath string) error {
+	local, err := gitcrypt.LoadLocalIdentity(repoPath)
+	if err != nil {
+		return fmt.Errorf("load repository identity: %w", err)
+	}
+	epochRaw, err := os.ReadFile(filepath.Join(repoPath, "encryption", "current"))
+	if err != nil {
+		return fmt.Errorf("read encryption/current: %w", err)
+	}
+	epoch, err := gitcrypt.ParseCurrentEpoch(epochRaw)
+	if err != nil {
+		return err
+	}
+	envelopePath := filepath.Join(repoPath, "encryption", "epochs", fmt.Sprintf("%d.age", epoch))
+	envelope, err := os.ReadFile(envelopePath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", envelopePath, err)
+	}
+	kek, err := gitcrypt.UnwrapKEKFromAgeEnvelope(envelope, local.Identity.AgePrivateKeyBase64)
+	if err != nil {
+		return fmt.Errorf("unwrap KEK for epoch %d: %w", epoch, err)
+	}
+	i.kek = kek
+	i.kekEpoch = epoch
+
+	if i.uploadObjects != nil {
+		return nil
+	}
+
+	originURL, err := i.runCmd(repoPath, "git", "config", "--get", "remote.origin.url")
+	if err != nil {
+		return fmt.Errorf("resolve remote.origin.url: %w", err)
+	}
+	lfsURL, err := lfsclient.DeriveEndpointURL(strings.TrimSpace(string(originURL)))
+	if err != nil {
+		return fmt.Errorf("derive LFS URL: %w", err)
+	}
+	endpoint, err := lfsclient.ParseEndpoint(lfsURL)
+	if err != nil {
+		return fmt.Errorf("parse LFS URL: %w", err)
+	}
+	caPath, err := i.gitConfigValue(repoPath, "http.sslCAInfo")
+	if err != nil {
+		return err
+	}
+	certPath, err := i.gitConfigValue(repoPath, "http.sslCert")
+	if err != nil {
+		return err
+	}
+	keyPath, err := i.gitConfigValue(repoPath, "http.sslKey")
+	if err != nil {
+		return err
+	}
+	httpClient, err := lfsclient.NewMTLSHTTPClient(caPath, certPath, keyPath)
+	if err != nil {
+		return err
+	}
+	var logOut io.Writer
+	if i.verboseOut != nil {
+		logOut = i.verboseOut
+	}
+	client := &lfsclient.Client{
+		HTTP:     httpClient,
+		Endpoint: endpoint,
+		Log:      logOut,
+	}
+	i.uploadObjects = func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error {
+		return client.Upload(ctx, "", objects, open)
+	}
+	return nil
+}
+
+// gitConfigValue reads one local git config key required for mTLS LFS uploads.
+func (i *importer) gitConfigValue(repoPath, key string) (string, error) {
+	out, err := i.runCmd(repoPath, "git", "config", "--local", "--get", key)
+	if err != nil {
+		return "", fmt.Errorf("failed to read git config %q: %w", key, err)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("missing git config %q", key)
+	}
+	return value, nil
+}
+
 // ensureTool fails fast when external tool dependencies are missing from PATH.
 func (i *importer) ensureTool(name string) error {
 	if _, err := exec.LookPath(name); err != nil {
@@ -549,11 +681,6 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 	manifestPath := filepath.Join(repoPath, "manifests", deviceSpace, apiVersion, "Original", shardName(name)+".yaml")
 	binaryPath := filepath.Join(repoPath, "binary", deviceSpace, apiVersion, "Original", shardName(name))
 
-	if err := copyFile(sourcePath, binaryPath); err != nil {
-		return nil, false, err
-	}
-	writtenPaths = append(writtenPaths, binaryPath)
-
 	modifiedAt := i.now().UTC().Format(time.RFC3339)
 	if st, err := os.Stat(sourcePath); err == nil {
 		modifiedAt = st.ModTime().UTC().Format(time.RFC3339)
@@ -623,15 +750,44 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 	}
 	writtenPaths = append(writtenPaths, manifestPath)
 
-	thumbs, err := i.generateThumbnails(repoPath, deviceSpace, name, sourcePath, mediaType, meta.duration, originalRef, photoSrc)
+	thumbs, err := i.generateThumbnails(deviceSpace, name, sourcePath, mediaType, meta.duration, originalRef, photoSrc)
 	if err != nil {
 		return nil, false, err
 	}
-	writtenPaths = append(writtenPaths, thumbs.binaryPaths...)
+	thumbs.manifestPath = filepath.Join(
+		repoPath,
+		"manifests",
+		deviceSpace,
+		apiVersion,
+		"ThumbnailSet",
+		shardName(thumbs.manifest.Metadata.Name)+".yaml",
+	)
 	if err := writeYAMLFile(thumbs.manifestPath, thumbs.manifest); err != nil {
 		return nil, false, err
 	}
 	writtenPaths = append(writtenPaths, thumbs.manifestPath)
+
+	uploads := make([]pendingLFSUpload, 0, 1+len(thumbs.payloads))
+	originalUpload, err := i.prepareOriginalUpload(sourcePath, binaryPath, size)
+	if err != nil {
+		return nil, false, err
+	}
+	uploads = append(uploads, originalUpload)
+	for _, payload := range thumbs.payloads {
+		thumbBinaryPath := filepath.Join(repoPath, "binary", deviceSpace, apiVersion, "ThumbnailSet", shardName(payload.name))
+		thumbUpload, err := i.prepareBytesUpload(payload.jpeg, thumbBinaryPath)
+		if err != nil {
+			return nil, false, err
+		}
+		uploads = append(uploads, thumbUpload)
+	}
+	if err := i.uploadAndWritePointers(uploads); err != nil {
+		return nil, false, err
+	}
+	for _, upload := range uploads {
+		writtenPaths = append(writtenPaths, upload.pointerPath)
+	}
+
 	return &preparedImport{
 		sourceName:   filepath.Base(sourcePath),
 		writtenPaths: writtenPaths,
@@ -639,21 +795,36 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 	}, false, nil
 }
 
-type generatedThumbnails struct {
-	manifestPath string
-	binaryPaths  []string
-	manifest     ThumbnailSetManifest
+// pendingLFSUpload holds one encrypted object ready for batch upload and pointer write.
+type pendingLFSUpload struct {
+	pointerPath string
+	oid         string
+	size        int64
+	wrappedDEK  string
+	open        func() (io.ReadCloser, error)
 }
 
-// generateThumbnails creates all variants and returns their manifest data.
-func (i *importer) generateThumbnails(repoPath, deviceSpace, originalName, sourcePath, mediaType string, duration *float64, originalRef string, photoSrc image.Image) (generatedThumbnails, error) {
+type generatedThumbnails struct {
+	manifestPath string
+	manifest     ThumbnailSetManifest
+	payloads     []thumbnailPayload
+}
+
+type thumbnailPayload struct {
+	name string
+	jpeg []byte
+}
+
+// generateThumbnails creates all variants in memory so import never stages
+// plaintext thumbnails in the worktree or TMPDIR.
+func (i *importer) generateThumbnails(deviceSpace, originalName, sourcePath, mediaType string, duration *float64, originalRef string, photoSrc image.Image) (generatedThumbnails, error) {
 	specs := []thumbSpec{
 		{suffix: "150x150", size: 150, square: true, scaler: xdraw.ApproxBiLinear},
 		{suffix: "225x225", size: 225, square: true, scaler: xdraw.ApproxBiLinear},
 		{suffix: "1024", size: 1024, square: false, scaler: xdraw.CatmullRom},
 	}
 	out := generatedThumbnails{
-		binaryPaths: make([]string, 0, len(specs)),
+		payloads: make([]thumbnailPayload, 0, len(specs)),
 		manifest: ThumbnailSetManifest{
 			APIVersion: apiVersion,
 			Kind:       "ThumbnailSet",
@@ -668,58 +839,37 @@ func (i *importer) generateThumbnails(repoPath, deviceSpace, originalName, sourc
 			Status: map[string]any{},
 		},
 	}
-	out.manifestPath = filepath.Join(
-		repoPath,
-		"manifests",
-		deviceSpace,
-		apiVersion,
-		"ThumbnailSet",
-		shardName(out.manifest.Metadata.Name)+".yaml",
-	)
 	for _, s := range specs {
 		thumbName := fmt.Sprintf("%s-thumb-%s", originalName, s.suffix)
-		thumbBinaryPath := filepath.Join(repoPath, "binary", deviceSpace, apiVersion, "ThumbnailSet", shardName(thumbName))
-		if err := os.MkdirAll(filepath.Dir(thumbBinaryPath), 0o755); err != nil {
-			return generatedThumbnails{}, err
-		}
-		thumbW, thumbH := 0, 0
+		var jpegBytes []byte
+		var thumbW, thumbH int
+		var err error
 		if mediaType == "photo" {
-			w, h, err := scalePhotoThumbnail(photoSrc, thumbBinaryPath, s)
-			if err != nil {
-				return generatedThumbnails{}, err
-			}
-			thumbW, thumbH = w, h
+			jpegBytes, thumbW, thumbH, err = scalePhotoThumbnail(photoSrc, s)
 		} else {
-			if err := i.makeThumbnail(sourcePath, thumbBinaryPath, mediaType, duration, s); err != nil {
-				return generatedThumbnails{}, err
+			jpegBytes, err = i.makeThumbnailJPEG(sourcePath, mediaType, duration, s)
+			if err == nil {
+				thumbW, thumbH, err = jpegDimensions(jpegBytes)
 			}
 		}
-		sum, size, err := fileSHAAndSize(thumbBinaryPath)
 		if err != nil {
 			return generatedThumbnails{}, err
 		}
-		if mediaType == "video" {
-			thumbMeta, err := i.probeMedia(thumbBinaryPath, "video")
-			if err != nil {
-				return generatedThumbnails{}, err
-			}
-			thumbW = thumbMeta.width
-			thumbH = thumbMeta.height
-		}
-		out.binaryPaths = append(out.binaryPaths, thumbBinaryPath)
+		sum := sha256.Sum256(jpegBytes)
+		out.payloads = append(out.payloads, thumbnailPayload{name: thumbName, jpeg: jpegBytes})
 		out.manifest.Spec.Thumbnails = append(out.manifest.Spec.Thumbnails, ThumbnailEntry{
 			Name:     thumbName,
-			SHA256:   sum,
+			SHA256:   hex.EncodeToString(sum[:]),
 			Width:    thumbW,
 			Height:   thumbH,
-			Filesize: size,
+			Filesize: int64(len(jpegBytes)),
 		})
 	}
 	return out, nil
 }
 
-// makeThumbnail renders one thumbnail variant as JPEG.
-func (i *importer) makeThumbnail(inputPath, outputPath, mediaType string, duration *float64, spec thumbSpec) error {
+// makeThumbnailJPEG renders one thumbnail variant to JPEG bytes via ffmpeg stdout.
+func (i *importer) makeThumbnailJPEG(inputPath, mediaType string, duration *float64, spec thumbSpec) ([]byte, error) {
 	filter := ""
 	if spec.square {
 		filter = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d", spec.size, spec.size, spec.size, spec.size)
@@ -735,22 +885,26 @@ func (i *importer) makeThumbnail(inputPath, outputPath, mediaType string, durati
 		}
 		args = append(args, "-ss", seek)
 	}
-	tmpPath := outputPath + ".jpg"
 	args = append(args, "-vf", filter, "-frames:v", "1", "-q:v", "2")
 	if mediaType == "video" {
 		args = append(args, "-pix_fmt", "yuvj420p")
 	}
-	args = append(args, tmpPath)
-	if _, err := i.runCmd("", "ffmpeg", args...); err != nil {
-		return err
+	args = append(args, "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1")
+	out, err := i.runCmd("", "ffmpeg", args...)
+	if err != nil {
+		return nil, err
 	}
-	return os.Rename(tmpPath, outputPath)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("ffmpeg produced empty thumbnail")
+	}
+	return out, nil
 }
 
-func scalePhotoThumbnail(src image.Image, outputPath string, spec thumbSpec) (int, int, error) {
+// scalePhotoThumbnail encodes one photo thumbnail into memory.
+func scalePhotoThumbnail(src image.Image, spec thumbSpec) ([]byte, int, int, error) {
 	srcBounds := src.Bounds()
 	if srcBounds.Dx() == 0 || srcBounds.Dy() == 0 {
-		return 0, 0, fmt.Errorf("invalid image dimensions")
+		return nil, 0, 0, fmt.Errorf("invalid image dimensions")
 	}
 
 	scaleSrc := src
@@ -778,19 +932,153 @@ func scalePhotoThumbnail(src image.Image, outputPath string, spec thumbSpec) (in
 	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	spec.scaler.Scale(dst, dst.Bounds(), scaleSrc, scaleSrc.Bounds(), xdraw.Over, nil)
 
-	out, err := os.Create(outputPath)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, 0, 0, err
+	}
+	return buf.Bytes(), dstW, dstH, nil
+}
+
+// jpegDimensions reads width/height from in-memory JPEG bytes without a second ffprobe.
+func jpegDimensions(jpegBytes []byte) (int, int, error) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(jpegBytes))
 	if err != nil {
 		return 0, 0, err
 	}
-	defer out.Close()
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return 0, 0, fmt.Errorf("invalid thumbnail dimensions")
+	}
+	return cfg.Width, cfg.Height, nil
+}
 
-	if err := jpeg.Encode(out, dst, &jpeg.Options{Quality: 85}); err != nil {
-		return 0, 0, err
+// prepareOriginalUpload encrypts the source once to learn the oid, then re-encrypts
+// on open for the upload body so large videos never sit fully in RAM.
+func (i *importer) prepareOriginalUpload(sourcePath, pointerPath string, plaintextSize int64) (pendingLFSUpload, error) {
+	dek, err := gitcrypt.NewDEK()
+	if err != nil {
+		return pendingLFSUpload{}, err
 	}
-	if err := out.Close(); err != nil {
-		return 0, 0, err
+	wrappedDEK, err := gitcrypt.WrapDEK(i.kek, dek, i.kekEpoch)
+	if err != nil {
+		return pendingLFSUpload{}, err
 	}
-	return dstW, dstH, nil
+	oid, size, err := hashEncryptedFile(sourcePath, plaintextSize, dek)
+	if err != nil {
+		return pendingLFSUpload{}, err
+	}
+	return pendingLFSUpload{
+		pointerPath: pointerPath,
+		oid:         oid,
+		size:        size,
+		wrappedDEK:  wrappedDEK,
+		open: func() (io.ReadCloser, error) {
+			f, err := os.Open(sourcePath)
+			if err != nil {
+				return nil, err
+			}
+			reader, err := gitcrypt.NewChunkedEncryptReader(f, plaintextSize, dek)
+			if err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			return &encryptReadCloser{Reader: reader, closer: f}, nil
+		},
+	}, nil
+}
+
+// prepareBytesUpload encrypts small in-memory payloads once and reuses the
+// ciphertext for both hashing and upload.
+func (i *importer) prepareBytesUpload(plaintext []byte, pointerPath string) (pendingLFSUpload, error) {
+	dek, err := gitcrypt.NewDEK()
+	if err != nil {
+		return pendingLFSUpload{}, err
+	}
+	wrappedDEK, err := gitcrypt.WrapDEK(i.kek, dek, i.kekEpoch)
+	if err != nil {
+		return pendingLFSUpload{}, err
+	}
+	ciphertext, err := gitcrypt.EncryptChunked(plaintext, dek)
+	if err != nil {
+		return pendingLFSUpload{}, err
+	}
+	sum := sha256.Sum256(ciphertext)
+	return pendingLFSUpload{
+		pointerPath: pointerPath,
+		oid:         hex.EncodeToString(sum[:]),
+		size:        int64(len(ciphertext)),
+		wrappedDEK:  wrappedDEK,
+		open: func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(ciphertext)), nil
+		},
+	}, nil
+}
+
+// uploadAndWritePointers pushes ciphertext first so lfs-prereceive always finds
+// objects, then writes pointer files into the worktree for the upcoming commit.
+func (i *importer) uploadAndWritePointers(uploads []pendingLFSUpload) error {
+	if i.uploadObjects == nil {
+		return fmt.Errorf("LFS uploader is not configured")
+	}
+	objects := make([]lfsclient.Object, len(uploads))
+	byOID := make(map[string]pendingLFSUpload, len(uploads))
+	for idx, upload := range uploads {
+		objects[idx] = lfsclient.Object{OID: upload.oid, Size: upload.size}
+		byOID[upload.oid] = upload
+	}
+	open := func(object lfsclient.Object) (io.ReadCloser, error) {
+		upload, ok := byOID[object.OID]
+		if !ok {
+			return nil, fmt.Errorf("unknown LFS object %s", object.OID)
+		}
+		return upload.open()
+	}
+	if err := i.uploadObjects(context.Background(), objects, open); err != nil {
+		return fmt.Errorf("upload LFS objects: %w", err)
+	}
+	for _, upload := range uploads {
+		pointer := gitcrypt.BuildLFSPointer(upload.oid, upload.size)
+		withHeaders, err := gitcrypt.AppendReplycantHeaders(pointer, i.kekEpoch, upload.wrappedDEK)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(upload.pointerPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(upload.pointerPath, withHeaders, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hashEncryptedFile streams ciphertext through SHA-256 without retaining it.
+func hashEncryptedFile(path string, plaintextSize int64, dek []byte) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	reader, err := gitcrypt.NewChunkedEncryptReader(f, plaintextSize, dek)
+	if err != nil {
+		return "", 0, err
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, reader)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// encryptReadCloser closes the underlying plaintext file when the encrypting
+// upload body is finished or abandoned.
+type encryptReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *encryptReadCloser) Close() error {
+	return r.closer.Close()
 }
 
 func cropImage(src image.Image, r image.Rectangle) *image.NRGBA {
@@ -1124,29 +1412,6 @@ func writeYAMLFile(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, b, 0o644)
-}
-
-// copyFile writes one file payload into destination path with parent creation.
-func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
 }
 
 // parseDuration accepts ffprobe decimal durations and converts to seconds.

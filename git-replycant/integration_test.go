@@ -971,6 +971,32 @@ func readFakeLFSObject(storeDir string, oid string) ([]byte, bool) {
 	return body, true
 }
 
+// fakeLFSBatch types are local JSON shapes for the integration fake LFS server.
+type fakeLFSObject struct {
+	OID  string `json:"oid"`
+	Size int64  `json:"size"`
+}
+
+type fakeLFSBatchRequest struct {
+	Operation string          `json:"operation"`
+	Objects   []fakeLFSObject `json:"objects"`
+}
+
+type fakeLFSBatchAction struct {
+	Href string `json:"href"`
+}
+
+type fakeLFSBatchObject struct {
+	OID     string                        `json:"oid"`
+	Size    int64                         `json:"size"`
+	Actions map[string]fakeLFSBatchAction `json:"actions,omitempty"`
+}
+
+type fakeLFSBatchResponse struct {
+	Transfer string               `json:"transfer"`
+	Objects  []fakeLFSBatchObject `json:"objects"`
+}
+
 // startFakeLFSBatchServer provides upload/verify endpoints compatible with basic Git LFS batch flows.
 func startFakeLFSBatchServer(t *testing.T, storeDir string) *httptest.Server {
 	t.Helper()
@@ -978,25 +1004,25 @@ func startFakeLFSBatchServer(t *testing.T, storeDir string) *httptest.Server {
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/objects/batch":
-			var batchReq lfsBatchRequest
+			var batchReq fakeLFSBatchRequest
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&batchReq))
 			require.Equal(t, "upload", batchReq.Operation)
-			response := lfsBatchResponse{
+			response := fakeLFSBatchResponse{
 				Transfer: "basic",
-				Objects:  make([]lfsBatchObject, 0, len(batchReq.Objects)),
+				Objects:  make([]fakeLFSBatchObject, 0, len(batchReq.Objects)),
 			}
 			for _, object := range batchReq.Objects {
 				if _, exists := readFakeLFSObject(storeDir, object.OID); exists {
-					response.Objects = append(response.Objects, lfsBatchObject{
+					response.Objects = append(response.Objects, fakeLFSBatchObject{
 						OID:  object.OID,
 						Size: object.Size,
 					})
 					continue
 				}
-				response.Objects = append(response.Objects, lfsBatchObject{
+				response.Objects = append(response.Objects, fakeLFSBatchObject{
 					OID:  object.OID,
 					Size: object.Size,
-					Actions: map[string]lfsBatchAction{
+					Actions: map[string]fakeLFSBatchAction{
 						"upload": {Href: server.URL + "/upload/" + object.OID},
 						"verify": {Href: server.URL + "/verify/" + object.OID},
 					},
@@ -1011,7 +1037,7 @@ func startFakeLFSBatchServer(t *testing.T, storeDir string) *httptest.Server {
 			writeFakeLFSObject(t, storeDir, oid, body)
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/verify/"):
-			var verifyReq lfsUploadObject
+			var verifyReq fakeLFSObject
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&verifyReq))
 			body, exists := readFakeLFSObject(storeDir, verifyReq.OID)
 			if !exists {

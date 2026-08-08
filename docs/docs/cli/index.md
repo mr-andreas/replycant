@@ -15,4 +15,5 @@ NSS-based mDNS resolution is not available.
 ## Tutorials
 
 - [Cloning Repositories](./cloning.md)
+- [Importing Media](./importing.md)
 - [Pushing an LFS Repository to a Backup Remote](./pushing-lfs.md)

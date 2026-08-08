@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"image"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -19,6 +21,8 @@ import (
 
 	"github.com/bep/imagemeta"
 	"github.com/google/uuid"
+	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/lfsclient"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1072,6 +1076,22 @@ func newTestImporter(t *testing.T, hook func(name string, args []string)) (*impo
 		newUUID:              func() string { return strings.ToLower(uuid.NewString()) },
 		now:                  time.Now,
 		extractPhotoMetadata: extractImageMetadata,
+		// Fake uploader accepts every object so unit tests cover import/commit
+		// flow without standing up a live LFS endpoint.
+		uploadObjects: func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error {
+			for _, object := range objects {
+				reader, err := open(object)
+				if err != nil {
+					return err
+				}
+				_, err = io.Copy(io.Discard, reader)
+				_ = reader.Close()
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
 	return imp, &stderr, &pushCalls, cmds
 }
@@ -1101,16 +1121,53 @@ func advanceRemoteWithForeignCommit(t *testing.T, remote string) string {
 	return sha
 }
 
-// initTempRepo creates a git repository with one initial commit for commit counting.
+// initTempRepo creates a --no-lfs-style replycant worktree with encryption and mTLS config.
 func initTempRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
 	mustRun(t, repo, "git", "init")
 	mustRun(t, repo, "git", "checkout", "-b", "main")
+	local, _, err := gitcrypt.EnsureLocalIdentity(repo, "importer-test-device")
+	if err != nil {
+		t.Fatalf("ensure identity: %v", err)
+	}
+	recipientPub, err := gitcrypt.DecodeAgePublicKey(local.Identity.AgePublicKey)
+	if err != nil {
+		t.Fatalf("decode age pubkey: %v", err)
+	}
+	kek := make([]byte, 32)
+	if _, err := rand.Read(kek); err != nil {
+		t.Fatalf("generate kek: %v", err)
+	}
+	envelope, err := gitcrypt.WrapKEKForAge(kek, recipientPub)
+	if err != nil {
+		t.Fatalf("wrap kek: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "encryption", "epochs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "encryption", "current"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "encryption", "epochs", "1.age"), envelope, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caPath := filepath.Join(local.ConfigDirectory, "ca.pem")
+	certPEM, err := os.ReadFile(local.ClientCertPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caPath, certPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, repo, "git", "config", "--local", "http.sslCAInfo", caPath)
+	mustRun(t, repo, "git", "config", "--local", "http.sslCert", local.ClientCertPath)
+	mustRun(t, repo, "git", "config", "--local", "http.sslKey", local.ClientKeyPath)
+	mustRun(t, repo, "git", "remote", "add", "origin", "https://example.com/repo.git")
 	if err := os.WriteFile(filepath.Join(repo, ".gitkeep"), []byte("init"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	mustRun(t, repo, "git", "add", ".gitkeep")
+	mustRun(t, repo, "git", "add", ".")
 	mustRun(t, repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init")
 	return repo
 }
@@ -1121,7 +1178,7 @@ func initTempRepoWithRemote(t *testing.T) string {
 	repo := initTempRepo(t)
 	remote := t.TempDir()
 	mustRun(t, remote, "git", "init", "--bare")
-	mustRun(t, repo, "git", "remote", "add", "origin", remote)
+	mustRun(t, repo, "git", "remote", "set-url", "origin", remote)
 	mustRun(t, repo, "git", "push", "-u", "origin", "main")
 	return repo
 }
