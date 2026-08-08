@@ -61,7 +61,12 @@ final class PhotoSyncManager: ObservableObject {
     private let uploadedMediaCache: UploadedMediaCaching
     private var idleTimer: IdleTimerControlling
     var syncTask: Task<Void, Never>?
-    private var manifestManager: ManifestManager?
+    // Preserves caller-injected test doubles so global invalidation broadcasts
+    // cannot swap tests onto production networking paths mid-sync.
+    private let injectedManifestManager: ManifestManager?
+    // Caches lazily constructed production dependencies until config changes or
+    // database replacement broadcasts require a fresh instance.
+    private var cachedManifestManager: ManifestManager?
     private var syncGeneration: UInt64 = 0
     // Observes LFS endpoint changes so subsequent syncs rebuild clients with the updated server URL.
     private var lfsURLObserver: AnyCancellable?
@@ -76,7 +81,7 @@ final class PhotoSyncManager: ObservableObject {
         idleTimer: IdleTimerControlling = UIApplicationIdleTimerController()
     ) {
         self.photoLibrary = photoLibraryProvider
-        self.manifestManager = manifestManager
+        self.injectedManifestManager = manifestManager
         self.uploadedMediaCache = uploadedMediaCache
         self.idleTimer = idleTimer
         observeLFSURLChanges()
@@ -85,7 +90,10 @@ final class PhotoSyncManager: ObservableObject {
 
     // Recreates manifest dependencies lazily, letting each sync run pick up the latest configured LFS endpoint.
     func getManifestManager() throws -> ManifestManager {
-        if let manifestManager = manifestManager {
+        if let manifestManager = injectedManifestManager {
+            return manifestManager
+        }
+        if let manifestManager = cachedManifestManager {
             return manifestManager
         }
         
@@ -115,9 +123,15 @@ final class PhotoSyncManager: ObservableObject {
         let deviceSpace = DeviceIdentifierManager.shared.deviceSpaceIdentifier
         let database = try ManifestLoaderManager.shared.getDatabase()
         let registry = ManifestLoaderManager.shared.getRegistry()
-        self.manifestManager = DefaultManifestManager(repository: repository, deviceSpace: deviceSpace, lfsClient: lfsClient, database: database, registry: registry)
+        self.cachedManifestManager = DefaultManifestManager(
+            repository: repository,
+            deviceSpace: deviceSpace,
+            lfsClient: lfsClient,
+            database: database,
+            registry: registry
+        )
         
-        return self.manifestManager!
+        return self.cachedManifestManager!
     }
 
     // Subscribes to LFS URL changes so stale upload/download dependencies are dropped after repository settings updates.
@@ -131,7 +145,7 @@ final class PhotoSyncManager: ObservableObject {
 
     // Discards cached manifest state so the next sync uses a freshly constructed GitLFS client.
     private func handleLFSURLDidChange() {
-        manifestManager = nil
+        cachedManifestManager = nil
     }
 
     // Drops the cached manifest manager when the shared database is replaced,
@@ -142,7 +156,7 @@ final class PhotoSyncManager: ObservableObject {
             .publisher(for: ManifestLoaderManager.databaseDidInvalidateNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.manifestManager = nil
+                self?.cachedManifestManager = nil
             }
     }
     
@@ -190,7 +204,8 @@ final class PhotoSyncManager: ObservableObject {
     func cancelSync() {
         log("Cancelling sync...", context: "PhotoSync")
         syncGeneration += 1
-        manifestManager?.cancelActiveLFSUpload()
+        injectedManifestManager?.cancelActiveLFSUpload()
+        cachedManifestManager?.cancelActiveLFSUpload()
         syncTask?.cancel()
         syncTask = nil
         setSyncState(.idle)

@@ -618,6 +618,54 @@ struct PhotoSyncManagerTests {
         // Verify manifest database sync was requested before upload dedup checks.
         #expect(mockManifest.syncToHeadCalls == 1)
     }
+
+    // Ensures notification-driven dependency invalidation never replaces an
+    // explicitly injected manifest manager used by unit tests.
+    @Test("Injected manifest survives dependency invalidation notifications")
+    func testInjectedManifestSurvivesInvalidationNotifications() async throws {
+        let repoPath = try setupDocumentsRepo()
+        defer { cleanupTestEnvironment(at: repoPath) }
+
+        UserDefaults.standard.set("http://localhost:8080/lfs", forKey: "gitServerURL")
+
+        let asset = createTestAsset(id: "IMG_NOTIFY_001", filename: "notify.jpg", mediaType: .image, creationDate: Date())
+        let mockLibrary = createMockLibrary(assets: [asset])
+        let mockManifest = MockManifestManager()
+
+        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let beforeInvalidationManager = try syncManager.getManifestManager()
+
+        NotificationCenter.default.post(
+            name: ManifestLoaderManager.databaseDidInvalidateNotification,
+            object: nil
+        )
+        NotificationCenter.default.post(
+            name: ServerConfigurationManager.lfsURLDidChangeNotification,
+            object: nil
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let afterInvalidationManager = try syncManager.getManifestManager()
+        #expect(
+            ObjectIdentifier(beforeInvalidationManager as AnyObject) ==
+                ObjectIdentifier(afterInvalidationManager as AnyObject)
+        )
+
+        await syncManager.startSync()
+        await syncManager.syncTask?.value
+
+        #expect(syncManager.isSyncing == false)
+
+        if case .completed(let total) = syncManager.syncState {
+            #expect(total == 1)
+        } else {
+            Issue.record("Expected completed state with total 1")
+        }
+
+        #expect(mockManifest.addLFSFileEncryptingCalls.count == 1)
+        #expect(mockManifest.addLFSDataCalls.count == 3)
+        try #require(mockManifest.createCommitCalls.count == 1)
+    }
     
     @Test("Single video sync")
     func testSingleVideoSync() async throws {
