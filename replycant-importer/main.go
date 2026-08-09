@@ -267,6 +267,9 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 	if err := i.ensureNoFullLFSClone(workCtx, repoAbs); err != nil {
 		return err
 	}
+	if err := i.ensureCleanWorktree(workCtx, repoAbs); err != nil {
+		return err
+	}
 	if err := i.setupCryptoAndUploader(workCtx, repoAbs); err != nil {
 		return err
 	}
@@ -511,6 +514,42 @@ func (i *importer) ensureGitRepo(ctx context.Context, repoPath string) error {
 		return fmt.Errorf("repo path is not a git worktree")
 	}
 	return nil
+}
+
+// ensureCleanWorktree refuses to start (or rebase) when tracked files diverge
+// from the index. A staged-but-deleted worktree permanently blocks rebase with
+// an opaque git error; naming the paths and the recovery command is actionable.
+func (i *importer) ensureCleanWorktree(ctx context.Context, repoPath string) error {
+	out, err := i.runCmd(ctx, repoPath, "git", "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return fmt.Errorf("check worktree cleanliness: %w", err)
+	}
+	lines := make([]string, 0)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	const maxShow = 10
+	shown := lines
+	if len(shown) > maxShow {
+		shown = shown[:maxShow]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "repository worktree is dirty (%d tracked path(s) differ from the index):\n", len(lines))
+	for _, line := range shown {
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
+	if len(lines) > maxShow {
+		fmt.Fprintf(&b, "  ... and %d more\n", len(lines)-maxShow)
+	}
+	fmt.Fprintf(&b, "restore tracked files with: git -C %s checkout -- .", repoPath)
+	return errors.New(b.String())
 }
 
 // ensureNoFullLFSClone rejects filter-driven clones so the importer can write
@@ -1391,6 +1430,8 @@ func (i *importer) probeMedia(ctx context.Context, path string, mediaType string
 }
 
 // gitCommit stores one atomic import commit for a batch of prepared files.
+// On commit failure it unstages the batch so the caller's worktree cleanup
+// cannot leave staged-but-deleted index entries that permanently block rebase.
 func (i *importer) gitCommit(ctx context.Context, repoPath string, batch []*preparedImport) error {
 	if len(batch) == 0 {
 		return nil
@@ -1400,6 +1441,7 @@ func (i *importer) gitCommit(ctx context.Context, repoPath string, batch []*prep
 
 	addArgs := []string{"add"}
 	seen := map[string]struct{}{}
+	var relPaths []string
 	var sourceNames []string
 	for _, prepared := range batch {
 		sourceNames = append(sourceNames, prepared.sourceName)
@@ -1413,6 +1455,7 @@ func (i *importer) gitCommit(ctx context.Context, repoPath string, batch []*prep
 				continue
 			}
 			seen[rel] = struct{}{}
+			relPaths = append(relPaths, rel)
 			addArgs = append(addArgs, rel)
 		}
 	}
@@ -1429,9 +1472,27 @@ func (i *importer) gitCommit(ctx context.Context, repoPath string, batch []*prep
 		"commit", "-m", msg, "--author", "Replycant Importer <importer@replycant.com>",
 	}
 	if _, err := i.runCmd(ctx, repoPath, "git", commitArgs...); err != nil {
-		return fmt.Errorf("git commit failed: %w", err)
+		return i.recoverFailedCommit(repoPath, relPaths, err)
 	}
 	return nil
+}
+
+// recoverFailedCommit unstages the batch after a commit error. If the commit
+// actually landed (killed after the ref update), treat it as success so the
+// caller does not delete committed files from the worktree.
+func (i *importer) recoverFailedCommit(repoPath string, relPaths []string, commitErr error) error {
+	bg := context.Background()
+	resetArgs := append([]string{"reset", "-q", "--"}, relPaths...)
+	if _, resetErr := i.runCmd(bg, repoPath, "git", resetArgs...); resetErr != nil {
+		return fmt.Errorf("git commit failed: %w (also failed to unstage: %v)", commitErr, resetErr)
+	}
+	if len(relPaths) == 0 {
+		return fmt.Errorf("git commit failed: %w", commitErr)
+	}
+	if _, err := i.runCmd(bg, repoPath, "git", "cat-file", "-e", "HEAD:"+relPaths[0]); err == nil {
+		return nil
+	}
+	return fmt.Errorf("git commit failed: %w", commitErr)
 }
 
 // pushLoop periodically runs git push based on successful commit notifications.
@@ -1523,6 +1584,11 @@ func (i *importer) pushWithRebase(ctx context.Context, repoPath string) error {
 		// not a non-fast-forward rejection — skip rebase and surface the push error.
 		if _, fetchErr := i.runCmd(ctx, repoPath, "git", "fetch", "origin"); fetchErr != nil {
 			return lastPushErr
+		}
+		// Surface dirty-worktree paths before rebase so the failure is actionable
+		// instead of git's opaque "cannot rebase: You have unstaged changes".
+		if err := i.ensureCleanWorktree(ctx, repoPath); err != nil {
+			return err
 		}
 		rebaseArgs := []string{
 			"-c", "user.name=Replycant Importer",
@@ -1841,8 +1907,10 @@ func defaultRunCmd(ctx context.Context, dir string, name string, args ...string)
 	return runCmdTee(nil, ctx, dir, name, args...)
 }
 
-// runCmdTee executes one command under ctx so Ctrl+C kills children. Child
-// stderr is mirrored to tee when set so long-running work can report progress.
+// runCmdTee executes one command under ctx so cancellation kills children.
+// Children run in their own process group so a terminal Ctrl+C delivered to the
+// importer's foreground group cannot kill an in-flight git commit that still
+// belongs to the flush stage. Child stderr is mirrored to tee when set.
 func runCmdTee(tee io.Writer, ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
@@ -1850,6 +1918,14 @@ func runCmdTee(tee io.Writer, ctx context.Context, dir string, name string, args
 	}
 	// Bound Wait after Kill so a grandchild holding stdout cannot stall exit.
 	cmd.WaitDelay = 2 * time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative pid kills the whole process group started above.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

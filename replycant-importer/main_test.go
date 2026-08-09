@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1620,6 +1621,196 @@ func TestRebaseUsesMergeBackendAndNoAutostash(t *testing.T) {
 		if !sliceContains(args, "--no-autostash") {
 			t.Fatalf("expected --no-autostash in %v", args)
 		}
+	}
+}
+
+// TestCommitFailureUnstagesBatch verifies that a failed git commit after a
+// successful git add cannot leave staged-but-deleted index entries. That is the
+// poison that permanently blocks rebase with "You have unstaged changes".
+func TestCommitFailureUnstagesBatch(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "a.jpg"), "red")
+
+	imp, _, _, _ := newTestImporter(t, nil)
+	baseRun := imp.runCmd
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+		if name == "git" && gitSubcommand(args) == "commit" {
+			return nil, fmt.Errorf("injected commit failure")
+		}
+		return baseRun(ctx, dir, name, args...)
+	}
+
+	err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+	})
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	deleted := strings.TrimSpace(mustRun(t, repo, "git", "ls-files", "-d"))
+	if deleted != "" {
+		t.Fatalf("expected no staged-but-deleted paths after commit failure, got %q", deleted)
+	}
+	diffFiles := strings.TrimSpace(mustRun(t, repo, "git", "diff-files", "--name-only"))
+	if diffFiles != "" {
+		t.Fatalf("expected clean worktree after commit failure, got %q", diffFiles)
+	}
+	staged := strings.TrimSpace(mustRun(t, repo, "git", "diff", "--cached", "--name-only"))
+	if staged != "" {
+		t.Fatalf("expected empty index after commit failure, got %q", staged)
+	}
+}
+
+// TestCommitFailureDoesNotBlockLaterRebase verifies recovery from an injected
+// commit failure still leaves the repo rebaseable when the remote advances.
+func TestCommitFailureDoesNotBlockLaterRebase(t *testing.T) {
+	repo := initTempRepoWithRemote(t)
+	srcDir := t.TempDir()
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "a.jpg"), "red")
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "b.jpg"), "blue")
+
+	imp, _, _, cmds := newTestImporter(t, nil)
+	baseRun := imp.runCmd
+	var commitAttempts int32
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+		if name == "git" && gitSubcommand(args) == "commit" {
+			if atomic.AddInt32(&commitAttempts, 1) == 1 {
+				return nil, fmt.Errorf("injected commit failure")
+			}
+		}
+		return baseRun(ctx, dir, name, args...)
+	}
+
+	if err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+		PushEvery:   1,
+		Workers:     1,
+	}); err != nil {
+		t.Fatalf("first run failed: %v", err)
+	}
+
+	_ = advanceRemoteWithForeignCommit(t, remoteURL(t, repo))
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "c.jpg"), "green")
+	if err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+		PushEvery:   1,
+		Workers:     1,
+	}); err != nil {
+		t.Fatalf("second run failed: %v", err)
+	}
+	if !cmds.containsSubcmd("rebase") {
+		t.Fatalf("expected rebase after remote advance, cmds=%v", cmds.snapshot())
+	}
+	local := strings.TrimSpace(mustRun(t, repo, "git", "rev-parse", "HEAD"))
+	remote := strings.TrimSpace(mustRun(t, repo, "git", "ls-remote", "origin", "refs/heads/main"))
+	remoteSHA := strings.Fields(remote)[0]
+	if local != remoteSHA {
+		t.Fatalf("expected local HEAD %s to match remote %s", local, remoteSHA)
+	}
+}
+
+// TestBootRefusesDirtyWorktree ensures import refuses to start when tracked
+// files are missing from the worktree, naming the path and the recovery command.
+func TestBootRefusesDirtyWorktree(t *testing.T) {
+	repo := initTempRepo(t)
+	tracked := filepath.Join(repo, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, repo, "git", "add", "tracked.txt")
+	mustRun(t, repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "track")
+	if err := os.Remove(tracked); err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := t.TempDir()
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "a.jpg"), "red")
+	imp, _, _, _ := newTestImporter(t, nil)
+	err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+	})
+	if err == nil {
+		t.Fatal("expected boot to refuse a dirty worktree")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "tracked.txt") {
+		t.Fatalf("expected dirty path in error, got %q", msg)
+	}
+	if !strings.Contains(msg, "git -C") || !strings.Contains(msg, "checkout -- .") {
+		t.Fatalf("expected recovery command in error, got %q", msg)
+	}
+	if commitCount(t, repo) != 2 { // init + track
+		t.Fatalf("expected no import commits on dirty boot, got %d", commitCount(t, repo))
+	}
+}
+
+// TestPushWithRebaseRefusesDirtyWorktree ensures a dirty worktree surfaces
+// actionable paths instead of git's opaque "cannot rebase" message, and never
+// invokes rebase.
+func TestPushWithRebaseRefusesDirtyWorktree(t *testing.T) {
+	repo := initTempRepoWithRemote(t)
+	tracked := filepath.Join(repo, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, repo, "git", "add", "tracked.txt")
+	mustRun(t, repo, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "track")
+	mustRun(t, repo, "git", "push")
+	if err := os.Remove(tracked); err != nil {
+		t.Fatal(err)
+	}
+	_ = advanceRemoteWithForeignCommit(t, remoteURL(t, repo))
+
+	imp, _, _, cmds := newTestImporter(t, nil)
+	err := imp.pushWithRebase(context.Background(), repo)
+	if err == nil {
+		t.Fatal("expected pushWithRebase to fail on dirty worktree")
+	}
+	if !strings.Contains(err.Error(), "tracked.txt") {
+		t.Fatalf("expected dirty path in error, got %q", err)
+	}
+	if cmds.containsSubcmd("rebase") {
+		t.Fatalf("expected no rebase on dirty worktree, cmds=%v", cmds.snapshot())
+	}
+}
+
+// TestRunCmdTeeUsesOwnProcessGroup pins that children are started in a new
+// process group so a terminal Ctrl+C delivered to the importer's group cannot
+// kill an in-flight git commit that still belongs to the flush stage.
+func TestRunCmdTeeUsesOwnProcessGroup(t *testing.T) {
+	// Inspect the shell itself ($$), not a grandchild: Setpgid applies to the
+	// process runCmdTee starts. /proc/$$/stat fields: pid (1) and pgid (5).
+	out, err := runCmdTee(nil, context.Background(), "", "sh", "-c",
+		`awk '{print $1, $5}' /proc/$$/stat`)
+	if err != nil {
+		t.Fatalf("runCmdTee failed: %v", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 {
+		t.Fatalf("expected pid pgid, got %q", out)
+	}
+	if fields[0] != fields[1] {
+		t.Fatalf("expected child in own process group (pid==pgid), got pid=%s pgid=%s", fields[0], fields[1])
+	}
+	parentPGID, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatalf("Getpgid: %v", err)
+	}
+	childPGID, err := strconv.Atoi(fields[1])
+	if err != nil {
+		t.Fatalf("parse pgid: %v", err)
+	}
+	if childPGID == parentPGID {
+		t.Fatalf("expected child pgid %d to differ from parent pgid %d", childPGID, parentPGID)
 	}
 }
 
