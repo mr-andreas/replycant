@@ -577,44 +577,197 @@ func TestNormalizePhotoOrientation(t *testing.T) {
 	}
 }
 
-// TestStreamSourceFilesProgressLabel verifies listing reports (calculating) until
-// the walk finishes, then exposes the concrete total for progress lines.
+// TestSourceQueueFIFO verifies push/pop preserve discovery order.
+func TestSourceQueueFIFO(t *testing.T) {
+	q := newSourceQueue()
+	q.push(sourceFile{index: 0, path: "a.jpg"})
+	q.push(sourceFile{index: 1, path: "b.jpg"})
+	q.close()
+
+	first, ok := q.pop()
+	if !ok || first.path != "a.jpg" {
+		t.Fatalf("expected a.jpg, got %+v ok=%v", first, ok)
+	}
+	second, ok := q.pop()
+	if !ok || second.path != "b.jpg" {
+		t.Fatalf("expected b.jpg, got %+v ok=%v", second, ok)
+	}
+	if _, ok := q.pop(); ok {
+		t.Fatal("expected empty closed queue to return ok=false")
+	}
+}
+
+// TestSourceQueuePopBlocksUntilPush verifies pop waits for work instead of
+// spinning or returning early while the scanner is still running.
+func TestSourceQueuePopBlocksUntilPush(t *testing.T) {
+	q := newSourceQueue()
+	done := make(chan sourceFile, 1)
+	go func() {
+		job, ok := q.pop()
+		if !ok {
+			t.Error("expected pop to receive a job")
+			return
+		}
+		done <- job
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("pop returned before push")
+	case <-time.After(50 * time.Millisecond):
+	}
+	q.push(sourceFile{index: 0, path: "a.jpg"})
+	select {
+	case job := <-done:
+		if job.path != "a.jpg" {
+			t.Fatalf("unexpected job: %+v", job)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for blocked pop")
+	}
+}
+
+// TestSourceQueueCloseWakesBlockedPop verifies close unblocks workers waiting
+// for work so shutdown does not hang after the scanner finishes.
+func TestSourceQueueCloseWakesBlockedPop(t *testing.T) {
+	q := newSourceQueue()
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := q.pop()
+		done <- ok
+	}()
+	time.Sleep(20 * time.Millisecond)
+	q.close()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("expected closed empty queue to return ok=false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for close to wake pop")
+	}
+}
+
+// TestSourceQueueCloseDrainsQueuedItems verifies close does not drop items
+// already discovered before the scanner finished.
+func TestSourceQueueCloseDrainsQueuedItems(t *testing.T) {
+	q := newSourceQueue()
+	q.push(sourceFile{index: 0, path: "a.jpg"})
+	q.close()
+	job, ok := q.pop()
+	if !ok || job.path != "a.jpg" {
+		t.Fatalf("expected queued item after close, got %+v ok=%v", job, ok)
+	}
+	if _, ok := q.pop(); ok {
+		t.Fatal("expected drained closed queue to return ok=false")
+	}
+}
+
+// TestStreamSourceFilesNoConsumerCompletes verifies the scan finishes even when
+// nothing drains the queue, so large libraries are not stuck in (calculating).
+func TestStreamSourceFilesNoConsumerCompletes(t *testing.T) {
+	srcDir := t.TempDir()
+	const n = 2000
+	for i := 0; i < n; i++ {
+		// Empty files are enough: the walker only checks extensions.
+		if err := os.WriteFile(filepath.Join(srcDir, fmt.Sprintf("%04d.jpg", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	q := newSourceQueue()
+	progress := &progressTotal{}
+	done := make(chan error, 1)
+	go func() {
+		done <- streamSourceFiles(context.Background(), srcDir, q, progress)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("streamSourceFiles failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("scan blocked behind consumers; expected unbounded queue to finish")
+	}
+	if !progress.done.Load() {
+		t.Fatal("expected progress to be marked done")
+	}
+	if got := progress.found.Load(); got != n {
+		t.Fatalf("expected found=%d, got %d", n, got)
+	}
+	if got := progress.label(); got != strconv.Itoa(n) {
+		t.Fatalf("expected concrete total %q, got %q", strconv.Itoa(n), got)
+	}
+}
+
+// TestStreamSourceFilesProgressLabel verifies listing reports a running found
+// count until the walk finishes, then exposes the concrete total.
 func TestStreamSourceFilesProgressLabel(t *testing.T) {
 	srcDir := t.TempDir()
 	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
 	writeTinyJPEG(t, filepath.Join(srcDir, "b.jpg"))
 	writeTinyJPEG(t, filepath.Join(srcDir, "c.jpg"))
 
-	out := make(chan sourceFile)
+	q := newSourceQueue()
 	progress := &progressTotal{}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- streamSourceFiles(context.Background(), srcDir, out, progress)
+		errCh <- streamSourceFiles(context.Background(), srcDir, q, progress)
 	}()
 
-	first, ok := <-out
-	if !ok {
-		t.Fatal("expected at least one source file")
+	// Wait until at least one file is discovered without draining everything.
+	deadline := time.Now().Add(time.Second)
+	for progress.found.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for first discovery")
+		}
+		time.Sleep(time.Millisecond)
 	}
-	if first.index != 0 {
-		t.Fatalf("expected first index 0, got %d", first.index)
-	}
-	if got := progress.label(); got != "(calculating)" {
-		t.Fatalf("expected (calculating) after first file, got %q", got)
+	if got := progress.label(); got != "(calculating, 1 found)" &&
+		got != "(calculating, 2 found)" &&
+		got != "(calculating, 3 found)" {
+		// Scan may finish before we sample; either running or done is fine
+		// as long as the format is correct when still calculating.
+		if !progress.done.Load() {
+			t.Fatalf("unexpected progress label while scanning: %q", got)
+		}
 	}
 
-	var rest []sourceFile
-	for job := range out {
-		rest = append(rest, job)
-	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("streamSourceFiles failed: %v", err)
 	}
-	if len(rest) != 2 {
-		t.Fatalf("expected 2 remaining files, got %d", len(rest))
-	}
 	if got := progress.label(); got != "3" {
 		t.Fatalf("expected total 3 after walk, got %q", got)
+	}
+
+	var got []sourceFile
+	for {
+		job, ok := q.pop()
+		if !ok {
+			break
+		}
+		got = append(got, job)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(got))
+	}
+	if got[0].index != 0 {
+		t.Fatalf("expected first index 0, got %d", got[0].index)
+	}
+}
+
+// TestProgressTotalLabelRunningCount verifies the denominator shows how many
+// files have been discovered while the scan is still running.
+func TestProgressTotalLabelRunningCount(t *testing.T) {
+	p := &progressTotal{}
+	p.found.Store(1234)
+	if got := p.label(); got != "(calculating, 1234 found)" {
+		t.Fatalf("expected running count label, got %q", got)
+	}
+	p.finish()
+	if got := p.label(); got != "1234" {
+		t.Fatalf("expected concrete total, got %q", got)
 	}
 }
 
@@ -628,13 +781,17 @@ func TestStreamSourceFilesSkipsUnsupported(t *testing.T) {
 	}
 	writeTinyJPEG(t, filepath.Join(srcDir, "b.jpg"))
 
-	out := make(chan sourceFile, 8)
+	q := newSourceQueue()
 	progress := &progressTotal{}
-	if err := streamSourceFiles(context.Background(), srcDir, out, progress); err != nil {
+	if err := streamSourceFiles(context.Background(), srcDir, q, progress); err != nil {
 		t.Fatalf("streamSourceFiles failed: %v", err)
 	}
 	var got []sourceFile
-	for job := range out {
+	for {
+		job, ok := q.pop()
+		if !ok {
+			break
+		}
 		got = append(got, job)
 	}
 	if len(got) != 2 {
@@ -653,38 +810,33 @@ func TestStreamSourceFilesSkipsUnsupported(t *testing.T) {
 	}
 }
 
-// TestStreamSourceFilesCancel verifies a cancelled context stops listing early
-// and still closes the channel so workers can drain.
+// TestStreamSourceFilesCancel verifies a pre-cancelled context stops listing
+// before any files are queued and still closes the queue for workers.
 func TestStreamSourceFilesCancel(t *testing.T) {
 	srcDir := t.TempDir()
 	for i := 0; i < 20; i++ {
-		writeTinyJPEG(t, filepath.Join(srcDir, fmt.Sprintf("%02d.jpg", i)))
+		if err := os.WriteFile(filepath.Join(srcDir, fmt.Sprintf("%02d.jpg", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	out := make(chan sourceFile)
-	progress := &progressTotal{}
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- streamSourceFiles(ctx, srcDir, out, progress)
-	}()
-
-	first, ok := <-out
-	if !ok {
-		t.Fatal("expected at least one source file before cancel")
-	}
-	_ = first
 	cancel()
-
-	var delivered int
-	for range out {
-		delivered++
-	}
-	if err := <-errCh; err != nil {
+	q := newSourceQueue()
+	progress := &progressTotal{}
+	if err := streamSourceFiles(ctx, srcDir, q, progress); err != nil {
 		t.Fatalf("streamSourceFiles failed after cancel: %v", err)
 	}
-	if delivered >= 19 {
-		t.Fatalf("expected early stop after cancel, delivered %d remaining files", delivered)
+	var delivered int
+	for {
+		_, ok := q.pop()
+		if !ok {
+			break
+		}
+		delivered++
+	}
+	if delivered != 0 {
+		t.Fatalf("expected no files after pre-cancel, got %d", delivered)
 	}
 	if !progress.done.Load() {
 		t.Fatal("expected progress to be marked done after cancel")

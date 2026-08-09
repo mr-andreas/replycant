@@ -10,7 +10,7 @@
 ### Features
 
 - replycant-importer: encrypts binaries and uploads them to LFS before commit, writing only pointer files into the worktree for much faster import/rebase
-- replycant-importer: starts encrypting and uploading while the source tree is still being scanned; progress shows `(calculating)` until the scan finishes
+- replycant-importer: starts encrypting and uploading while the source tree is still being scanned; progress shows `(calculating, N found)` until the scan finishes
 
 ### Fixes
 

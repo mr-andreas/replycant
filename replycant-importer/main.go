@@ -283,8 +283,8 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		workers = 1
 	}
 
-	// Buffer ahead of workers so listing stays ahead of slow encrypt/upload work.
-	workCh := make(chan sourceFile, 1024)
+	// Unbounded queue so listing never stalls behind slow encrypt/upload work.
+	queue := newSourceQueue()
 	commitCh := make(chan *preparedImport, workers*2)
 	progress := &progressTotal{}
 	var workerWG sync.WaitGroup
@@ -296,7 +296,7 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 	walkWG.Add(1)
 	go func() {
 		defer walkWG.Done()
-		walkErr = streamSourceFiles(ctx, srcAbs, workCh, progress)
+		walkErr = streamSourceFiles(ctx, srcAbs, queue, progress)
 		logMu.Lock()
 		if walkErr != nil {
 			fmt.Fprintf(i.stderr, "error scanning source files: %v\n", walkErr)
@@ -377,9 +377,16 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		workerWG.Add(1)
 		go func() {
 			defer workerWG.Done()
-			for job := range workCh {
+			for {
 				if ctx.Err() != nil {
-					continue
+					return
+				}
+				job, ok := queue.pop()
+				if !ok {
+					return
+				}
+				if ctx.Err() != nil {
+					return
 				}
 				prepared, skipped, err := i.prepareFile(repoAbs, cli.DeviceSpace, job.path, knownSHAs, knownPathSizes)
 				if err != nil {
@@ -406,6 +413,7 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 				select {
 				case commitCh <- prepared:
 				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -575,8 +583,57 @@ type sourceFile struct {
 	path  string
 }
 
+// sourceQueue hands scanned files to import workers without backpressure. A
+// bounded channel stalls the walk behind slow encrypt/upload work, which keeps
+// the file total unknown for nearly all of a large import.
+type sourceQueue struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	items  []sourceFile
+	closed bool
+}
+
+func newSourceQueue() *sourceQueue {
+	q := &sourceQueue{}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *sourceQueue) push(job sourceFile) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	q.items = append(q.items, job)
+	q.cond.Signal()
+}
+
+func (q *sourceQueue) close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.cond.Broadcast()
+}
+
+// pop blocks until an item is available or the queue is closed and drained.
+func (q *sourceQueue) pop() (sourceFile, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.items) == 0 && !q.closed {
+		q.cond.Wait()
+	}
+	if len(q.items) == 0 {
+		return sourceFile{}, false
+	}
+	job := q.items[0]
+	q.items[0] = sourceFile{}
+	q.items = q.items[1:]
+	return job, true
+}
+
 // progressTotal tracks how many media files the walker has found so progress
-// lines can show "(calculating)" until the walk completes.
+// lines can show a running count until the walk completes.
 type progressTotal struct {
 	found atomic.Int64
 	done  atomic.Bool
@@ -586,7 +643,7 @@ type progressTotal struct {
 // importing, so the total is unknown until the walk completes.
 func (p *progressTotal) label() string {
 	if !p.done.Load() {
-		return "(calculating)"
+		return fmt.Sprintf("(calculating, %d found)", p.found.Load())
 	}
 	return strconv.FormatInt(p.found.Load(), 10)
 }
@@ -595,11 +652,11 @@ func (p *progressTotal) finish() {
 	p.done.Store(true)
 }
 
-// streamSourceFiles walks root and streams supported media paths to out so
+// streamSourceFiles walks root and streams supported media paths to q so
 // workers can encrypt/upload before the full tree is listed. It owns and closes
-// out, and marks progress done when the walk finishes or is cancelled.
-func streamSourceFiles(ctx context.Context, root string, out chan<- sourceFile, progress *progressTotal) error {
-	defer close(out)
+// q, and marks progress done when the walk finishes or is cancelled.
+func streamSourceFiles(ctx context.Context, root string, q *sourceQueue, progress *progressTotal) error {
+	defer q.close()
 	defer progress.finish()
 
 	index := 0
@@ -616,15 +673,10 @@ func streamSourceFiles(ctx context.Context, root string, out chan<- sourceFile, 
 		if mediaTypeFromPath(path) == "" {
 			return nil
 		}
-		job := sourceFile{index: index, path: path}
-		select {
-		case out <- job:
-			index++
-			progress.found.Store(int64(index))
-			return nil
-		case <-ctx.Done():
-			return fs.SkipAll
-		}
+		index++
+		progress.found.Store(int64(index))
+		q.push(sourceFile{index: index - 1, path: path})
+		return nil
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return err
