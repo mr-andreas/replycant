@@ -11,6 +11,7 @@
 ### Features
 
 - add regenerable iOS and Electron product screenshots in the README (`make readme-screenshots`)
+- iosapp: adds recovery key creation, deep-link and QR recovery flows, and fresh-install repository recovery with key re-enrollment
 - replycant-importer: encrypts binaries and uploads them to LFS before commit, writing only pointer files into the worktree for much faster import/rebase
 - replycant-importer: starts encrypting and uploading while the source tree is still being scanned; progress shows `(calculating, N found)` until the scan finishes
 - server: git and CA listen ports can be set with `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT`; already-linked devices need re-onboarding or a stored URL update after a port change

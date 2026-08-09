@@ -32,6 +32,9 @@ struct ContentView: View {
     @State private var hasEmittedMainTabsVisible = false
     @State private var hasEmittedOnboardingVisible = false
     @State private var showRecoveryWarning = false
+    @State private var pendingRecoveryInput: String?
+    @State private var showRecoveryFlow = false
+    @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
     init(previewState: PreviewState? = nil) {
@@ -129,6 +132,7 @@ struct ContentView: View {
         }
         .onAppear {
             emitRootVisibleIfNeeded()
+            consumeRecoveryInputIfAvailable()
         }
         .task {
             guard previewState == nil else { return }
@@ -138,6 +142,18 @@ struct ContentView: View {
             guard previewState == nil else { return }
             updatePeriodicSyncLifecycle()
             await refreshRecoveryWarning()
+        }
+        .onChange(of: recoveryRouter.pendingInput) { _, _ in
+            consumeRecoveryInputIfAvailable()
+        }
+        .sheet(isPresented: $showRecoveryFlow) {
+            NavigationStack {
+                RecoveryView(initialInput: pendingRecoveryInput) {
+                    showRecoveryFlow = false
+                    pendingRecoveryInput = nil
+                    checkRepositoryStatus()
+                }
+            }
         }
     }
     
@@ -357,6 +373,15 @@ struct ContentView: View {
         guard !hasEmittedOnboardingVisible else { return }
         hasEmittedOnboardingVisible = true
         AppSignposts.event("OnboardingVisible")
+    }
+
+    // Bridges deep-link router state into an actionable recovery flow presentation.
+    private func consumeRecoveryInputIfAvailable() {
+        guard let input = RecoveryDeepLinkRouter.shared.consumePendingInput() else {
+            return
+        }
+        pendingRecoveryInput = input
+        showRecoveryFlow = true
     }
 }
 

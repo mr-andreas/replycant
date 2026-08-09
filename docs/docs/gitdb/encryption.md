@@ -263,6 +263,70 @@ Encryption integrates with the existing [device onboarding](./device-onboarding.
 3. Bump `encryption/current` to the new epoch number
 4. New objects are encrypted with the new KEK -- the revoked device cannot decrypt them
 
+## Recovery Keys
+
+Recovery keys provide an emergency path when every normal device key is lost.
+They are intentionally marked and managed separately from normal device keys.
+
+### Repository layout
+
+Recovery key public components live in `pubkeys/`:
+
+```
+pubkeys/
+  my-phone-<uuid>.pub
+  my-phone-<uuid>.age
+  home-safe-<uuid>.recovery.pub
+  home-safe-<uuid>.recovery.age
+```
+
+`*.recovery.pub` is still a P-256 SSH-form public key, so gitd authorization
+continues to use the same matching logic as normal device keys.
+
+### Bundle format and transport
+
+Recovery private material is exported as an encrypted JSON envelope:
+
+- KDF: `PBKDF2-HMAC-SHA256` (600k iterations)
+- Cipher: `AES-256-GCM`
+- Plaintext includes: recovery P-256 PEM key, recovery age private key,
+  discovery URL, and pinned CA SHA-256 hash.
+
+The app exports:
+
+- QR payload: raw envelope JSON
+- Deep link: `replycant://recover?v=1&d=<base64url envelope>`
+
+No hosted web domain is required for recovery transport.
+
+### Recovery behavior
+
+Recovery is allowed only on fresh installs (no configured server and no local
+repository). The flow:
+
+1. Decrypt bundle with user password
+2. Discover server config and verify CA hash
+3. Build temporary mTLS identity from recovery P-256 key
+4. Clone repo
+5. Re-wrap KEK epochs for the new device age key
+6. Commit/push a new normal device key
+7. Switch transport back to the normal device identity
+
+### Manual emergency recovery procedure
+
+If app automation is unavailable, the bundle can be processed manually:
+
+1. Decode envelope JSON from the QR or from deep-link `d` parameter.
+2. Derive AES key using bundle KDF parameters (`PBKDF2-HMAC-SHA256`).
+3. Decrypt envelope ciphertext (`AES-256-GCM`) to recover plaintext JSON.
+4. Fetch `discovery_url/config.json` and verify discovered CA hash matches
+   `ca_sha256`.
+5. Use `p256_private_key` for temporary mTLS git access.
+6. Use `age_private_key` to decrypt/re-wrap KEK epoch files and add a new
+   device key pair in `pubkeys/`.
+
+This is why the payload stays JSON and includes both identity private keys.
+
 ## Design Decisions
 
 | Decision | Choice | Alternative | Rationale |

@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+import GitDB
 import LibGit2
+import UIKit
 
 // Coordinates recovery-key creation and revocation so users can regain repository access after key loss.
 final class RecoveryKeyManager {
@@ -22,12 +24,23 @@ final class RecoveryKeyManager {
         let agePath: String
     }
 
+    // Carries the key metadata used in a successful recovery so callers can offer immediate key replacement.
+    struct RecoveryResult {
+        let usedRecoveryLabel: String
+        let usedRecoveryUUID: String
+        let discoveredServerURL: String
+    }
+
     // Names creation and revocation failures so settings and onboarding can show specific guidance.
     enum Error: Swift.Error, LocalizedError {
         case missingServerConfiguration
         case invalidServerConfiguration
         case malformedRecoveryFilename
         case noMatchingRecoveryKey
+        case alreadyConfiguredDevice
+        case missingClientIdentity
+        case missingPinnedCA
+        case malformedRecoveryAgeKey
 
         // Explains why recovery-key operations failed so users know whether to retry or reconfigure.
         var errorDescription: String? {
@@ -40,8 +53,24 @@ final class RecoveryKeyManager {
                 return "Recovery key files are malformed."
             case .noMatchingRecoveryKey:
                 return "Recovery key not found."
+            case .alreadyConfiguredDevice:
+                return "Recovery is only available on fresh installs. Reinstall the app and try again."
+            case .missingClientIdentity:
+                return "Device identity is missing."
+            case .missingPinnedCA:
+                return "Server trust configuration is missing."
+            case .malformedRecoveryAgeKey:
+                return "Recovery key age secret is malformed."
             }
         }
+    }
+
+    // Rejects recovery on already-configured devices to prevent identity swap confusion and accidental key loss.
+    static func shouldRejectRecovery(
+        isServerConfigured: Bool,
+        repositoryExists: Bool
+    ) -> Bool {
+        isServerConfigured || repositoryExists
     }
 
     // Returns true when at least one marked recovery key exists in pubkeys/.
@@ -163,6 +192,109 @@ final class RecoveryKeyManager {
         try repository.push(remoteName: "origin", branchName: branchName)
     }
 
+    // Recovers repository access by authenticating with the recovery identity once, then rotating back to device identity.
+    func recover(
+        input: String,
+        password: String,
+        discoveryURLOverride: String? = nil,
+        repositoryPath: String = (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path as NSString).appendingPathComponent("replycant-git-db"),
+        session: URLSession = .shared,
+        progress: ((String) -> Void)? = nil
+    ) async throws -> RecoveryResult {
+        let repositoryExists = Repository.exists(at: repositoryPath)
+        if Self.shouldRejectRecovery(
+            isServerConfigured: ServerConfigurationManager.shared.isConfigured,
+            repositoryExists: repositoryExists
+        ) {
+            throw Error.alreadyConfiguredDevice
+        }
+
+        progress?("Decrypting recovery bundle...")
+        let envelope = try RecoveryBundle.parseEnvelope(from: input)
+        let plaintext = try RecoveryBundle.decrypt(envelope: envelope, password: password)
+
+        progress?("Resolving server discovery...")
+        let discoveryURL = discoveryURLOverride ?? plaintext.discoveryURL
+        let discovered = try await ServerConfigurationManager.shared.discoverAndConfigure(
+            discoveryURLString: discoveryURL,
+            expectedCAHash: plaintext.caSHA256,
+            session: session
+        )
+
+        guard let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
+            throw Error.missingPinnedCA
+        }
+
+        progress?("Preparing temporary recovery identity...")
+        let temporaryIdentity = try ClientIdentityManager.shared.makeTemporaryIdentity(
+            privateKeyPEM: plaintext.p256PrivateKeyPEM,
+            commonName: "recovery-\(plaintext.uuid.prefix(8))"
+        )
+        defer {
+            try? ClientIdentityManager.shared.deleteTemporaryIdentity()
+        }
+
+        try MTLSTransport.shared.configure(clientIdentity: temporaryIdentity, pinnedCA: pinnedCA)
+
+        if FileManager.default.fileExists(atPath: repositoryPath) {
+            try FileManager.default.removeItem(atPath: repositoryPath)
+        }
+
+        progress?("Cloning with recovery identity...")
+        let mtlsURL = MTLSTransport.convertToMTLSScheme(discovered.url)
+        _ = try Repository.clone(from: mtlsURL, to: repositoryPath, depth: 1)
+        await MainActor.run {
+            RepositoryManager.shared.clearRepository()
+            GitDBManager.shared.clearGitDB()
+        }
+
+        let repository = try await MainActor.run {
+            try RepositoryManager.shared.getRepository()
+        }
+        let gitDB = try await MainActor.run {
+            try GitDBManager.shared.getGitDB()
+        }
+        let ageIdentity = try parseRecoveryAgePrivateKey(plaintext.agePrivateKey)
+        let ownDeviceName = normalizedDeviceName()
+        let ownDeviceUUID = UUID().uuidString.lowercased()
+        let ownPublicKey = try ClientIdentityManager.shared.sshPublicKey(comment: "\(ownDeviceName)-\(ownDeviceUUID)")
+        let ownAgePublic = try ClientIdentityManager.shared.agePublicKey()
+        let ownPubPath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).pub"
+        let ownAgePath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).age"
+
+        progress?("Re-wrapping encryption keys for this device...")
+        let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
+        let allRecipients = Array(Set(existingAgeRecipients + [ownAgePublic]))
+        let epochFiles = try KEKEpochManager(
+            repository: repository,
+            ageIdentityLoader: { ageIdentity }
+        ).rewrappedEpochFilesIncludingRecipients(allRecipients)
+
+        var files: [(path: String, content: String)] = [
+            (path: ownPubPath, content: ownPublicKey),
+            (path: ownAgePath, content: ownAgePublic),
+        ]
+        files.append(contentsOf: epochFiles)
+        try await gitDB.commitFiles(
+            message: "Recover device key for \(ownDeviceName) (\(ownDeviceUUID))",
+            files: files
+        )
+        let branchName = repository.currentBranch() ?? "main"
+        try repository.push(remoteName: "origin", branchName: branchName)
+
+        guard let primaryIdentity = ClientIdentityManager.shared.loadSecIdentity() else {
+            throw Error.missingClientIdentity
+        }
+        try MTLSTransport.shared.configure(clientIdentity: primaryIdentity, pinnedCA: pinnedCA)
+
+        progress?("Recovery complete.")
+        return RecoveryResult(
+            usedRecoveryLabel: plaintext.label,
+            usedRecoveryUUID: plaintext.uuid,
+            discoveredServerURL: discovered.url
+        )
+    }
+
     // Parses recovery key filenames of form pubkeys/<label>-<uuid>.recovery.pub.
     private func parseRecoveryKeyName(path: String) -> (label: String, uuid: String)? {
         let fileName = (path as NSString).lastPathComponent
@@ -231,5 +363,22 @@ final class RecoveryKeyManager {
         keyData.append(publicKeyData)
 
         return "ecdsa-sha2-nistp256 \(keyData.base64EncodedString()) \(comment)"
+    }
+
+    // Parses age secret keys from the recovery payload so epoch files can be decrypted once during recovery.
+    private func parseRecoveryAgePrivateKey(_ ageSecretKey: String) throws -> Curve25519.KeyAgreement.PrivateKey {
+        let decoded = try Bech32.decode(ageSecretKey.lowercased())
+        guard decoded.hrp == "age-secret-key-" else {
+            throw Error.malformedRecoveryAgeKey
+        }
+        return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: decoded.data)
+    }
+
+    // Produces stable path-safe names for recovered device key files.
+    private func normalizedDeviceName() -> String {
+        UIDevice.current.name
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "'", with: "")
+            .lowercased()
     }
 }

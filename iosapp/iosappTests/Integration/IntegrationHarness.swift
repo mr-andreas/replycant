@@ -32,6 +32,11 @@ enum IntegrationHarness {
         try await prepare(seedContainerRepo: true, provisionDevice: false)
     }
 
+    // Resets app-local state so integration tests can emulate uninstall/reinstall before recovery.
+    static func resetLocalInstallState() throws {
+        try wipeLocalState()
+    }
+
     // Creates one unique path under tmp for isolated repositories used in failing-auth push tests.
     static func makeTemporaryRepositoryPath(prefix: String) -> String {
         FileManager.default.temporaryDirectory

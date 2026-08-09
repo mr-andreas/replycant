@@ -28,7 +28,7 @@ struct SettingsView: View {
                         Label("Link a New Device", systemImage: "plus.circle")
                     }
 
-                    NavigationLink(destination: Text("Recovery key management is coming in this build.")) {
+                    NavigationLink(destination: RecoveryKeyView()) {
                         HStack {
                             Label("Recovery Key", systemImage: "key")
                             Spacer()

@@ -8,12 +8,23 @@ struct QRCodeDisplayView: View {
     let title: String
     let subtitle: String?
     let borderColor: Color?
+    let qrSide: CGFloat
+    let correctionLevel: String
     
-    init(data: String, title: String, subtitle: String? = nil, borderColor: Color? = nil) {
+    init(
+        data: String,
+        title: String,
+        subtitle: String? = nil,
+        borderColor: Color? = nil,
+        qrSide: CGFloat = 260,
+        correctionLevel: String = "H"
+    ) {
         self.data = data
         self.title = title
         self.subtitle = subtitle
         self.borderColor = borderColor
+        self.qrSide = qrSide
+        self.correctionLevel = correctionLevel
     }
 
     // Exposes whether this QR card should render a phase border so tests can
@@ -38,12 +49,12 @@ struct QRCodeDisplayView: View {
                     .padding(.horizontal)
             }
             
-            if let qrImage = generateQRCode(from: data) {
+            if let qrImage = QRCodeDisplayView.generateQRCodeImage(from: data, side: qrSide, correctionLevel: correctionLevel) {
                 Image(uiImage: qrImage)
                     .interpolation(.none)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: 260, maxHeight: 260)
+                    .frame(maxWidth: qrSide, maxHeight: qrSide)
                     .padding(16)
                     .background(Color.white)
                     .overlay(
@@ -55,7 +66,7 @@ struct QRCodeDisplayView: View {
             } else {
                 RoundedRectangle(cornerRadius: 16)
                     .fill(Color.gray.opacity(0.2))
-                    .frame(maxWidth: 260, maxHeight: 260)
+                    .frame(maxWidth: qrSide, maxHeight: qrSide)
                     .aspectRatio(1, contentMode: .fit)
                     .overlay(
                         Text("Failed to generate QR code")
@@ -68,7 +79,7 @@ struct QRCodeDisplayView: View {
     
     // Generates a UIImage QR code from the provided string using CoreImage.
     // Returns a high-resolution QR code with error correction level H.
-    private func generateQRCode(from string: String) -> UIImage? {
+    static func generateQRCodeImage(from string: String, side: CGFloat = 260, correctionLevel: String = "H") -> UIImage? {
         let context = CIContext()
         let filter = CIFilter.qrCodeGenerator()
         
@@ -78,15 +89,15 @@ struct QRCodeDisplayView: View {
         }
         
         filter.setValue(data, forKey: "inputMessage")
-        filter.setValue("H", forKey: "inputCorrectionLevel") // High error correction
+        filter.setValue(correctionLevel, forKey: "inputCorrectionLevel")
         
         guard let outputImage = filter.outputImage else {
             logError("Failed to generate QR code image", context: "QRCode")
             return nil
         }
         
-        let scaleX = 260 / outputImage.extent.size.width
-        let scaleY = 260 / outputImage.extent.size.height
+        let scaleX = side / outputImage.extent.size.width
+        let scaleY = side / outputImage.extent.size.height
         let transformedImage = outputImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
         
         guard let cgImage = context.createCGImage(transformedImage, from: transformedImage.extent) else {

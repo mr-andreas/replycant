@@ -41,6 +41,10 @@ This target:
 - GitDB sync-to-SQL round trip after seeded media history
 - Real LFS upload/download through gitd's `/lfs` proxy
 - Unauthorized push rejection for non-provisioned identities
+- Recovery key creation writes `.recovery.pub/.recovery.age` files to remote
+- Recovery reject gate blocks already-configured installs
+- Recovery wrong-password handling fails closed
+- Wipe-and-recover path re-enrolls a new normal device key
 
 ## MockLFSServer (Unit Tests)
 

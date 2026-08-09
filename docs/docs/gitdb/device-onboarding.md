@@ -206,6 +206,31 @@ sequenceDiagram
 
 `ca_hash` is optional across the full protocol: iOS-to-iOS public key QR codes omit it, while webapp-generated QR codes include it and trigger CA verification before key commit.
 
+## Recovery Onboarding Path
+
+When all existing device keys are lost, onboarding supports a recovery path that
+starts from a recovery bundle instead of a pairing QR from another device.
+
+### Recovery entry points
+
+- Onboarding action: **Recover with a recovery key**
+- In-app recovery scanner: QR mode that accepts recovery envelope JSON
+- Deep link: `replycant://recover?v=1&d=...`
+
+### Recovery sequence
+
+1. User provides/scans recovery bundle and enters bundle password.
+2. App decrypts bundle and discovers server config from `discovery_url`.
+3. App verifies discovered CA hash against pinned `ca_sha256`.
+4. App authenticates once with temporary recovery identity.
+5. App clones repository, registers a new normal device key, and re-wraps KEK
+   epochs for the new device age key.
+6. App switches back to normal device identity and deletes temporary recovery
+   identity artifacts.
+
+Recovery is rejected if the app is already configured locally; users must
+reinstall first to avoid mixing recovery with an existing identity context.
+
 ## Key Cache Behavior
 
 When a new device is authorized, there may be a delay before the server recognizes it due to key caching.

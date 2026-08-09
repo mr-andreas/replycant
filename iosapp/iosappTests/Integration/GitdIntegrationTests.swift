@@ -129,4 +129,101 @@ struct GitdIntegrationTests {
             #expect(expectedAuthFailure)
         }
     }
+
+    // Confirms creating a recovery key writes marked key files to the integration remote.
+    @Test
+    func recoveryKeyCreationPublishesMarkedPubkeys() async throws {
+        let context = try await IntegrationHarness.prepareSeededAndProvisioned()
+        let repository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        let gitDB = try GitDBManager.shared.getGitDB()
+        let config = try #require(ServerConfigurationManager.shared.loadConfiguration())
+        let manager = RecoveryKeyManager()
+        let created = try await manager.createRecoveryKey(
+            label: "integration-recovery",
+            password: "correct horse battery staple",
+            repository: repository,
+            gitDB: gitDB,
+            serverConfiguration: config
+        )
+
+        let recloned = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        #expect(recloned.fileExists(at: created.recoveryPubPath))
+        #expect(recloned.fileExists(at: created.recoveryAgePath))
+    }
+
+    // Confirms wrong recovery passwords fail closed before any network mutation.
+    @Test
+    func recoveryWithWrongPasswordFails() async throws {
+        let context = try await IntegrationHarness.prepareSeededAndProvisioned()
+        let repository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        let gitDB = try GitDBManager.shared.getGitDB()
+        let config = try #require(ServerConfigurationManager.shared.loadConfiguration())
+        let manager = RecoveryKeyManager()
+        let created = try await manager.createRecoveryKey(
+            label: "wrong-password-recovery",
+            password: "correct horse battery staple",
+            repository: repository,
+            gitDB: gitDB,
+            serverConfiguration: config
+        )
+
+        do {
+            _ = try await manager.recover(input: created.deepLink, password: "definitely-wrong")
+            Issue.record("recovery unexpectedly succeeded with wrong password")
+        } catch {
+            let message = String(describing: error).lowercased()
+            #expect(message.contains("cipher") || message.contains("decrypt") || message.contains("auth"))
+        }
+    }
+
+    // Confirms recovery is blocked on already-configured installs to enforce reinstall guidance.
+    @Test
+    func recoveryRejectedWhenDeviceAlreadyConfigured() async throws {
+        _ = try await IntegrationHarness.prepareSeededAndProvisioned()
+        let manager = RecoveryKeyManager()
+
+        do {
+            _ = try await manager.recover(input: "replycant://recover?v=1&d=bogus", password: "x")
+            Issue.record("recovery unexpectedly bypassed configured-device gate")
+        } catch {
+            guard case RecoveryKeyManager.Error.alreadyConfiguredDevice = error else {
+                Issue.record("expected alreadyConfiguredDevice error, got \(error)")
+                return
+            }
+        }
+    }
+
+    // Confirms recovery can re-enroll a wiped install and pushes a new non-recovery device key.
+    @Test
+    func recoveryAfterWipeRegistersNewDeviceKey() async throws {
+        let context = try await IntegrationHarness.prepareSeededAndProvisioned()
+        let repository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        let gitDB = try GitDBManager.shared.getGitDB()
+        let config = try #require(ServerConfigurationManager.shared.loadConfiguration())
+        let manager = RecoveryKeyManager()
+        let created = try await manager.createRecoveryKey(
+            label: "wipe-recover",
+            password: "correct horse battery staple",
+            repository: repository,
+            gitDB: gitDB,
+            serverConfiguration: config
+        )
+
+        let beforePubCount = try repository
+            .listFiles(in: "pubkeys")
+            .filter { $0.hasSuffix(".pub") && !$0.contains(".recovery.") }
+            .count
+
+        try IntegrationHarness.resetLocalInstallState()
+        try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "ios-recovered-device")
+
+        _ = try await manager.recover(input: created.deepLink, password: "correct horse battery staple")
+
+        let recoveredRepository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        let afterPubCount = try recoveredRepository
+            .listFiles(in: "pubkeys")
+            .filter { $0.hasSuffix(".pub") && !$0.contains(".recovery.") }
+            .count
+        #expect(afterPubCount > beforePubCount)
+    }
 }

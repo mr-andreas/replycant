@@ -85,6 +85,8 @@ struct OnboardingView: View {
                     processingView
                 case .error:
                     errorView
+                case .recover:
+                    RecoveryView(initialInput: nil, onCompleted: onComplete)
                 }
             }
             .navigationTitle(currentStep.title)
@@ -187,6 +189,14 @@ struct OnboardingView: View {
                     HStack {
                         Image(systemName: "arrow.down.circle")
                         Text("Connect to an existing library")
+                    }
+                }
+                .buttonStyle(PairingSecondaryButtonStyle())
+
+                Button(action: { currentStep = .recover }) {
+                    HStack {
+                        Image(systemName: "key.viewfinder")
+                        Text("Recover with a recovery key")
                     }
                 }
                 .buttonStyle(PairingSecondaryButtonStyle())
@@ -689,6 +699,7 @@ enum OnboardingStep {
     case scanConfig
     case processing
     case error
+    case recover
     
     // Supplies concise navigation titles for each onboarding step screen.
     var title: String {
@@ -701,6 +712,7 @@ enum OnboardingStep {
         case .scanConfig: return "Scan Configuration"
         case .processing: return "Setting Up"
         case .error: return "Error"
+        case .recover: return "Recover Access"
         }
     }
 }
