@@ -76,16 +76,25 @@ struct GitNoOpSyncLogTests {
         return (local, root)
     }
 
-    // Keeps only log lines naming this test's own repository.
-    //
-    // Redirecting STDOUT_FILENO captures the whole process, and suites that run
-    // in parallel log while the capture is installed, so an unrelated test
-    // creating a repository would otherwise be read as this push having logged.
-    private func linesAboutRepository(at rootPath: String, in output: String) -> [String] {
-        output
+    // Keeps only push/pull sync lines so process-wide stdout capture ignores
+    // unrelated repository lifecycle chatter from parallel suites.
+    private func gitSyncLogLines(in output: String) -> [String] {
+        let syncMarkers = [
+            "Starting push to remote",
+            "Nothing to push",
+            "Successfully pushed",
+            "Push failed",
+            "REBASE -",
+            "REBASE ERROR"
+        ]
+
+        return output
             .split(separator: "\n")
             .map(String.init)
-            .filter { $0.contains(rootPath) }
+            .filter { line in
+                guard line.contains("[Git]") else { return false }
+                return syncMarkers.contains { marker in line.contains(marker) }
+            }
     }
 
     // Ensures no-op push produces no visible log output at the default INFO level.
@@ -97,9 +106,9 @@ struct GitNoOpSyncLogTests {
             try repo.push(remoteName: "origin", branchName: "main")
         }
 
-        let ownLines = linesAboutRepository(at: rootPath, in: output)
-        #expect(!ownLines.contains { $0.contains("[INFO][Git]") })
-        #expect(!ownLines.contains { $0.contains("[DEBUG][Git]") })
+        let syncLines = gitSyncLogLines(in: output)
+        #expect(!syncLines.contains { $0.contains("[INFO][Git]") })
+        #expect(!syncLines.contains { $0.contains("[DEBUG][Git]") })
     }
 
     // Ensures no-op pull-rebase produces no visible log output at the default INFO level.
@@ -111,8 +120,24 @@ struct GitNoOpSyncLogTests {
             try repo.pullRebase(remoteName: "origin", branchName: "main")
         }
 
-        let ownLines = linesAboutRepository(at: rootPath, in: output)
-        #expect(!ownLines.contains { $0.contains("[INFO][Git]") })
-        #expect(!ownLines.contains { $0.contains("[DEBUG][Git]") })
+        let syncLines = gitSyncLogLines(in: output)
+        #expect(!syncLines.contains { $0.contains("[INFO][Git]") })
+        #expect(!syncLines.contains { $0.contains("[DEBUG][Git]") })
+    }
+
+    // Proves sync-line filtering does not depend on repository paths, which
+    // no-op Git messages intentionally omit.
+    @Test func syncFilterMatchesPathlessNoOpMessages() {
+        let output = """
+        [12:00:00.000][INFO][Git] Nothing to push - local main matches refs/remotes/origin/main
+        [12:00:00.001][INFO][Git] Creating repository at /tmp/repo.git, bare: false
+        [12:00:00.002][DEBUG][Git] REBASE - Already up to date, skipping rebase
+        """
+
+        let syncLines = gitSyncLogLines(in: output)
+        #expect(syncLines.count == 2)
+        #expect(syncLines.contains { $0.contains("Nothing to push") })
+        #expect(syncLines.contains { $0.contains("REBASE - Already up to date") })
+        #expect(!syncLines.contains { $0.contains("Creating repository at") })
     }
 }
