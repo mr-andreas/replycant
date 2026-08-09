@@ -21,18 +21,21 @@ enum QRScanValidation {
 
     // Validates scanned QR content for a specific flow and returns the next scanner action.
     static func validate(code: String, mode: QRCodeScannerView.ValidationMode) -> Decision {
-        guard let data = code.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return .reject("Invalid QR code. Expected valid JSON.")
-        }
-
         switch mode {
         case .serverConfig:
+            guard let data = code.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+                return .reject("Invalid QR code. Expected valid JSON.")
+            }
             guard json["ca"] != nil, json["url"] != nil else {
                 return .reject("Invalid QR code. Expected server configuration with ca and url.")
             }
             return .acceptRaw
         case .devicePublicKey:
+            guard let data = code.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+                return .reject("Invalid QR code. Expected valid JSON.")
+            }
             guard let pubkey = json["pubkey"], let agePubkey = json["age_pubkey"], let name = json["name"], let uuid = json["uuid"] else {
                 return .reject("Unsupported QR code format. Please scan a device-link QR containing pubkey, age_pubkey, name, and uuid.")
             }
@@ -46,6 +49,11 @@ enum QRScanValidation {
                     rawJSON: code
                 )
             )
+        case .recoveryBundle:
+            guard (try? RecoveryBundle.parseEnvelope(from: code)) != nil else {
+                return .reject("Unsupported recovery QR code. Expected recovery envelope JSON or replycant recovery link.")
+            }
+            return .acceptRaw
         case .any:
             return .acceptRaw
         }

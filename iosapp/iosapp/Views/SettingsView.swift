@@ -11,7 +11,14 @@ import SwiftUI
 // Provides navigation to various settings pages such as repository management, cache controls, and git plumbing.
 struct SettingsView: View {
     let onWipeAndResync: () -> Void
+    let showRecoveryWarning: Bool
     @State private var isShowingResetConfirmation = false
+
+    // Allows callers to surface repo-wide recovery readiness in the settings navigation row.
+    init(onWipeAndResync: @escaping () -> Void, showRecoveryWarning: Bool = false) {
+        self.onWipeAndResync = onWipeAndResync
+        self.showRecoveryWarning = showRecoveryWarning
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,6 +26,17 @@ struct SettingsView: View {
                 Section {
                     NavigationLink(destination: DeviceLinkingView()) {
                         Label("Link a New Device", systemImage: "plus.circle")
+                    }
+
+                    NavigationLink(destination: Text("Recovery key management is coming in this build.")) {
+                        HStack {
+                            Label("Recovery Key", systemImage: "key")
+                            Spacer()
+                            if showRecoveryWarning {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                     }
                 } header: {
                     Text("Device Management")

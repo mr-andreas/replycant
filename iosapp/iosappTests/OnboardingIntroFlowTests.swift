@@ -25,14 +25,6 @@ struct OnboardingIntroFlowTests {
         #expect(pages[2].title == "Durable and portable")
     }
 
-    // Ensures users acknowledge key-loss risk before setup proceeds to
-    // scanner-based bootstrap so encryption consequences are explicit.
-    @Test func encryptionDisclaimerCopyAndTitleMatchExpectedText() {
-        #expect(OnboardingView.encryptionDisclaimerText == "Replycant encrypts both media files and metadata. Encryption keys are stored only on your devices and are never stored on the server. If these keys are lost, your entire library will be permanently inaccessible. Uninstalling the iOS app removes this device's keys and can cause permanent data loss unless another device has already been granted access.")
-        #expect(OnboardingView.encryptionDisclaimerAcknowledgeLabel == "I understand")
-        #expect(OnboardingStep.encryptionDisclaimer.title == "Encryption Warning")
-    }
-
     // Ensures create-library onboarding points users to server setup guidance
     // before the scanner step so required infrastructure is explicit.
     @Test func serverSetupGuideCopyAndTitleMatchExpectedText() {

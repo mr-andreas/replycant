@@ -515,7 +515,12 @@ public final class Repository: @unchecked Sendable {
         return git_repository_is_bare(repo) != 0
     }
     
-    public func createCommit(message: String, files: [(path: String, content: String)]) throws {
+    // Creates a commit from in-memory file updates plus explicit deletions so key-rotation flows can remove old artifacts.
+    public func createCommit(
+        message: String,
+        files: [(path: String, content: String)],
+        deletions: [String] = []
+    ) throws {
         let commitSignpost = GitSignposts.begin("GitCreateCommit")
         var commitSucceeded = false
         defer {
@@ -523,7 +528,7 @@ public final class Repository: @unchecked Sendable {
                 GitSignposts.signposter.endInterval(
                     "GitCreateCommit",
                     commitSignpost,
-                    "files=\(files.count, privacy: .public)"
+                    "files=\(files.count, privacy: .public) deletions=\(deletions.count, privacy: .public)"
                 )
             } else {
                 GitSignposts.end("GitCreateCommit", commitSignpost)
@@ -535,6 +540,7 @@ public final class Repository: @unchecked Sendable {
         
         logDebug("Creating commit with message: '\(message)'")
         logDebug("Files to commit: \(files.map { $0.path })")
+        logDebug("Files to delete: \(deletions)")
         
         var index: OpaquePointer?
         guard git_repository_index(&index, repo) == 0, let idx = index else {
@@ -563,6 +569,18 @@ public final class Repository: @unchecked Sendable {
                 throw GitError.repositoryError("Failed to add file to index: \(error)")
             }
             logDebug("Added \(file.path) to index from memory")
+        }
+
+        for deletionPath in deletions {
+            let removalResult = deletionPath.withCString { cPath in
+                git_index_remove_bypath(idx, cPath)
+            }
+            guard removalResult == 0 || removalResult == Int32(GIT_ENOTFOUND.rawValue) else {
+                logDebug("Failed to remove \(deletionPath) from index, error code: \(removalResult)")
+                let error = GitError.fromGitError()
+                throw GitError.repositoryError("Failed to remove file from index: \(error)")
+            }
+            logDebug("Removed \(deletionPath) from index")
         }
         
         guard git_index_write(idx) == 0 else {

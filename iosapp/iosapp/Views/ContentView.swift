@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var hasEmittedRootVisible = false
     @State private var hasEmittedMainTabsVisible = false
     @State private var hasEmittedOnboardingVisible = false
+    @State private var showRecoveryWarning = false
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
     init(previewState: PreviewState? = nil) {
@@ -85,10 +86,11 @@ struct ContentView: View {
                     
                     SettingsView(onWipeAndResync: {
                         Task { await performResync(shouldWipeLocalState: true) }
-                    })
+                    }, showRecoveryWarning: showRecoveryWarning)
                         .tabItem {
                             Label("Settings", systemImage: "gearshape")
                         }
+                        .badge(showRecoveryWarning ? "!" : nil)
                         .tag(2)
                         .accessibilityIdentifier("settingsTab")
                 }
@@ -135,6 +137,7 @@ struct ContentView: View {
         .task(id: shouldShowMainTabs && !isResyncing) {
             guard previewState == nil else { return }
             updatePeriodicSyncLifecycle()
+            await refreshRecoveryWarning()
         }
     }
     
@@ -317,6 +320,21 @@ struct ContentView: View {
         } else {
             PeriodicSyncManager.shared.onPushSuccess = nil
             PeriodicSyncManager.shared.stop()
+        }
+    }
+
+    // Computes whether no recovery key exists so settings can nudge users before key-loss incidents.
+    private func refreshRecoveryWarning() async {
+        guard shouldShowMainTabs else {
+            showRecoveryWarning = false
+            return
+        }
+        do {
+            let repository = try RepositoryManager.shared.getRepository()
+            let hasRecovery = try RecoveryKeyManager().hasRecoveryKey(repository: repository)
+            showRecoveryWarning = !hasRecovery
+        } catch {
+            showRecoveryWarning = false
         }
     }
 

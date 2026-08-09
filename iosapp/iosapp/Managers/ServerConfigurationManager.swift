@@ -58,6 +58,44 @@ final class ServerConfigurationManager {
         }
         try configure(fromQRCodeData: data)
     }
+
+    // Resolves discovery JSON and verifies the CA fingerprint before persisting trust configuration.
+    // This lets recovery re-target moved servers while keeping the original out-of-band trust anchor.
+    func discoverAndConfigure(
+        discoveryURLString: String,
+        expectedCAHash: String,
+        session: URLSession = .shared
+    ) async throws -> Configuration {
+        guard let configURL = Self.discoveryConfigURL(from: discoveryURLString) else {
+            throw ConfigurationError.invalidDiscoveryURL
+        }
+
+        let responseData: Data
+        do {
+            let (data, response) = try await session.data(from: configURL)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  200..<300 ~= httpResponse.statusCode else {
+                throw ConfigurationError.discoveryFetchFailed
+            }
+            responseData = data
+        } catch {
+            throw ConfigurationError.discoveryFetchFailed
+        }
+
+        guard let payload = try? JSONSerialization.jsonObject(with: responseData) as? [String: String],
+              let discoveredCA = payload["ca"],
+              let discoveredURL = payload["url"] else {
+            throw ConfigurationError.invalidDiscoveryResponse
+        }
+
+        guard let discoveredHash = Self.certificateHash(fromPEM: discoveredCA),
+              discoveredHash.caseInsensitiveCompare(expectedCAHash) == .orderedSame else {
+            throw ConfigurationError.discoveryCAHashMismatch
+        }
+
+        try configure(url: discoveredURL, caCertificate: discoveredCA)
+        return Configuration(url: discoveredURL, caCertificate: discoveredCA)
+    }
     
     // Stores the server URL and CA certificate, from which LFS URL is always derived.
     func configure(url: String, caCertificate: String) throws {
@@ -321,6 +359,30 @@ final class ServerConfigurationManager {
         let digest = SHA256.hash(data: derData)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
+
+    // Normalizes operator-provided discovery URLs into a concrete config.json endpoint.
+    // Recovery asks users for a discovery address when the original endpoint is unreachable.
+    static func discoveryConfigURL(from discoveryURLString: String) -> URL? {
+        let trimmed = discoveryURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              components.scheme != nil,
+              components.host != nil else {
+            return nil
+        }
+
+        let path = components.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch path {
+        case "", "/":
+            components.path = "/config.json"
+        case "/config.json":
+            break
+        default:
+            components.path = path.hasSuffix("/") ? path + "config.json" : path + "/config.json"
+        }
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
 }
 
 // Errors that can occur during server configuration.
@@ -329,6 +391,10 @@ enum ConfigurationError: Error, LocalizedError {
     case invalidURL
     case invalidCertificate
     case keychainError(OSStatus)
+    case invalidDiscoveryURL
+    case discoveryFetchFailed
+    case invalidDiscoveryResponse
+    case discoveryCAHashMismatch
     
     var errorDescription: String? {
         switch self {
@@ -340,6 +406,14 @@ enum ConfigurationError: Error, LocalizedError {
             return "Invalid CA certificate"
         case .keychainError(let status):
             return "Keychain error: \(status)"
+        case .invalidDiscoveryURL:
+            return "Invalid discovery URL. Expected an http(s) URL to the gitd discovery endpoint."
+        case .discoveryFetchFailed:
+            return "Could not reach discovery server."
+        case .invalidDiscoveryResponse:
+            return "Discovery server returned invalid configuration."
+        case .discoveryCAHashMismatch:
+            return "Discovery server CA did not match the pinned recovery key fingerprint."
         }
     }
 }

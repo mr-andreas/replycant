@@ -47,6 +47,9 @@ struct iosappApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onOpenURL { url in
+                    RecoveryDeepLinkRouter.shared.handle(url: url)
+                }
         }
     }
     

@@ -5,12 +5,18 @@ import LibGit2
 // Manages KEK epoch files so devices can rotate and redistribute encryption access without re-encrypting all objects.
 final class KEKEpochManager {
     private let repository: Repository
-    private let identityManager: ClientIdentityManager
+    private let ageIdentityLoader: () throws -> Curve25519.KeyAgreement.PrivateKey
     private var kekCache: [Int: Data] = [:]
 
-    init(repository: Repository, identityManager: ClientIdentityManager = .shared) {
+    // Allows recovery flows to decrypt epochs with an injected key without mutating the app's primary keychain identity.
+    init(
+        repository: Repository,
+        ageIdentityLoader: @escaping () throws -> Curve25519.KeyAgreement.PrivateKey = {
+            try ClientIdentityManager.shared.agePrivateKey()
+        }
+    ) {
         self.repository = repository
-        self.identityManager = identityManager
+        self.ageIdentityLoader = ageIdentityLoader
     }
 
     // Returns the active epoch number so callers can tag newly encrypted manifests and pointers correctly.
@@ -30,7 +36,7 @@ final class KEKEpochManager {
         let path = "encryption/epochs/\(epoch).age"
         let encryptedText = try repository.readFile(at: path)
         let encryptedData = Data(encryptedText.utf8)
-        let identity = try identityManager.agePrivateKey()
+        let identity = try ageIdentityLoader()
         let kek = try AgeCrypto.decrypt(ciphertext: encryptedData, identity: identity)
         kekCache[epoch] = kek
         return kek

@@ -9,8 +9,6 @@ struct OnboardingView: View {
     static let connectToExistingStepOneContinueLabel = "Next"
     static let connectToExistingStepOneWaitingLabel = "Waiting for your other device to scan..."
     static let connectToExistingStepTwoHint = "Your other device should now be showing a green-bordered QR code"
-    static let encryptionDisclaimerText = "Replycant encrypts both media files and metadata. Encryption keys are stored only on your devices and are never stored on the server. If these keys are lost, your entire library will be permanently inaccessible. Uninstalling the iOS app removes this device's keys and can cause permanent data loss unless another device has already been granted access."
-    static let encryptionDisclaimerAcknowledgeLabel = "I understand"
     static let serverSetupGuideText = "Before you continue, set up a Replycant server and make sure it's reachable from this device. Follow the guide below, then return here to scan your server QR code."
     static let serverSetupGuideURL = URL(string: "https://github.com/mr-andreas/replycant#getting-started")!
     
@@ -24,7 +22,6 @@ struct OnboardingView: View {
     @State private var deviceName: String
     @State private var deviceUUID: String
     @State private var isConnectToExistingFlow: Bool
-    @State private var hasAcceptedEncryptionDisclaimer: Bool
 
     // Initializes the onboarding router so first-launch users see product context before setup actions.
     init(onComplete: @escaping () -> Void) {
@@ -37,7 +34,6 @@ struct OnboardingView: View {
         _deviceName = State(initialValue: "")
         _deviceUUID = State(initialValue: "")
         _isConnectToExistingFlow = State(initialValue: false)
-        _hasAcceptedEncryptionDisclaimer = State(initialValue: false)
     }
 
     /// Preview-only initializer that parks the view at a specific step
@@ -63,7 +59,6 @@ struct OnboardingView: View {
         _deviceName = State(initialValue: deviceName)
         _deviceUUID = State(initialValue: "preview-uuid")
         _isConnectToExistingFlow = State(initialValue: step == .showPublicKey || step == .scanConfig)
-        _hasAcceptedEncryptionDisclaimer = State(initialValue: false)
     }
     
     var body: some View {
@@ -74,8 +69,6 @@ struct OnboardingView: View {
                     introView
                 case .welcome:
                     welcomeView
-                case .encryptionDisclaimer:
-                    encryptionDisclaimerView
                 case .serverSetupGuide:
                     serverSetupGuideView
                 case .scanQR:
@@ -203,60 +196,6 @@ struct OnboardingView: View {
         }
     }
 
-    // Requires explicit key-loss acknowledgement before scanner setup so users
-    // understand encryption recovery constraints before creating a library.
-    private var encryptionDisclaimerView: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            Image(systemName: "lock.trianglebadge.exclamationmark")
-                .font(.system(size: 56))
-                .foregroundStyle(.red)
-
-            Text(Self.encryptionDisclaimerText)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-
-            Button(action: {
-                hasAcceptedEncryptionDisclaimer.toggle()
-            }) {
-                HStack(spacing: 12) {
-                    Image(systemName: hasAcceptedEncryptionDisclaimer ? "checkmark.square.fill" : "square")
-                        .font(.title3)
-                    Text(Self.encryptionDisclaimerAcknowledgeLabel)
-                        .font(.body.weight(.semibold))
-                    Spacer()
-                }
-                .foregroundStyle(.primary)
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.gray.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal)
-
-            Spacer()
-
-            VStack(spacing: 16) {
-                Button(action: { currentStep = .serverSetupGuide }) {
-                    Text("Continue")
-                }
-                .buttonStyle(PairingPrimaryButtonStyle(disabled: !hasAcceptedEncryptionDisclaimer))
-                .disabled(!hasAcceptedEncryptionDisclaimer)
-
-                Button(action: { currentStep = .welcome }) {
-                    Text("Go Back")
-                }
-                .buttonStyle(PairingTertiaryButtonStyle())
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 40)
-        }
-    }
-
     // Surfaces a concrete server setup guide before QR scanning so users can
     // complete infrastructure prerequisites without leaving onboarding guessing.
     private var serverSetupGuideView: some View {
@@ -294,7 +233,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(PairingPrimaryButtonStyle())
 
-                Button(action: { currentStep = .encryptionDisclaimer }) {
+                Button(action: { currentStep = .welcome }) {
                     Text("Go Back")
                 }
                 .buttonStyle(PairingTertiaryButtonStyle())
@@ -417,12 +356,10 @@ struct OnboardingView: View {
         currentStep = .welcome
     }
 
-    // Starts create-library onboarding at encryption warnings so users
-    // acknowledge irreversible key-loss risks before setup begins.
+    // Starts create-library onboarding at server setup guidance so users can bootstrap immediately.
     private func startCreateLibrary() {
         isConnectToExistingFlow = false
-        hasAcceptedEncryptionDisclaimer = false
-        currentStep = .encryptionDisclaimer
+        currentStep = .serverSetupGuide
     }
 
     // MARK: - QR Code Handling
@@ -746,7 +683,6 @@ struct OnboardingView: View {
 enum OnboardingStep {
     case intro
     case welcome
-    case encryptionDisclaimer
     case serverSetupGuide
     case scanQR
     case showPublicKey
@@ -759,7 +695,6 @@ enum OnboardingStep {
         switch self {
         case .intro: return "Welcome"
         case .welcome: return ""
-        case .encryptionDisclaimer: return "Encryption Warning"
         case .serverSetupGuide: return "Server Setup"
         case .scanQR: return "Scan QR Code"
         case .showPublicKey: return "Your Device Key"
@@ -819,10 +754,6 @@ private enum OnboardingError: Error, LocalizedError {
 
 #Preview("Welcome") {
     OnboardingView(preview: .welcome)
-}
-
-#Preview("Encryption Disclaimer") {
-    OnboardingView(preview: .encryptionDisclaimer)
 }
 
 #Preview("Server Setup Guide") {

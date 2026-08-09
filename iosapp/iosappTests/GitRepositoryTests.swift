@@ -371,6 +371,38 @@ struct GitRepositoryTests {
         #expect(repo.fileExists(at: "signpost.txt"))
     }
 
+    // Verifies commit-time deletions remove tracked files so recovery-key replacement can revoke old pubkeys.
+    @Test func testCreateCommitSupportsDeletions() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("delete-commit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        let repo = try Repository.create(at: root, bare: false)
+        try repo.createCommit(
+            message: "seed files",
+            files: [
+                (path: "pubkeys/recovery-old.recovery.pub", content: "ssh-pub"),
+                (path: "pubkeys/recovery-old.recovery.age", content: "age-pub"),
+                (path: "pubkeys/keep.pub", content: "keep"),
+            ]
+        )
+        #expect(repo.fileExists(at: "pubkeys/recovery-old.recovery.pub"))
+        #expect(repo.fileExists(at: "pubkeys/recovery-old.recovery.age"))
+
+        try repo.createCommit(
+            message: "delete old recovery key",
+            files: [],
+            deletions: [
+                "pubkeys/recovery-old.recovery.pub",
+                "pubkeys/recovery-old.recovery.age",
+            ]
+        )
+
+        #expect(!repo.fileExists(at: "pubkeys/recovery-old.recovery.pub"))
+        #expect(!repo.fileExists(at: "pubkeys/recovery-old.recovery.age"))
+        #expect(repo.fileExists(at: "pubkeys/keep.pub"))
+    }
+
     // Verifies repository mutation lock strictly serializes overlapping mutation closures.
     @Test func testRepositoryMutationLockSerializesConcurrentMutations() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("repo-mutation-lock-\(UUID().uuidString)")

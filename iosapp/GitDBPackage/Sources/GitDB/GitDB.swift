@@ -65,10 +65,11 @@ public final class GitDatabase: Sendable {
         succeeded = true
     }
 
-    // Commits raw file updates and then converges SQL state to current HEAD.
+    // Commits raw file updates/deletions and then converges SQL state to current HEAD.
     public func commitFiles(
         message: String,
-        files: [(path: String, content: String)]
+        files: [(path: String, content: String)],
+        deletions: [String] = []
     ) async throws {
         let signpost = GitDBSignposts.begin("GitDBCommitFiles")
         var succeeded = false
@@ -77,14 +78,14 @@ public final class GitDatabase: Sendable {
                 GitDBSignposts.signposter.endInterval(
                     "GitDBCommitFiles",
                     signpost,
-                    "files=\(files.count, privacy: .public)"
+                    "files=\(files.count, privacy: .public) deletions=\(deletions.count, privacy: .public)"
                 )
             } else {
                 GitDBSignposts.end("GitDBCommitFiles", signpost)
             }
         }
         try await repository.withMutationLock {
-            try repository.createCommit(message: message, files: files)
+            try repository.createCommit(message: message, files: files, deletions: deletions)
             try await syncEngine.syncToHead(progressHandler: nil)
         }
         succeeded = true
