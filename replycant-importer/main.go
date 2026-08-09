@@ -20,10 +20,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -264,11 +264,6 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 	_, _ = i.log("boot: loaded %d known sha256 values\n", len(knownSHAs))
 
 	_, _ = i.log("boot: scanning source files\n")
-	files, err := collectSourceFiles(srcAbs)
-	if err != nil {
-		return err
-	}
-	_, _ = i.log("boot: found %d source files\n", len(files))
 
 	pushCh := make(chan struct{}, 32)
 	var pushWG sync.WaitGroup
@@ -288,11 +283,29 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		workers = 1
 	}
 
-	workCh := make(chan int, workers)
+	// Buffer ahead of workers so listing stays ahead of slow encrypt/upload work.
+	workCh := make(chan sourceFile, 1024)
 	commitCh := make(chan *preparedImport, workers*2)
+	progress := &progressTotal{}
 	var workerWG sync.WaitGroup
 	var commitWG sync.WaitGroup
+	var walkWG sync.WaitGroup
 	var logMu sync.Mutex
+	var walkErr error
+
+	walkWG.Add(1)
+	go func() {
+		defer walkWG.Done()
+		walkErr = streamSourceFiles(ctx, srcAbs, workCh, progress)
+		logMu.Lock()
+		if walkErr != nil {
+			fmt.Fprintf(i.stderr, "error scanning source files: %v\n", walkErr)
+		} else {
+			_, _ = i.log("boot: found %d source files\n", progress.found.Load())
+		}
+		logMu.Unlock()
+	}()
+
 	commitWG.Add(1)
 	go func() {
 		defer commitWG.Done()
@@ -347,7 +360,12 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 			logMu.Unlock()
 			for _, prepared := range batch {
 				logMu.Lock()
-				_, _ = i.log("[%d/%d] %s imported\n", prepared.index+1, len(files), prepared.sourceName)
+				_, _ = i.log(
+					"[%d/%s] %s imported\n",
+					prepared.index+1,
+					progress.label(),
+					prepared.sourceName,
+				)
 				logMu.Unlock()
 				if cli.PushEvery > 0 {
 					pushCh <- struct{}{}
@@ -359,28 +377,32 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		workerWG.Add(1)
 		go func() {
 			defer workerWG.Done()
-			for idx := range workCh {
+			for job := range workCh {
 				if ctx.Err() != nil {
 					continue
 				}
-				file := files[idx]
-				prepared, skipped, err := i.prepareFile(repoAbs, cli.DeviceSpace, file, knownSHAs, knownPathSizes)
+				prepared, skipped, err := i.prepareFile(repoAbs, cli.DeviceSpace, job.path, knownSHAs, knownPathSizes)
 				if err != nil {
 					logMu.Lock()
-					fmt.Fprintf(i.stderr, "error importing %s: %v\n", file, err)
+					fmt.Fprintf(i.stderr, "error importing %s: %v\n", job.path, err)
 					logMu.Unlock()
 					continue
 				}
 				if skipped {
 					logMu.Lock()
-					_, _ = i.log("[%d/%d] %s (duplicate, skipped)\n", idx+1, len(files), filepath.Base(file))
+					_, _ = i.log(
+						"[%d/%s] %s (duplicate, skipped)\n",
+						job.index+1,
+						progress.label(),
+						filepath.Base(job.path),
+					)
 					logMu.Unlock()
 					continue
 				}
 				if prepared == nil {
 					continue
 				}
-				prepared.index = idx
+				prepared.index = job.index
 				select {
 				case commitCh <- prepared:
 				case <-ctx.Done():
@@ -388,13 +410,7 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 			}
 		}()
 	}
-	for idx := 0; idx < len(files); idx++ {
-		if ctx.Err() != nil {
-			break
-		}
-		workCh <- idx
-	}
-	close(workCh)
+	walkWG.Wait()
 	workerWG.Wait()
 	close(commitCh)
 	commitWG.Wait()
@@ -410,6 +426,9 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		if err != nil {
 			return fmt.Errorf("final push failed: %w", err)
 		}
+	}
+	if walkErr != nil {
+		return walkErr
 	}
 	return nil
 }
@@ -549,12 +568,47 @@ func (i *importer) ensureTool(name string) error {
 	return nil
 }
 
-// collectSourceFiles recursively enumerates supported media files in stable order.
-func collectSourceFiles(root string) ([]string, error) {
-	var out []string
+// sourceFile is one media path discovered while scanning, with a stable 0-based
+// index used only for progress reporting.
+type sourceFile struct {
+	index int
+	path  string
+}
+
+// progressTotal tracks how many media files the walker has found so progress
+// lines can show "(calculating)" until the walk completes.
+type progressTotal struct {
+	found atomic.Int64
+	done  atomic.Bool
+}
+
+// label renders the progress denominator; listing runs concurrently with
+// importing, so the total is unknown until the walk completes.
+func (p *progressTotal) label() string {
+	if !p.done.Load() {
+		return "(calculating)"
+	}
+	return strconv.FormatInt(p.found.Load(), 10)
+}
+
+func (p *progressTotal) finish() {
+	p.done.Store(true)
+}
+
+// streamSourceFiles walks root and streams supported media paths to out so
+// workers can encrypt/upload before the full tree is listed. It owns and closes
+// out, and marks progress done when the walk finishes or is cancelled.
+func streamSourceFiles(ctx context.Context, root string, out chan<- sourceFile, progress *progressTotal) error {
+	defer close(out)
+	defer progress.finish()
+
+	index := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if ctx.Err() != nil {
+			return fs.SkipAll
 		}
 		if d.IsDir() {
 			return nil
@@ -562,14 +616,20 @@ func collectSourceFiles(root string) ([]string, error) {
 		if mediaTypeFromPath(path) == "" {
 			return nil
 		}
-		out = append(out, path)
-		return nil
+		job := sourceFile{index: index, path: path}
+		select {
+		case out <- job:
+			index++
+			progress.found.Store(int64(index))
+			return nil
+		case <-ctx.Done():
+			return fs.SkipAll
+		}
 	})
-	if err != nil {
-		return nil, err
+	if err != nil && !errors.Is(err, fs.SkipAll) {
+		return err
 	}
-	sort.Strings(out)
-	return out, nil
+	return nil
 }
 
 // loadExistingSHAs indexes all existing Original manifests across all device spaces.

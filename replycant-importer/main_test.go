@@ -577,6 +577,156 @@ func TestNormalizePhotoOrientation(t *testing.T) {
 	}
 }
 
+// TestStreamSourceFilesProgressLabel verifies listing reports (calculating) until
+// the walk finishes, then exposes the concrete total for progress lines.
+func TestStreamSourceFilesProgressLabel(t *testing.T) {
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+	writeTinyJPEG(t, filepath.Join(srcDir, "b.jpg"))
+	writeTinyJPEG(t, filepath.Join(srcDir, "c.jpg"))
+
+	out := make(chan sourceFile)
+	progress := &progressTotal{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- streamSourceFiles(context.Background(), srcDir, out, progress)
+	}()
+
+	first, ok := <-out
+	if !ok {
+		t.Fatal("expected at least one source file")
+	}
+	if first.index != 0 {
+		t.Fatalf("expected first index 0, got %d", first.index)
+	}
+	if got := progress.label(); got != "(calculating)" {
+		t.Fatalf("expected (calculating) after first file, got %q", got)
+	}
+
+	var rest []sourceFile
+	for job := range out {
+		rest = append(rest, job)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("streamSourceFiles failed: %v", err)
+	}
+	if len(rest) != 2 {
+		t.Fatalf("expected 2 remaining files, got %d", len(rest))
+	}
+	if got := progress.label(); got != "3" {
+		t.Fatalf("expected total 3 after walk, got %q", got)
+	}
+}
+
+// TestStreamSourceFilesSkipsUnsupported verifies non-media files are ignored and
+// media indices stay contiguous.
+func TestStreamSourceFilesSkipsUnsupported(t *testing.T) {
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+	if err := os.WriteFile(filepath.Join(srcDir, "notes.txt"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTinyJPEG(t, filepath.Join(srcDir, "b.jpg"))
+
+	out := make(chan sourceFile, 8)
+	progress := &progressTotal{}
+	if err := streamSourceFiles(context.Background(), srcDir, out, progress); err != nil {
+		t.Fatalf("streamSourceFiles failed: %v", err)
+	}
+	var got []sourceFile
+	for job := range out {
+		got = append(got, job)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 media files, got %d", len(got))
+	}
+	for i, job := range got {
+		if job.index != i {
+			t.Fatalf("expected contiguous index %d, got %d", i, job.index)
+		}
+		if mediaTypeFromPath(job.path) == "" {
+			t.Fatalf("unexpected non-media path: %s", job.path)
+		}
+	}
+	if got := progress.label(); got != "2" {
+		t.Fatalf("expected total 2, got %q", got)
+	}
+}
+
+// TestStreamSourceFilesCancel verifies a cancelled context stops listing early
+// and still closes the channel so workers can drain.
+func TestStreamSourceFilesCancel(t *testing.T) {
+	srcDir := t.TempDir()
+	for i := 0; i < 20; i++ {
+		writeTinyJPEG(t, filepath.Join(srcDir, fmt.Sprintf("%02d.jpg", i)))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan sourceFile)
+	progress := &progressTotal{}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- streamSourceFiles(ctx, srcDir, out, progress)
+	}()
+
+	first, ok := <-out
+	if !ok {
+		t.Fatal("expected at least one source file before cancel")
+	}
+	_ = first
+	cancel()
+
+	var delivered int
+	for range out {
+		delivered++
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("streamSourceFiles failed after cancel: %v", err)
+	}
+	if delivered >= 19 {
+		t.Fatalf("expected early stop after cancel, delivered %d remaining files", delivered)
+	}
+	if !progress.done.Load() {
+		t.Fatal("expected progress to be marked done after cancel")
+	}
+}
+
+// TestImportProgressUsesConcreteTotal verifies import progress lines switch from
+// (calculating) during listing to a concrete denominator once scanning finishes.
+func TestImportProgressUsesConcreteTotal(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	imp, _, _, _ := newTestImporter(t, nil)
+	imp.log = func(format string, args ...any) (int, error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return fmt.Fprintf(&logBuf, format, args...)
+	}
+
+	if err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+		Workers:     1,
+	}); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	logMu.Lock()
+	logs := logBuf.String()
+	logMu.Unlock()
+	if !strings.Contains(logs, "[1/1] a.jpg imported") {
+		t.Fatalf("expected concrete progress total in logs, got:\n%s", logs)
+	}
+	if strings.Contains(logs, "[1/(calculating)] a.jpg imported") {
+		t.Fatalf("imported line should not keep (calculating) after walk finishes:\n%s", logs)
+	}
+}
+
 // TestErrorContinue verifies one bad file does not prevent importing good files.
 func TestErrorContinue(t *testing.T) {
 	repo := initTempRepo(t)

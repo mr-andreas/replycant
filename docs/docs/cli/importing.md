@@ -40,3 +40,8 @@ under `binary/**`. Instead it:
 4. Commits the pointer alongside the YAML manifests
 
 That keeps rebases cheap because Git only moves small pointer blobs.
+
+Scanning the source tree overlaps with import work: workers begin
+encrypting and uploading as soon as files are discovered. Progress
+lines show `(calculating)` as the denominator until the scan finishes,
+then switch to the concrete total.
