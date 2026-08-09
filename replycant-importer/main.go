@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -136,7 +137,7 @@ type importer struct {
 	// multi-minute LFS upload reports progress instead of looking like a hang.
 	verboseOut           io.Writer
 	log                  func(format string, args ...any) (int, error)
-	runCmd               func(dir string, name string, args ...string) ([]byte, error)
+	runCmd               func(ctx context.Context, dir string, name string, args ...string) ([]byte, error)
 	newUUID              func() string
 	now                  func() time.Time
 	extractPhotoMetadata func(path string) (string, *OriginalLocation, int)
@@ -173,7 +174,8 @@ func main() {
 	}
 }
 
-// runCLI parses CLI args and executes the importer with signal-aware shutdown.
+// runCLI parses CLI args and executes the importer with two-stage signal shutdown:
+// first interrupt cancels in-flight import work, second cancels the flush push.
 func runCLI() error {
 	var cli CLI
 	parser, err := kong.New(
@@ -189,8 +191,28 @@ func runCLI() error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	flushCtx, cancelFlush := context.WithCancel(context.Background())
+	defer cancelWork()
+	defer cancelFlush()
+
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		stage := 0
+		for range sigCh {
+			stage++
+			switch stage {
+			case 1:
+				fmt.Fprintln(os.Stderr, "cancelling import; press Ctrl+C again to cancel the flush")
+				cancelWork()
+			case 2:
+				cancelFlush()
+				signal.Stop(sigCh)
+			}
+		}
+	}()
 
 	imp := &importer{
 		stderr:               os.Stderr,
@@ -200,11 +222,17 @@ func runCLI() error {
 		extractPhotoMetadata: extractImageMetadata,
 	}
 	imp.runCmd = imp.execCmd
-	return imp.run(ctx, cli)
+	return imp.runStaged(workCtx, flushCtx, cli)
 }
 
-// run validates setup, imports recursively, and keeps processing on per-file errors.
+// run is the single-context entry point used by tests; both stages share ctx.
 func (i *importer) run(ctx context.Context, cli CLI) error {
+	return i.runStaged(ctx, ctx, cli)
+}
+
+// runStaged validates setup, imports recursively, and keeps processing on
+// per-file errors. workCtx cancels prepare/walk; flushCtx cancels commit/push.
+func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 	if i.log == nil {
 		i.log = fmt.Printf
 	}
@@ -233,13 +261,13 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 	}
 
 	_, _ = i.log("boot: validating repository %s\n", repoAbs)
-	if err := i.ensureGitRepo(repoAbs); err != nil {
+	if err := i.ensureGitRepo(workCtx, repoAbs); err != nil {
 		return err
 	}
-	if err := i.ensureNoFullLFSClone(repoAbs); err != nil {
+	if err := i.ensureNoFullLFSClone(workCtx, repoAbs); err != nil {
 		return err
 	}
-	if err := i.setupCryptoAndUploader(repoAbs); err != nil {
+	if err := i.setupCryptoAndUploader(workCtx, repoAbs); err != nil {
 		return err
 	}
 	_, _ = i.log("boot: repository ok\n")
@@ -271,7 +299,7 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		pushWG.Add(1)
 		go func() {
 			defer pushWG.Done()
-			i.pushLoop(repoAbs, cli.PushEvery, pushCh)
+			i.pushLoop(workCtx, flushCtx, repoAbs, cli.PushEvery, pushCh)
 		}()
 	}
 
@@ -285,6 +313,9 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 
 	// Unbounded queue so listing never stalls behind slow encrypt/upload work.
 	queue := newSourceQueue()
+	// Wake workers parked in pop() even if the walker is stuck in ReadDir.
+	stopQueueOnCancel := context.AfterFunc(workCtx, queue.close)
+	defer stopQueueOnCancel()
 	commitCh := make(chan *preparedImport, workers*2)
 	progress := &progressTotal{}
 	var workerWG sync.WaitGroup
@@ -296,11 +327,11 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 	walkWG.Add(1)
 	go func() {
 		defer walkWG.Done()
-		walkErr = streamSourceFiles(ctx, srcAbs, queue, progress)
+		walkErr = streamSourceFiles(workCtx, srcAbs, queue, progress)
 		logMu.Lock()
 		if walkErr != nil {
 			fmt.Fprintf(i.stderr, "error scanning source files: %v\n", walkErr)
-		} else {
+		} else if workCtx.Err() == nil {
 			_, _ = i.log("boot: found %d source files\n", progress.found.Load())
 		}
 		logMu.Unlock()
@@ -335,11 +366,13 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 
 		commitBatch:
 			commitStart := i.now()
-			if err := i.gitCommit(repoAbs, batch); err != nil {
+			if err := i.gitCommit(flushCtx, repoAbs, batch); err != nil {
 				for _, prepared := range batch {
-					logMu.Lock()
-					fmt.Fprintf(i.stderr, "error importing %s: %v\n", prepared.sourceName, err)
-					logMu.Unlock()
+					if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+						logMu.Lock()
+						fmt.Fprintf(i.stderr, "error importing %s: %v\n", prepared.sourceName, err)
+						logMu.Unlock()
+					}
 					if prepared.reservedSHA != "" {
 						i.shaMu.Lock()
 						delete(knownSHAs, prepared.reservedSHA)
@@ -368,7 +401,10 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 				)
 				logMu.Unlock()
 				if cli.PushEvery > 0 {
-					pushCh <- struct{}{}
+					select {
+					case pushCh <- struct{}{}:
+					case <-flushCtx.Done():
+					}
 				}
 			}
 		}
@@ -378,21 +414,23 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 		go func() {
 			defer workerWG.Done()
 			for {
-				if ctx.Err() != nil {
+				if workCtx.Err() != nil {
 					return
 				}
 				job, ok := queue.pop()
 				if !ok {
 					return
 				}
-				if ctx.Err() != nil {
+				if workCtx.Err() != nil {
 					return
 				}
-				prepared, skipped, err := i.prepareFile(repoAbs, cli.DeviceSpace, job.path, knownSHAs, knownPathSizes)
+				prepared, skipped, err := i.prepareFile(workCtx, repoAbs, cli.DeviceSpace, job.path, knownSHAs, knownPathSizes)
 				if err != nil {
-					logMu.Lock()
-					fmt.Fprintf(i.stderr, "error importing %s: %v\n", job.path, err)
-					logMu.Unlock()
+					if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+						logMu.Lock()
+						fmt.Fprintf(i.stderr, "error importing %s: %v\n", job.path, err)
+						logMu.Unlock()
+					}
 					continue
 				}
 				if skipped {
@@ -412,7 +450,15 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 				prepared.index = job.index
 				select {
 				case commitCh <- prepared:
-				case <-ctx.Done():
+				case <-flushCtx.Done():
+					if prepared.reservedSHA != "" {
+						i.shaMu.Lock()
+						delete(knownSHAs, prepared.reservedSHA)
+						i.shaMu.Unlock()
+					}
+					for _, p := range prepared.writtenPaths {
+						_ = os.Remove(p)
+					}
 					return
 				}
 			}
@@ -428,10 +474,24 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 	// Flush remaining commits (and recover from a late push rejection) so a finished
 	// import does not leave work local-only when periodic push is enabled.
 	if cli.PushEvery > 0 {
+		if workCtx.Err() != nil {
+			_, _ = i.log(
+				"cancelled: pushing %s pending commit(s); press Ctrl+C again to cancel immediately\n",
+				i.pendingCommitLabel(flushCtx, repoAbs),
+			)
+		}
 		i.gitMu.Lock()
-		err := i.pushWithRebase(repoAbs)
+		err := i.pushWithRebase(flushCtx, repoAbs)
 		i.gitMu.Unlock()
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || flushCtx.Err() != nil {
+				fmt.Fprintf(
+					i.stderr,
+					"push cancelled: %s commit(s) remain local; run git push in the repo\n",
+					i.pendingCommitLabel(context.Background(), repoAbs),
+				)
+				return nil
+			}
 			return fmt.Errorf("final push failed: %w", err)
 		}
 	}
@@ -442,8 +502,8 @@ func (i *importer) run(ctx context.Context, cli CLI) error {
 }
 
 // ensureGitRepo validates the repo arg points at an existing git worktree.
-func (i *importer) ensureGitRepo(repoPath string) error {
-	out, err := i.runCmd(repoPath, "git", "rev-parse", "--is-inside-work-tree")
+func (i *importer) ensureGitRepo(ctx context.Context, repoPath string) error {
+	out, err := i.runCmd(ctx, repoPath, "git", "rev-parse", "--is-inside-work-tree")
 	if err != nil {
 		return fmt.Errorf("repo path is not a git repository: %w", err)
 	}
@@ -455,8 +515,8 @@ func (i *importer) ensureGitRepo(repoPath string) error {
 
 // ensureNoFullLFSClone rejects filter-driven clones so the importer can write
 // pointers itself without git-lfs clean rewriting multi-megabyte binaries.
-func (i *importer) ensureNoFullLFSClone(repoPath string) error {
-	out, err := i.runCmd(repoPath, "git", "rev-parse", "--git-dir")
+func (i *importer) ensureNoFullLFSClone(ctx context.Context, repoPath string) error {
+	out, err := i.runCmd(ctx, repoPath, "git", "rev-parse", "--git-dir")
 	if err != nil {
 		return fmt.Errorf("failed to resolve git dir: %w", err)
 	}
@@ -475,7 +535,7 @@ func (i *importer) ensureNoFullLFSClone(repoPath string) error {
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return fmt.Errorf("failed reading %s: %w", attrPath, readErr)
 	}
-	if _, err := i.runCmd(repoPath, "git", "config", "--local", "--get", "lfs.url"); err == nil {
+	if _, err := i.runCmd(ctx, repoPath, "git", "config", "--local", "--get", "lfs.url"); err == nil {
 		return fmt.Errorf("repository has lfs.url configured; re-clone with git-replycant clone --no-lfs")
 	}
 	return nil
@@ -483,7 +543,7 @@ func (i *importer) ensureNoFullLFSClone(repoPath string) error {
 
 // setupCryptoAndUploader loads repository encryption material and the LFS uploader
 // so every binary can be encrypted and pushed before its pointer is committed.
-func (i *importer) setupCryptoAndUploader(repoPath string) error {
+func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) error {
 	local, err := gitcrypt.LoadLocalIdentity(repoPath)
 	if err != nil {
 		return fmt.Errorf("load repository identity: %w", err)
@@ -512,7 +572,7 @@ func (i *importer) setupCryptoAndUploader(repoPath string) error {
 		return nil
 	}
 
-	originURL, err := i.runCmd(repoPath, "git", "config", "--get", "remote.origin.url")
+	originURL, err := i.runCmd(ctx, repoPath, "git", "config", "--get", "remote.origin.url")
 	if err != nil {
 		return fmt.Errorf("resolve remote.origin.url: %w", err)
 	}
@@ -524,15 +584,15 @@ func (i *importer) setupCryptoAndUploader(repoPath string) error {
 	if err != nil {
 		return fmt.Errorf("parse LFS URL: %w", err)
 	}
-	caPath, err := i.gitConfigValue(repoPath, "http.sslCAInfo")
+	caPath, err := i.gitConfigValue(ctx, repoPath, "http.sslCAInfo")
 	if err != nil {
 		return err
 	}
-	certPath, err := i.gitConfigValue(repoPath, "http.sslCert")
+	certPath, err := i.gitConfigValue(ctx, repoPath, "http.sslCert")
 	if err != nil {
 		return err
 	}
-	keyPath, err := i.gitConfigValue(repoPath, "http.sslKey")
+	keyPath, err := i.gitConfigValue(ctx, repoPath, "http.sslKey")
 	if err != nil {
 		return err
 	}
@@ -556,8 +616,8 @@ func (i *importer) setupCryptoAndUploader(repoPath string) error {
 }
 
 // gitConfigValue reads one local git config key required for mTLS LFS uploads.
-func (i *importer) gitConfigValue(repoPath, key string) (string, error) {
-	out, err := i.runCmd(repoPath, "git", "config", "--local", "--get", key)
+func (i *importer) gitConfigValue(ctx context.Context, repoPath, key string) (string, error) {
+	out, err := i.runCmd(ctx, repoPath, "git", "config", "--local", "--get", key)
 	if err != nil {
 		return "", fmt.Errorf("failed to read git config %q: %w", key, err)
 	}
@@ -738,7 +798,7 @@ type preparedImport struct {
 }
 
 // prepareFile writes one file's artifacts and returns data for later commit.
-func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSHAs map[string]struct{}, knownPathSizes map[string]int64) (result *preparedImport, skipped bool, retErr error) {
+func (i *importer) prepareFile(ctx context.Context, repoPath, deviceSpace, sourcePath string, knownSHAs map[string]struct{}, knownPathSizes map[string]int64) (result *preparedImport, skipped bool, retErr error) {
 	var writtenPaths []string
 	reservedSHA := ""
 	defer func() {
@@ -765,6 +825,9 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 	if err != nil {
 		return nil, false, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	i.shaMu.Lock()
 	if _, ok := knownSHAs[sum]; ok {
 		i.shaMu.Unlock()
@@ -783,7 +846,7 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 		return nil, true, nil
 	}
 
-	meta, err := i.probeMedia(sourcePath, mediaType)
+	meta, err := i.probeMedia(ctx, sourcePath, mediaType)
 	if err != nil {
 		return nil, false, err
 	}
@@ -862,7 +925,7 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 	}
 	writtenPaths = append(writtenPaths, manifestPath)
 
-	thumbs, err := i.generateThumbnails(deviceSpace, name, sourcePath, mediaType, meta.duration, originalRef, photoSrc)
+	thumbs, err := i.generateThumbnails(ctx, deviceSpace, name, sourcePath, mediaType, meta.duration, originalRef, photoSrc)
 	if err != nil {
 		return nil, false, err
 	}
@@ -879,6 +942,9 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 	}
 	writtenPaths = append(writtenPaths, thumbs.manifestPath)
 
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	uploads := make([]pendingLFSUpload, 0, 1+len(thumbs.payloads))
 	originalUpload, err := i.prepareOriginalUpload(sourcePath, binaryPath, size)
 	if err != nil {
@@ -893,7 +959,7 @@ func (i *importer) prepareFile(repoPath, deviceSpace, sourcePath string, knownSH
 		}
 		uploads = append(uploads, thumbUpload)
 	}
-	if err := i.uploadAndWritePointers(uploads); err != nil {
+	if err := i.uploadAndWritePointers(ctx, uploads); err != nil {
 		return nil, false, err
 	}
 	for _, upload := range uploads {
@@ -929,7 +995,7 @@ type thumbnailPayload struct {
 
 // generateThumbnails creates all variants in memory so import never stages
 // plaintext thumbnails in the worktree or TMPDIR.
-func (i *importer) generateThumbnails(deviceSpace, originalName, sourcePath, mediaType string, duration *float64, originalRef string, photoSrc image.Image) (generatedThumbnails, error) {
+func (i *importer) generateThumbnails(ctx context.Context, deviceSpace, originalName, sourcePath, mediaType string, duration *float64, originalRef string, photoSrc image.Image) (generatedThumbnails, error) {
 	specs := []thumbSpec{
 		{suffix: "150x150", size: 150, square: true, scaler: xdraw.ApproxBiLinear},
 		{suffix: "225x225", size: 225, square: true, scaler: xdraw.ApproxBiLinear},
@@ -959,7 +1025,7 @@ func (i *importer) generateThumbnails(deviceSpace, originalName, sourcePath, med
 		if mediaType == "photo" {
 			jpegBytes, thumbW, thumbH, err = scalePhotoThumbnail(photoSrc, s)
 		} else {
-			jpegBytes, err = i.makeThumbnailJPEG(sourcePath, mediaType, duration, s)
+			jpegBytes, err = i.makeThumbnailJPEG(ctx, sourcePath, mediaType, duration, s)
 			if err == nil {
 				thumbW, thumbH, err = jpegDimensions(jpegBytes)
 			}
@@ -981,7 +1047,7 @@ func (i *importer) generateThumbnails(deviceSpace, originalName, sourcePath, med
 }
 
 // makeThumbnailJPEG renders one thumbnail variant to JPEG bytes via ffmpeg stdout.
-func (i *importer) makeThumbnailJPEG(inputPath, mediaType string, duration *float64, spec thumbSpec) ([]byte, error) {
+func (i *importer) makeThumbnailJPEG(ctx context.Context, inputPath, mediaType string, duration *float64, spec thumbSpec) ([]byte, error) {
 	filter := ""
 	if spec.square {
 		filter = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d", spec.size, spec.size, spec.size, spec.size)
@@ -1002,7 +1068,7 @@ func (i *importer) makeThumbnailJPEG(inputPath, mediaType string, duration *floa
 		args = append(args, "-pix_fmt", "yuvj420p")
 	}
 	args = append(args, "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1")
-	out, err := i.runCmd("", "ffmpeg", args...)
+	out, err := i.runCmd(ctx, "", "ffmpeg", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1127,7 +1193,7 @@ func (i *importer) prepareBytesUpload(plaintext []byte, pointerPath string) (pen
 
 // uploadAndWritePointers pushes ciphertext first so lfs-prereceive always finds
 // objects, then writes pointer files into the worktree for the upcoming commit.
-func (i *importer) uploadAndWritePointers(uploads []pendingLFSUpload) error {
+func (i *importer) uploadAndWritePointers(ctx context.Context, uploads []pendingLFSUpload) error {
 	if i.uploadObjects == nil {
 		return fmt.Errorf("LFS uploader is not configured")
 	}
@@ -1144,7 +1210,7 @@ func (i *importer) uploadAndWritePointers(uploads []pendingLFSUpload) error {
 		}
 		return upload.open()
 	}
-	if err := i.uploadObjects(context.Background(), objects, open); err != nil {
+	if err := i.uploadObjects(ctx, objects, open); err != nil {
 		return fmt.Errorf("upload LFS objects: %w", err)
 	}
 	for _, upload := range uploads {
@@ -1256,7 +1322,7 @@ func sourcePixelForOrientation(orientation, x, y, sw, sh int) (int, int) {
 }
 
 // probeMedia reads dimensions/duration/mime using ffprobe and file extension fallback.
-func (i *importer) probeMedia(path string, mediaType string) (mediaMeta, error) {
+func (i *importer) probeMedia(ctx context.Context, path string, mediaType string) (mediaMeta, error) {
 	args := []string{
 		"-v", "error",
 		"-print_format", "json",
@@ -1264,7 +1330,7 @@ func (i *importer) probeMedia(path string, mediaType string) (mediaMeta, error) 
 		"-show_format",
 		path,
 	}
-	out, err := i.runCmd("", "ffprobe", args...)
+	out, err := i.runCmd(ctx, "", "ffprobe", args...)
 	if err != nil {
 		return mediaMeta{}, fmt.Errorf("ffprobe failed: %w", err)
 	}
@@ -1325,7 +1391,7 @@ func (i *importer) probeMedia(path string, mediaType string) (mediaMeta, error) 
 }
 
 // gitCommit stores one atomic import commit for a batch of prepared files.
-func (i *importer) gitCommit(repoPath string, batch []*preparedImport) error {
+func (i *importer) gitCommit(ctx context.Context, repoPath string, batch []*preparedImport) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -1353,7 +1419,7 @@ func (i *importer) gitCommit(repoPath string, batch []*preparedImport) error {
 	if len(addArgs) == 1 {
 		return fmt.Errorf("git add failed: no paths to add")
 	}
-	if _, err := i.runCmd(repoPath, "git", addArgs...); err != nil {
+	if _, err := i.runCmd(ctx, repoPath, "git", addArgs...); err != nil {
 		return fmt.Errorf("git add failed: %w", err)
 	}
 	msg := fmt.Sprintf("import: %s", strings.Join(sourceNames, ", "))
@@ -1362,29 +1428,45 @@ func (i *importer) gitCommit(repoPath string, batch []*preparedImport) error {
 		"-c", "user.email=importer@replycant.com",
 		"commit", "-m", msg, "--author", "Replycant Importer <importer@replycant.com>",
 	}
-	if _, err := i.runCmd(repoPath, "git", commitArgs...); err != nil {
+	if _, err := i.runCmd(ctx, repoPath, "git", commitArgs...); err != nil {
 		return fmt.Errorf("git commit failed: %w", err)
 	}
 	return nil
 }
 
 // pushLoop periodically runs git push based on successful commit notifications.
-func (i *importer) pushLoop(repoPath string, every int, ch <-chan struct{}) {
+// After workCtx is cancelled it drains tokens without starting new pushes; the
+// final flush covers the backlog. flushCtx aborts an in-flight push immediately.
+func (i *importer) pushLoop(workCtx, flushCtx context.Context, repoPath string, every int, ch <-chan struct{}) {
 	if every <= 0 {
 		return
 	}
 	count := 0
-	for range ch {
-		count++
-		if count < every {
-			continue
-		}
-		count = 0
-		i.gitMu.Lock()
-		err := i.pushWithRebase(repoPath)
-		i.gitMu.Unlock()
-		if err != nil {
-			fmt.Fprintf(i.stderr, "error pushing repository: %v\n", err)
+	for {
+		select {
+		case <-flushCtx.Done():
+			return
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+			if workCtx.Err() != nil {
+				continue
+			}
+			count++
+			if count < every {
+				continue
+			}
+			count = 0
+			i.gitMu.Lock()
+			err := i.pushWithRebase(flushCtx, repoPath)
+			i.gitMu.Unlock()
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				fmt.Fprintf(i.stderr, "error pushing repository: %v\n", err)
+			}
 		}
 	}
 }
@@ -1399,15 +1481,24 @@ const pushRebaseMaxAttempts = 5
 // rebase reuses existing blobs/trees, and merge-ort plus --no-autostash avoid smudging
 // the whole unpushed binary backlog into the worktree. Retries are bounded so a
 // continuously moving remote eventually surfaces a hard error.
-func (i *importer) pushWithRebase(repoPath string) error {
+func (i *importer) pushWithRebase(ctx context.Context, repoPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	start := i.now()
-	_, _ = i.log("push: start pending_commits=%s\n", i.pendingCommitLabel(repoPath))
+	_, _ = i.log("push: start pending_commits=%s\n", i.pendingCommitLabel(ctx, repoPath))
 	var lastPushErr error
 	for attempt := 1; attempt <= pushRebaseMaxAttempts; attempt++ {
-		_, err := i.runCmd(repoPath, "git", "push")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := i.runCmd(ctx, repoPath, "git", "push")
 		if err == nil {
 			_, _ = i.log("push: done attempts=%d elapsed=%s\n", attempt, i.now().Sub(start).Round(time.Millisecond))
 			return nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
 		}
 		lastPushErr = err
 		if attempt == pushRebaseMaxAttempts {
@@ -1420,7 +1511,7 @@ func (i *importer) pushWithRebase(repoPath string) error {
 			summarizeCommandError(err),
 		)
 
-		branchOut, branchErr := i.runCmd(repoPath, "git", "rev-parse", "--abbrev-ref", "HEAD")
+		branchOut, branchErr := i.runCmd(ctx, repoPath, "git", "rev-parse", "--abbrev-ref", "HEAD")
 		if branchErr != nil {
 			return lastPushErr
 		}
@@ -1430,7 +1521,7 @@ func (i *importer) pushWithRebase(repoPath string) error {
 		}
 		// Fetch failure usually means the original push failed for network reasons,
 		// not a non-fast-forward rejection — skip rebase and surface the push error.
-		if _, fetchErr := i.runCmd(repoPath, "git", "fetch", "origin"); fetchErr != nil {
+		if _, fetchErr := i.runCmd(ctx, repoPath, "git", "fetch", "origin"); fetchErr != nil {
 			return lastPushErr
 		}
 		rebaseArgs := []string{
@@ -1439,8 +1530,8 @@ func (i *importer) pushWithRebase(repoPath string) error {
 			"-c", "rebase.backend=merge",
 			"rebase", "--no-autostash", "origin/" + branch,
 		}
-		if _, rebaseErr := i.runCmd(repoPath, "git", rebaseArgs...); rebaseErr != nil {
-			_, _ = i.runCmd(repoPath, "git", "rebase", "--abort")
+		if _, rebaseErr := i.runCmd(ctx, repoPath, "git", rebaseArgs...); rebaseErr != nil {
+			_, _ = i.runCmd(context.Background(), repoPath, "git", "rebase", "--abort")
 			return fmt.Errorf("rebase after failed push: %w", rebaseErr)
 		}
 		_, _ = i.log("push: rebased onto origin/%s; retrying\n", branch)
@@ -1456,8 +1547,8 @@ func (i *importer) pushWithRebase(repoPath string) error {
 // pendingCommitLabel reports how many local commits are missing from the tracked
 // remote branch so push logs show the backlog size. Best effort: a missing or
 // stale upstream ref must never fail the push, so it degrades to "unknown".
-func (i *importer) pendingCommitLabel(repoPath string) string {
-	out, err := i.runCmd(repoPath, "git", "rev-list", "--count", "@{upstream}..HEAD")
+func (i *importer) pendingCommitLabel(ctx context.Context, repoPath string) string {
+	out, err := i.runCmd(ctx, repoPath, "git", "rev-list", "--count", "@{upstream}..HEAD")
 	if err != nil {
 		return "unknown"
 	}
@@ -1713,8 +1804,8 @@ func asFloat64(v any) (float64, bool) {
 
 // execCmd is the importer's command leaf. Routing every invocation through it
 // keeps verbose stderr mirroring in effect even for wrapped/spied runners.
-func (i *importer) execCmd(dir string, name string, args ...string) ([]byte, error) {
-	return runCmdTee(i.verboseTeeFor(name, args), dir, name, args...)
+func (i *importer) execCmd(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	return runCmdTee(i.verboseTeeFor(name, args), ctx, dir, name, args...)
 }
 
 // verboseTeeFor limits live stderr mirroring to remote git operations. ffmpeg and
@@ -1746,17 +1837,19 @@ func gitSubcommand(args []string) string {
 }
 
 // defaultRunCmd executes commands and returns stdout or rich stderr context.
-func defaultRunCmd(dir string, name string, args ...string) ([]byte, error) {
-	return runCmdTee(nil, dir, name, args...)
+func defaultRunCmd(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	return runCmdTee(nil, ctx, dir, name, args...)
 }
 
-// runCmdTee executes one command, mirroring child stderr to tee when set so
-// long-running work can report progress before it finishes.
-func runCmdTee(tee io.Writer, dir string, name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+// runCmdTee executes one command under ctx so Ctrl+C kills children. Child
+// stderr is mirrored to tee when set so long-running work can report progress.
+func runCmdTee(tee io.Writer, ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// Bound Wait after Kill so a grandchild holding stdout cannot stall exit.
+	cmd.WaitDelay = 2 * time.Second
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1766,6 +1859,9 @@ func runCmdTee(tee io.Writer, dir string, name string, args ...string) ([]byte, 
 		cmd.Stderr = &stderr
 	}
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), ctxErr)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()

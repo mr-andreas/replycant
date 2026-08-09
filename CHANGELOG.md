@@ -14,4 +14,5 @@
 
 ### Fixes
 
+- replycant-importer: ctrl+c now stops in-flight work immediately, flushes pending commits, and a second ctrl+c cancels the flush
 - iosapp: timeline and photo sync now recover after resetting local state instead of staying empty until the app is relaunched

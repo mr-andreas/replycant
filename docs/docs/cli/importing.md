@@ -41,6 +41,18 @@ under `binary/**`. Instead it:
 
 That keeps rebases cheap because Git only moves small pointer blobs.
 
+## Cancelling an Import
+
+Press Ctrl+C once to stop preparing new files. In-flight work
+(`ffmpeg`/`ffprobe`, LFS uploads) is cancelled and any partial
+manifests or pointers for the cancelled file are removed. Already
+committed imports are flushed with a final push when `--push-every`
+is set.
+
+Press Ctrl+C a second time to abort that flush immediately. Remaining
+commits stay local; run `git push` in the repo when you are ready.
+A third Ctrl+C uses the default process kill.
+
 Scanning the source tree overlaps with import work: workers begin
 encrypting and uploading as soon as files are discovered. Progress
 lines show `(calculating, N found)` as the denominator until the scan

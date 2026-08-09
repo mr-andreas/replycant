@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -549,14 +550,14 @@ func TestProbeMediaVideoRotationSwapsDimensions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			imp := &importer{
-				runCmd: func(_ string, name string, _ ...string) ([]byte, error) {
+				runCmd: func(_ context.Context, _ string, name string, _ ...string) ([]byte, error) {
 					if name != "ffprobe" {
 						t.Fatalf("unexpected command: %s", name)
 					}
 					return []byte(tc.jsonOut), nil
 				},
 			}
-			meta, err := imp.probeMedia("video.mp4", "video")
+			meta, err := imp.probeMedia(context.Background(), "video.mp4", "video")
 			if err != nil {
 				t.Fatalf("probeMedia failed: %v", err)
 			}
@@ -944,6 +945,278 @@ func TestGracefulCtrlC(t *testing.T) {
 	}
 }
 
+// TestRunCmdTeeKillsChildOnCancel verifies cancelled contexts kill child
+// processes so Ctrl+C does not leave ffmpeg/git blocked in Wait.
+func TestRunCmdTeeKillsChildOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	_, err := runCmdTee(nil, ctx, "", "sleep", "30")
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("runCmdTee did not return promptly after cancel: %s", elapsed)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestCancelAbortsInFlightLFSUpload verifies cancelling workCtx stops a blocked
+// LFS upload, leaves no commit, and rolls back partial manifests/pointers.
+func TestCancelAbortsInFlightLFSUpload(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	defer cancelWork()
+	uploadStarted := make(chan struct{})
+	imp, _, _, _ := newTestImporter(t, nil)
+	imp.uploadObjects = func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error {
+		close(uploadStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- imp.runStaged(workCtx, context.Background(), CLI{
+			Repo:        repo,
+			Source:      srcDir,
+			DeviceSpace: "device-a",
+			Workers:     1,
+		})
+	}()
+
+	select {
+	case <-uploadStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for LFS upload to start")
+	}
+	cancelWork()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runStaged failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return promptly after cancelling in-flight LFS upload")
+	}
+
+	if got := commitCount(t, repo); got != 1 {
+		// init commit only
+		t.Fatalf("expected only the initial repo commit, got %d", got)
+	}
+	originals, thumbs := listManifestPaths(t, repo, "device-a")
+	if len(originals) != 0 || len(thumbs) != 0 {
+		t.Fatalf("expected cancelled upload to remove manifests, got originals=%v thumbs=%v", originals, thumbs)
+	}
+	if leftover := countBinaryPointers(t, repo); leftover != 0 {
+		t.Fatalf("expected no leftover pointer files, got %d", leftover)
+	}
+}
+
+// TestCancelDoesNotReportContextCanceledAsImportError keeps cancellation from
+// looking like a per-file failure in stderr.
+func TestCancelDoesNotReportContextCanceledAsImportError(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	defer cancelWork()
+	uploadStarted := make(chan struct{})
+	imp, stderr, _, _ := newTestImporter(t, nil)
+	imp.uploadObjects = func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error {
+		close(uploadStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- imp.runStaged(workCtx, context.Background(), CLI{
+			Repo:        repo,
+			Source:      srcDir,
+			DeviceSpace: "device-a",
+			Workers:     1,
+		})
+	}()
+	select {
+	case <-uploadStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for LFS upload to start")
+	}
+	cancelWork()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runStaged failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return promptly after cancel")
+	}
+	if strings.Contains(stderr.String(), "error importing") {
+		t.Fatalf("cancellation should not log import errors, got: %s", stderr.String())
+	}
+}
+
+// TestCancelStillFlushesPendingCommits verifies the first interrupt still pushes
+// already-committed work when periodic push is enabled.
+func TestCancelStillFlushesPendingCommits(t *testing.T) {
+	repo := initTempRepoWithRemote(t)
+	srcDir := t.TempDir()
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "a.jpg"), "red")
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "b.jpg"), "blue")
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "c.jpg"), "green")
+
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	defer cancelWork()
+	var mediaCmdCalls int32
+	imp, _, pushCalls, _ := newTestImporter(t, func(name string, _ []string) {
+		if name != "ffprobe" && name != "ffmpeg" {
+			return
+		}
+		n := atomic.AddInt32(&mediaCmdCalls, 1)
+		if n == 1 {
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				cancelWork()
+			}()
+		}
+		time.Sleep(80 * time.Millisecond)
+	})
+
+	if err := imp.runStaged(workCtx, context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+		PushEvery:   1,
+		Workers:     1,
+	}); err != nil {
+		t.Fatalf("runStaged failed: %v", err)
+	}
+	if got := atomic.LoadInt32(pushCalls); got < 1 {
+		t.Fatalf("expected at least one push after cancel flush, got %d", got)
+	}
+	local := strings.TrimSpace(mustRun(t, repo, "git", "rev-parse", "HEAD"))
+	remote := strings.TrimSpace(mustRun(t, repo, "git", "ls-remote", "origin", "refs/heads/main"))
+	remoteSHA := strings.Fields(remote)[0]
+	if local != remoteSHA {
+		t.Fatalf("expected cancel flush to push commits: local=%s remote=%s", local, remoteSHA)
+	}
+}
+
+// TestSecondInterruptAbortsFlushPush verifies a second cancel stops the final
+// push and reports that commits remain local.
+func TestSecondInterruptAbortsFlushPush(t *testing.T) {
+	repo := initTempRepoWithRemote(t)
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	defer cancelWork()
+	flushCtx, cancelFlush := context.WithCancel(context.Background())
+	defer cancelFlush()
+
+	imp, stderr, _, _ := newTestImporter(t, nil)
+	baseRun := imp.runCmd
+	pushStarted := make(chan struct{})
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+		if name == "git" && gitSubcommand(args) == "push" {
+			select {
+			case <-pushStarted:
+			default:
+				close(pushStarted)
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return baseRun(ctx, dir, name, args...)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- imp.runStaged(workCtx, flushCtx, CLI{
+			Repo:        repo,
+			Source:      srcDir,
+			DeviceSpace: "device-a",
+			PushEvery:   5,
+			Workers:     1,
+		})
+	}()
+
+	select {
+	case <-pushStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for final flush push")
+	}
+	cancelWork()
+	cancelFlush()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runStaged failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return promptly after second interrupt")
+	}
+	if !strings.Contains(stderr.String(), "remain local") {
+		t.Fatalf("expected local-commit hint after aborted flush, got: %s", stderr.String())
+	}
+}
+
+// TestCancelWakesWorkersBlockedOnEmptyQueue mirrors run's AfterFunc(workCtx,
+// queue.close) so cancellation does not leave workers parked in pop().
+func TestCancelWakesWorkersBlockedOnEmptyQueue(t *testing.T) {
+	q := newSourceQueue()
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := context.AfterFunc(ctx, q.close)
+	defer stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = q.pop()
+		}()
+	}
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("workers stayed blocked after cancel closed the queue")
+	}
+}
+
+// countBinaryPointers counts pointer files left under binary/ after a cancelled import.
+func countBinaryPointers(t *testing.T, repo string) int {
+	t.Helper()
+	root := filepath.Join(repo, "binary")
+	count := 0
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		count++
+		return nil
+	})
+	return count
+}
+
 // TestPushEvery verifies periodic pushes happen in parallel after every N commits.
 func TestPushEvery(t *testing.T) {
 	repo := initTempRepoWithRemote(t)
@@ -987,7 +1260,7 @@ func TestPushRebasesWhenRemoteMovedAhead(t *testing.T) {
 	if !cmds.containsSubcmd("rebase") {
 		t.Fatalf("expected rebase after rejected push, cmds=%v", cmds.snapshot())
 	}
-	if _, err := defaultRunCmd(repo, "git", "merge-base", "--is-ancestor", foreignSHA, "HEAD"); err != nil {
+	if _, err := defaultRunCmd(context.Background(), repo, "git", "merge-base", "--is-ancestor", foreignSHA, "HEAD"); err != nil {
 		t.Fatalf("expected foreign commit %s to be ancestor of HEAD after rebase: %v", foreignSHA, err)
 	}
 	merges := strings.TrimSpace(mustRun(t, repo, "git", "rev-list", "--merges", "HEAD"))
@@ -1013,14 +1286,14 @@ func TestPushRetriesWhenRemoteKeepsMoving(t *testing.T) {
 	imp, _, _, cmds := newTestImporter(t, nil)
 	var pushAttempts int32
 	baseRun := imp.runCmd
-	imp.runCmd = func(dir string, name string, args ...string) ([]byte, error) {
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
 		if name == "git" && gitSubcommand(args) == "push" {
 			n := atomic.AddInt32(&pushAttempts, 1)
 			if n <= 2 {
 				_ = advanceRemoteWithForeignCommit(t, remote)
 			}
 		}
-		return baseRun(dir, name, args...)
+		return baseRun(ctx, dir, name, args...)
 	}
 
 	if err := imp.run(context.Background(), CLI{
@@ -1056,14 +1329,14 @@ func TestPushGivesUpAfterAttemptCap(t *testing.T) {
 
 	imp, _, _, cmds := newTestImporter(t, nil)
 	baseRun := imp.runCmd
-	imp.runCmd = func(dir string, name string, args ...string) ([]byte, error) {
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
 		if name == "git" && gitSubcommand(args) == "push" {
 			_ = advanceRemoteWithForeignCommit(t, remote)
 		}
-		return baseRun(dir, name, args...)
+		return baseRun(ctx, dir, name, args...)
 	}
 
-	err := imp.pushWithRebase(repo)
+	err := imp.pushWithRebase(context.Background(), repo)
 	if err == nil {
 		t.Fatal("expected pushWithRebase to fail after exhausting retries")
 	}
@@ -1255,12 +1528,12 @@ func TestPushRebaseAbortsAndLeavesRepoUsable(t *testing.T) {
 	imp, _, _, cmds := newTestImporter(t, nil)
 	// Fail rebase (non-abort) without starting a real rebase so abort cleanup is exercised.
 	baseRun := imp.runCmd
-	imp.runCmd = func(dir string, name string, args ...string) ([]byte, error) {
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
 		if name == "git" && gitSubcommand(args) == "rebase" && !sliceContains(args, "--abort") {
 			cmds.record(args)
 			return nil, fmt.Errorf("injected rebase failure")
 		}
-		return baseRun(dir, name, args...)
+		return baseRun(ctx, dir, name, args...)
 	}
 
 	_ = imp.run(context.Background(), CLI{
@@ -1359,7 +1632,7 @@ func newTestImporter(t *testing.T, hook func(name string, args []string)) (*impo
 	// Commands run through the importer's own leaf so verbose stderr mirroring
 	// still applies to spied invocations.
 	var imp *importer
-	run := func(dir string, name string, args ...string) ([]byte, error) {
+	run := func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
 		if hook != nil {
 			hook(name, args)
 		}
@@ -1369,7 +1642,7 @@ func newTestImporter(t *testing.T, hook func(name string, args []string)) (*impo
 				atomic.AddInt32(&pushCalls, 1)
 			}
 		}
-		return imp.execCmd(dir, name, args...)
+		return imp.execCmd(ctx, dir, name, args...)
 	}
 	imp = &importer{
 		stderr:               &stderr,
@@ -1576,7 +1849,7 @@ func writeTinyJPEGColor(t *testing.T, path string, color string) {
 // writeTinyJPEGColorSize writes a valid tiny JPEG fixture with deterministic color and size.
 func writeTinyJPEGColorSize(t *testing.T, path string, color string, width int, height int) {
 	t.Helper()
-	_, err := defaultRunCmd("", "ffmpeg",
+	_, err := defaultRunCmd(context.Background(), "", "ffmpeg",
 		"-y",
 		"-loglevel", "error",
 		"-f", "lavfi",
@@ -1593,7 +1866,7 @@ func writeTinyJPEGColorSize(t *testing.T, path string, color string, width int, 
 // makeTinyVideo creates a short synthetic mp4 fixture for video tests.
 func makeTinyVideo(t *testing.T, path string) {
 	t.Helper()
-	_, err := defaultRunCmd("", "ffmpeg",
+	_, err := defaultRunCmd(context.Background(), "", "ffmpeg",
 		"-y",
 		"-loglevel", "error",
 		"-f", "lavfi",
@@ -1609,7 +1882,7 @@ func makeTinyVideo(t *testing.T, path string) {
 // makeTinyVideoWithCreationTime creates an mp4 fixture with embedded creation_time.
 func makeTinyVideoWithCreationTime(t *testing.T, path string, creationTime string) {
 	t.Helper()
-	_, err := defaultRunCmd("", "ffmpeg",
+	_, err := defaultRunCmd(context.Background(), "", "ffmpeg",
 		"-y",
 		"-loglevel", "error",
 		"-f", "lavfi",
@@ -1626,7 +1899,7 @@ func makeTinyVideoWithCreationTime(t *testing.T, path string, creationTime strin
 // mustRun executes command and fails test immediately with stderr context on errors.
 func mustRun(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
-	out, err := defaultRunCmd(dir, name, args...)
+	out, err := defaultRunCmd(context.Background(), dir, name, args...)
 	if err != nil {
 		t.Fatalf("%s %v failed: %v", name, args, err)
 	}
