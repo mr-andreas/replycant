@@ -144,4 +144,30 @@ struct LocalNetworkPermissionManagerTests {
             ) == nil
         )
     }
+
+    // Ensures generic endpoint lists detect LAN discovery hosts used by recovery.
+    @Test func endpointListPrefersFirstLocalHost() {
+        let endpoint = LocalNetworkPermissionManager.localNetworkEndpoint(
+            endpointURLs: [
+                "https://git.example.com/repo.git",
+                "http://replycant.local:8080/config.json",
+                "https://10.0.0.25:8443/lfs"
+            ]
+        )
+
+        #expect(endpoint?.host == "replycant.local")
+        #expect(endpoint?.port == 8080)
+    }
+
+    // Ensures endpoint lists without LAN hosts skip permission probing entirely.
+    @Test func endpointListReturnsNilForPublicHosts() {
+        #expect(
+            LocalNetworkPermissionManager.localNetworkEndpoint(
+                endpointURLs: [
+                    "https://git.example.com/repo.git",
+                    "https://lfs.example.com"
+                ]
+            ) == nil
+        )
+    }
 }

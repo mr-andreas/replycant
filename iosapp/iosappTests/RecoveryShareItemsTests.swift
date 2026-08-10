@@ -4,8 +4,8 @@ import UIKit
 
 // Verifies share payloads preserve formatting across app-specific share extensions.
 struct RecoveryShareItemsTests {
-    // Ensures mail-like targets receive HTML with preserved line breaks.
-    @Test func mailActivityUsesHTMLText() throws {
+    // Ensures mail-like targets also receive plain text because Gmail escapes HTML.
+    @Test func mailActivityUsesPlainText() {
         let source = RecoveryShareText(
             plainText: "Line one\nLine two",
             label: "home-safe"
@@ -20,10 +20,8 @@ struct RecoveryShareItemsTests {
             dataTypeIdentifierForActivityType: .mail
         )
 
-        let html = try #require(item as? String)
-        #expect(html.contains("<br>"))
-        #expect(!html.contains("\n"))
-        #expect(identifier == "public.html")
+        #expect((item as? String) == "Line one\nLine two")
+        #expect(identifier == "public.plain-text")
     }
 
     // Ensures non-mail targets keep plain text payloads untouched.

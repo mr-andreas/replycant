@@ -199,7 +199,7 @@ final class RecoveryKeyManager {
         discoveryURLOverride: String? = nil,
         repositoryPath: String = (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path as NSString).appendingPathComponent("replycant-git-db"),
         session: URLSession = .shared,
-        progress: ((String) -> Void)? = nil
+        progress: ((String, Double) -> Void)? = nil
     ) async throws -> RecoveryResult {
         let repositoryExists = Repository.exists(at: repositoryPath)
         if Self.shouldRejectRecovery(
@@ -209,12 +209,15 @@ final class RecoveryKeyManager {
             throw Error.alreadyConfiguredDevice
         }
 
-        progress?("Decrypting recovery bundle...")
+        progress?("Decrypting recovery bundle...", 5)
         let envelope = try RecoveryBundle.parseEnvelope(from: input)
         let plaintext = try RecoveryBundle.decrypt(envelope: envelope, password: password)
 
-        progress?("Resolving server discovery...")
         let discoveryURL = discoveryURLOverride ?? plaintext.discoveryURL
+        progress?("Requesting local network access...", 10)
+        try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(endpointURLs: [discoveryURL])
+
+        progress?("Resolving server discovery...", 15)
         let discovered = try await ServerConfigurationManager.shared.discoverAndConfigure(
             discoveryURLString: discoveryURL,
             expectedCAHash: plaintext.caSHA256,
@@ -225,7 +228,7 @@ final class RecoveryKeyManager {
             throw Error.missingPinnedCA
         }
 
-        progress?("Preparing temporary recovery identity...")
+        progress?("Preparing temporary recovery identity...", 25)
         let temporaryIdentity = try ClientIdentityManager.shared.makeTemporaryIdentity(
             privateKeyPEM: plaintext.p256PrivateKeyPEM,
             commonName: "recovery-\(plaintext.uuid.prefix(8))"
@@ -236,16 +239,12 @@ final class RecoveryKeyManager {
 
         try MTLSTransport.shared.configure(clientIdentity: temporaryIdentity, pinnedCA: pinnedCA)
 
-        if FileManager.default.fileExists(atPath: repositoryPath) {
-            try FileManager.default.removeItem(atPath: repositoryPath)
-        }
-
-        progress?("Cloning with recovery identity...")
-        let mtlsURL = MTLSTransport.convertToMTLSScheme(discovered.url)
-        _ = try Repository.clone(from: mtlsURL, to: repositoryPath, depth: 1)
-        await MainActor.run {
-            RepositoryManager.shared.clearRepository()
-            GitDBManager.shared.clearGitDB()
+        progress?("Cloning with recovery identity...", 35)
+        try await RepositoryBootstrap.clone(
+            serverURL: discovered.url,
+            repositoryPath: repositoryPath
+        ) { message, cloneProgress in
+            progress?(message, RepositoryBootstrap.scaled(cloneProgress, into: 35...70))
         }
 
         let repository = try await MainActor.run {
@@ -262,7 +261,7 @@ final class RecoveryKeyManager {
         let ownPubPath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).pub"
         let ownAgePath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).age"
 
-        progress?("Re-wrapping encryption keys for this device...")
+        progress?("Re-wrapping encryption keys for this device...", 72)
         let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
         let allRecipients = Array(Set(existingAgeRecipients + [ownAgePublic]))
         let epochFiles = try KEKEpochManager(
@@ -282,12 +281,19 @@ final class RecoveryKeyManager {
         let branchName = repository.currentBranch() ?? "main"
         try repository.push(remoteName: "origin", branchName: branchName)
 
+        progress?("Building media index...", 75)
+        try await RepositoryBootstrap.hydrateIndex(
+            resetDatabase: true
+        ) { message, hydrateProgress in
+            progress?(message, RepositoryBootstrap.scaled(hydrateProgress, into: 75...95))
+        }
+
         guard let primaryIdentity = ClientIdentityManager.shared.loadSecIdentity() else {
             throw Error.missingClientIdentity
         }
         try MTLSTransport.shared.configure(clientIdentity: primaryIdentity, pinnedCA: pinnedCA)
 
-        progress?("Recovery complete.")
+        progress?("Recovery complete.", 100)
         return RecoveryResult(
             usedRecoveryLabel: plaintext.label,
             usedRecoveryUUID: plaintext.uuid,
@@ -302,12 +308,18 @@ final class RecoveryKeyManager {
             return nil
         }
         let stripped = String(fileName.dropLast(".recovery.pub".count))
-        guard let dash = stripped.lastIndex(of: "-") else {
+        let uuidLength = 36
+        guard stripped.count > uuidLength else {
             return nil
         }
-        let label = String(stripped[..<dash])
-        let uuid = String(stripped[stripped.index(after: dash)...])
-        guard !label.isEmpty, !uuid.isEmpty else {
+        let uuidStart = stripped.index(stripped.endIndex, offsetBy: -uuidLength)
+        let separatorIndex = stripped.index(before: uuidStart)
+        guard stripped[separatorIndex] == "-" else {
+            return nil
+        }
+        let label = String(stripped[..<separatorIndex])
+        let uuid = String(stripped[uuidStart...])
+        guard !label.isEmpty, UUID(uuidString: uuid) != nil else {
             return nil
         }
         return (label, uuid)

@@ -148,11 +148,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showRecoveryFlow) {
             NavigationStack {
-                RecoveryView(initialInput: pendingRecoveryInput) {
-                    showRecoveryFlow = false
-                    pendingRecoveryInput = nil
-                    checkRepositoryStatus()
-                }
+                RecoveryView(
+                    initialInput: pendingRecoveryInput,
+                    onCompleted: {
+                        showRecoveryFlow = false
+                        pendingRecoveryInput = nil
+                        checkRepositoryStatus()
+                    },
+                    onCancel: {
+                        showRecoveryFlow = false
+                        pendingRecoveryInput = nil
+                    }
+                )
             }
         }
     }
@@ -268,31 +275,27 @@ struct ContentView: View {
             }
 
             let repoPath = RepositoryManager.shared.repositoryPath()
-            let mtlsURL = MTLSTransport.convertToMTLSScheme(serverURL)
             resyncProgress = 20
             resyncProgressMessage = "Cloning from server..."
 
-            _ = try await Task.detached {
-                try Repository.clone(from: mtlsURL, to: repoPath, depth: 1) { gitProgress in
-                    Task { @MainActor in
-                        self.resyncProgress = 20 + (gitProgress.percentage * 0.6)
-                        self.resyncProgressMessage = "Cloning: " + gitProgress.description
-                    }
+            try await RepositoryBootstrap.clone(
+                serverURL: serverURL,
+                repositoryPath: repoPath
+            ) { message, phaseProgress in
+                Task { @MainActor in
+                    self.resyncProgress = RepositoryBootstrap.scaled(phaseProgress, into: 20...80)
+                    self.resyncProgressMessage = message
                 }
-            }.value
+            }
 
-            RepositoryManager.shared.clearRepository()
-            GitDBManager.shared.clearGitDB()
-            try ManifestLoaderManager.shared.deleteDatabaseFile()
             resyncProgress = 80
             resyncProgressMessage = "Building media index..."
-
-            let gitDB = try GitDBManager.shared.getGitDB()
-            try await gitDB.syncToHead { phase, loaded, total in
-                let fraction = total > 0 ? Double(loaded) / Double(total) : 0
+            try await RepositoryBootstrap.hydrateIndex(
+                resetDatabase: true
+            ) { message, phaseProgress in
                 Task { @MainActor in
-                    self.resyncProgress = 80 + (fraction * 19)
-                    self.resyncProgressMessage = "\(phase) (\(loaded)/\(total))"
+                    self.resyncProgress = RepositoryBootstrap.scaled(phaseProgress, into: 80...99)
+                    self.resyncProgressMessage = message
                 }
             }
 

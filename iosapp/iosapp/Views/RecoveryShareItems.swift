@@ -18,9 +18,6 @@ final class RecoveryShareText: NSObject, UIActivityItemSource {
         _ activityViewController: UIActivityViewController,
         itemForActivityType activityType: UIActivity.ActivityType?
     ) -> Any? {
-        if isMailActivity(activityType) {
-            return htmlText
-        }
         return plainText
     }
 
@@ -28,7 +25,7 @@ final class RecoveryShareText: NSObject, UIActivityItemSource {
         _ activityViewController: UIActivityViewController,
         dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?
     ) -> String {
-        isMailActivity(activityType) ? "public.html" : "public.plain-text"
+        "public.plain-text"
     }
 
     func activityViewController(
@@ -38,28 +35,6 @@ final class RecoveryShareText: NSObject, UIActivityItemSource {
         "Replycant recovery key: \(label)"
     }
 
-    private var htmlText: String {
-        plainText
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { escapeHTML(String($0)) }
-            .joined(separator: "<br>")
-    }
-
-    private func isMailActivity(_ activityType: UIActivity.ActivityType?) -> Bool {
-        guard let rawValue = activityType?.rawValue.lowercased() else {
-            return false
-        }
-        return rawValue.contains("mail")
-    }
-
-    private func escapeHTML(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "'", with: "&#39;")
-    }
 }
 
 // Provides an image-only backup payload for share extensions that keep only one attachment.

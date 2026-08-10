@@ -86,7 +86,11 @@ struct OnboardingView: View {
                 case .error:
                     errorView
                 case .recover:
-                    RecoveryView(initialInput: nil, onCompleted: onComplete)
+                    RecoveryView(
+                        initialInput: nil,
+                        onCompleted: onComplete,
+                        onCancel: { currentStep = .welcome }
+                    )
                 }
             }
             .navigationTitle(currentStep.title)
@@ -622,53 +626,33 @@ struct OnboardingView: View {
         }
         try MTLSTransport.shared.configure(clientIdentity: identity, pinnedCA: pinnedCA)
         
-        // Step 5: Ensure repository path is clean before cloning
-        updateProgress(40, message: "Preparing to clone...")
+        // Step 5: Clone repository and hydrate local index.
         let repoPath = RepositoryManager.shared.repositoryPath()
-        
-        // Critical: Remove any existing repository to ensure clean clone
-        if FileManager.default.fileExists(atPath: repoPath) {
-            log("Removing existing directory at \(repoPath) before clone", context: "Onboarding")
-            do {
-                try FileManager.default.removeItem(atPath: repoPath)
-                log("Successfully removed existing directory", context: "Onboarding")
-            } catch {
-                logError("Failed to remove existing directory: \(error.localizedDescription)", context: "Onboarding")
-                throw OnboardingError.repositoryError("Failed to prepare for clone: \(error.localizedDescription)")
-            }
-        }
-        
-        // Step 6: Clone repository (run on background to avoid blocking UI)
+
+        // Step 6: Clone repository (run on background to avoid blocking UI).
         updateProgress(40, message: "Cloning repository...")
         guard let serverURL = ServerConfigurationManager.shared.loadURL() else {
             throw OnboardingError.noServerURL
         }
-        
-        // Convert to mtls+https:// scheme so libgit2 routes through our custom transport
-        let mtlsURL = MTLSTransport.convertToMTLSScheme(serverURL)
-        
-        log("Cloning from \(mtlsURL) to \(repoPath)", context: "Onboarding")
-        
-        // Run the blocking clone operation on a background thread
-        _ = try await Task.detached {
-            try Repository.clone(from: mtlsURL, to: repoPath, depth: 1) { gitProgress in
-                // Update UI on main actor - this will now work because we're not blocking the main thread
-                Task { @MainActor in
-                    self.progress = 40.0 + (gitProgress.percentage * 0.4)
-                    self.progressMessage = "Cloning: " + gitProgress.description
-                }
+
+        log("Cloning from \(serverURL) to \(repoPath)", context: "Onboarding")
+        try await RepositoryBootstrap.clone(
+            serverURL: serverURL,
+            repositoryPath: repoPath
+        ) { message, phaseProgress in
+            Task { @MainActor in
+                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 40...80)
+                self.progressMessage = message
             }
-        }.value
+        }
 
         updateProgress(80, message: "Building media index...")
-        RepositoryManager.shared.clearRepository()
-        GitDBManager.shared.clearGitDB()
-        let gitDB = try GitDBManager.shared.getGitDB()
-        try await gitDB.syncToHead { phase, loaded, total in
-            let fraction = total > 0 ? Double(loaded) / Double(total) : 0
+        try await RepositoryBootstrap.hydrateIndex(
+            resetDatabase: false
+        ) { message, phaseProgress in
             Task { @MainActor in
-                self.progress = 80 + (fraction * 19)
-                self.progressMessage = "\(phase) (\(loaded)/\(total))"
+                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 80...99)
+                self.progressMessage = message
             }
         }
         

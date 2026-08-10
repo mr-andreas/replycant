@@ -23,6 +23,7 @@ struct RecoveryWizardTests {
         #expect(RecoveryView.revokeCtaLabel == "Revoke used key")
         #expect(RecoveryView.continueCtaLabel == "Continue")
         #expect(RecoveryView.revokeDoneMessage == "Used key revoked. Create a new recovery key in Settings.")
+        #expect(RecoveryView.cancelCtaLabel == "Cancel")
     }
 
     // Ensures create wizard only advances when label is non-empty and password fields match.
@@ -63,5 +64,6 @@ struct RecoveryWizardTests {
 
         #expect(RecoveryView.nextStepAfterBundleValidation(input: validJSON) == .password)
         #expect(RecoveryView.nextStepAfterBundleValidation(input: "not-valid-json") == .error)
+        #expect(RecoveryView.bundleBackDestination() == .start)
     }
 }

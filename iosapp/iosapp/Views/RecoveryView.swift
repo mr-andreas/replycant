@@ -1,11 +1,11 @@
 import SwiftUI
-import UIKit
 
 // Runs the end-user recovery flow from a scanned/pasted bundle and returns to normal app identity afterwards.
 struct RecoveryView: View {
     static let revokeCtaLabel = "Revoke used key"
     static let continueCtaLabel = "Continue"
     static let revokeDoneMessage = "Used key revoked. Create a new recovery key in Settings."
+    static let cancelCtaLabel = "Cancel"
 
     enum RecoveryStep {
         case start
@@ -31,11 +31,13 @@ struct RecoveryView: View {
 
     let initialInput: String?
     let onCompleted: () -> Void
+    let onCancel: () -> Void
 
     @State private var currentStep: RecoveryStep = .start
     @State private var input = ""
     @State private var password = ""
     @State private var progressMessage: String?
+    @State private var progress: Double = 0
     @State private var errorMessage: String?
     @State private var manualDiscoveryURL = ""
     @State private var isBusy = false
@@ -46,9 +48,10 @@ struct RecoveryView: View {
     private let manager = RecoveryKeyManager()
 
     // Supports deterministic previews for each wizard state without invoking recovery side effects.
-    init(initialInput: String?, onCompleted: @escaping () -> Void, previewStep: RecoveryStep? = nil) {
+    init(initialInput: String?, onCompleted: @escaping () -> Void, onCancel: @escaping () -> Void, previewStep: RecoveryStep? = nil) {
         self.initialInput = initialInput
         self.onCompleted = onCompleted
+        self.onCancel = onCancel
         if let previewStep {
             _currentStep = State(initialValue: previewStep)
         }
@@ -66,7 +69,8 @@ struct RecoveryView: View {
             case .processing:
                 PairingProgressView(
                     isProcessing: true,
-                    message: progressMessage ?? "Recovering..."
+                    message: progressMessage ?? "Recovering...",
+                    progress: progress
                 )
             case .serverUnreachable:
                 serverUnreachableStepView
@@ -79,12 +83,31 @@ struct RecoveryView: View {
                     title: "Recovery Failed",
                     message: errorMessage,
                     onRetry: { currentStep = Self.initialStep(for: initialInput) },
-                    onCancel: onCompleted
+                    onCancel: onCancel
                 )
             }
         }
         .navigationTitle(currentStep.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if currentStep == .start {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(Self.cancelCtaLabel) {
+                        onCancel()
+                    }
+                }
+            }
+            if currentStep == .bundle {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        currentStep = Self.bundleBackDestination()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .accessibilityLabel("Back")
+                }
+            }
+        }
         .onAppear {
             currentStep = Self.initialStep(for: initialInput)
             if let initialInput {
@@ -163,21 +186,6 @@ struct RecoveryView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.horizontal)
 
-            HStack(spacing: 12) {
-                Button("Paste") {
-                    if let pasted = UIPasteboard.general.string {
-                        input = pasted
-                    }
-                }
-                .font(.caption)
-
-                Button("Scan instead") {
-                    showScanner = true
-                }
-                .font(.caption)
-            }
-            .padding(.horizontal)
-
             if let errorMessage {
                 Text(errorMessage)
                     .font(.footnote)
@@ -199,11 +207,6 @@ struct RecoveryView: View {
                 }
                 .disabled(!Self.canAdvanceFromBundle(input: input))
                 .buttonStyle(PairingPrimaryButtonStyle(disabled: !Self.canAdvanceFromBundle(input: input)))
-
-                Button("Back") {
-                    currentStep = .start
-                }
-                .buttonStyle(PairingTertiaryButtonStyle())
             }
             .padding(.horizontal)
             .padding(.bottom, 40)
@@ -243,8 +246,8 @@ struct RecoveryView: View {
                 .disabled(isBusy || password.isEmpty)
                 .buttonStyle(PairingPrimaryButtonStyle(disabled: isBusy || password.isEmpty))
 
-                Button("Back") {
-                    currentStep = initialInput == nil ? .bundle : .start
+                Button(Self.cancelCtaLabel) {
+                    onCancel()
                 }
                 .buttonStyle(PairingTertiaryButtonStyle())
             }
@@ -380,6 +383,14 @@ struct RecoveryView: View {
                     }
                     .buttonStyle(PairingPrimaryButtonStyle())
                 } else {
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 28)
+                    }
+
                     Button(Self.revokeCtaLabel) {
                         Task { await revokeUsedRecoveryKey() }
                     }
@@ -410,6 +421,11 @@ struct RecoveryView: View {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    // Keeps bundle-step back navigation deterministic for tests and deep-link safety.
+    static func bundleBackDestination() -> RecoveryStep {
+        .start
+    }
+
     // Encodes bundle validation routing so tests can assert password vs error transitions.
     static func nextStepAfterBundleValidation(input: String) -> RecoveryStep {
         guard canAdvanceFromBundle(input: input) else {
@@ -423,6 +439,7 @@ struct RecoveryView: View {
         errorMessage = nil
         isBusy = true
         currentStep = .processing
+        progress = 0
         defer { isBusy = false }
 
         do {
@@ -430,9 +447,10 @@ struct RecoveryView: View {
                 input: input,
                 password: password,
                 discoveryURLOverride: manualDiscoveryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : manualDiscoveryURL
-            ) { message in
+            ) { message, phaseProgress in
                 Task { @MainActor in
                     progressMessage = message
+                    progress = phaseProgress
                 }
             }
             completedRecovery = result
@@ -459,25 +477,25 @@ struct RecoveryView: View {
             return
         }
         do {
+            errorMessage = nil
             let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
             try await manager.deleteRecoveryKey(uuid: completedRecovery.usedRecoveryUUID, repository: repository, gitDB: gitDB)
             didRevokeUsedKey = true
         } catch {
             errorMessage = error.localizedDescription
-            currentStep = .error
         }
     }
 }
 
 #Preview("Recovery Start") {
     NavigationStack {
-        RecoveryView(initialInput: nil, onCompleted: {}, previewStep: .start)
+        RecoveryView(initialInput: nil, onCompleted: {}, onCancel: {}, previewStep: .start)
     }
 }
 
 #Preview("Recovery Password") {
     NavigationStack {
-        RecoveryView(initialInput: "replycant://recover?v=1&d=abc", onCompleted: {}, previewStep: .password)
+        RecoveryView(initialInput: "replycant://recover?v=1&d=abc", onCompleted: {}, onCancel: {}, previewStep: .password)
     }
 }

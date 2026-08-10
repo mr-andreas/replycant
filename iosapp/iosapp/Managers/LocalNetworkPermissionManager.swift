@@ -12,10 +12,12 @@ final class LocalNetworkPermissionManager {
     // Requests local-network permission only when QR-provided endpoints target
     // LAN hosts that iOS may gate behind the privacy prompt.
     func requestPermissionIfNeeded(gitServerURL: String, lfsServerURL: String?) async throws {
-        guard let endpoint = Self.localNetworkEndpoint(
-            gitServerURL: gitServerURL,
-            lfsServerURL: lfsServerURL
-        ) else {
+        try await requestPermissionIfNeeded(endpointURLs: [gitServerURL, lfsServerURL].compactMap { $0 })
+    }
+
+    // Requests local-network permission only when at least one endpoint URL points at a LAN host.
+    func requestPermissionIfNeeded(endpointURLs: [String]) async throws {
+        guard let endpoint = Self.localNetworkEndpoint(endpointURLs: endpointURLs) else {
             return
         }
         try await requestPermissionPreflight(host: endpoint.host, port: endpoint.port)
@@ -39,11 +41,15 @@ final class LocalNetworkPermissionManager {
     // Selects the best LAN endpoint to probe so onboarding can verify local
     // network access against the same target family used by clone/sync traffic.
     static func localNetworkEndpoint(gitServerURL: String, lfsServerURL: String?) -> (host: String, port: UInt16)? {
-        if let endpoint = endpointCandidate(from: gitServerURL) {
-            return endpoint
-        }
-        if let lfsServerURL, let endpoint = endpointCandidate(from: lfsServerURL) {
-            return endpoint
+        localNetworkEndpoint(endpointURLs: [gitServerURL, lfsServerURL].compactMap { $0 })
+    }
+
+    // Selects the first LAN endpoint from an ordered URL list so callers can prioritize discovery or git hosts.
+    static func localNetworkEndpoint(endpointURLs: [String]) -> (host: String, port: UInt16)? {
+        for endpointURL in endpointURLs {
+            if let endpoint = endpointCandidate(from: endpointURL) {
+                return endpoint
+            }
         }
         return nil
     }
