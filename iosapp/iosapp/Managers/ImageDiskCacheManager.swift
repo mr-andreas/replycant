@@ -30,6 +30,8 @@ actor ImageDiskCacheManager {
         let topItemCount: Int
     }
 
+    /// Reads persisted cache budgets at startup while reusing the same
+    /// clamping rules as the settings manager to avoid overflow-prone byte math.
     private init() {
         let base = FileManager.default.urls(
             for: .cachesDirectory, in: .userDomainMask
@@ -37,14 +39,22 @@ actor ImageDiskCacheManager {
 
         let mainLimitMB = UserDefaults.standard.integer(forKey: "mainDiskCacheLimitMB")
         let topLimitMB = UserDefaults.standard.integer(forKey: "topDiskCacheLimitMB")
+        let mainLimitBytes = CacheSettingsManager.clampedDiskCacheBytes(
+            storedMB: mainLimitMB,
+            defaultMB: 1024
+        )
+        let topLimitBytes = CacheSettingsManager.clampedDiskCacheBytes(
+            storedMB: topLimitMB,
+            defaultMB: 100
+        )
 
         mainCache = DiskImageCache(
             directory: base.appendingPathComponent("main"),
-            maxBytes: (mainLimitMB > 0 ? mainLimitMB : 1024) * 1024 * 1024
+            maxBytes: mainLimitBytes
         )
         topCache = DiskImageCache(
             directory: base.appendingPathComponent("top"),
-            maxBytes: (topLimitMB > 0 ? topLimitMB : 100) * 1024 * 1024
+            maxBytes: topLimitBytes
         )
         scheduler = LFSRequestScheduler(
             maxConcurrent: Self.lfsMaxConcurrentRequests
@@ -175,10 +185,20 @@ actor ImageDiskCacheManager {
         }
     }
 
+    /// Applies live settings updates using clamped values so malformed
+    /// persisted numbers cannot overflow the MB-to-bytes conversion path.
     private func applySettings() async {
-        let mainLimitMB = UserDefaults.standard.integer(forKey: "mainDiskCacheLimitMB")
-        let topLimitMB = UserDefaults.standard.integer(forKey: "topDiskCacheLimitMB")
-        await mainCache.setMaxBytes((mainLimitMB > 0 ? mainLimitMB : 1024) * 1024 * 1024)
-        await topCache.setMaxBytes((topLimitMB > 0 ? topLimitMB : 100) * 1024 * 1024)
+        let mainLimitMB = await MainActor.run { CacheSettingsManager.shared.mainDiskCacheLimitMB }
+        let topLimitMB = await MainActor.run { CacheSettingsManager.shared.topDiskCacheLimitMB }
+        let mainLimitBytes = CacheSettingsManager.clampedDiskCacheBytes(
+            storedMB: mainLimitMB,
+            defaultMB: 1024
+        )
+        let topLimitBytes = CacheSettingsManager.clampedDiskCacheBytes(
+            storedMB: topLimitMB,
+            defaultMB: 100
+        )
+        await mainCache.setMaxBytes(mainLimitBytes)
+        await topCache.setMaxBytes(topLimitBytes)
     }
 }

@@ -530,8 +530,10 @@ final class TimelineManager: ObservableObject {
         let lastVisible = sortedIndices.last!
         
         let cacheSettings = CacheSettingsManager.shared
-        let beforeCount = cacheSettings.imagesBeforeViewport
-        let afterCount = cacheSettings.imagesAfterViewport
+        // Clamp preload counts to timeline length so persisted outlier values
+        // cannot overflow index arithmetic during range calculation.
+        let beforeCount = min(cacheSettings.imagesBeforeViewport, totalCount)
+        let afterCount = min(cacheSettings.imagesAfterViewport, totalCount)
         
         // Calculate preload range: [firstVisible - beforeCount, lastVisible + afterCount]
         let preloadStart = max(0, firstVisible - beforeCount)

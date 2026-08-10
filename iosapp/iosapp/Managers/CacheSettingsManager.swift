@@ -6,7 +6,7 @@ import Foundation
 @MainActor
 final class CacheSettingsManager {
     static let shared = CacheSettingsManager()
-    
+
     private let beforeViewportKey = "cacheImagesBeforeViewport"
     private let afterViewportKey = "cacheImagesAfterViewport"
     private let maxCacheSizeKey = "maxTimelineThumbnailRAMCacheSizeMB"
@@ -16,42 +16,104 @@ final class CacheSettingsManager {
     private let topDiskCacheLimitKey = "topDiskCacheLimitMB"
     private let mainCacheWarmItemCountKey = "mainCacheWarmItemCount"
     private let topCacheWarmItemCountKey = "topCacheWarmItemCount"
-    
-    private init() {}
-    
+    private let defaults: UserDefaults
+
+    // Clamps persisted values to operationally safe ceilings so test or
+    // legacy outliers cannot trigger integer overflow in preload/cache math.
+    private enum Limits {
+        static let viewportPreloadMax = 1_000
+        static let fullScreenPreloadRadiusMax = 100
+        static let timelineRamCacheMBMax = 4_096
+        static let diskCacheMBMax = 65_536
+        static let warmItemCountMax = 100_000
+    }
+
+    // Allows tests to use an isolated defaults suite so they cannot poison
+    // app-wide settings persisted in the simulator container.
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    // Normalizes positive integer settings to a safe range and keeps
+    // defaults behavior when stored values are zero or negative.
+    private func clampedPositive(
+        forKey key: String,
+        defaultValue: Int,
+        maxValue: Int
+    ) -> Int {
+        let value = defaults.integer(forKey: key)
+        guard value > 0 else { return defaultValue }
+        return min(value, maxValue)
+    }
+
+    // Preserves explicit zero for settings where disabling a feature is valid
+    // while still preventing unbounded values from propagating into index math.
+    private func clampedNonNegative(
+        forKey key: String,
+        defaultValue: Int,
+        maxValue: Int
+    ) -> Int {
+        guard let value = defaults.object(forKey: key) as? Int else {
+            return defaultValue
+        }
+        guard value >= 0 else { return defaultValue }
+        return min(value, maxValue)
+    }
+
+    // Converts MB budget to bytes with a final hard cap so callers outside
+    // the main actor can share the same sanitization without reading defaults directly.
+    nonisolated static func clampedDiskCacheBytes(
+        storedMB: Int,
+        defaultMB: Int
+    ) -> Int {
+        let boundedMB = min(max(storedMB, 1), Limits.diskCacheMBMax)
+        let fallbackMB = min(max(defaultMB, 1), Limits.diskCacheMBMax)
+        let safeMB = storedMB > 0 ? boundedMB : fallbackMB
+        return safeMB * 1_024 * 1_024
+    }
+
     // Number of images to preload before the current viewport.
     // Defaults to 100 if not previously configured.
     var imagesBeforeViewport: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: beforeViewportKey)
-            return value > 0 ? value : 100
+            clampedPositive(
+                forKey: beforeViewportKey,
+                defaultValue: 100,
+                maxValue: Limits.viewportPreloadMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: beforeViewportKey)
+            defaults.set(newValue, forKey: beforeViewportKey)
         }
     }
-    
+
     // Number of images to preload after the current viewport.
     // Defaults to 100 if not previously configured.
     var imagesAfterViewport: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: afterViewportKey)
-            return value > 0 ? value : 100
+            clampedPositive(
+                forKey: afterViewportKey,
+                defaultValue: 100,
+                maxValue: Limits.viewportPreloadMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: afterViewportKey)
+            defaults.set(newValue, forKey: afterViewportKey)
         }
     }
-    
+
     // Maximum RAM cache size for timeline thumbnails in megabytes.
     // Defaults to 100 MB if not previously configured.
     var maxTimelineThumbnailRAMCacheSizeMB: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: maxCacheSizeKey)
-            return value > 0 ? value : 100
+            clampedPositive(
+                forKey: maxCacheSizeKey,
+                defaultValue: 100,
+                maxValue: Limits.timelineRamCacheMBMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: maxCacheSizeKey)
+            defaults.set(newValue, forKey: maxCacheSizeKey)
             NotificationCenter.default.post(name: .cacheSettingsDidChange, object: nil)
         }
     }
@@ -59,8 +121,8 @@ final class CacheSettingsManager {
     // Enables loading timeline thumbnails from local Photo Library assets before LFS fetches.
     // Defaults to true so local-first behavior is active unless users explicitly opt out.
     var localThumbnailsEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: localThumbnailsEnabledKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: localThumbnailsEnabledKey) }
+        get { defaults.object(forKey: localThumbnailsEnabledKey) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: localThumbnailsEnabledKey) }
     }
 
     // How many images to preload in each direction when viewing fullscreen.
@@ -68,10 +130,14 @@ final class CacheSettingsManager {
     // rather than collapsing to the default like the viewport counts do.
     var fullScreenPreloadRadius: Int {
         get {
-            UserDefaults.standard.object(forKey: fullScreenPreloadRadiusKey) as? Int ?? 2
+            clampedNonNegative(
+                forKey: fullScreenPreloadRadiusKey,
+                defaultValue: 2,
+                maxValue: Limits.fullScreenPreloadRadiusMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: fullScreenPreloadRadiusKey)
+            defaults.set(newValue, forKey: fullScreenPreloadRadiusKey)
         }
     }
 
@@ -79,11 +145,14 @@ final class CacheSettingsManager {
     // Holds thumbnails and full-size originals loaded during browsing.
     var mainDiskCacheLimitMB: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: mainDiskCacheLimitKey)
-            return value > 0 ? value : 1024
+            clampedPositive(
+                forKey: mainDiskCacheLimitKey,
+                defaultValue: 1024,
+                maxValue: Limits.diskCacheMBMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: mainDiskCacheLimitKey)
+            defaults.set(newValue, forKey: mainDiskCacheLimitKey)
             NotificationCenter.default.post(name: .cacheSettingsDidChange, object: nil)
         }
     }
@@ -93,11 +162,14 @@ final class CacheSettingsManager {
     // without network access.
     var topDiskCacheLimitMB: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: topDiskCacheLimitKey)
-            return value > 0 ? value : 100
+            clampedPositive(
+                forKey: topDiskCacheLimitKey,
+                defaultValue: 100,
+                maxValue: Limits.diskCacheMBMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: topDiskCacheLimitKey)
+            defaults.set(newValue, forKey: topDiskCacheLimitKey)
             NotificationCenter.default.post(name: .cacheSettingsDidChange, object: nil)
         }
     }
@@ -107,11 +179,14 @@ final class CacheSettingsManager {
     // browsing at the cost of background bandwidth.
     var mainCacheWarmItemCount: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: mainCacheWarmItemCountKey)
-            return value > 0 ? value : 1000
+            clampedPositive(
+                forKey: mainCacheWarmItemCountKey,
+                defaultValue: 1000,
+                maxValue: Limits.warmItemCountMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: mainCacheWarmItemCountKey)
+            defaults.set(newValue, forKey: mainCacheWarmItemCountKey)
         }
     }
 
@@ -119,11 +194,14 @@ final class CacheSettingsManager {
     // cache so the first screen is always fast.
     var topCacheWarmItemCount: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: topCacheWarmItemCountKey)
-            return value > 0 ? value : 300
+            clampedPositive(
+                forKey: topCacheWarmItemCountKey,
+                defaultValue: 300,
+                maxValue: Limits.warmItemCountMax
+            )
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: topCacheWarmItemCountKey)
+            defaults.set(newValue, forKey: topCacheWarmItemCountKey)
         }
     }
 }
