@@ -9,26 +9,20 @@ struct PasswordEntryView: View {
     }
 
     let mode: Mode
-    @Binding var label: String
     @Binding var password: String
     @Binding var confirmPassword: String
-    let showsLabel: Bool
     let onGenerate: (() -> Void)?
 
     // Keeps recovery creation and unlock forms consistent while allowing either flow to hide nonessential fields.
     init(
         mode: Mode,
-        label: Binding<String>,
         password: Binding<String>,
         confirmPassword: Binding<String> = .constant(""),
-        showsLabel: Bool = true,
         onGenerate: (() -> Void)? = nil
     ) {
         self.mode = mode
-        self._label = label
         self._password = password
         self._confirmPassword = confirmPassword
-        self.showsLabel = showsLabel
         self.onGenerate = onGenerate
     }
 
@@ -38,14 +32,6 @@ struct PasswordEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if showsLabel {
-                TextField("Recovery key label", text: $label)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textContentType(.username)
-                    .submitLabel(.next)
-            }
-
             SecureField(mode == .create ? "Password" : "Recovery password", text: $password)
                 .textContentType(mode == .create ? .newPassword : .password)
 
