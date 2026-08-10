@@ -13,7 +13,6 @@ RUN go build -o /usr/local/bin/git-replycant ./git-replycant
 RUN go build -o /usr/local/bin/seeder ./integration/seeder
 RUN go build -o /usr/local/bin/provisioner ./integration/provisioner
 RUN go build -o /usr/local/bin/ctl ./integration/ctl
-RUN go install github.com/git-lfs/lfs-test-server@latest
 
 COPY integration/entrypoint.sh /entrypoint.sh
 COPY integration/reset-repo.sh /usr/local/bin/reset-repo.sh

@@ -1,9 +1,7 @@
 package gitd
 
 import (
-	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +14,6 @@ import (
 // media service behind gitd means devices only ever trust one mTLS endpoint,
 // and the backends themselves never need to be reachable from the network.
 const (
-	lfsProxyPathPrefix        = "/lfs"
 	decryptdProxyPathPrefix   = "/decryptd"
 	transcodedProxyPathPrefix = "/transcoded"
 )
@@ -29,16 +26,12 @@ type serviceProxy struct {
 	upstreamAuth     string
 	upstreamPathBase string
 	httpClient       *http.Client
-
-	// Only the LFS batch API embeds absolute upstream URLs in its responses, so
-	// href rewriting is opt-in rather than applied to every proxied service.
-	rewritesLFSBatchActions bool
 }
 
 // Parses a configured upstream URL and normalizes it for authenticated proxying.
 // Returns a nil proxy for an empty URL so tests and partial deployments can omit
 // services they do not exercise.
-func newServiceProxy(pathPrefix string, rawURL string, rewritesLFSBatchActions bool) (*serviceProxy, error) {
+func newServiceProxy(pathPrefix string, rawURL string) (*serviceProxy, error) {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" {
 		return nil, nil
@@ -69,12 +62,11 @@ func newServiceProxy(pathPrefix string, rawURL string, rewritesLFSBatchActions b
 	}
 
 	return &serviceProxy{
-		pathPrefix:              pathPrefix,
-		upstreamBaseURL:         parsed,
-		upstreamAuth:            authHeader,
-		upstreamPathBase:        basePath,
-		httpClient:              &http.Client{Timeout: 5 * time.Minute},
-		rewritesLFSBatchActions: rewritesLFSBatchActions,
+		pathPrefix:       pathPrefix,
+		upstreamBaseURL:  parsed,
+		upstreamAuth:     authHeader,
+		upstreamPathBase: basePath,
+		httpClient:       &http.Client{Timeout: 5 * time.Minute},
 	}, nil
 }
 
@@ -106,10 +98,7 @@ func (s *Server) proxyToService(proxy *serviceProxy, w http.ResponseWriter, r *h
 	}
 	defer upstreamRes.Body.Close()
 
-	if proxy.rewritesLFSBatchActions && shouldRewriteBatchResponse(r, upstreamRes) {
-		return s.writeRewrittenBatchResponse(proxy, w, r, upstreamRes)
-	}
-	copyProxyResponseHeaders(w.Header(), upstreamRes.Header, false)
+	copyProxyResponseHeaders(w.Header(), upstreamRes.Header)
 	w.WriteHeader(upstreamRes.StatusCode)
 	_, err = io.Copy(w, upstreamRes.Body)
 	return err
@@ -133,123 +122,6 @@ func (p *serviceProxy) resolveUpstreamURL(requestPath string, rawQuery string) (
 	return &target, nil
 }
 
-// Rewrites LFS batch actions so follow-up upload/download requests stay on the mTLS /lfs route.
-func (s *Server) writeRewrittenBatchResponse(proxy *serviceProxy, w http.ResponseWriter, r *http.Request, upstreamRes *http.Response) error {
-	body, err := io.ReadAll(upstreamRes.Body)
-	if err != nil {
-		return fmt.Errorf("read upstream batch response: %w", err)
-	}
-
-	rewrittenBody, err := rewriteBatchHrefs(proxy, r, body)
-	if err != nil {
-		return fmt.Errorf("rewrite batch response: %w", err)
-	}
-
-	copyProxyResponseHeaders(w.Header(), upstreamRes.Header, true)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(rewrittenBody)))
-	w.WriteHeader(upstreamRes.StatusCode)
-	_, err = io.Copy(w, bytes.NewReader(rewrittenBody))
-	return err
-}
-
-// Applies public gitd host rewriting to LFS batch action href values.
-func rewriteBatchHrefs(proxy *serviceProxy, r *http.Request, body []byte) ([]byte, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return body, nil
-	}
-
-	objects, ok := payload["objects"].([]any)
-	if !ok {
-		return body, nil
-	}
-
-	publicBase := buildPublicBaseURL(r, proxy.pathPrefix)
-	for _, objectEntry := range objects {
-		objectMap, ok := objectEntry.(map[string]any)
-		if !ok {
-			continue
-		}
-		actions, ok := objectMap["actions"].(map[string]any)
-		if !ok {
-			continue
-		}
-		for actionName, actionEntry := range actions {
-			actionMap, ok := actionEntry.(map[string]any)
-			if !ok {
-				continue
-			}
-			href, ok := actionMap["href"].(string)
-			if !ok || strings.TrimSpace(href) == "" {
-				continue
-			}
-			rewritten, err := proxy.rewriteActionHref(href, publicBase)
-			if err != nil {
-				continue
-			}
-			actionMap["href"] = rewritten
-			actions[actionName] = actionMap
-		}
-		objectMap["actions"] = actions
-	}
-
-	rewrittenBody, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	return rewrittenBody, nil
-}
-
-// Converts upstream LFS action URLs to equivalent URLs under gitd's public prefix.
-func (p *serviceProxy) rewriteActionHref(rawHref string, publicBase *url.URL) (string, error) {
-	parsedHref, err := url.Parse(rawHref)
-	if err != nil {
-		return "", err
-	}
-
-	relativePath := parsedHref.Path
-	if p.upstreamPathBase != "" && strings.HasPrefix(relativePath, p.upstreamPathBase) {
-		relativePath = strings.TrimPrefix(relativePath, p.upstreamPathBase)
-		if !strings.HasPrefix(relativePath, "/") {
-			relativePath = "/" + relativePath
-		}
-	}
-
-	target := *publicBase
-	target.Path = joinURLPath(publicBase.Path, relativePath)
-	target.RawQuery = parsedHref.RawQuery
-	target.Fragment = ""
-	return target.String(), nil
-}
-
-// Detects batch API responses that require href rewriting for continued mTLS routing.
-func shouldRewriteBatchResponse(req *http.Request, upstreamRes *http.Response) bool {
-	if req.Method != http.MethodPost {
-		return false
-	}
-	if !strings.HasSuffix(strings.TrimSuffix(req.URL.Path, "/"), "/objects/batch") {
-		return false
-	}
-	if upstreamRes.StatusCode < 200 || upstreamRes.StatusCode >= 300 {
-		return false
-	}
-	contentType := strings.ToLower(upstreamRes.Header.Get("Content-Type"))
-	return strings.Contains(contentType, "application/vnd.git-lfs+json") || strings.Contains(contentType, "application/json")
-}
-
-// Builds the externally reachable base URL for a proxied service from the active gitd request host.
-func buildPublicBaseURL(r *http.Request, pathPrefix string) *url.URL {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	return &url.URL{
-		Scheme: scheme,
-		Host:   r.Host,
-		Path:   pathPrefix,
-	}
-}
-
 // Copies request headers while excluding hop-by-hop values unsafe for proxy forwarding.
 func copyProxyRequestHeaders(dst http.Header, src http.Header) {
 	for name, values := range src {
@@ -263,14 +135,11 @@ func copyProxyRequestHeaders(dst http.Header, src http.Header) {
 	}
 }
 
-// Copies response headers while optionally dropping content-length for rewritten payloads.
-func copyProxyResponseHeaders(dst http.Header, src http.Header, rewritingBody bool) {
+// Copies response headers while excluding hop-by-hop values.
+func copyProxyResponseHeaders(dst http.Header, src http.Header) {
 	for name, values := range src {
 		lower := strings.ToLower(name)
 		if lower == "connection" || lower == "transfer-encoding" {
-			continue
-		}
-		if rewritingBody && lower == "content-length" {
 			continue
 		}
 		for _, value := range values {

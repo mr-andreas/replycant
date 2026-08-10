@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-mkdir -p /tmp/pki /tmp/identity
+mkdir -p /tmp/pki /tmp/identity /tmp/lfs
 
 # Generate CA and server certificates with SANs for localhost and 127.0.0.1.
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out /tmp/pki/ca.key
@@ -14,22 +14,12 @@ openssl x509 -req -in /tmp/pki/server.csr -CA /tmp/pki/ca.crt -CAkey /tmp/pki/ca
   -out /tmp/pki/server.crt -days 2 -CAcreateserial -copy_extensions copyall
 
 # Create and seed bare repository with authorized pubkey and encryption metadata.
-/usr/local/bin/reset-repo.sh true
+git init --initial-branch=main --bare /tmp/repo.git
+git -C /tmp/repo.git config http.receivepack true
+seeder --bare-repo=/tmp/repo.git --output-dir=/tmp/identity
 
 # Install git-lfs hooks from template for subsequent test repositories.
 git lfs install
-
-# Start lfs-test-server.
-LFS_LISTEN=tcp://:18444 \
-LFS_HOST=localhost:18444 \
-LFS_CONTENTPATH=/tmp/lfs-content \
-LFS_METADB=/tmp/lfs.db \
-LFS_ADMINUSER=admin \
-LFS_ADMINPASS=admin \
-lfs-test-server >/tmp/lfs.log 2>&1 &
-
-# Start control server for host-driven integration lifecycle operations.
-ctl >/tmp/ctl.log 2>&1 &
 
 # Start gitd server. The media upstreams are required flags but unused here;
 # these integration tests only exercise Git and LFS, so nothing listens on them.
@@ -40,7 +30,8 @@ gitd \
   --key=/tmp/pki/server.key \
   --ca=/tmp/pki/ca.crt \
   --hostname=localhost \
-  --lfs-url=http://admin:admin@localhost:18444 \
+  --lfs-dir=/tmp/lfs \
+  --lfs-internal-addr= \
   --decryptd-url=http://localhost:18445 \
   --transcoded-url=http://localhost:18446 \
   --cache-ttl=1s >/tmp/gitd.log 2>&1 &
@@ -60,5 +51,4 @@ done
 
 echo "container startup failed" >&2
 cat /tmp/gitd.log >&2 || true
-cat /tmp/lfs.log >&2 || true
 exit 1

@@ -27,7 +27,7 @@ const (
 	// lfsContentMediaType selects the LFS object content route on upstream storage.
 	lfsContentMediaType = "application/vnd.git-lfs"
 	// lfsMetaMediaType selects the LFS metadata route, which answers object size
-	// from the metadata database without opening the stored object.
+	// without opening the stored object.
 	lfsMetaMediaType = "application/vnd.git-lfs+json"
 	// maxMetadataResponseBytes caps how much of a metadata reply is read before
 	// giving up, so a non-LFS upstream answering with object content cannot pull
@@ -299,15 +299,9 @@ func computeLayout(encryptedSize int64) (plainSize int, totalChunks int, lastChu
 	return plainSize, totalChunks, lastChunkPlainSize, nil
 }
 
-// fetchEncryptedObjectSize reads the encrypted upstream object size required for range math.
-//
-// The LFS metadata API is tried first because it is the only lookup that cannot
-// touch stored object content. The HEAD and range-probe fallbacks exist for
-// plain object stores that do not implement the LFS metadata route, but both are
-// pathological against git-lfs-test-server: it omits Content-Length on HEAD
-// while still streaming the whole file off disk, and it ignores range ends, so a
-// bytes=0-0 probe streams the entire object. On a large video that turned every
-// range request into a full-object disk read.
+// fetchEncryptedObjectSize reads the encrypted upstream object size required for
+// range math. The LFS metadata API is tried first because it never opens object
+// content; HEAD with Content-Length is the fallback for plain object stores.
 func (s *Server) fetchEncryptedObjectSize(ctx context.Context, oid string) (int64, error) {
 	if size, ok := s.sizes.get(oid); ok {
 		return size, nil
@@ -321,23 +315,15 @@ func (s *Server) fetchEncryptedObjectSize(ctx context.Context, oid string) (int6
 	metadataErr := err
 
 	size, err = s.fetchEncryptedObjectSizeFromHead(ctx, oid)
-	if err == nil {
-		s.sizes.put(oid, size)
-		return size, nil
-	}
-	headErr := err
-
-	size, err = s.fetchEncryptedObjectSizeFromRangeProbe(ctx, oid)
 	if err != nil {
-		return 0, fmt.Errorf("metadata lookup failed (%w), head failed (%w), range probe failed: %w", metadataErr, headErr, err)
+		return 0, fmt.Errorf("metadata lookup failed (%w), head failed: %w", metadataErr, err)
 	}
 	s.sizes.put(oid, size)
 	return size, nil
 }
 
 // fetchEncryptedObjectSizeFromMetadata resolves object size through the LFS
-// metadata route, which answers from the metadata database and never opens the
-// stored object.
+// metadata route, which never opens the stored object.
 func (s *Server) fetchEncryptedObjectSizeFromMetadata(ctx context.Context, oid string) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.upstreamObjectURL(oid), nil)
 	if err != nil {
@@ -394,64 +380,12 @@ func (s *Server) fetchEncryptedObjectSizeFromHead(ctx context.Context, oid strin
 	return size, nil
 }
 
-// fetchEncryptedObjectSizeFromRangeProbe recovers object size when HEAD metadata omits content length.
-func (s *Server) fetchEncryptedObjectSizeFromRangeProbe(ctx context.Context, oid string) (int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.upstreamObjectURL(oid), nil)
-	if err != nil {
-		return 0, err
-	}
-	s.setUpstreamHeaders(req.Header)
-	req.Header.Set("Range", "bytes=0-0")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusPartialContent:
-		size, ok := parseContentRangeTotalSize(resp.Header.Get("Content-Range"))
-		if !ok {
-			return 0, errors.New("missing content range total")
-		}
-		return size, nil
-	case http.StatusOK:
-		size, ok := parsePositiveContentLength(resp.Header.Get("Content-Length"))
-		if !ok {
-			return 0, errors.New("missing content length")
-		}
-		return size, nil
-	default:
-		return 0, fmt.Errorf("upstream range probe status: %d", resp.StatusCode)
-	}
-}
-
 // parsePositiveContentLength validates and parses positive content length metadata.
 func parsePositiveContentLength(value string) (int64, bool) {
 	if value == "" {
 		return 0, false
 	}
 	size, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || size <= 0 {
-		return 0, false
-	}
-	return size, true
-}
-
-// parseContentRangeTotalSize extracts the total object size from an HTTP Content-Range header.
-func parseContentRangeTotalSize(value string) (int64, bool) {
-	if !strings.HasPrefix(value, "bytes ") {
-		return 0, false
-	}
-	slashIndex := strings.LastIndex(value, "/")
-	if slashIndex == -1 || slashIndex == len(value)-1 {
-		return 0, false
-	}
-	total := strings.TrimSpace(value[slashIndex+1:])
-	if total == "*" {
-		return 0, false
-	}
-	size, err := strconv.ParseInt(total, 10, 64)
 	if err != nil || size <= 0 {
 		return 0, false
 	}

@@ -80,10 +80,6 @@ services:
         condition: service_completed_successfully
       init-repo:
         condition: service_completed_successfully
-      decryptd:
-        condition: service_started
-      transcoded:
-        condition: service_started
     image: ${REPLYCANT_GITD_IMAGE:-gitd:local}
     build:
       context: .
@@ -99,37 +95,17 @@ services:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/server.crt:/data/server.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/server.key:/data/server.key:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
+      - ${REPLYCANT_LFS_DIR:-./replycant-lfs}:/data/lfs
     entrypoint: /bin/sh
     command:
       - -xec
       - |
         . /data/hostname/hostname.env
-        exec gitd --repo=/data/repo --addr=:8443 --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-url=http://admin:admin@lfs:8083 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082
-
-  lfs:
-    image: golang:1.25.5-alpine3.23
-    container_name: lfs
-    volumes:
-      - ${REPLYCANT_LFS_DIR:-./replycant-lfs}:/data/
-      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
-    depends_on:
-      hostname-detect:
-        condition: service_completed_successfully
-    environment:
-      LFS_CONTENTPATH: /data/lfs-content
-      LFS_METADB: /data/lfs.db
-      LFS_ADMINUSER: admin
-      LFS_ADMINPASS: admin
-      LFS_LISTEN: tcp://:8083
-    entrypoint: /bin/sh
-    command:
-      - -xec
-      - |
-        . /data/hostname/hostname.env
-        LFS_HOST=$$REPLYCANT_HOSTNAME:8443 exec go run github.com/git-lfs/lfs-test-server@latest
+        exec gitd --repo=/data/repo --addr=:8443 --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082
 
   # Decrypts encrypted LFS objects on the fly. Reachable only through gitd's
   # mTLS-authenticated /decryptd route, so no host port is published.
+  # Object bytes come from gitd's internal read-only LFS listener.
   decryptd:
     image: ${REPLYCANT_DECRYPTD_IMAGE:-decryptd:local}
     build:
@@ -137,9 +113,9 @@ services:
       dockerfile: Dockerfile
       target: decryptd
     depends_on:
-      - lfs
+      - gitd
     command:
-      - --upstream=http://admin:admin@lfs:8083
+      - --upstream=http://gitd:8085/lfs
       - --listen=:8084
 
   # Run transcoded for on-demand video segments. Reachable only through gitd's

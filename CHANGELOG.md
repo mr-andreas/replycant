@@ -5,6 +5,7 @@
 ### Breaking changes
 
 - replycant-importer: requires a `git-replycant clone --no-lfs` worktree; full-LFS clones with `binary/**` filters or `lfs.url` are rejected
+- server: replace the separate `lfs-test-server` service and `--lfs-url` proxy with a native file-backed LFS store in gitd (`--lfs-dir`); wipe existing LFS volumes (or point `--lfs-dir` at a compatible `objects/` tree), remove the `lfs` compose service, and point decryptd at `http://gitd:8085/lfs`
 - server: transcoded no longer depends on nvidia gpu reservation or cuda runtime; redeploy and expect software-only transcoding
 
 ### Features

@@ -250,56 +250,10 @@ func TestHandleObjectGetUpstreamMetadataFailure(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "failed to read upstream metadata")
 }
 
-// TestHandleObjectGetMetadataFallbackViaRangeProbe keeps decryptd working with upstreams that omit HEAD content length.
-func TestHandleObjectGetMetadataFallbackViaRangeProbe(t *testing.T) {
-	dek := []byte("0123456789abcdef0123456789abcdef")
-	plaintext := []byte("abcdefghijklmnopqrstuvwxyz0123456789")
-	encrypted := encryptChunkedForTest(t, plaintext, dek)
-	probeSeen := false
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodHead:
-			w.WriteHeader(http.StatusOK)
-			return
-		case http.MethodGet:
-			if r.Header.Get("Range") == "bytes=0-0" {
-				probeSeen = true
-				w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(encrypted)))
-				w.Header().Set("Content-Length", "1")
-				w.WriteHeader(http.StatusPartialContent)
-				_, _ = w.Write(encrypted[:1])
-				return
-			}
-			serveRangePayload(t, w, r, encrypted)
-			return
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	}))
-	defer upstream.Close()
-
-	proxy, err := NewServer(ServerConfig{UpstreamURL: upstream.URL})
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodGet, "/objects/test-oid", nil)
-	req.Header.Set(HeaderDEK, base64.StdEncoding.EncodeToString(dek))
-	req.Header.Set("Range", "bytes=5-20")
-
-	rec := httptest.NewRecorder()
-	proxy.Handler().ServeHTTP(rec, req)
-
-	require.True(t, probeSeen)
-	require.Equal(t, http.StatusPartialContent, rec.Code)
-	assert.Equal(t, "bytes 5-20/36", rec.Header().Get("Content-Range"))
-	assert.Equal(t, plaintext[5:21], rec.Body.Bytes())
-}
-
-// TestHandleObjectGetMetadataFallbackFailure keeps 502 behavior when no size metadata is recoverable.
+// TestHandleObjectGetMetadataFallbackFailure keeps 502 behavior when neither the
+// metadata route nor HEAD reports a usable object size.
 func TestHandleObjectGetMetadataFallbackFailure(t *testing.T) {
 	dek := []byte("0123456789abcdef0123456789abcdef")
-	plaintext := []byte("abcdefghijklmnopqrstuvwxyz0123456789")
-	encrypted := encryptChunkedForTest(t, plaintext, dek)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -307,12 +261,7 @@ func TestHandleObjectGetMetadataFallbackFailure(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			return
 		case http.MethodGet:
-			if r.Header.Get("Range") == "bytes=0-0" {
-				w.WriteHeader(http.StatusPartialContent)
-				_, _ = w.Write(encrypted[:1])
-				return
-			}
-			serveRangePayload(t, w, r, encrypted)
+			w.WriteHeader(http.StatusOK)
 			return
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)

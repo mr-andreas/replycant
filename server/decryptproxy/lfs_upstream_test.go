@@ -18,20 +18,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// lfsTestServerUpstream reproduces the exact behavior of the git-lfs-test-server
-// deployment this project runs in docker-compose. Its quirks are the reason
-// decryptd cannot treat upstream object reads as cheap:
+// lfsTestServerUpstream reproduces the historical git-lfs-test-server quirks
+// that forced decryptd onto the metadata size path:
 //
-//   - HEAD responses carry no Content-Length, so any size lookup that relies on
-//     HEAD silently degrades into a second request.
-//   - HEAD still runs io.Copy over the whole file. Go discards the body for
-//     HEAD, but the handler keeps pulling every byte off disk, so a HEAD costs a
-//     full-object read on the server.
-//   - Range requests only parse the start offset. The end is ignored and the
-//     server always streams to EOF.
+//   - HEAD responses carry no Content-Length.
+//   - HEAD still streams the whole file off disk.
+//   - Range requests ignore the end bound and stream to EOF.
 //
-// The earlier fixtures in server_test.go model a well-behaved upstream, which is
-// why the request amplification against the real server went unnoticed.
+// The native gitd LFS server does none of these; the fixture remains so the
+// metadata-first size lookup stays covered against pathological upstreams.
 type lfsTestServerUpstream struct {
 	server *httptest.Server
 

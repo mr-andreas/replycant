@@ -16,6 +16,7 @@ import (
 	"github.com/mr-andreas/replycant/server/gitd"
 	"github.com/mr-andreas/replycant/server/gitd/auth"
 	"github.com/mr-andreas/replycant/server/gitd/caserver"
+	"github.com/mr-andreas/replycant/server/gitd/lfs"
 )
 
 // CLI for gitd - Git HTTP server with mTLS authentication.
@@ -29,7 +30,11 @@ type CLI struct {
 	CacheTTL time.Duration `default:"5m" help:"Cache TTL for authorized keys"`
 	Check    bool          `help:"Run health check and exit"`
 	Hostname string        `required:"" help:"Hostname to use for the server. Not used for anything, except for presenting a URL in the QR code scanned by apps."`
-	LfsURL   string        `required:"" help:"Internal LFS server URL proxied at /lfs (full URL, e.g., http://admin:admin@lfs:8083)"`
+	LfsDir   string        `required:"" help:"Directory for the native file-backed LFS object store" type:"path"`
+
+	// LfsInternalAddr is the plain-HTTP listener for compose-network readers
+	// such as decryptd. Empty disables it so tests can omit the listener.
+	LfsInternalAddr string `default:":8085" help:"Internal read-only LFS listen address (empty disables)"`
 
 	DecryptdURL   string `required:"" help:"Internal decryptd URL proxied at /decryptd (full URL, e.g., http://decryptd:8084)"`
 	TranscodedURL string `required:"" help:"Internal transcoded URL proxied at /transcoded (full URL, e.g., http://transcoded:8082)"`
@@ -43,7 +48,9 @@ func (c *CLI) Validate() error {
 	return nil
 }
 
-// Wires CA distribution and mTLS gitd servers so clients bootstrap and route Git/LFS through one endpoint.
+// Wires CA distribution, mTLS gitd, and the internal read-only LFS listener so
+// clients bootstrap and route Git/LFS through one endpoint while media services
+// can fetch objects without mTLS.
 func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
@@ -82,7 +89,7 @@ func main() {
 
 	handler, err := gitd.NewServer(auth, gitd.ServerConfig{
 		RepoPath:      cli.Repo,
-		LfsURL:        cli.LfsURL,
+		LfsDir:        cli.LfsDir,
 		DecryptdURL:   cli.DecryptdURL,
 		TranscodedURL: cli.TranscodedURL,
 	})
@@ -105,6 +112,20 @@ func main() {
 		}
 	}()
 
+	var lfsInternalServer *http.Server
+	if cli.LfsInternalAddr != "" {
+		lfsInternalServer = &http.Server{
+			Addr:    cli.LfsInternalAddr,
+			Handler: lfs.NewReadOnlyHandler(handler.LFSHandler().Store(), "/lfs"),
+		}
+		go func() {
+			log.Printf("Starting internal read-only LFS server on %s", cli.LfsInternalAddr)
+			if err := lfsInternalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("internal LFS server failed: %v", err)
+			}
+		}()
+	}
+
 	// Set up signal handling for graceful shutdown
 	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,29 +138,25 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown both servers concurrently
+	// Shutdown servers concurrently
 	var wg sync.WaitGroup
-	wg.Add(2)
+	servers := []*http.Server{httpServer, gitServer}
+	if lfsInternalServer != nil {
+		servers = append(servers, lfsInternalServer)
+	}
+	wg.Add(len(servers))
 
-	go func() {
-		defer wg.Done()
-		log.Println("Shutting down CA server...")
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("CA server shutdown error: %v", err)
-		} else {
-			log.Println("CA server shutdown complete")
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		log.Println("Shutting down gitd server...")
-		if err := gitServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("gitd server shutdown error: %v", err)
-		} else {
-			log.Println("gitd server shutdown complete")
-		}
-	}()
+	for _, srv := range servers {
+		go func(srv *http.Server) {
+			defer wg.Done()
+			log.Printf("Shutting down server on %s...", srv.Addr)
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("server %s shutdown error: %v", srv.Addr, err)
+			} else {
+				log.Printf("server %s shutdown complete", srv.Addr)
+			}
+		}(srv)
+	}
 
 	wg.Wait()
 	log.Println("Shutdown complete")

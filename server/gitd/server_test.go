@@ -49,6 +49,15 @@ func setupHookBinaryForTests(t *testing.T) {
 	t.Setenv("PATH", joined)
 }
 
+// testServerConfig builds a ServerConfig with a disposable LFS store root.
+func testServerConfig(t *testing.T, repoPath string) ServerConfig {
+	t.Helper()
+	return ServerConfig{
+		RepoPath: repoPath,
+		LfsDir:   t.TempDir(),
+	}
+}
+
 // Tests that ValidateRepository accepts a bare git repository.
 func TestValidateRepository_BareRepo(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -143,7 +152,8 @@ func TestServer_HandleGitRequest_Authenticated(t *testing.T) {
 
 	cert := testCtx.CreateTestCertificate(t, pubKey, privKey)
 
-	server, err := NewServer(&mockAuthenticator{}, ServerConfig{RepoPath: testRepo.BareRepo})
+	cfg := testServerConfig(t, testRepo.BareRepo)
+	server, err := NewServer(&mockAuthenticator{}, cfg)
 	require.NoError(t, err)
 
 	// Create test request with client certificate
@@ -169,7 +179,7 @@ func TestServer_HandleGitRequest_NoClientCert(t *testing.T) {
 
 	mockAuthenticator := &mockAuthenticator{}
 
-	server, err := NewServer(mockAuthenticator, ServerConfig{RepoPath: testRepo.BareRepo})
+	server, err := NewServer(mockAuthenticator, testServerConfig(t, testRepo.BareRepo))
 	require.NoError(t, err)
 
 	// Create test request without client certificate
@@ -197,7 +207,7 @@ func TestServer_HandleGitRequest_Unauthorized(t *testing.T) {
 		AuthErr: auth.ErrUnauthorized,
 	}
 
-	server, err := NewServer(mockAuthenticator, ServerConfig{RepoPath: testRepo.BareRepo})
+	server, err := NewServer(mockAuthenticator, testServerConfig(t, testRepo.BareRepo))
 	require.NoError(t, err)
 
 	// Create client cert with unauthorized key
@@ -226,7 +236,7 @@ func TestNewServer_InstallsPreReceiveHook(t *testing.T) {
 	defer testCtx.Close(t)
 	testRepo := testCtx.CreateTestRepo(t)
 
-	server, err := NewServer(&mockAuthenticator{}, ServerConfig{RepoPath: testRepo.BareRepo, LfsURL: "http://example.com"})
+	server, err := NewServer(&mockAuthenticator{}, testServerConfig(t, testRepo.BareRepo))
 	require.NoError(t, err)
 	require.NotNil(t, server)
 
@@ -248,10 +258,10 @@ func TestServer_HandleLFSRequest_NoClientCert(t *testing.T) {
 	defer testCtx.Close(t)
 	testRepo := testCtx.CreateTestRepo(t)
 
-	server, err := NewServer(&mockAuthenticator{}, ServerConfig{RepoPath: testRepo.BareRepo, LfsURL: "http://example.com"})
+	server, err := NewServer(&mockAuthenticator{}, testServerConfig(t, testRepo.BareRepo))
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/lfs/objects/abc", nil)
+	req := httptest.NewRequest(http.MethodGet, "/lfs/objects/"+strings.Repeat("a", 64), nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{},
 	}
@@ -263,94 +273,31 @@ func TestServer_HandleLFSRequest_NoClientCert(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "Client certificate required")
 }
 
-// Tests that authenticated /lfs requests are forwarded to upstream with fixed Basic auth.
-func TestServer_HandleLFSRequest_ProxiesToUpstream(t *testing.T) {
+// Tests that authenticated /lfs batch responses advertise public mTLS hrefs
+// without a reverse-proxy rewrite step.
+func TestServer_HandleLFSBatch_PublicActionHrefs(t *testing.T) {
 	setupHookBinaryForTests(t)
 
 	testCtx := gittest.NewContext(t)
 	defer testCtx.Close(t)
 	testRepo := testCtx.CreateTestRepo(t)
 
-	requestSeen := false
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestSeen = true
-		require.Equal(t, "/objects/abc", r.URL.Path)
-		require.Equal(t, "a=1", r.URL.RawQuery)
-		require.Equal(
-			t,
-			"Basic "+base64.StdEncoding.EncodeToString([]byte("admin:admin")),
-			r.Header.Get("Authorization"),
-		)
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok")
-	}))
-	defer upstream.Close()
-
-	server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1"}, ServerConfig{
-		RepoPath: testRepo.BareRepo,
-		LfsURL:   "http://admin:admin@" + strings.TrimPrefix(upstream.URL, "http://"),
-	})
+	server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1"}, testServerConfig(t, testRepo.BareRepo))
 	require.NoError(t, err)
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	cert := testCtx.CreateTestCertificate(t, &privKey.PublicKey, privKey)
 
-	req := httptest.NewRequest(http.MethodGet, "/lfs/objects/abc?a=1", nil)
+	oid := strings.Repeat("ab", 32)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/lfs/objects/batch",
+		strings.NewReader(`{"operation":"upload","transfers":["basic"],"objects":[{"oid":"`+oid+`","size":3}]}`),
+	)
 	req.Host = "git.example:8443"
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{cert},
-	}
-
-	w := httptest.NewRecorder()
-	server.handleAuthenticatedRequest(w, req)
-
-	require.True(t, requestSeen)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "ok", w.Body.String())
-}
-
-// Tests that LFS batch action hrefs are rewritten to gitd /lfs URLs so follow-up calls stay mTLS-gated.
-func TestServer_HandleLFSBatch_RewritesActionHrefs(t *testing.T) {
-	setupHookBinaryForTests(t)
-
-	testCtx := gittest.NewContext(t)
-	defer testCtx.Close(t)
-	testRepo := testCtx.CreateTestRepo(t)
-
-	upstreamURL := ""
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/objects/batch", r.URL.Path)
-		w.Header().Set("Content-Type", "application/vnd.git-lfs+json")
-		_, _ = io.WriteString(w, `{
-  "objects":[
-    {
-      "oid":"abc",
-      "size":3,
-      "actions":{
-        "upload":{"href":"`+upstreamURL+`/objects/abc"},
-        "download":{"href":"`+upstreamURL+`/objects/abc?dl=1"},
-        "verify":{"href":"`+upstreamURL+`/verify/abc"}
-      }
-    }
-  ]
-}`)
-	}))
-	defer upstream.Close()
-	upstreamURL = upstream.URL
-
-	server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1"}, ServerConfig{
-		RepoPath: testRepo.BareRepo,
-		LfsURL:   "http://admin:admin@" + strings.TrimPrefix(upstream.URL, "http://"),
-	})
-	require.NoError(t, err)
-
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	cert := testCtx.CreateTestCertificate(t, &privKey.PublicKey, privKey)
-
-	req := httptest.NewRequest(http.MethodPost, "/lfs/objects/batch", strings.NewReader(`{"operation":"upload"}`))
-	req.Host = "git.example:8443"
+	req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+	req.Header.Set("Accept", "application/vnd.git-lfs+json")
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	}
@@ -366,21 +313,14 @@ func TestServer_HandleLFSBatch_RewritesActionHrefs(t *testing.T) {
 
 	objects, ok := payload["objects"].([]any)
 	require.True(t, ok)
+	require.Len(t, objects, 1)
 	first, ok := objects[0].(map[string]any)
 	require.True(t, ok)
 	actions, ok := first["actions"].(map[string]any)
 	require.True(t, ok)
-
 	upload, ok := actions["upload"].(map[string]any)
 	require.True(t, ok)
-	download, ok := actions["download"].(map[string]any)
-	require.True(t, ok)
-	verify, ok := actions["verify"].(map[string]any)
-	require.True(t, ok)
-
-	assert.Equal(t, "https://git.example:8443/lfs/objects/abc", upload["href"])
-	assert.Equal(t, "https://git.example:8443/lfs/objects/abc?dl=1", download["href"])
-	assert.Equal(t, "https://git.example:8443/lfs/verify/abc", verify["href"])
+	assert.Equal(t, "https://git.example:8443/lfs/objects/"+oid, upload["href"])
 }
 
 // Builds a gitd server whose media routes point at the supplied upstreams so
@@ -394,12 +334,10 @@ func newMediaProxyTestServer(t *testing.T, decryptdURL string, transcodedURL str
 	t.Cleanup(func() { testCtx.Close(t) })
 	testRepo := testCtx.CreateTestRepo(t)
 
-	server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1"}, ServerConfig{
-		RepoPath:      testRepo.BareRepo,
-		LfsURL:        "http://example.com",
-		DecryptdURL:   decryptdURL,
-		TranscodedURL: transcodedURL,
-	})
+	cfg := testServerConfig(t, testRepo.BareRepo)
+	cfg.DecryptdURL = decryptdURL
+	cfg.TranscodedURL = transcodedURL
+	server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1"}, cfg)
 	require.NoError(t, err)
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -515,31 +453,6 @@ func TestServer_HandleMediaRequest_InjectsUpstreamBasicAuth(t *testing.T) {
 	server.handleAuthenticatedRequest(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-}
-
-// Tests that LFS batch href rewriting stays confined to /lfs. decryptd exposes
-// an /objects/ namespace too, so an unguarded rewrite would corrupt its responses.
-func TestServer_HandleDecryptdRequest_DoesNotRewriteBatchHrefs(t *testing.T) {
-	body := `{"objects":[{"oid":"abc","actions":{"download":{"href":"http://elsewhere.invalid/objects/abc"}}}]}`
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, body)
-	}))
-	defer upstream.Close()
-
-	server, cert := newMediaProxyTestServer(t, upstream.URL, "http://example.com")
-
-	req := httptest.NewRequest(http.MethodPost, "/decryptd/objects/batch", strings.NewReader("{}"))
-	req.Host = "git.example:8443"
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{cert},
-	}
-
-	w := httptest.NewRecorder()
-	server.handleAuthenticatedRequest(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, body, w.Body.String())
 }
 
 // Tests that gitd advertises the CORS headers browsers need for ranged,

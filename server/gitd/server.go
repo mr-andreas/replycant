@@ -15,30 +15,35 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/mr-andreas/replycant/server/gitd/auth"
+	"github.com/mr-andreas/replycant/server/gitd/lfs"
 )
+
+const lfsPathPrefix = "/lfs"
 
 // Interface fullfilled by the auth.Authenticator.
 type Authenticator interface {
 	Authenticate(clientCert *x509.Certificate) (string, error)
 }
 
-// Collects the repository and backend service upstreams gitd fronts. Grouping
-// them keeps the constructor readable as more services move behind the single
-// mTLS endpoint, and lets callers omit services they do not run.
+// Collects the repository, native LFS store, and backend service upstreams gitd
+// fronts. Grouping them keeps the constructor readable as more services move
+// behind the single mTLS endpoint, and lets callers omit services they do not run.
 type ServerConfig struct {
 	RepoPath      string
-	LfsURL        string
+	LfsDir        string
 	DecryptdURL   string
 	TranscodedURL string
 }
 
 // Implements http.Handler for Git Smart HTTP protocol with mTLS authentication.
-// Wraps git-http-backend to provide secure, authenticated access to a Git repository.
+// Wraps git-http-backend to provide secure, authenticated access to a Git repository
+// and serves a native file-backed LFS API at /lfs.
 type Server struct {
 	repoPath       string
 	auth           Authenticator
 	gitBackendPath string
-	lfsURL         string
+	lfsDir         string
+	lfsHandler     *lfs.Handler
 	serviceProxies []*serviceProxy
 
 	bootstrapMu sync.Mutex // Prevents race condition during initial repository bootstrap
@@ -56,6 +61,14 @@ func NewServer(a Authenticator, cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("git-http-backend not found: %w", err)
 	}
 
+	if strings.TrimSpace(cfg.LfsDir) == "" {
+		return nil, errors.New("lfs dir is required")
+	}
+	store, err := lfs.NewStore(cfg.LfsDir)
+	if err != nil {
+		return nil, fmt.Errorf("create lfs store: %w", err)
+	}
+
 	proxies, err := buildServiceProxies(cfg)
 	if err != nil {
 		return nil, err
@@ -65,7 +78,8 @@ func NewServer(a Authenticator, cfg ServerConfig) (*Server, error) {
 		repoPath:       cfg.RepoPath,
 		auth:           a,
 		gitBackendPath: gitBackendPath,
-		lfsURL:         cfg.LfsURL,
+		lfsDir:         store.Root(),
+		lfsHandler:     lfs.NewHandler(store, lfsPathPrefix),
 		serviceProxies: proxies,
 	}
 
@@ -76,21 +90,29 @@ func NewServer(a Authenticator, cfg ServerConfig) (*Server, error) {
 	return server, nil
 }
 
+// LFSHandler returns the in-process LFS API for the public mTLS route.
+func (s *Server) LFSHandler() *lfs.Handler {
+	return s.lfsHandler
+}
+
+// LFSDir returns the on-disk store root used by the pre-receive hook.
+func (s *Server) LFSDir() string {
+	return s.lfsDir
+}
+
 // Builds the ordered proxy routing table, skipping services left unconfigured.
 func buildServiceProxies(cfg ServerConfig) ([]*serviceProxy, error) {
 	specs := []struct {
-		pathPrefix              string
-		upstreamURL             string
-		rewritesLFSBatchActions bool
+		pathPrefix  string
+		upstreamURL string
 	}{
-		{lfsProxyPathPrefix, cfg.LfsURL, true},
-		{decryptdProxyPathPrefix, cfg.DecryptdURL, false},
-		{transcodedProxyPathPrefix, cfg.TranscodedURL, false},
+		{decryptdProxyPathPrefix, cfg.DecryptdURL},
+		{transcodedProxyPathPrefix, cfg.TranscodedURL},
 	}
 
 	proxies := make([]*serviceProxy, 0, len(specs))
 	for _, spec := range specs {
-		proxy, err := newServiceProxy(spec.pathPrefix, spec.upstreamURL, spec.rewritesLFSBatchActions)
+		proxy, err := newServiceProxy(spec.pathPrefix, spec.upstreamURL)
 		if err != nil {
 			return nil, err
 		}
@@ -175,6 +197,11 @@ func (s *Server) handleAuthenticatedRequest(w http.ResponseWriter, r *http.Reque
 
 	log.Printf("Authenticated user: %s, path: %s", username, r.URL.Path)
 
+	if r.URL.Path == lfsPathPrefix || strings.HasPrefix(r.URL.Path, lfsPathPrefix+"/") {
+		s.lfsHandler.ServeHTTP(w, r)
+		return
+	}
+
 	for _, proxy := range s.serviceProxies {
 		if !proxy.matches(r.URL.Path) {
 			continue
@@ -202,7 +229,7 @@ func (s *Server) proxyToGitBackend(w http.ResponseWriter, r *http.Request, usern
 			fmt.Sprintf("GIT_PROJECT_ROOT=%s", s.repoPath),
 			"GIT_HTTP_EXPORT_ALL=1",
 			fmt.Sprintf("REMOTE_USER=%s", username),
-			fmt.Sprintf("REPLYCANT_LFS_URL=%s", s.lfsURL),
+			fmt.Sprintf("REPLYCANT_LFS_DIR=%s", s.lfsDir),
 		},
 	}
 

@@ -1,40 +1,43 @@
 # Server Architecture
 
-gitd is a Go-based Git server that provides authenticated access to repositories using mTLS with P-256 ECDSA certificates. It wraps `git-http-backend` for Git protocol handling and also acts as the single authenticated entrypoint for every backend service, exposing them as reverse-proxy routes.
+gitd is a Go-based Git server that provides authenticated access to repositories using mTLS with P-256 ECDSA certificates. It wraps `git-http-backend` for Git protocol handling, serves a native file-backed Git LFS API, and acts as the single authenticated entrypoint for media backends.
 
 ## Overview
 
-gitd runs two HTTP servers:
+gitd runs three HTTP servers:
 
 | Server | Port | Protocol | Purpose |
 |--------|------|----------|---------|
-| Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP + service proxy routes |
+| Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP, native `/lfs`, media proxies |
 | CA Server | 8080 | HTTP | Certificate distribution for device onboarding |
+| Internal LFS | 8085 | HTTP | Read-only LFS for compose-network services |
 
-These are the only ports published to the host. The backend services sit on an
-internal Docker network and are reachable only through gitd:
+Only 8443 and 8080 are published to the host. Media backends sit on the
+internal Docker network:
 
-| Route | Upstream service | Purpose |
-|-------|------------------|---------|
-| `/lfs` | lfs (`:8083`) | Git LFS object storage |
-| `/decryptd` | decryptd (`:8084`) | On-the-fly decryption of LFS objects |
-| `/transcoded` | transcoded (`:8082`) | HLS transcoding for video playback |
+| Route | Implementation | Purpose |
+|-------|----------------|---------|
+| `/lfs` | in-process LFS store (`--lfs-dir`) | Git LFS object storage |
+| `/decryptd` | reverse proxy to decryptd (`:8084`) | On-the-fly decryption of LFS objects |
+| `/transcoded` | reverse proxy to transcoded (`:8082`) | HLS transcoding for video playback |
 
 ```mermaid
 flowchart LR
   webapp[webapp proxy]
   iosapp[iosapp]
   gitd["gitd :8443 mTLS"]
-  lfs["lfs :8083"]
+  lfsstore["file-backed LFS store"]
+  internal["gitd :8085 read-only LFS"]
   decryptd["decryptd :8084"]
   transcoded["transcoded :8082"]
 
   webapp --> gitd
   iosapp --> gitd
-  gitd -->|"/lfs"| lfs
+  gitd -->|"/lfs"| lfsstore
   gitd -->|"/decryptd"| decryptd
   gitd -->|"/transcoded"| transcoded
-  decryptd --> lfs
+  internal --> lfsstore
+  decryptd --> internal
   transcoded --> decryptd
 ```
 
@@ -78,10 +81,11 @@ The Git server handles all Git Smart HTTP operations with mTLS authentication.
 1. Client initiates TLS connection with client certificate
 2. Server extracts P-256 public key from certificate
 3. Server validates key against authorized keys in `pubkeys/` directory
-4. If authorized and the path matches a service route (`/lfs/*`, `/decryptd/*`, `/transcoded/*`), the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
-5. Otherwise, request is proxied to `git-http-backend` via CGI
-6. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist
-7. If validation succeeds, refs are updated; otherwise the push is rejected atomically
+4. If authorized and the path is under `/lfs`, the native LFS handler serves batch/upload/download from the file-backed store
+5. If authorized and the path matches `/decryptd/*` or `/transcoded/*`, the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
+6. Otherwise, request is proxied to `git-http-backend` via CGI
+7. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist on disk
+8. If validation succeeds, refs are updated; otherwise the push is rejected atomically
 
 ### CGI Environment
 
@@ -92,7 +96,7 @@ The server passes these environment variables to `git-http-backend`:
 | `GIT_PROJECT_ROOT` | Path to the bare repository |
 | `GIT_HTTP_EXPORT_ALL` | Set to `1` to allow access without `git-daemon-export-ok` |
 | `REMOTE_USER` | Authenticated username (from pubkey filename) |
-| `REPLYCANT_LFS_URL` | LFS server URL used by the pre-receive validator |
+| `REPLYCANT_LFS_DIR` | On-disk LFS store root used by the pre-receive validator |
 
 ## CA Certificate Distribution
 
@@ -190,7 +194,9 @@ gitd \
   --key /path/to/server.key \
   --ca /path/to/ca.crt \
   --hostname server.example.com \
-  --lfs-url http://admin:admin@lfs:8083 \
+  --lfs-dir /var/lib/replycant/lfs \
+  --decryptd-url http://decryptd:8084 \
+  --transcoded-url http://transcoded:8082 \
   --addr :8443 \
   --cache-ttl 5m
 ```
@@ -202,7 +208,8 @@ gitd \
 | `--key` | Yes | - | Server TLS private key |
 | `--ca` | Yes | - | CA certificate for client trust |
 | `--hostname` | Yes | - | Hostname for QR code URL |
-| `--lfs-url` | Yes | - | Internal upstream Git LFS URL used by gitd proxy and pre-receive checks |
+| `--lfs-dir` | Yes | - | Directory for the native file-backed LFS object store |
+| `--lfs-internal-addr` | No | `:8085` | Read-only internal LFS listen address (empty disables) |
 | `--decryptd-url` | Yes | - | Internal upstream decryptd URL proxied at `/decryptd` |
 | `--transcoded-url` | Yes | - | Internal upstream transcoded URL proxied at `/transcoded` |
 | `--addr` | No | `:8443` | Git server listen address |

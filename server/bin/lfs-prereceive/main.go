@@ -48,10 +48,16 @@ func newContainerLogger() *log.Logger {
 
 // run executes pre-receive validation and returns an error that should reject the push when non-nil.
 func run() error {
-	lfsURL := strings.TrimSpace(os.Getenv("REPLYCANT_LFS_URL"))
-	if lfsURL == "" {
-		containerLog.Printf("lfs url not configured; skipping validation")
+	lfsDir := strings.TrimSpace(os.Getenv("REPLYCANT_LFS_DIR"))
+	if lfsDir == "" {
+		containerLog.Printf("lfs dir not configured; skipping validation")
 		return nil
+	}
+
+	store, err := lfs.NewStore(lfsDir)
+	if err != nil {
+		containerLog.Printf("failed to open lfs store at %q: %v", lfsDir, err)
+		return fmt.Errorf("open lfs store: %w", err)
 	}
 
 	updates, err := readUpdates(os.Stdin)
@@ -67,7 +73,7 @@ func run() error {
 	for _, update := range updates {
 		refNames = append(refNames, update.RefName)
 	}
-	containerLog.Printf("starting validation for refs=%q using lfs_url=%q", refNames, lfsURL)
+	containerLog.Printf("starting validation for refs=%q using lfs_dir=%q", refNames, lfsDir)
 
 	newCommitHashes, err := collectIntroducedCommits(updates)
 	if err != nil {
@@ -91,11 +97,7 @@ func run() error {
 		return nil
 	}
 
-	missing, err := lfs.VerifyObjects(lfsURL, objects)
-	if err != nil {
-		containerLog.Printf("lfs verification request failed: %v", err)
-		return fmt.Errorf("verify lfs objects: %w", err)
-	}
+	missing := lfs.MissingObjects(store, objects)
 	if len(missing) == 0 {
 		containerLog.Printf("verified all %d lfs objects successfully", len(objects))
 		return nil

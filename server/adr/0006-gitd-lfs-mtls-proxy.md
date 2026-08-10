@@ -1,7 +1,7 @@
 # ADR-0006: Route LFS Through gitd mTLS Proxy
 
 ## Status
-Accepted
+Superseded by [ADR-0009](0009-native-lfs-server-in-gitd.md)
 
 ## Context
 Replycant currently uses `lfs-test-server` with static Basic credentials
