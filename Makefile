@@ -33,15 +33,19 @@ BUILD_NUMBER := $(shell date +%Y%m%d%H%M)
 # a usable run.
 FASTLANE_LOCALE := LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-ios-test:
+ios-unit-test:
 	xcodebuild test -project $(IOS_PROJECT) -scheme $(IOS_SCHEME) \
 	  -destination '$(IOS_TEST_DESTINATION)' \
 	  -derivedDataPath iosapp/build/test-derived-data
+
+ios-ui-test:
 	xcodebuild test -project $(IOS_PROJECT) -scheme iosappScreenshots \
 	  -destination '$(IOS_TEST_DESTINATION)' \
-	  -derivedDataPath iosapp/build/test-derived-data \
+	  -derivedDataPath iosapp/build/uitest-derived-data \
 	  -skip-testing:iosappUITests/ScreenshotUITests
-.PHONY: ios-test
+
+ios-test: ios-unit-test ios-ui-test
+.PHONY: ios-test ios-unit-test ios-ui-test
 
 ios-integration-test:
 	@set -euo pipefail; \
