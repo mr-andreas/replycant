@@ -14,11 +14,4 @@ struct PasswordStrengthTests {
         let score = PasswordStrength.score("S7f!9xQ2m#1Lb@8nR5t$0wZk")
         #expect(score.level == .strong)
     }
-
-    // Confirms generator output is non-empty and typically classified as strong.
-    @Test func generatedPasswordIsStrong() {
-        let generated = PasswordStrength.generate()
-        #expect(!generated.isEmpty)
-        #expect(PasswordStrength.score(generated).level == .strong)
-    }
 }

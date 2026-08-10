@@ -207,12 +207,7 @@ struct RecoveryKeyView: View {
             PasswordEntryView(
                 mode: .create,
                 password: $password,
-                confirmPassword: $confirmPassword,
-                onGenerate: {
-                    let generated = PasswordStrength.generate()
-                    password = generated
-                    confirmPassword = generated
-                }
+                confirmPassword: $confirmPassword
             )
             .padding(.horizontal)
 
@@ -315,11 +310,25 @@ struct RecoveryKeyView: View {
 
         Password is required and is not included in this share.
         """
-        let qrImage = QRCodeDisplayView.generateQRCodeImage(from: createdKey.envelopeJSON, side: 1024, correctionLevel: "H")
+        let textSource = RecoveryShareText(
+            plainText: text,
+            label: createdKey.label
+        )
+        let qrImage = QRCodeDisplayView.generateQRCodeImage(
+            from: createdKey.envelopeJSON,
+            side: 1024,
+            correctionLevel: "H"
+        )
         if let qrImage {
-            return [text, qrImage]
+            let cardImage = RecoveryShareCard.render(
+                qr: qrImage,
+                label: createdKey.label,
+                uuid: createdKey.uuid,
+                host: host
+            )
+            return [textSource, RecoveryShareImage(image: cardImage)]
         }
-        return [text]
+        return [textSource]
     }
 }
 

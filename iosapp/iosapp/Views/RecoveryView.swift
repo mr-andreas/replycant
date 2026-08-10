@@ -3,6 +3,10 @@ import UIKit
 
 // Runs the end-user recovery flow from a scanned/pasted bundle and returns to normal app identity afterwards.
 struct RecoveryView: View {
+    static let revokeCtaLabel = "Revoke used key"
+    static let continueCtaLabel = "Continue"
+    static let revokeDoneMessage = "Used key revoked. Create a new recovery key in Settings."
+
     enum RecoveryStep {
         case start
         case bundle
@@ -37,6 +41,7 @@ struct RecoveryView: View {
     @State private var isBusy = false
     @State private var showScanner = false
     @State private var completedRecovery: RecoveryKeyManager.RecoveryResult?
+    @State private var didRevokeUsedKey = false
 
     private let manager = RecoveryKeyManager()
 
@@ -348,7 +353,7 @@ struct RecoveryView: View {
             .font(.title3)
             .foregroundStyle(Color.brandGreen)
 
-            Text("For best security, replace the recovery key you just used.")
+            Text("For best security, revoke the recovery key you just used.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -363,15 +368,29 @@ struct RecoveryView: View {
             Spacer()
 
             VStack(spacing: 12) {
-                Button("Replace recovery key") {
-                    Task { await replaceUsedRecoveryKey() }
-                }
-                .buttonStyle(PairingPrimaryButtonStyle())
+                if didRevokeUsedKey {
+                    Text(Self.revokeDoneMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 28)
 
-                Button("Not now") {
-                    onCompleted()
+                    Button(Self.continueCtaLabel) {
+                        onCompleted()
+                    }
+                    .buttonStyle(PairingPrimaryButtonStyle())
+                } else {
+                    Button(Self.revokeCtaLabel) {
+                        Task { await revokeUsedRecoveryKey() }
+                    }
+                    .buttonStyle(PairingPrimaryButtonStyle())
+
+                    Button("Not now") {
+                        onCompleted()
+                    }
+                    .buttonStyle(PairingTertiaryButtonStyle())
                 }
-                .buttonStyle(PairingTertiaryButtonStyle())
+
             }
             .padding(.horizontal)
             .padding(.bottom, 40)
@@ -417,6 +436,7 @@ struct RecoveryView: View {
                 }
             }
             completedRecovery = result
+            didRevokeUsedKey = false
             currentStep = .done
         } catch ConfigurationError.discoveryFetchFailed {
             errorMessage = "Discovery endpoint unreachable. Enter a new discovery URL and retry."
@@ -432,8 +452,8 @@ struct RecoveryView: View {
         }
     }
 
-    // Rotates away the used recovery key so one-time recovery material cannot be reused if leaked later.
-    private func replaceUsedRecoveryKey() async {
+    // Revokes used recovery material so one-time credentials cannot be reused after account recovery.
+    private func revokeUsedRecoveryKey() async {
         guard let completedRecovery else {
             onCompleted()
             return
@@ -442,18 +462,7 @@ struct RecoveryView: View {
             let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
             try await manager.deleteRecoveryKey(uuid: completedRecovery.usedRecoveryUUID, repository: repository, gitDB: gitDB)
-            guard let serverConfiguration = ServerConfigurationManager.shared.loadConfiguration() else {
-                throw RecoveryKeyManager.Error.missingServerConfiguration
-            }
-            let replacementPassword = PasswordStrength.generate()
-            _ = try await manager.createRecoveryKey(
-                label: "\(completedRecovery.usedRecoveryLabel)-replacement",
-                password: replacementPassword,
-                repository: repository,
-                gitDB: gitDB,
-                serverConfiguration: serverConfiguration
-            )
-            onCompleted()
+            didRevokeUsedKey = true
         } catch {
             errorMessage = error.localizedDescription
             currentStep = .error

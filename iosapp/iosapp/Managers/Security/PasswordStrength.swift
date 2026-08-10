@@ -1,7 +1,6 @@
 import Foundation
-import Security
 
-// Scores passwords and generates high-entropy secrets so recovery bundles are resilient to offline guessing.
+// Scores passwords so recovery setup can nudge users away from weak secrets.
 enum PasswordStrength {
     enum Level: String {
         case weak
@@ -36,13 +35,5 @@ enum PasswordStrength {
             level = .strong
         }
         return Score(level: level, entropyBits: bits)
-    }
-
-    // Generates a random password long enough to default users into the strong bucket.
-    static func generate(length: Int = 24) -> String {
-        let characters = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}")
-        var bytes = [UInt8](repeating: 0, count: max(length, 1))
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return String(bytes.map { characters[Int($0) % characters.count] })
     }
 }

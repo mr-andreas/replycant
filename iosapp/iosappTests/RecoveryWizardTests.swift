@@ -18,6 +18,13 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.savePromptShowAgainLabel == "Show share dialog again")
     }
 
+    // Ensures revoke guidance copy remains explicit after successful recovery.
+    @Test func recoveryWizardRevokeCopy() {
+        #expect(RecoveryView.revokeCtaLabel == "Revoke used key")
+        #expect(RecoveryView.continueCtaLabel == "Continue")
+        #expect(RecoveryView.revokeDoneMessage == "Used key revoked. Create a new recovery key in Settings.")
+    }
+
     // Ensures create wizard only advances when label is non-empty and password fields match.
     @Test func recoveryKeyWizardAdvancePredicates() {
         #expect(!RecoveryKeyView.canAdvanceFromName(label: ""))

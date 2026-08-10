@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 // Reuses recovery password entry behavior so creation and unlock screens share AutoFill-compatible fields.
 struct PasswordEntryView: View {
@@ -11,19 +10,16 @@ struct PasswordEntryView: View {
     let mode: Mode
     @Binding var password: String
     @Binding var confirmPassword: String
-    let onGenerate: (() -> Void)?
 
     // Keeps recovery creation and unlock forms consistent while allowing either flow to hide nonessential fields.
     init(
         mode: Mode,
         password: Binding<String>,
-        confirmPassword: Binding<String> = .constant(""),
-        onGenerate: (() -> Void)? = nil
+        confirmPassword: Binding<String> = .constant("")
     ) {
         self.mode = mode
         self._password = password
         self._confirmPassword = confirmPassword
-        self.onGenerate = onGenerate
     }
 
     private var score: PasswordStrength.Score {
@@ -39,23 +35,6 @@ struct PasswordEntryView: View {
                 SecureField("Confirm password", text: $confirmPassword)
                     .textContentType(nil)
             }
-
-            HStack(spacing: 12) {
-                if mode == .create {
-                    Button("Generate strong password") {
-                        onGenerate?()
-                    }
-                }
-                Button("Paste") {
-                    if let pasted = UIPasteboard.general.string {
-                        password = pasted
-                        if mode == .create {
-                            confirmPassword = pasted
-                        }
-                    }
-                }
-            }
-            .font(.caption)
 
             HStack {
                 Text("Strength:")
