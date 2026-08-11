@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1787,6 +1788,9 @@ func TestPushWithRebaseRefusesDirtyWorktree(t *testing.T) {
 // process group so a terminal Ctrl+C delivered to the importer's group cannot
 // kill an in-flight git commit that still belongs to the flush stage.
 func TestRunCmdTeeUsesOwnProcessGroup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc to inspect child process group")
+	}
 	// Inspect the shell itself ($$), not a grandchild: Setpgid applies to the
 	// process runCmdTee starts. /proc/$$/stat fields: pid (1) and pgid (5).
 	out, err := runCmdTee(nil, context.Background(), "", "sh", "-c",
