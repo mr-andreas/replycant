@@ -84,8 +84,6 @@ const composeReadmeScreenshot = (): void => {
   const iosShadowPath = join(workDir, "ios-shadow.png");
 
   try {
-    const desktopPadX = 24;
-    const desktopPadY = 24;
     const desktop = imageSize(DESKTOP_PATH);
     // Phone height tracks the desktop capture scale (CSS or retina).
     const iosHeight = Math.round(desktop.height * 0.82);
@@ -112,11 +110,11 @@ const composeReadmeScreenshot = (): void => {
     ]);
 
     const ios = imageSize(iosShadowPath);
-    // Keep most of the phone over the desktop; hang a slice past the bottom-right.
-    const iosX = desktopPadX + desktop.width - Math.round(ios.width * 0.78);
-    const iosY = desktopPadY + desktop.height - Math.round(ios.height * 0.72);
-    const canvasWidth = Math.max(desktopPadX + desktop.width, iosX + ios.width) + 24;
-    const canvasHeight = Math.max(desktopPadY + desktop.height, iosY + ios.height) + 24;
+    // Flush desktop to the top-left; hang the phone past the bottom-right edge.
+    const iosX = desktop.width - Math.round(ios.width * 0.78);
+    const iosY = desktop.height - Math.round(ios.height * 0.72);
+    const canvasWidth = Math.max(desktop.width, iosX + ios.width);
+    const canvasHeight = Math.max(desktop.height, iosY + ios.height);
 
     run("magick", [
       "-size",
@@ -124,7 +122,7 @@ const composeReadmeScreenshot = (): void => {
       "xc:none",
       DESKTOP_PATH,
       "-geometry",
-      `+${desktopPadX}+${desktopPadY}`,
+      "+0+0",
       "-compose",
       "over",
       "-composite",
