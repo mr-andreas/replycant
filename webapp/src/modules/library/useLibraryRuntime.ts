@@ -339,11 +339,30 @@ export const useLibraryRuntime = ({
   const mtlsHeadersRef = useRef<Record<string, string> | null>(mtlsHeaders);
   const agePrivateKeyRef = useRef<string | null>(agePrivateKeyBase64);
   const loadingPageRef = useRef(false);
+  // Remembers an edge load that arrived while another page was in flight or was
+  // discarded by a generation bump, so the viewport can self-heal without a scroll.
+  const pendingEdgeLoadRef = useRef<"older" | "newer" | null>(null);
+  const loadOlderPageRef = useRef<() => void>(() => {});
+  const loadNewerPageRef = useRef<() => void>(() => {});
   const monthIndexRef = useRef<MonthEntry[]>(timelineMonthIndex);
   const windowRef = useRef<TimelineWindow>(timelineWindow);
   const timelineLoadGenerationRef = useRef(0);
   mtlsHeadersRef.current = mtlsHeaders;
   agePrivateKeyRef.current = agePrivateKeyBase64;
+
+  // Replays a deferred edge load after the in-flight page settles so dropped
+  // requests from commit switches still cover the viewport.
+  const flushPendingEdgeLoad = useCallback(() => {
+    const pending = pendingEdgeLoadRef.current;
+    pendingEdgeLoadRef.current = null;
+    if (pending === "older") {
+      loadOlderPageRef.current();
+      return;
+    }
+    if (pending === "newer") {
+      loadNewerPageRef.current();
+    }
+  }, []);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
@@ -745,8 +764,16 @@ export const useLibraryRuntime = ({
               exactOffset += typeof countBefore === "number" ? countBefore : 0;
             }
             if (generation !== timelineLoadGenerationRef.current) return;
+            // Applies the offset to the current window even after a concurrent
+            // edge merge, as long as the counted older cursor is still the anchor.
             setTimelineWindow((windowState) => {
-              if (windowState.loadedItems !== currentWindow.loadedItems) return windowState;
+              if (
+                !windowState.olderCursor
+                || windowState.olderCursor.key !== anchor.key
+                || windowState.olderCursor.takenAt !== anchor.takenAt
+              ) {
+                return windowState;
+              }
               if (windowState.loadedOffset === exactOffset) return windowState;
               return {
                 loadedOffset: exactOffset,
@@ -773,7 +800,11 @@ export const useLibraryRuntime = ({
   const loadOlderPage = useCallback(() => {
     const engine = engineRef.current;
     const window = windowRef.current;
-    if (!engine || loadingPageRef.current || !window.olderCursor || window.loadedOffset === 0) return;
+    if (!engine || !window.olderCursor || window.loadedOffset === 0) return;
+    if (loadingPageRef.current) {
+      pendingEdgeLoadRef.current = "older";
+      return;
+    }
     const generation = timelineLoadGenerationRef.current;
     const startOffset = window.loadedOffset;
     const startOlderCursor = window.olderCursor;
@@ -781,7 +812,7 @@ export const useLibraryRuntime = ({
     void (async () => {
       try {
         const items = await loadPageBeforeCursor(engine, window.olderCursor!, PAGE_SIZE);
-        if (items.length === 0) { loadingPageRef.current = false; return; }
+        if (items.length === 0) return;
         const currentWindow = windowRef.current;
         if (
           generation !== timelineLoadGenerationRef.current
@@ -789,30 +820,40 @@ export const useLibraryRuntime = ({
           || currentWindow.olderCursor?.key !== startOlderCursor?.key
           || currentWindow.olderCursor?.takenAt !== startOlderCursor?.takenAt
         ) {
+          pendingEdgeLoadRef.current = "older";
           return;
         }
         const newOffset = Math.max(0, window.loadedOffset - items.length);
         const merged = [...items, ...window.loadedItems];
-        setTimelineWindow({
+        // Sync the ref before replaying a pending edge load so the retry sees
+        // the merged window instead of the pre-await snapshot.
+        const nextWindow = {
           loadedOffset: newOffset,
           loadedItems: merged,
           olderCursor: cursorFromItem(merged[0]),
           newerCursor: cursorFromItem(merged[merged.length - 1]),
-        });
+        };
+        windowRef.current = nextWindow;
+        setTimelineWindow(nextWindow);
       } catch (error) {
         console.error("[replycant-app] loadOlderPage failed", error);
       } finally {
         loadingPageRef.current = false;
+        flushPendingEdgeLoad();
       }
     })();
-  }, [loadPageBeforeCursor]);
+  }, [flushPendingEdgeLoad, loadPageBeforeCursor]);
 
   const loadNewerPage = useCallback(() => {
     const engine = engineRef.current;
     const window = windowRef.current;
     const months = monthIndexRef.current;
     const totalCount = totalCountFromMonthIndex(months);
-    if (!engine || loadingPageRef.current || !window.newerCursor || (window.loadedOffset + window.loadedItems.length >= totalCount)) return;
+    if (!engine || !window.newerCursor || (window.loadedOffset + window.loadedItems.length >= totalCount)) return;
+    if (loadingPageRef.current) {
+      pendingEdgeLoadRef.current = "newer";
+      return;
+    }
     const generation = timelineLoadGenerationRef.current;
     const startOffset = window.loadedOffset;
     const startNewerCursor = window.newerCursor;
@@ -820,7 +861,7 @@ export const useLibraryRuntime = ({
     void (async () => {
       try {
         const items = await loadPageAfterCursor(engine, window.newerCursor!, PAGE_SIZE);
-        if (items.length === 0) { loadingPageRef.current = false; return; }
+        if (items.length === 0) return;
         const currentWindow = windowRef.current;
         if (
           generation !== timelineLoadGenerationRef.current
@@ -828,22 +869,31 @@ export const useLibraryRuntime = ({
           || currentWindow.newerCursor?.key !== startNewerCursor?.key
           || currentWindow.newerCursor?.takenAt !== startNewerCursor?.takenAt
         ) {
+          pendingEdgeLoadRef.current = "newer";
           return;
         }
         const merged = [...window.loadedItems, ...items];
-        setTimelineWindow({
+        // Sync the ref before replaying a pending edge load so the retry sees
+        // the merged window instead of the pre-await snapshot.
+        const nextWindow = {
           loadedOffset: window.loadedOffset,
           loadedItems: merged,
           olderCursor: cursorFromItem(merged[0]),
           newerCursor: cursorFromItem(merged[merged.length - 1]),
-        });
+        };
+        windowRef.current = nextWindow;
+        setTimelineWindow(nextWindow);
       } catch (error) {
         console.error("[replycant-app] loadNewerPage failed", error);
       } finally {
         loadingPageRef.current = false;
+        flushPendingEdgeLoad();
       }
     })();
-  }, [loadPageAfterCursor]);
+  }, [flushPendingEdgeLoad, loadPageAfterCursor]);
+
+  loadOlderPageRef.current = loadOlderPage;
+  loadNewerPageRef.current = loadNewerPage;
 
   const seekToIndex = useCallback((index: number) => {
     const engine = engineRef.current;

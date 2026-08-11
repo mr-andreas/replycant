@@ -136,6 +136,7 @@ const RuntimeHarness = ({ initialMode }: { initialMode: SetupMode }) => {
       <div data-testid="loaded-items-count">{String(runtime.timelineWindow.loadedItems.length)}</div>
       <div data-testid="loaded-items-ref-change-count">{String(loadedItemsRefChangeCountRef.current)}</div>
       <div data-testid="first-loaded-key">{runtime.timelineWindow.loadedItems[0]?.key ?? ""}</div>
+      <div data-testid="last-loaded-key">{runtime.timelineWindow.loadedItems.at(-1)?.key ?? ""}</div>
       <div data-testid="first-loaded-thumbnail-url">{runtime.timelineWindow.loadedItems[0]?.thumbnailUrl ?? ""}</div>
       <button type="button" onClick={() => void runtime.handleSyncNow()}>
         sync-now
@@ -148,6 +149,9 @@ const RuntimeHarness = ({ initialMode }: { initialMode: SetupMode }) => {
       </button>
       <button type="button" onClick={() => runtime.loadNewerPage()}>
         load-newer
+      </button>
+      <button type="button" onClick={() => runtime.loadOlderPage()}>
+        load-older
       </button>
       <button type="button" onClick={() => void runtime.wipeReplycantState(20)}>
         wipe-custom-depth
@@ -1672,5 +1676,311 @@ describe("useLibraryRuntime", () => {
       resolveIncrementalReload?.(staleIncrementalRecords);
     });
     await waitFor(() => expect(screen.getByTestId("first-loaded-key")).toHaveTextContent("device/seek-wins-"));
+  });
+
+  // Keeps a second edge load alive when the first is still in flight so commit
+  // switches and rapid scroll cannot silently drop the viewport-covering page.
+  it("retries loadNewerPage that arrives while another edge load is in flight", async () => {
+    let onManifestChange: ((change: any) => void) | null = null;
+    gitdbMocks.mockCreateGitdbWorker.mockImplementation((options?: {
+      onManifestChange?: (change: any) => void;
+    }) => {
+      onManifestChange = options?.onManifestChange ?? null;
+      return mockEngine;
+    });
+    window.history.replaceState(null, "", "#k=item-5000&o=12&t=2026-03-15T00:00:00Z");
+    mockEngine.queryDerived.mockResolvedValue([
+      { monthKey: "2026-01", count: 2000, firstTakenAt: "2026-01-01T00:00:00Z" },
+      { monthKey: "2026-02", count: 3000, firstTakenAt: "2026-02-01T00:00:00Z" },
+      { monthKey: "2026-03", count: 4200, firstTakenAt: "2026-03-01T00:00:00Z" },
+    ]);
+    const anchorRecords = buildSequentialOriginalRecords("retry-anchor", 100);
+    const firstNewerPage = Array.from({ length: 20 }, (_, i) =>
+      buildOriginalRecord(`retry-newer-a-${i}`, `2026-03-30T00:${String(i).padStart(2, "0")}:00Z`),
+    );
+    const secondNewerPage = Array.from({ length: 20 }, (_, i) =>
+      buildOriginalRecord(`retry-newer-b-${i}`, `2026-03-30T01:${String(i).padStart(2, "0")}:00Z`),
+    );
+
+    let resolveFirstNewer: ((records: ReturnType<typeof buildOriginalRecord>[]) => void) | null = null;
+    const firstNewerPromise = new Promise<ReturnType<typeof buildOriginalRecord>[]>((resolve) => {
+      resolveFirstNewer = resolve;
+    });
+    let newerLoadCount = 0;
+
+    mockEngine.query.mockImplementation(async (identity: { kind?: string }, query: {
+      type?: string;
+      indexName?: string;
+      direction?: string;
+      range?: { lower?: string; upper?: string; lowerOpen?: boolean };
+      limit?: number;
+    }) => {
+      if (
+        identity.kind === "Original"
+        && query.type === "count"
+        && query.indexName === "byTakenAt"
+        && query.range?.lower === "2026-03-01T00:00:00Z"
+        && query.range?.upper?.startsWith("2026-03-15T00:00:00")
+      ) {
+        return 72;
+      }
+      if (
+        identity.kind === "Original"
+        && query.type === "cursor"
+        && query.indexName === "byTakenAt"
+        && query.direction === "next"
+        && query.limit === 120
+      ) {
+        newerLoadCount += 1;
+        if (newerLoadCount === 1) return firstNewerPromise;
+        return secondNewerPage;
+      }
+      if (
+        identity.kind === "Original"
+        && query.type === "cursor"
+        && query.indexName === "byTakenAt"
+        && query.direction === "next"
+      ) {
+        return anchorRecords.slice(0, query.limit ?? 100);
+      }
+      return [];
+    });
+
+    render(<RuntimeHarness initialMode="create" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "sync-now" }));
+    });
+    await waitFor(() => expect(gitdbMocks.mockCreateGitdbWorker).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      onManifestChange?.({ type: "fullReplace" });
+    });
+    await waitFor(() => expect(screen.getByTestId("loaded-items-count")).toHaveTextContent("100"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "load-newer" }));
+    });
+    await waitFor(() => expect(newerLoadCount).toBe(1));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "load-newer" }));
+    });
+    await act(async () => {
+      resolveFirstNewer?.(firstNewerPage);
+    });
+
+    await waitFor(() => expect(screen.getByTestId("loaded-items-count")).toHaveTextContent("140"));
+    expect(screen.getByTestId("last-loaded-key")).toHaveTextContent("device/retry-newer-b-19");
+    expect(newerLoadCount).toBeGreaterThanOrEqual(2);
+  });
+
+  // Recovers when a commit jump bumps the load generation while an edge page is
+  // still in flight, so the viewport is not left on skeletons until the user scrolls.
+  it("retries loadNewerPage discarded by a manifest-change generation bump", async () => {
+    let onManifestChange: ((change: any) => void) | null = null;
+    gitdbMocks.mockCreateGitdbWorker.mockImplementation((options?: {
+      onManifestChange?: (change: any) => void;
+    }) => {
+      onManifestChange = options?.onManifestChange ?? null;
+      return mockEngine;
+    });
+    window.history.replaceState(null, "", "#k=item-5000&o=12&t=2026-03-15T00:00:00Z");
+    mockEngine.queryDerived.mockResolvedValue([
+      { monthKey: "2026-01", count: 2000, firstTakenAt: "2026-01-01T00:00:00Z" },
+      { monthKey: "2026-02", count: 3000, firstTakenAt: "2026-02-01T00:00:00Z" },
+      { monthKey: "2026-03", count: 4200, firstTakenAt: "2026-03-01T00:00:00Z" },
+    ]);
+    const anchorRecords = buildSequentialOriginalRecords("gen-anchor", 100);
+    const newerPage = Array.from({ length: 20 }, (_, i) =>
+      buildOriginalRecord(`gen-newer-${i}`, `2026-03-30T00:${String(i).padStart(2, "0")}:00Z`),
+    );
+
+    let resolveFirstNewer: ((records: ReturnType<typeof buildOriginalRecord>[]) => void) | null = null;
+    const firstNewerPromise = new Promise<ReturnType<typeof buildOriginalRecord>[]>((resolve) => {
+      resolveFirstNewer = resolve;
+    });
+    let newerLoadCount = 0;
+
+    mockEngine.query.mockImplementation(async (identity: { kind?: string }, query: {
+      type?: string;
+      indexName?: string;
+      direction?: string;
+      range?: { lower?: string; upper?: string; lowerOpen?: boolean };
+      limit?: number;
+    }) => {
+      if (
+        identity.kind === "Original"
+        && query.type === "count"
+        && query.indexName === "byTakenAt"
+        && query.range?.lower === "2026-03-01T00:00:00Z"
+        && query.range?.upper?.startsWith("2026-03-15T00:00:00")
+      ) {
+        return 72;
+      }
+      if (
+        identity.kind === "Original"
+        && query.type === "cursor"
+        && query.indexName === "byTakenAt"
+        && query.direction === "next"
+        && query.limit === 120
+      ) {
+        newerLoadCount += 1;
+        if (newerLoadCount === 1) return firstNewerPromise;
+        return newerPage;
+      }
+      if (
+        identity.kind === "Original"
+        && query.type === "cursor"
+        && query.indexName === "byTakenAt"
+        && query.direction === "next"
+      ) {
+        return anchorRecords.slice(0, query.limit ?? 100);
+      }
+      return [];
+    });
+
+    render(<RuntimeHarness initialMode="create" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "sync-now" }));
+    });
+    await waitFor(() => expect(gitdbMocks.mockCreateGitdbWorker).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      onManifestChange?.({ type: "fullReplace" });
+    });
+    await waitFor(() => expect(screen.getByTestId("loaded-items-count")).toHaveTextContent("100"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "load-newer" }));
+    });
+    await waitFor(() => expect(newerLoadCount).toBe(1));
+
+    // Outside-newer addition bumps the generation without rewriting the loaded window.
+    await act(async () => {
+      onManifestChange?.({
+        type: "incremental",
+        mutation: {
+          added: [buildOriginalRecord("gen-outside-newer", "2026-04-01T00:00:00Z")],
+          removed: [],
+          updated: [],
+        },
+      });
+    });
+
+    await act(async () => {
+      resolveFirstNewer?.(newerPage);
+    });
+
+    await waitFor(() => expect(screen.getByTestId("loaded-items-count")).toHaveTextContent("120"));
+    expect(screen.getByTestId("last-loaded-key")).toHaveTextContent("device/gen-newer-19");
+    expect(newerLoadCount).toBeGreaterThanOrEqual(2);
+  });
+
+  // Applies the offset correction even when a concurrent edge merge replaced
+  // loadedItems, so older insertions outside the window cannot leave a stale offset.
+  it("updates loadedOffset for outside-older incremental even after a concurrent page merge", async () => {
+    let onManifestChange: ((change: any) => void) | null = null;
+    gitdbMocks.mockCreateGitdbWorker.mockImplementation((options?: {
+      onManifestChange?: (change: any) => void;
+    }) => {
+      onManifestChange = options?.onManifestChange ?? null;
+      return mockEngine;
+    });
+    window.history.replaceState(null, "", "#k=item-5000&o=12&t=2026-03-15T00:00:00Z");
+    mockEngine.queryDerived.mockResolvedValue([
+      { monthKey: "2026-01", count: 2000, firstTakenAt: "2026-01-01T00:00:00Z" },
+      { monthKey: "2026-02", count: 3000, firstTakenAt: "2026-02-01T00:00:00Z" },
+      { monthKey: "2026-03", count: 4200, firstTakenAt: "2026-03-01T00:00:00Z" },
+    ]);
+    const anchorRecords = buildSequentialOriginalRecords("race-anchor", 100);
+    const newerPage = Array.from({ length: 20 }, (_, i) =>
+      buildOriginalRecord(`race-newer-${i}`, `2026-03-30T00:${String(i).padStart(2, "0")}:00Z`),
+    );
+
+    let resolveNewer: ((records: ReturnType<typeof buildOriginalRecord>[]) => void) | null = null;
+    const newerPromise = new Promise<ReturnType<typeof buildOriginalRecord>[]>((resolve) => {
+      resolveNewer = resolve;
+    });
+    let resolveOffsetCount: ((value: number) => void) | null = null;
+    const offsetCountPromise = new Promise<number>((resolve) => {
+      resolveOffsetCount = resolve;
+    });
+    let countCalls = 0;
+
+    mockEngine.query.mockImplementation(async (identity: { kind?: string }, query: {
+      type?: string;
+      indexName?: string;
+      direction?: string;
+      range?: { lower?: string; upper?: string; lowerOpen?: boolean };
+      limit?: number;
+    }) => {
+      if (
+        identity.kind === "Original"
+        && query.type === "count"
+        && query.indexName === "byTakenAt"
+        && query.range?.lower === "2026-03-01T00:00:00Z"
+        && query.range?.upper?.startsWith("2026-03-15T00:00:00")
+      ) {
+        countCalls += 1;
+        if (countCalls === 1) return 72;
+        return offsetCountPromise;
+      }
+      if (
+        identity.kind === "Original"
+        && query.type === "cursor"
+        && query.indexName === "byTakenAt"
+        && query.direction === "next"
+        && query.limit === 120
+      ) {
+        return newerPromise;
+      }
+      if (
+        identity.kind === "Original"
+        && query.type === "cursor"
+        && query.indexName === "byTakenAt"
+        && query.direction === "next"
+      ) {
+        return anchorRecords.slice(0, query.limit ?? 100);
+      }
+      return [];
+    });
+
+    render(<RuntimeHarness initialMode="create" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "sync-now" }));
+    });
+    await waitFor(() => expect(gitdbMocks.mockCreateGitdbWorker).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      onManifestChange?.({ type: "fullReplace" });
+    });
+    await waitFor(() => expect(screen.getByTestId("loaded-offset")).toHaveTextContent("5072"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "load-newer" }));
+    });
+    await waitFor(() => expect(resolveNewer).not.toBeNull());
+
+    await act(async () => {
+      onManifestChange?.({
+        type: "incremental",
+        mutation: {
+          added: [buildOriginalRecord("race-outside-older", "2026-02-10T00:00:00Z")],
+          removed: [],
+          updated: [],
+        },
+      });
+    });
+    await waitFor(() => expect(resolveOffsetCount).not.toBeNull());
+
+    // Discarded edge load retries and merges before the deferred offset count resolves,
+    // so the offset setter must apply against the post-merge window instead of bailing.
+    await act(async () => {
+      resolveNewer?.(newerPage);
+    });
+    await act(async () => {
+      resolveOffsetCount?.(73);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loaded-items-count")).toHaveTextContent("120");
+      expect(screen.getByTestId("loaded-offset")).toHaveTextContent("5073");
+    });
   });
 });

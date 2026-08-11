@@ -144,6 +144,17 @@ const SparseGridInner = <TItem,>(
     [columnCount, itemCount, loadedItems.length, loadedOffset, onLoadNewer, onLoadOlder, onSeekToIndex, rowHeight],
   );
 
+  // Syncs virtualization to the live DOM scroll position so data swaps and
+  // browser scroll anchoring cannot leave skeleton rows until the user nudges.
+  const reconcileViewport = useCallback(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    lastScrollTopRef.current = timeline.scrollTop;
+    setScrollTick((v) => v + 1);
+    emitViewportAnchor();
+    checkLoadEdges(timeline.scrollTop, timeline.clientHeight);
+  }, [checkLoadEdges, emitViewportAnchor]);
+
   // Tracks container width so responsive column math updates on resize.
   useLayoutEffect(() => {
     const timeline = timelineRef.current;
@@ -190,35 +201,32 @@ const SparseGridInner = <TItem,>(
       } else {
         timeline.scrollTop = totalHeight;
       }
-      lastScrollTopRef.current = timeline.scrollTop;
-      setScrollTick((v) => v + 1);
-      emitViewportAnchor();
-      checkLoadEdges(timeline.scrollTop, timeline.clientHeight);
+      reconcileViewport();
       return;
     }
 
     const anchor = pendingAnchorRef.current;
     pendingAnchorRef.current = null;
-    if (!anchor) return;
-    const idx = loadedItems.findIndex((item) => getItemKey(item) === anchor.itemKey);
-    if (idx < 0) return;
-    const globalIdx = loadedOffset + idx;
-    timeline.scrollTop = Math.max(0, Math.min(totalHeight, scrollTopForIndex(globalIdx) + anchor.offsetPx));
-    lastScrollTopRef.current = timeline.scrollTop;
-    setScrollTick((v) => v + 1);
-    emitViewportAnchor();
-  }, [checkLoadEdges, emitViewportAnchor, getItemKey, initialAnchor, loadedItems, loadedOffset, scrollTopForIndex, totalHeight, width]);
+    if (anchor) {
+      const idx = loadedItems.findIndex((item) => getItemKey(item) === anchor.itemKey);
+      if (idx >= 0) {
+        const globalIdx = loadedOffset + idx;
+        timeline.scrollTop = Math.max(0, Math.min(totalHeight, scrollTopForIndex(globalIdx) + anchor.offsetPx));
+      }
+    }
+    // Always resync from the DOM so unrestorable anchors and scroll anchoring
+    // cannot leave virtualization on a stale scrollTop.
+    reconcileViewport();
+  }, [getItemKey, initialAnchor, loadedItems, loadedOffset, reconcileViewport, scrollTopForIndex, totalHeight, width]);
 
-  // Re-validates edge loading once seek results land at a stale scroll position.
+  // Re-validates virtualization and edge loading once seek/page results land.
   useEffect(() => {
     if (itemCount === 0 || loadedItems.length === 0) return;
     const frame = requestAnimationFrame(() => {
-      const timeline = timelineRef.current;
-      if (!timeline) return;
-      checkLoadEdges(timeline.scrollTop, timeline.clientHeight);
+      reconcileViewport();
     });
     return () => cancelAnimationFrame(frame);
-  }, [checkLoadEdges, itemCount, loadedItems.length, loadedOffset]);
+  }, [itemCount, loadedItems.length, loadedOffset, reconcileViewport]);
 
   // Reports visible global range so wrappers can preload adjacent data.
   useEffect(() => {
@@ -239,13 +247,8 @@ const SparseGridInner = <TItem,>(
 
   // Handles native scrolling and feeds both paging and anchor persistence.
   const handleScroll = useCallback(() => {
-    const timeline = timelineRef.current;
-    if (!timeline) return;
-    lastScrollTopRef.current = timeline.scrollTop;
-    setScrollTick((v) => v + 1);
-    emitViewportAnchor();
-    checkLoadEdges(timeline.scrollTop, timeline.clientHeight);
-  }, [checkLoadEdges, emitViewportAnchor]);
+    reconcileViewport();
+  }, [reconcileViewport]);
 
   // Supports external month/anchor controls without leaking layout math.
   useImperativeHandle(ref, () => ({
@@ -258,9 +261,7 @@ const SparseGridInner = <TItem,>(
       }
       const y = scrollTopForIndex(index);
       timeline.scrollTop = Math.max(0, Math.min(totalHeight, y));
-      lastScrollTopRef.current = timeline.scrollTop;
-      setScrollTick((v) => v + 1);
-      emitViewportAnchor();
+      reconcileViewport();
     },
     scrollToAnchor: (anchor: SparseGridAnchor) => {
       const timeline = timelineRef.current;
@@ -269,12 +270,9 @@ const SparseGridInner = <TItem,>(
       if (idx < 0) return;
       const globalIdx = loadedOffset + idx;
       timeline.scrollTop = Math.max(0, Math.min(totalHeight, scrollTopForIndex(globalIdx) + anchor.offsetPx));
-      lastScrollTopRef.current = timeline.scrollTop;
-      setScrollTick((v) => v + 1);
-      emitViewportAnchor();
-      checkLoadEdges(timeline.scrollTop, timeline.clientHeight);
+      reconcileViewport();
     },
-  }), [checkLoadEdges, emitViewportAnchor, getItemKey, loadedItems, loadedOffset, onSeekToIndex, scrollTopForIndex, totalHeight]);
+  }), [getItemKey, loadedItems, loadedOffset, onSeekToIndex, reconcileViewport, scrollTopForIndex, totalHeight]);
 
   const scrollTop = lastScrollTopRef.current;
   const viewportHeight = timelineRef.current?.clientHeight ?? 0;

@@ -358,4 +358,97 @@ describe("SparseGrid", () => {
       expect(Math.abs(beforeIndex - afterIndex)).toBeLessThanOrEqual(3);
     });
   });
+
+  // After a commit switch the previous anchor key is often absent from the new
+  // window while the browser advances scrollTop without firing scroll; the grid
+  // must still paint rows for the real scroll position and re-check edges.
+  it("reconciles viewport from DOM scrollTop when anchor cannot be restored", async () => {
+    const onLoadNewer = vi.fn();
+    const onSeekToIndex = vi.fn();
+    const readGeometry = (root: HTMLElement) => {
+      const row = root.querySelector(".image-row") as HTMLElement | null;
+      expect(row).toBeTruthy();
+      const rowHeight = Number.parseFloat(row!.style.height || "0") + 2;
+      const colMatch = /repeat\((\d+),/.exec(row!.style.gridTemplateColumns);
+      const columnCount = colMatch ? Number.parseInt(colMatch[1], 10) : 1;
+      return {
+        rowHeight,
+        columnCount,
+        scrollTopForIndex: (index: number) => Math.floor(index / Math.max(1, columnCount)) * rowHeight,
+      };
+    };
+    const rowTops = (root: HTMLElement): number[] =>
+      Array.from(root.querySelectorAll(".image-row"))
+        .map((row) => {
+          const match = /translateY\(([-\d.]+)px\)/.exec((row as HTMLElement).style.transform);
+          return match ? Number.parseFloat(match[1]) : NaN;
+        })
+        .filter((value) => Number.isFinite(value));
+
+    const oldItems = Array.from({ length: 100 }, (_, i) => ({
+      key: `old-${i}`,
+      label: `Old ${i}`,
+    }));
+    const { container, rerender } = render(
+      <SparseGrid
+        dataSource={buildDataSource({
+          itemCount: 200,
+          window: { loadedOffset: 100, loadedItems: oldItems },
+          onLoadNewer,
+          onSeekToIndex,
+        })}
+        getItemKey={(item) => item.key}
+        renderItem={({ item }) => <span>{item.label}</span>}
+      />,
+    );
+
+    emitResize(620);
+    const timeline = container.querySelector("main.timeline") as HTMLElement;
+    Object.defineProperty(timeline, "clientHeight", { configurable: true, value: 600 });
+    const initialGeometry = readGeometry(container);
+    // Scroll near the end of the old window so the pending anchor captures an old-* key.
+    timeline.scrollTop = initialGeometry.scrollTopForIndex(180);
+    fireEvent.scroll(timeline);
+    await waitFor(() => {
+      expect(container.textContent).toMatch(/Old \d+/);
+    });
+
+    const newItems = Array.from({ length: 100 }, (_, i) => ({
+      key: `new-${i}`,
+      label: `New ${i}`,
+    }));
+    const renderNewWindow = (items: MockItem[]) => (
+      <SparseGrid
+        dataSource={buildDataSource({
+          // Leave room past the loaded window so reconcileViewport re-checks edges.
+          itemCount: 600,
+          window: { loadedOffset: 400, loadedItems: items },
+          onLoadNewer,
+          onSeekToIndex,
+        })}
+        getItemKey={(item) => item.key}
+        renderItem={({ item }) => <span>{item.label}</span>}
+      />
+    );
+    // Grow the spacer first so jsdom will accept the anchored scrollTop, then
+    // advance scrollTop without a scroll event and re-render so layout reconcile runs.
+    rerender(renderNewWindow(newItems));
+    const geometry = readGeometry(container);
+    const newScrollTop = geometry.scrollTopForIndex(480);
+    onLoadNewer.mockClear();
+    onSeekToIndex.mockClear();
+    timeline.scrollTop = newScrollTop;
+    expect(timeline.scrollTop).toBe(newScrollTop);
+    rerender(renderNewWindow([...newItems]));
+
+    await waitFor(() => {
+      expect(container.textContent).toMatch(/New \d+/);
+      expect(container.querySelectorAll(".image-tile.skeleton")).toHaveLength(0);
+      const tops = rowTops(container);
+      expect(tops.length).toBeGreaterThan(0);
+      expect(Math.min(...tops)).toBeLessThanOrEqual(newScrollTop);
+      expect(Math.max(...tops) + geometry.rowHeight).toBeGreaterThanOrEqual(newScrollTop);
+      expect(onLoadNewer).toHaveBeenCalled();
+    });
+  });
 });
