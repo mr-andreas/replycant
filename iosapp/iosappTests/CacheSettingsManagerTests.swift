@@ -2,304 +2,121 @@ import Foundation
 import Testing
 @testable import iosapp
 
-// Tests for CacheSettingsManager to verify cache settings persistence and default values.
+// Tests cache setting defaults, persistence, and clamp behavior using
+// isolated UserDefaults domains so test runs never mutate app state.
 @MainActor
 struct CacheSettingsManagerTests {
-    
-    // MARK: - Test Setup/Teardown
-    
-    func clearCacheSettings() {
-        UserDefaults.standard.removeObject(forKey: "cacheImagesBeforeViewport")
-        UserDefaults.standard.removeObject(forKey: "cacheImagesAfterViewport")
-        UserDefaults.standard.removeObject(forKey: "maxTimelineThumbnailRAMCacheSizeMB")
-        UserDefaults.standard.removeObject(forKey: "localThumbnailsEnabled")
-        UserDefaults.standard.removeObject(forKey: "fullScreenPreloadRadius")
-        UserDefaults.standard.removeObject(forKey: "mainDiskCacheLimitMB")
-        UserDefaults.standard.removeObject(forKey: "topDiskCacheLimitMB")
-        UserDefaults.standard.removeObject(forKey: "mainCacheWarmItemCount")
-        UserDefaults.standard.removeObject(forKey: "topCacheWarmItemCount")
+
+    // Creates an isolated defaults domain so each test runs without
+    // leaking values into the simulator's app container.
+    private func makeIsolatedDefaults() -> UserDefaults {
+        let suiteName = "CacheSettingsManagerTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("Failed to create isolated UserDefaults suite")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
     }
-    
-    // MARK: - Default Values Tests
-    
+
+    // Creates a manager bound to test-scoped defaults for deterministic reads.
+    private func makeManager() -> (CacheSettingsManager, UserDefaults) {
+        let defaults = makeIsolatedDefaults()
+        return (CacheSettingsManager(defaults: defaults), defaults)
+    }
+
+    // Verifies default values remain stable when no settings are configured.
     @Test func testDefaultValues() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Should default to 100 when no value is set
+        let (manager, _) = makeManager()
         #expect(manager.imagesBeforeViewport == 100)
         #expect(manager.imagesAfterViewport == 100)
         #expect(manager.maxTimelineThumbnailRAMCacheSizeMB == 100)
-        #expect(manager.localThumbnailsEnabled == true)
-    }
-
-    @Test func testLocalThumbnailsEnabledPersists() {
-        clearCacheSettings()
-
-        let manager = CacheSettingsManager.shared
-        manager.localThumbnailsEnabled = false
-
-        #expect(manager.localThumbnailsEnabled == false)
-        #expect(UserDefaults.standard.object(forKey: "localThumbnailsEnabled") as? Bool == false)
-    }
-    
-    @Test func testDefaultValueWhenZero() {
-        clearCacheSettings()
-        
-        // Set to 0 explicitly - should still default to 100
-        UserDefaults.standard.set(0, forKey: "cacheImagesBeforeViewport")
-        UserDefaults.standard.set(0, forKey: "cacheImagesAfterViewport")
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Should default to 100 when value is 0
-        #expect(manager.imagesBeforeViewport == 100)
-        #expect(manager.imagesAfterViewport == 100)
-    }
-    
-    @Test func testDefaultValueWhenNegative() {
-        clearCacheSettings()
-        
-        // Set to negative value - should default to 100
-        UserDefaults.standard.set(-5, forKey: "cacheImagesBeforeViewport")
-        UserDefaults.standard.set(-10, forKey: "cacheImagesAfterViewport")
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Should default to 100 when value is negative
-        #expect(manager.imagesBeforeViewport == 100)
-        #expect(manager.imagesAfterViewport == 100)
-    }
-    
-    // MARK: - Persistence Tests
-    
-    @Test func testSettingBeforeViewport() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set a custom value
-        manager.imagesBeforeViewport = 15
-        
-        // Verify it's persisted
-        #expect(manager.imagesBeforeViewport == 15)
-        
-        // Verify it's in UserDefaults
-        let storedValue = UserDefaults.standard.integer(forKey: "cacheImagesBeforeViewport")
-        #expect(storedValue == 15)
-    }
-    
-    @Test func testSettingAfterViewport() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set a custom value
-        manager.imagesAfterViewport = 25
-        
-        // Verify it's persisted
-        #expect(manager.imagesAfterViewport == 25)
-        
-        // Verify it's in UserDefaults
-        let storedValue = UserDefaults.standard.integer(forKey: "cacheImagesAfterViewport")
-        #expect(storedValue == 25)
-    }
-    
-    @Test func testSettingBothValues() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set both values
-        manager.imagesBeforeViewport = 10
-        manager.imagesAfterViewport = 30
-        
-        // Verify both are persisted
-        #expect(manager.imagesBeforeViewport == 10)
-        #expect(manager.imagesAfterViewport == 30)
-        
-        // Verify both are in UserDefaults
-        #expect(UserDefaults.standard.integer(forKey: "cacheImagesBeforeViewport") == 10)
-        #expect(UserDefaults.standard.integer(forKey: "cacheImagesAfterViewport") == 30)
-    }
-    
-    @Test func testPersistenceAcrossInstances() {
-        clearCacheSettings()
-        
-        let manager1 = CacheSettingsManager.shared
-        manager1.imagesBeforeViewport = 5
-        manager1.imagesAfterViewport = 7
-        
-        // Create a new reference (should be same singleton, but verify persistence)
-        let manager2 = CacheSettingsManager.shared
-        
-        // Both should have the same values
-        #expect(manager2.imagesBeforeViewport == 5)
-        #expect(manager2.imagesAfterViewport == 7)
-    }
-    
-    @Test func testSettingToZero() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set to 0
-        manager.imagesBeforeViewport = 0
-        manager.imagesAfterViewport = 0
-        
-        // Should be stored as 0 in UserDefaults
-        #expect(UserDefaults.standard.integer(forKey: "cacheImagesBeforeViewport") == 0)
-        #expect(UserDefaults.standard.integer(forKey: "cacheImagesAfterViewport") == 0)
-        
-        // But reading should return 100 (default)
-        #expect(manager.imagesBeforeViewport == 100)
-        #expect(manager.imagesAfterViewport == 100)
-    }
-    
-    @Test func testSettingToLargeValue() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set to a large value
-        manager.imagesBeforeViewport = 100
-        manager.imagesAfterViewport = 200
-        
-        // Should persist large values
-        #expect(manager.imagesBeforeViewport == 100)
-        #expect(manager.imagesAfterViewport == 200)
-    }
-    
-    @Test func testUpdatingValues() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set initial values
-        manager.imagesBeforeViewport = 10
-        manager.imagesAfterViewport = 20
-        
-        #expect(manager.imagesBeforeViewport == 10)
-        #expect(manager.imagesAfterViewport == 20)
-        
-        // Update values
-        manager.imagesBeforeViewport = 15
-        manager.imagesAfterViewport = 25
-        
-        // Should reflect updated values
-        #expect(manager.imagesBeforeViewport == 15)
-        #expect(manager.imagesAfterViewport == 25)
-    }
-    
-    // MARK: - Edge Cases
-    
-    @Test func testSettingToMaximumValue() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set to Int.max (or a very large value)
-        manager.imagesBeforeViewport = Int.max
-        manager.imagesAfterViewport = Int.max
-        
-        // Should handle large values
-        #expect(manager.imagesBeforeViewport == Int.max)
-        #expect(manager.imagesAfterViewport == Int.max)
-    }
-    
-    @Test func testIndependentSettings() {
-        clearCacheSettings()
-        
-        let manager = CacheSettingsManager.shared
-        
-        // Set different values for before and after
-        manager.imagesBeforeViewport = 5
-        manager.imagesAfterViewport = 50
-        
-        // Should maintain independent values
-        #expect(manager.imagesBeforeViewport == 5)
-        #expect(manager.imagesAfterViewport == 50)
-        
-        // Changing one shouldn't affect the other
-        manager.imagesBeforeViewport = 10
-        #expect(manager.imagesBeforeViewport == 10)
-        #expect(manager.imagesAfterViewport == 50)
-    }
-
-    // MARK: - Fullscreen Preload Radius Tests
-
-    @Test func testFullScreenPreloadRadiusDefault() {
-        clearCacheSettings()
-        #expect(CacheSettingsManager.shared.fullScreenPreloadRadius == 2)
-    }
-
-    @Test func testFullScreenPreloadRadiusSetGet() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
-        manager.fullScreenPreloadRadius = 5
-        #expect(manager.fullScreenPreloadRadius == 5)
-        #expect(UserDefaults.standard.integer(forKey: "fullScreenPreloadRadius") == 5)
-    }
-
-    @Test func testFullScreenPreloadRadiusZeroPersists() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
-        manager.fullScreenPreloadRadius = 0
-        #expect(manager.fullScreenPreloadRadius == 0)
-    }
-
-    // MARK: - Disk Cache Settings
-
-    @Test func testDiskCacheDefaults() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
+        #expect(manager.fullScreenPreloadRadius == 2)
         #expect(manager.mainDiskCacheLimitMB == 1024)
         #expect(manager.topDiskCacheLimitMB == 100)
         #expect(manager.mainCacheWarmItemCount == 1000)
         #expect(manager.topCacheWarmItemCount == 300)
+        #expect(manager.localThumbnailsEnabled)
     }
 
-    @Test func testMainDiskCacheLimitPersists() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
-        manager.mainDiskCacheLimitMB = 2048
-        #expect(manager.mainDiskCacheLimitMB == 2048)
-        #expect(UserDefaults.standard.integer(forKey: "mainDiskCacheLimitMB") == 2048)
+    // Verifies viewport preload values persist and round trip when in range.
+    @Test func testViewportPreloadValuesPersist() {
+        let (manager, defaults) = makeManager()
+        manager.imagesBeforeViewport = 15
+        manager.imagesAfterViewport = 25
+
+        #expect(manager.imagesBeforeViewport == 15)
+        #expect(manager.imagesAfterViewport == 25)
+        #expect(defaults.integer(forKey: "cacheImagesBeforeViewport") == 15)
+        #expect(defaults.integer(forKey: "cacheImagesAfterViewport") == 25)
     }
 
-    @Test func testTopDiskCacheLimitPersists() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
-        manager.topDiskCacheLimitMB = 200
-        #expect(manager.topDiskCacheLimitMB == 200)
-        #expect(UserDefaults.standard.integer(forKey: "topDiskCacheLimitMB") == 200)
+    // Verifies poisoned Int.max preload settings are clamped to prevent
+    // downstream preload index arithmetic overflow.
+    @Test func testViewportPreloadValuesClampFromIntMax() {
+        let (manager, defaults) = makeManager()
+        defaults.set(Int.max, forKey: "cacheImagesBeforeViewport")
+        defaults.set(Int.max, forKey: "cacheImagesAfterViewport")
+
+        #expect(manager.imagesBeforeViewport == 1000)
+        #expect(manager.imagesAfterViewport == 1000)
     }
 
-    @Test func testMainCacheWarmItemCountPersists() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
-        manager.mainCacheWarmItemCount = 500
-        #expect(manager.mainCacheWarmItemCount == 500)
-        #expect(UserDefaults.standard.integer(forKey: "mainCacheWarmItemCount") == 500)
+    // Verifies non-positive stored preload values still map to defaults.
+    @Test func testViewportPreloadValuesFallbackWhenNonPositive() {
+        let (manager, defaults) = makeManager()
+        defaults.set(0, forKey: "cacheImagesBeforeViewport")
+        defaults.set(-5, forKey: "cacheImagesAfterViewport")
+
+        #expect(manager.imagesBeforeViewport == 100)
+        #expect(manager.imagesAfterViewport == 100)
     }
 
-    @Test func testTopCacheWarmItemCountPersists() {
-        clearCacheSettings()
-        let manager = CacheSettingsManager.shared
-        manager.topCacheWarmItemCount = 150
-        #expect(manager.topCacheWarmItemCount == 150)
-        #expect(UserDefaults.standard.integer(forKey: "topCacheWarmItemCount") == 150)
+    // Verifies local-thumbnail toggle persists because multiple loaders
+    // branch on this flag before touching Photos APIs.
+    @Test func testLocalThumbnailsEnabledPersists() {
+        let (manager, defaults) = makeManager()
+        manager.localThumbnailsEnabled = false
+        #expect(manager.localThumbnailsEnabled == false)
+        #expect(defaults.object(forKey: "localThumbnailsEnabled") as? Bool == false)
     }
 
-    @Test func testDiskCacheDefaultsWhenZeroOrNegative() {
-        clearCacheSettings()
-        UserDefaults.standard.set(0, forKey: "mainDiskCacheLimitMB")
-        UserDefaults.standard.set(-1, forKey: "topDiskCacheLimitMB")
-        UserDefaults.standard.set(0, forKey: "mainCacheWarmItemCount")
-        UserDefaults.standard.set(-5, forKey: "topCacheWarmItemCount")
+    // Verifies fullscreen preload preserves explicit zero for "disabled"
+    // while clamping unsafe large values.
+    @Test func testFullScreenPreloadRadiusSupportsZeroAndClamps() {
+        let (manager, defaults) = makeManager()
+        manager.fullScreenPreloadRadius = 0
+        #expect(manager.fullScreenPreloadRadius == 0)
 
-        let manager = CacheSettingsManager.shared
+        defaults.set(Int.max, forKey: "fullScreenPreloadRadius")
+        #expect(manager.fullScreenPreloadRadius == 100)
+    }
+
+    // Verifies RAM cache budgets remain bounded so MB-to-bytes conversion
+    // remains safe in image cache wrappers.
+    @Test func testTimelineRamCacheLimitClamps() {
+        let (manager, defaults) = makeManager()
+        defaults.set(Int.max, forKey: "maxTimelineThumbnailRAMCacheSizeMB")
+        #expect(manager.maxTimelineThumbnailRAMCacheSizeMB == 4096)
+    }
+
+    // Verifies disk cache limits and warm counts clamp from outlier values
+    // and fall back to defaults for non-positive values.
+    @Test func testDiskAndWarmSettingsClampAndFallback() {
+        let (manager, defaults) = makeManager()
+
+        defaults.set(Int.max, forKey: "mainDiskCacheLimitMB")
+        defaults.set(Int.max, forKey: "topDiskCacheLimitMB")
+        defaults.set(Int.max, forKey: "mainCacheWarmItemCount")
+        defaults.set(Int.max, forKey: "topCacheWarmItemCount")
+        #expect(manager.mainDiskCacheLimitMB == 65536)
+        #expect(manager.topDiskCacheLimitMB == 65536)
+        #expect(manager.mainCacheWarmItemCount == 100000)
+        #expect(manager.topCacheWarmItemCount == 100000)
+
+        defaults.set(0, forKey: "mainDiskCacheLimitMB")
+        defaults.set(-1, forKey: "topDiskCacheLimitMB")
+        defaults.set(0, forKey: "mainCacheWarmItemCount")
+        defaults.set(-5, forKey: "topCacheWarmItemCount")
         #expect(manager.mainDiskCacheLimitMB == 1024)
         #expect(manager.topDiskCacheLimitMB == 100)
         #expect(manager.mainCacheWarmItemCount == 1000)

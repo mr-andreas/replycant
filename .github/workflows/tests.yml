@@ -71,10 +71,10 @@ jobs:
       - name: Run integration e2e tests
         run: npm run e2e:integration
 
-  ios-tests:
-    name: iOS tests
+  ios-unit-tests:
+    name: iOS unit tests
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       XCODE_VERSION: "26.5"
       IOS_TEST_DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro Max
@@ -99,7 +99,42 @@ jobs:
         run: |
           xcodebuild -resolvePackageDependencies \
             -project iosapp/iosapp.xcodeproj \
-            -scheme iosapp
+            -scheme iosapp \
+            -derivedDataPath iosapp/build/test-derived-data
 
-      - name: Run iOS tests
-        run: make ios-test
+      - name: Run iOS unit tests
+        run: make ios-unit-test
+
+  ios-ui-tests:
+    name: iOS UI tests
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      XCODE_VERSION: "26.5"
+      IOS_TEST_DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro Max
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+
+      - name: Cache Swift package checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            iosapp/build/uitest-derived-data/SourcePackages
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-xcode-${{ env.XCODE_VERSION }}-uitests-spm-${{ hashFiles('iosapp/iosapp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project iosapp/iosapp.xcodeproj \
+            -scheme iosappScreenshots \
+            -derivedDataPath iosapp/build/uitest-derived-data
+
+      - name: Run iOS UI tests
+        run: make ios-ui-test
