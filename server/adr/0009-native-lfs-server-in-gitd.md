@@ -21,7 +21,9 @@ running in-process inside gitd.
 - Serve the basic-transfer API at `/lfs` after the existing mTLS + `pubkeys/`
   gate. No Basic auth.
 - Store objects under `--lfs-dir` as `objects/ab/cd/<rest>` with streamed
-  temp-file + rename commits and a per-OID write mutex.
+  temp-file + rename commits and a per-OID in-flight guard. A second PUT for an
+  OID already being written returns `409 Conflict` immediately so clients can
+  move on instead of blocking behind a long transfer.
 - Advertise batch action `href`s from the live request host so rewrite logic is
   unnecessary.
 - Expose a second, read-only plain-HTTP listener (`--lfs-internal-addr`, default
@@ -46,3 +48,5 @@ range end bounds.
 - Existing `lfs-test-server` content layouts and `lfs.db` are not migrated; alpha
   deployments wipe LFS state or repoint `--lfs-dir` at a compatible tree.
 - Internal services must use the new listener URL (`http://gitd:8085/lfs`).
+- No client today retries a `409` on PUT: `git-replycant` pre-push fails the
+  push, and `replycant-importer` skips that file until a later run.

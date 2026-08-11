@@ -15,7 +15,9 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -187,6 +189,64 @@ func TestHandler_PutExistingAnswersWithoutDrainingBody(t *testing.T) {
 	got, err := io.ReadAll(f)
 	require.NoError(t, err)
 	assert.Equal(t, content, got)
+}
+
+// TestHandler_PutInFlightConflictAnswers409WithoutDrainingBody ensures a second
+// PUT for an OID already being written fails fast with 409 and never reads the
+// body, so clients can abort and upload something else.
+func TestHandler_PutInFlightConflictAnswers409WithoutDrainingBody(t *testing.T) {
+	h, store := newTestHandler(t)
+	content := bytes.Repeat([]byte("c"), 64*1024)
+	oid := oidFor(content)
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.Put(context.Background(), oid, int64(len(content)), &gateReader{
+			r:       bytes.NewReader(content),
+			started: started,
+			release: release,
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first writer did not start streaming")
+	}
+
+	body := &countingReader{r: bytes.NewReader(content)}
+	req := httptest.NewRequest(http.MethodPut, "/lfs/objects/"+oid, body)
+	req.Header.Set("Accept", contentMediaType)
+	req.ContentLength = int64(len(content))
+	rr := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		h.ServeHTTP(rr, req)
+	}()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conflicted PUT blocked instead of failing fast")
+	}
+
+	require.Equal(t, http.StatusConflict, rr.Code)
+	assert.Contains(t, rr.Header().Get("Content-Type"), metaMediaType)
+	var payload struct {
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &payload))
+	assert.Contains(t, payload.Message, "in progress")
+	assert.Zero(t, atomic.LoadInt64(&body.n), "conflicted PUT must not consume body")
+	assert.Zero(t, atomic.LoadInt64(&body.reads))
+
+	close(release)
+	require.NoError(t, <-firstDone)
+	assert.True(t, store.Exists(oid))
 }
 
 // TestHandler_MetadataJSON returns size without opening object content beyond Stat.

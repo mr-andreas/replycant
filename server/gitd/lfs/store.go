@@ -23,24 +23,21 @@ var (
 	ErrSizeMismatch = errors.New("lfs object size mismatch")
 	// ErrNotFound reports that an object is absent from the store.
 	ErrNotFound = errors.New("lfs object not found")
+	// ErrUploadInProgress rejects a second writer for an OID already being
+	// uploaded so clients can fail fast instead of blocking on a long transfer.
+	ErrUploadInProgress = errors.New("lfs object upload already in progress")
 )
 
 // Store is a file-backed Git LFS object store. Objects are content-addressed
 // under a two-level prefix layout so large libraries avoid oversized directories,
 // and writes commit via rename in the destination directory so crashes cannot
-// leave a half-written object at the final path.
+// leave a half-written object at the final path. Concurrent writers of the same
+// OID are rejected immediately rather than serialized.
 type Store struct {
 	root string
 
-	mu      sync.Mutex
-	writers map[string]*oidLock
-}
-
-// oidLock serializes writers for one OID and is removed from the map once no
-// goroutine holds or waits on it, keeping memory proportional to in-flight work.
-type oidLock struct {
-	mu   sync.Mutex
-	refs int
+	mu       sync.Mutex
+	inFlight map[string]struct{}
 }
 
 // NewStore prepares a content store rooted at dir. The directory is created if
@@ -53,8 +50,8 @@ func NewStore(dir string) (*Store, error) {
 		return nil, fmt.Errorf("create lfs store root: %w", err)
 	}
 	return &Store{
-		root:    dir,
-		writers: make(map[string]*oidLock),
+		root:     dir,
+		inFlight: make(map[string]struct{}),
 	}, nil
 }
 
@@ -129,7 +126,8 @@ func (s *Store) Open(oid string) (*os.File, os.FileInfo, error) {
 
 // Put streams an object into the store under oid. When the object already exists
 // the reader is left unread so callers can answer early without wasting bandwidth.
-// Concurrent writers of the same OID are serialized by a keyed mutex.
+// If another request is already writing the same OID, Put returns
+// ErrUploadInProgress without reading the body so clients can move on.
 func (s *Store) Put(ctx context.Context, oid string, size int64, r io.Reader) error {
 	if !ValidOID(oid) {
 		return ErrInvalidOID
@@ -141,11 +139,15 @@ func (s *Store) Put(ctx context.Context, oid string, size int64, r io.Reader) er
 		return err
 	}
 
-	lock := s.acquireOID(oid)
-	defer s.releaseOID(oid, lock)
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
+	if s.Exists(oid) {
+		return nil
+	}
+	if !s.tryAcquireOID(oid) {
+		return ErrUploadInProgress
+	}
+	defer s.releaseOID(oid)
 
+	// Another writer may have committed between the Exists check and acquire.
 	if s.Exists(oid) {
 		return nil
 	}
@@ -209,37 +211,32 @@ func (s *Store) Put(ctx context.Context, oid string, size int64, r io.Reader) er
 	return nil
 }
 
-// acquireOID returns the per-OID lock, creating it when needed and bumping the
-// reference count so the map entry survives until the last waiter is done.
-func (s *Store) acquireOID(oid string) *oidLock {
+// tryAcquireOID marks oid as in-flight. Returns false when another writer
+// already holds it so the caller can reject without waiting.
+func (s *Store) tryAcquireOID(oid string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry, ok := s.writers[oid]
-	if !ok {
-		entry = &oidLock{}
-		s.writers[oid] = entry
+	if _, ok := s.inFlight[oid]; ok {
+		return false
 	}
-	entry.refs++
-	return entry
+	s.inFlight[oid] = struct{}{}
+	return true
 }
 
-// releaseOID drops one reference and removes the map entry when idle so the
-// writer map does not grow without bound across many distinct OIDs.
-func (s *Store) releaseOID(oid string, entry *oidLock) {
+// releaseOID clears the in-flight mark so a later upload of the same OID can
+// proceed after the current writer finishes or fails.
+func (s *Store) releaseOID(oid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry.refs--
-	if entry.refs == 0 {
-		delete(s.writers, oid)
-	}
+	delete(s.inFlight, oid)
 }
 
-// writerKeys is a test helper that exposes in-flight OID locks.
-func (s *Store) writerKeys() []string {
+// inFlightKeys is a test helper that exposes OIDs currently being written.
+func (s *Store) inFlightKeys() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	keys := make([]string, 0, len(s.writers))
-	for k := range s.writers {
+	keys := make([]string, 0, len(s.inFlight))
+	for k := range s.inFlight {
 		keys = append(keys, k)
 	}
 	return keys
@@ -256,7 +253,7 @@ func randomTempName() (string, error) {
 }
 
 // copyWithContext streams r into dst while honouring cancellation so a client
-// disconnect does not leave a long-lived write holding an OID lock.
+// disconnect does not leave a long-lived write holding an OID in-flight mark.
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var written int64

@@ -210,7 +210,8 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePutObject streams an upload into the store. Existing objects answer 200
-// before reading the body so Expect: 100-continue clients skip the transfer.
+// before reading the body so Expect: 100-continue clients skip the transfer. An
+// in-flight write of the same OID answers 409 without reading the body.
 func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request, oid string) {
 	if h.store.Exists(oid) {
 		w.WriteHeader(http.StatusOK)
@@ -229,6 +230,8 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request, oid st
 			return
 		}
 		switch {
+		case errors.Is(err, ErrUploadInProgress):
+			writeLFSError(w, http.StatusConflict, "another upload of this object is in progress")
 		case errors.Is(err, ErrHashMismatch), errors.Is(err, ErrSizeMismatch), errors.Is(err, ErrInvalidOID):
 			writeLFSError(w, http.StatusBadRequest, err.Error())
 		default:

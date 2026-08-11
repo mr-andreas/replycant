@@ -153,9 +153,71 @@ func TestStore_ExistingObjectShortCircuit(t *testing.T) {
 	assert.Zero(t, atomic.LoadInt64(&body.reads))
 }
 
-// TestStore_ConcurrentSameOID serializes writers of one OID so only one durable
-// file remains and both callers succeed.
-func TestStore_ConcurrentSameOID(t *testing.T) {
+// TestStore_ConcurrentSameOIDRejectsInFlight proves a second writer for the same
+// OID fails immediately with ErrUploadInProgress instead of blocking, and does
+// not consume its body while the first write is still streaming.
+func TestStore_ConcurrentSameOIDRejectsInFlight(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	content := bytes.Repeat([]byte("x"), 64*1024)
+	oid := oidFor(content)
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- store.Put(context.Background(), oid, int64(len(content)), &gateReader{
+			r:       bytes.NewReader(content),
+			started: started,
+			release: release,
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first writer did not start streaming")
+	}
+
+	body := &countingReader{r: bytes.NewReader(content)}
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- store.Put(context.Background(), oid, int64(len(content)), body)
+	}()
+
+	select {
+	case err := <-secondDone:
+		require.ErrorIs(t, err, ErrUploadInProgress)
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Put blocked instead of failing fast")
+	}
+	assert.Zero(t, atomic.LoadInt64(&body.n), "conflicted Put must not consume body")
+	assert.Zero(t, atomic.LoadInt64(&body.reads))
+	assert.Contains(t, store.inFlightKeys(), oid)
+
+	close(release)
+	require.NoError(t, <-firstErr)
+	assert.True(t, store.Exists(oid))
+	assert.Empty(t, store.inFlightKeys(), "in-flight set should drain after writers finish")
+
+	f, _, err := store.Open(oid)
+	require.NoError(t, err)
+	defer f.Close()
+	got, err := io.ReadAll(f)
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+
+	// After the durable object exists, a later Put succeeds without reading.
+	later := &countingReader{r: bytes.NewReader(content)}
+	require.NoError(t, store.Put(context.Background(), oid, int64(len(content)), later))
+	assert.Zero(t, atomic.LoadInt64(&later.n))
+}
+
+// TestStore_ConcurrentSameOIDRace accepts either success or ErrUploadInProgress
+// for racing writers: exactly one commits, late arrivals that lose the race but
+// arrive after commit see the durable object and return nil.
+func TestStore_ConcurrentSameOIDRace(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	require.NoError(t, err)
 
@@ -177,9 +239,20 @@ func TestStore_ConcurrentSameOID(t *testing.T) {
 	close(start)
 	wg.Wait()
 	close(errs)
+
+	var ok, conflicted int
 	for err := range errs {
-		require.NoError(t, err)
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrUploadInProgress):
+			conflicted++
+		default:
+			require.NoError(t, err)
+		}
 	}
+	assert.GreaterOrEqual(t, ok, 1, "at least one writer must succeed")
+	assert.Equal(t, writers, ok+conflicted)
 
 	assert.True(t, store.Exists(oid))
 	f, _, err := store.Open(oid)
@@ -188,7 +261,28 @@ func TestStore_ConcurrentSameOID(t *testing.T) {
 	got, err := io.ReadAll(f)
 	require.NoError(t, err)
 	assert.Equal(t, content, got)
-	assert.Empty(t, store.writerKeys(), "keyed mutex map should drain after writers finish")
+	assert.Empty(t, store.inFlightKeys())
+}
+
+// TestStore_FailedWriteReleasesInFlight ensures a hash mismatch frees the OID so
+// a subsequent correct upload can proceed immediately.
+func TestStore_FailedWriteReleasesInFlight(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	content := []byte("good-content")
+	oid := oidFor(content)
+	wrong := []byte("different-content")
+
+	err = store.Put(context.Background(), oid, int64(len(wrong)), bytes.NewReader(wrong))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrHashMismatch)
+	assert.Empty(t, store.inFlightKeys())
+	assert.False(t, store.Exists(oid))
+
+	require.NoError(t, store.Put(context.Background(), oid, int64(len(content)), bytes.NewReader(content)))
+	assert.True(t, store.Exists(oid))
+	assert.Empty(t, store.inFlightKeys())
 }
 
 // TestStore_ConcurrentDifferentOIDs ensures distinct OIDs do not share a lock so
@@ -233,7 +327,7 @@ func TestStore_ConcurrentDifferentOIDs(t *testing.T) {
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	assert.Empty(t, store.writerKeys())
+	assert.Empty(t, store.inFlightKeys())
 }
 
 // TestStore_RejectsInvalidOID keeps path construction unreachable for traversal
@@ -269,7 +363,7 @@ func (e *errReader) Read([]byte) (int, error) {
 }
 
 // gateReader signals when the first byte is requested and waits until release,
-// so tests can observe concurrent writers holding distinct OID locks.
+// so tests can observe in-flight writers without completing the upload.
 type gateReader struct {
 	r       io.Reader
 	started chan<- struct{}
