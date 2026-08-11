@@ -32,6 +32,10 @@ BUILD_NUMBER := $(shell date +%Y%m%d%H%M)
 # passing tests. Force a UTF-8 locale so shells that leave LANG unset still get
 # a usable run.
 FASTLANE_LOCALE := LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+# Homebrew Ruby (3.x) is required; macOS system Ruby is too old for modern fastlane.
+HOMEBREW_RUBY_BIN := $(shell test -x /opt/homebrew/opt/ruby/bin/ruby && echo /opt/homebrew/opt/ruby/bin)
+# Prefer the iosapp Gemfile so frameit includes iPhone 17 / recent device frames.
+FASTLANE := cd iosapp && $(FASTLANE_LOCALE) env PATH="$(HOMEBREW_RUBY_BIN):$$PATH" bundle exec fastlane
 
 ios-unit-test:
 	xcodebuild test -project $(IOS_PROJECT) -scheme $(IOS_SCHEME) \
@@ -107,16 +111,58 @@ ios-release:
 	  -allowProvisioningUpdates
 .PHONY: ios-release
 
-ios-screenshots:
-	cd iosapp && $(FASTLANE_LOCALE) fastlane screenshots
+ios-bundle:
+	@if [ -z "$(HOMEBREW_RUBY_BIN)" ]; then \
+	  echo "Need Homebrew Ruby at /opt/homebrew/opt/ruby (brew install ruby)"; \
+	  exit 1; \
+	fi
+	cd iosapp && env PATH="$(HOMEBREW_RUBY_BIN):$$PATH" bundle check || \
+	  env PATH="$(HOMEBREW_RUBY_BIN):$$PATH" bundle install
+.PHONY: ios-bundle
+
+ios-screenshots: ios-bundle
+	$(FASTLANE) screenshots
 .PHONY: ios-screenshots
 
-ios-screenshots-upload:
+ios-screenshots-upload: ios-bundle
 	@: "$${ASC_KEY_ID:?Set ASC_KEY_ID}" "$${ASC_ISSUER_ID:?Set ASC_ISSUER_ID}" "$${ASC_KEY_PATH:?Set ASC_KEY_PATH}"
-	cd iosapp && $(FASTLANE_LOCALE) fastlane upload_screenshots
+	$(FASTLANE) upload_screenshots
 .PHONY: ios-screenshots-upload
 
-ios-metadata-upload:
+ios-metadata-upload: ios-bundle
 	@: "$${ASC_KEY_ID:?Set ASC_KEY_ID}" "$${ASC_ISSUER_ID:?Set ASC_ISSUER_ID}" "$${ASC_KEY_PATH:?Set ASC_KEY_PATH}"
-	cd iosapp && $(FASTLANE_LOCALE) fastlane upload_metadata
+	$(FASTLANE) upload_metadata
 .PHONY: ios-metadata-upload
+
+README_SCREENSHOT_DIR := docs/static/img/readme
+README_IOS_SCREENSHOT := $(README_SCREENSHOT_DIR)/ios-timeline.png
+README_DESKTOP_SCREENSHOT := $(README_SCREENSHOT_DIR)/desktop-timeline.png
+README_COMPOSITE_SCREENSHOT := $(README_SCREENSHOT_DIR)/apps.png
+
+# Captures the Electron timeline window into the committed README desktop asset.
+webapp-readme-screenshot:
+	cd webapp && npm run screenshot:readme
+	@test -f "$(README_DESKTOP_SCREENSHOT)" || (echo "missing $(README_DESKTOP_SCREENSHOT)" && exit 1)
+.PHONY: webapp-readme-screenshot
+
+# Copies the README-specific black-device iPhone frame into the committed asset.
+copy-readme-ios-screenshot:
+	@mkdir -p "$(README_SCREENSHOT_DIR)"
+	@src="iosapp/fastlane/screenshots/framed/readme/ios-timeline.png"; \
+	  if [ ! -f "$$src" ]; then \
+	    echo "missing $$src (run make ios-screenshots first)"; \
+	    exit 1; \
+	  fi; \
+	  cp "$$src" "$(README_IOS_SCREENSHOT)"; \
+	  echo "copied $$src -> $(README_IOS_SCREENSHOT)"
+.PHONY: copy-readme-ios-screenshot
+
+# Overlays the iPhone frame on the Electron window for the README hero image.
+compose-readme-screenshot:
+	cd webapp && npm run screenshot:readme:compose
+	@test -f "$(README_COMPOSITE_SCREENSHOT)" || (echo "missing $(README_COMPOSITE_SCREENSHOT)" && exit 1)
+.PHONY: compose-readme-screenshot
+
+# Regenerates README product screenshots and the combined hero image.
+readme-screenshots: ios-screenshots copy-readme-ios-screenshot webapp-readme-screenshot compose-readme-screenshot
+.PHONY: readme-screenshots

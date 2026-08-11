@@ -2,5 +2,7 @@ report.xml
 screenshots/screenshots.html
 screenshots/en-US/*.png
 screenshots/framed/
+screenshots/readme/*.png
+screenshots/fonts/Title.ttf
 Preview.html
 test_output/

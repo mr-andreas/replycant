@@ -109,7 +109,7 @@ async function resetBrowserState(page: Page): Promise<void> {
 }
 
 // Seeds encrypted localStorage and mocks API endpoints so shell tests can unlock into the main app.
-async function setupOnboardingBypass(page: Page): Promise<void> {
+export async function setupOnboardingBypass(page: Page): Promise<void> {
   const identityValue = await getFakeEncryptedIdentity();
   await page.addInitScript(
     ({ configKey, configValue, identityKey, identityRecord }) => {

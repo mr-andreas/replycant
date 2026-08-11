@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
 import { LibraryHeader } from "../../components/LibraryHeader";
+import type { SyncSnapshot } from "../gitdb";
 import { LibraryView } from "../timeline/TimelineView";
 
 // Defines placeholder view dependencies so future modules can reuse shell-level controls consistently.
@@ -9,6 +10,7 @@ interface CollectionPlaceholderViewProps {
   commitPaneOpen: boolean;
   onToggleCommitPane: () => void;
   commitPane: ReactNode;
+  snapshot: SyncSnapshot;
 }
 
 // Shows scaffold screens for upcoming library modules while preserving global navigation.
@@ -18,6 +20,7 @@ export const CollectionPlaceholderView = ({
   commitPaneOpen,
   onToggleCommitPane,
   commitPane,
+  snapshot,
 }: CollectionPlaceholderViewProps) => (
   <div className="app-shell">
     <div className="app-main">
@@ -26,6 +29,7 @@ export const CollectionPlaceholderView = ({
         onSelectView={onSelectView}
         commitPaneOpen={commitPaneOpen}
         onToggleCommitPane={onToggleCommitPane}
+        syncSnapshot={snapshot}
       />
       <div className="timeline-container">
         <div className="placeholder-content">

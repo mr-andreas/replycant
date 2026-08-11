@@ -21,6 +21,7 @@ Stop immediately if any check fails.
    - `git branch --show-current`
 2. Ensure working tree is clean:
    - `git status --short`
+   - Regenerated screenshots must already be committed at this point
 3. Validate version format:
    - Must match `^\d+\.\d+\.\d+$`
 4. Ensure tag does not already exist:
@@ -35,11 +36,26 @@ to release.
 
 ## Release workflow
 
-1. Finalize `CHANGELOG.md`.
-2. Commit only `CHANGELOG.md` with the release notes copied from that new
+1. Refresh product screenshots (major/minor only, see below).
+2. Finalize `CHANGELOG.md`.
+3. Commit only `CHANGELOG.md` with the release notes copied from that new
    version section.
-3. Create tag `v<version>` on that commit.
-4. Stop. Never push.
+4. Create tag `v<version>` on that commit.
+5. Stop. Never push.
+
+## Product screenshots
+
+The README hero images must show the shipped UI, so regenerate them whenever a
+release changes user-visible surfaces.
+
+- Major and minor releases (`X.0.0`, `X.Y.0`): run `make readme-screenshots`
+  and commit the regenerated images in their own commit **before** the release
+  commit, so the release commit still touches only `CHANGELOG.md`.
+- Patch releases: skipping this is fine unless the patch changed the UI.
+
+Regeneration requires a macOS machine with Xcode, ImageMagick, and `pngquant`.
+If it cannot run, stop and ask the user whether to release with the existing
+screenshots.
 
 ## Update CHANGELOG.md
 

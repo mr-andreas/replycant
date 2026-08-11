@@ -6,6 +6,12 @@ Replycant is a simple photo library based on proven technologies. It uses Git wi
 
 Part of Replycant is also an open source iOS app which is published on the app store.
 
+## Screenshots
+
+![Replycant iOS and desktop](docs/static/img/readme/apps.png)
+
+Regenerate with `make readme-screenshots`.
+
 ## Why Replycant
 
 - **Untrusted server** — media and metadata are encrypted on-device; the server never sees plaintext

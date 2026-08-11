@@ -148,6 +148,7 @@ export const App = () => {
           commitPaneOpen={commitPaneOpen}
           onToggleCommitPane={handleToggleCommitPane}
           commitPane={commitPane}
+          snapshot={runtime.snapshot}
         />
       )}
     </OnboardingGate>

@@ -1,4 +1,6 @@
 import logoUrl from "../assets/logo.png";
+import type { SyncSnapshot } from "../modules/gitdb";
+import { SyncProgressBar } from "./SyncProgressBar";
 import { WindowControls } from "./WindowControls";
 
 // Defines shared shell controls so all library views keep one consistent header.
@@ -10,6 +12,7 @@ interface LibraryHeaderProps {
   showMonthToggle?: boolean;
   showMonthSidebar?: boolean;
   onToggleMonthSidebar?: () => void;
+  syncSnapshot?: SyncSnapshot | null;
 }
 
 // Renders one reusable top bar for timeline and placeholder library views.
@@ -19,6 +22,7 @@ export const LibraryHeader = ({
   showMonthToggle = false,
   showMonthSidebar = false,
   onToggleMonthSidebar,
+  syncSnapshot = null,
 }: LibraryHeaderProps) => (
   <header className="top-bar">
     <div className="brand">
@@ -55,5 +59,6 @@ export const LibraryHeader = ({
       </button>
       <WindowControls />
     </div>
+    <SyncProgressBar snapshot={syncSnapshot} />
   </header>
 );

@@ -19,20 +19,26 @@ const createMainWindow = async (): Promise<void> => {
   // Linux compositors handle window transparency inconsistently, which leaves
   // the frosted-glass treatment looking like rendering garbage instead of the
   // intended effect. Fall back to an opaque window there so the UI stays solid.
+  // README screenshot capture also forces opaque output so vibrancy does not
+  // produce unstable or empty pixels in headless Electron runs.
   const isLinux = process.platform === "linux";
+  const opaqueScreenshot = process.env.REPLYCANT_SCREENSHOT_OPAQUE === "1";
+  const useOpaqueChrome = isLinux || opaqueScreenshot;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     frame: false,
-    transparent: !isLinux,
-    backgroundColor: isLinux ? "#ffffff" : "#00000000",
+    transparent: !useOpaqueChrome,
+    backgroundColor: useOpaqueChrome ? "#ffffff" : "#00000000",
     // Keep the macOS vibrancy material lit even when the window loses focus;
     // the default "followWindow" state collapses the blur into a flat fill,
     // which reads as an opaque background instead of the intended frosted glass.
-    ...(process.platform === "darwin"
+    ...(!useOpaqueChrome && process.platform === "darwin"
       ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const }
       : {}),
-    ...(process.platform === "win32" ? { backgroundMaterial: "acrylic" as const } : {}),
+    ...(!useOpaqueChrome && process.platform === "win32"
+      ? { backgroundMaterial: "acrylic" as const }
+      : {}),
     webPreferences: {
       preload: resolve(import.meta.dirname, "preload.cjs"),
       contextIsolation: true,

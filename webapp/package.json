@@ -34,7 +34,9 @@
     "e2e": "playwright test --config playwright.e2e.config.ts --grep-invert @integration",
     "e2e:integration": "playwright test --config playwright.e2e.config.ts --grep @integration --workers=1",
     "e2e:timeline-scroll": "playwright test --config playwright.e2e.config.ts src/e2e/timeline-scroll-indexeddb.e2e.spec.ts",
-    "e2e:install-browsers": "playwright install chromium firefox"
+    "e2e:install-browsers": "playwright install chromium firefox",
+    "screenshot:readme": "npm run build:desktop:runtime && playwright test --config playwright.readme.config.ts",
+    "screenshot:readme:compose": "tsx src/e2e/composeReadmeScreenshot.ts"
   },
   "keywords": [
     "replycant",

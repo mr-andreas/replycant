@@ -1,6 +1,8 @@
 default_platform(:ios)
 SCREENSHOT_ROOT = File.expand_path("screenshots", __dir__)
 FRAMED_SCREENSHOT_ROOT = File.join(SCREENSHOT_ROOT, "framed", "en-US")
+README_FRAME_ROOT = File.join(SCREENSHOT_ROOT, "readme")
+README_FRAMED_ROOT = File.join(SCREENSHOT_ROOT, "framed", "readme")
 RAW_SCREENSHOT_ROOT = File.join(SCREENSHOT_ROOT, "en-US")
 
 SCREENSHOT_DEVICES = [
@@ -10,14 +12,22 @@ SCREENSHOT_DEVICES = [
 SCREENSHOT_IOS_VERSION = "26.2"
 
 platform :ios do
-  # Captures screenshot sets and verifies App Store sizes.
+  # Captures screenshot sets, verifies App Store sizes, then frames for marketing.
   lane :screenshots do
     ensure_screenshot_simulator!(SCREENSHOT_DEVICES, SCREENSHOT_IOS_VERSION)
     snapshot(
       devices: SCREENSHOT_DEVICES,
       ios_version: SCREENSHOT_IOS_VERSION
     )
-    validate_screenshot_dimensions
+    validate_screenshot_dimensions(RAW_SCREENSHOT_ROOT)
+    ensure_frameit_title_font!
+    frame_screenshots(
+      path: SCREENSHOT_ROOT,
+      use_platform: "IOS"
+    )
+    collect_framed_screenshots!
+    validate_screenshot_dimensions(FRAMED_SCREENSHOT_ROOT)
+    frame_readme_iphone!
   end
 
   # Uploads the framed screenshot set to the editable App Store Connect version.
@@ -53,6 +63,11 @@ platform :ios do
   lane :release_screenshots do
     screenshots
     upload_screenshots
+  end
+
+  # Rebuilds only the README iPhone frame from an existing raw snapshot PNG.
+  lane :frame_readme do
+    frame_readme_iphone!
   end
 end
 
@@ -119,8 +134,80 @@ def screenshot_upload_path
   end
 end
 
+# Supplies a local Title.ttf for Framefile without committing a proprietary font.
+# macOS CI and developer machines already ship Arial Bold; we copy it at lane time.
+def ensure_frameit_title_font!
+  require "fileutils"
+
+  font_path = File.join(SCREENSHOT_ROOT, "fonts", "Title.ttf")
+  return if File.file?(font_path)
+
+  candidates = [
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf"
+  ]
+  source = candidates.find { |path| File.file?(path) }
+  unless source
+    UI.user_error!(
+      "frameit needs #{font_path}. Copy a Bold TTF there, or install macOS Arial Bold."
+    )
+  end
+
+  FileUtils.mkdir_p(File.dirname(font_path))
+  FileUtils.cp(source, font_path)
+  UI.message("Prepared frameit title font at #{font_path}")
+end
+
+# Frames the iPhone timeline for README: black device, no slogan, transparent
+# background. Uses a dedicated Framefile so App Store marketing framing stays intact.
+def frame_readme_iphone!
+  require "fileutils"
+
+  raw = Dir.glob(File.join(RAW_SCREENSHOT_ROOT, "*iPhone*01-timeline.png"))
+    .reject { |path| path.end_with?("_framed.png") }
+    .min
+  UI.user_error!("No raw iPhone 01-timeline screenshot under #{RAW_SCREENSHOT_ROOT}") unless raw
+
+  FileUtils.mkdir_p(README_FRAME_ROOT)
+  FileUtils.mkdir_p(README_FRAMED_ROOT)
+  Dir.glob(File.join(README_FRAME_ROOT, "*.png")).each { |path| FileUtils.rm_f(path) }
+
+  staged = File.join(README_FRAME_ROOT, File.basename(raw))
+  FileUtils.cp(raw, staged)
+
+  frame_screenshots(
+    path: README_FRAME_ROOT,
+    use_platform: "IOS"
+  )
+
+  framed = Dir.glob(File.join(README_FRAME_ROOT, "*_framed.png")).min
+  UI.user_error!("README frameit produced no *_framed.png under #{README_FRAME_ROOT}") unless framed
+
+  dest = File.join(README_FRAMED_ROOT, "ios-timeline.png")
+  FileUtils.cp(framed, dest)
+  UI.success("README iPhone frame written to #{dest}")
+end
+
+# Copies frameit *_framed.png outputs into framed/en-US so App Store upload
+# has a stable directory of final marketing images.
+def collect_framed_screenshots!
+  require "fileutils"
+
+  FileUtils.rm_rf(FRAMED_SCREENSHOT_ROOT)
+  FileUtils.mkdir_p(FRAMED_SCREENSHOT_ROOT)
+
+  framed = Dir.glob(File.join(RAW_SCREENSHOT_ROOT, "*_framed.png")).sort
+  UI.user_error!("frameit produced no *_framed.png under #{RAW_SCREENSHOT_ROOT}") if framed.empty?
+
+  framed.each do |path|
+    # deliver prefers unprefixed names; strip the frameit suffix for the upload set.
+    dest_name = File.basename(path).sub(/_framed\.png\z/, ".png")
+    FileUtils.cp(path, File.join(FRAMED_SCREENSHOT_ROOT, dest_name))
+  end
+end
+
 # Fails screenshot lanes when output dimensions do not match accepted iPhone or iPad App Store slots.
-def validate_screenshot_dimensions
+def validate_screenshot_dimensions(directory = screenshot_upload_path)
   accepted = [
     [1320, 2868], # iPhone 17 Pro Max (6.9") — required App Store baseline
     [2868, 1320],
@@ -136,8 +223,8 @@ def validate_screenshot_dimensions
     [2732, 2048]
   ]
 
-  screenshots = Dir.glob(File.join(screenshot_upload_path, "*.png")).sort
-  UI.user_error!("No screenshots found in #{screenshot_upload_path}") if screenshots.empty?
+  screenshots = Dir.glob(File.join(directory, "*.png")).sort
+  UI.user_error!("No screenshots found in #{directory}") if screenshots.empty?
 
   screenshots.each do |screenshot_path|
     info = Actions.sh("sips -g pixelWidth -g pixelHeight \"#{screenshot_path}\"")

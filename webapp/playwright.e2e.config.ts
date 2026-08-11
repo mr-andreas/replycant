@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: ".",
   testMatch: "src/e2e/**/*.e2e.spec.ts",
+  testIgnore: ["src/e2e/readme-screenshot.spec.ts"],
   timeout: 30_000,
   globalSetup: "./src/e2e/global-setup.ts",
   globalTeardown: "./src/e2e/global-teardown.ts",

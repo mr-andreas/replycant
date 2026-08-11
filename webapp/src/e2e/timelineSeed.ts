@@ -34,6 +34,11 @@ type SeedPayload = {
 
 type TimelineSeedOptions = {
   uniqueThumbnailSha?: boolean;
+  // Days between consecutive items so sparse seeds can still fill many months.
+  dayStride?: number;
+  // When set, build successive months with varied per-month counts instead of a flat stride.
+  monthCount?: number;
+  itemsPerMonth?: { min: number; max: number };
 };
 
 export type TimelineSeedResult = {
@@ -49,17 +54,50 @@ const isoAtDayOffset = (offset: number): string => {
   return new Date(baseUtc + offset * 24 * 60 * 60 * 1000).toISOString();
 };
 
+// Deterministic 0..n-1 jitter so README month counts look natural but stay stable across runs.
+const stableUnitJitter = (seed: number): number => {
+  const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+// Builds takenAt timestamps for seeds: either flat dayStride or varied per-month density.
+const buildTakenAtSchedule = (itemCount: number, options: TimelineSeedOptions): string[] => {
+  if (options.monthCount && options.monthCount > 0) {
+    const monthCount = Math.floor(options.monthCount);
+    const min = Math.max(1, Math.floor(options.itemsPerMonth?.min ?? 18));
+    const max = Math.max(min, Math.floor(options.itemsPerMonth?.max ?? 48));
+    const span = max - min + 1;
+    const schedule: string[] = [];
+    for (let monthIndex = 0; monthIndex < monthCount; monthIndex += 1) {
+      const count = min + Math.floor(stableUnitJitter(monthIndex + 1) * span);
+      const year = 2024 + Math.floor(monthIndex / 12);
+      const month = monthIndex % 12;
+      for (let item = 0; item < count; item += 1) {
+        // Spread within the month; keep day in 1..28 so every month is valid.
+        const day = 1 + Math.floor((item * 27) / Math.max(1, count));
+        const hour = 8 + (item % 12);
+        schedule.push(new Date(Date.UTC(year, month, day, hour, (item * 7) % 60, 0)).toISOString());
+      }
+    }
+    return schedule;
+  }
+
+  const dayStride = Math.max(1, Math.floor(options.dayStride ?? 1));
+  return Array.from({ length: itemCount }, (_, index) => isoAtDayOffset(index * dayStride));
+};
+
 // Builds deterministic manifest and pointer rows so timeline e2e can load encrypted media.
 const buildSeedPayload = (itemCount: number, options: TimelineSeedOptions = {}): SeedPayload => {
+  const schedule = buildTakenAtSchedule(itemCount, options);
   const monthMap = new Map<string, MonthBucket>();
   const originals: unknown[] = [];
   const thumbnails: unknown[] = [];
   const pointers: Array<[string, PointerRecord]> = [];
 
-  for (let i = 0; i < itemCount; i += 1) {
+  for (let i = 0; i < schedule.length; i += 1) {
     const name = `orig-${String(i).padStart(4, "0")}`;
     const key = `${DEVICE_SPACE}/${name}`;
-    const takenAt = isoAtDayOffset(i);
+    const takenAt = schedule[i]!;
     const monthKey = takenAt.slice(0, 7);
     const sha = `${String(i).padStart(64, "0")}`.slice(-64);
     const thumbnailSha = options.uniqueThumbnailSha ? sha : THUMB_SHA;
@@ -147,17 +185,25 @@ const buildSeedPayload = (itemCount: number, options: TimelineSeedOptions = {}):
   return { originals, thumbnails, months, pointers };
 };
 
+// Exported for unit tests that verify README month-density schedules stay varied.
+export const previewTakenAtSchedule = (
+  itemCount: number,
+  options: TimelineSeedOptions = {},
+): string[] => buildTakenAtSchedule(itemCount, options);
+
 // Seeds IndexedDB directly so timeline e2e tests can bypass expensive git sync setup.
 export const seedTimelineIndexedDb = async (
   page: Page,
   itemCount = 1000,
   options: TimelineSeedOptions = {},
 ): Promise<TimelineSeedResult> => {
+  const schedule = buildTakenAtSchedule(itemCount, options);
   const payload = buildSeedPayload(itemCount, options);
+  const resolvedCount = schedule.length;
   const firstKey = `${DEVICE_SPACE}/orig-0000`;
-  const lastKey = `${DEVICE_SPACE}/orig-${String(itemCount - 1).padStart(4, "0")}`;
-  const firstTakenAt = isoAtDayOffset(0);
-  const lastTakenAt = isoAtDayOffset(itemCount - 1);
+  const lastKey = `${DEVICE_SPACE}/orig-${String(Math.max(0, resolvedCount - 1)).padStart(4, "0")}`;
+  const firstTakenAt = schedule[0] ?? isoAtDayOffset(0);
+  const lastTakenAt = schedule[resolvedCount - 1] ?? firstTakenAt;
 
   await page.evaluate(
     async ({ dbName, originalStore, thumbnailStore, monthStore, pointerStore, payload: seed }) => {
@@ -212,7 +258,7 @@ export const seedTimelineIndexedDb = async (
   );
 
   return {
-    itemCount,
+    itemCount: resolvedCount,
     firstKey,
     lastKey,
     firstTakenAt,

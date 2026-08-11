@@ -1,0 +1,10 @@
+{
+  "default": {
+    "padding": 50,
+    "show_complete_frame": true,
+    "use_platform": "IOS",
+    "force_device_type": "iphone16-pro-max",
+    "frame": "BLACK_TITANIUM"
+  },
+  "data": []
+}

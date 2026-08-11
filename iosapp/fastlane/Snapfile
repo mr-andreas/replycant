@@ -14,7 +14,8 @@ skip_open_summary(true)
 # Avoid erase races on iOS 26 simulators that leave the device in an invalid state.
 erase_simulator(false)
 reinstall_app(false)
-concurrent_simulators(true)
+# Sequential devices avoid xcodebuild diagnose hangs when one destination flakes.
+concurrent_simulators(false)
 number_of_retries(0)
 launch_arguments(["--screenshots"])
 only_testing(["iosappUITests/ScreenshotUITests"])

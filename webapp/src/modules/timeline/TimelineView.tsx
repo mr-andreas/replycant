@@ -214,6 +214,7 @@ export const TimelineView = ({
           showMonthToggle
           showMonthSidebar={showMonthSidebar}
           onToggleMonthSidebar={handleToggleMonthSidebar}
+          syncSnapshot={runtime.snapshot}
         />
 
         {runtime.timelineItemCount === 0 && !runtime.snapshot.syncing ? (

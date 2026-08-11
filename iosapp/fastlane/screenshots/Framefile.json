@@ -5,7 +5,8 @@
     "stack_title": true,
     "use_platform": "IOS",
     "title": {
-      "color": "#FFFFFF"
+      "color": "#FFFFFF",
+      "font": "./fonts/Title.ttf"
     }
   },
   "data": [

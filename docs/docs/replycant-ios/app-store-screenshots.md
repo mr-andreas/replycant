@@ -46,7 +46,20 @@ From repository root:
 make ios-screenshots
 ```
 
-Captures and frames screenshots via Fastlane.
+Captures screenshots via Fastlane `snapshot`, frames them with `frameit`
+(device bezel, background, and title from `Framefile.json`), and collects the
+final set under `iosapp/fastlane/screenshots/framed/en-US/`. Also builds a
+README-specific black-device frame (no slogan, transparent background) under
+`iosapp/fastlane/screenshots/framed/readme/`. Requires the `iosapp/Gemfile`
+fastlane pin (`make ios-bundle`) so frameit recognizes iPhone 17 Pro Max sizes.
+
+```bash
+make readme-screenshots
+```
+
+Regenerates README product screenshots under `docs/static/img/readme/`: the
+framed iPhone timeline, the Electron desktop timeline, and the combined
+`apps.png` hero used in the root README.
 
 ```bash
 make ios-screenshots-upload

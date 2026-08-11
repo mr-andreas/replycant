@@ -1,0 +1,4 @@
+# Pins fastlane so frameit knows iPhone 17 Pro Max / iPad Pro 13" (M5) sizes.
+source "https://rubygems.org"
+
+gem "fastlane", ">= 2.234.0"
