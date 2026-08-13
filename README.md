@@ -28,17 +28,20 @@ curl -fsSL -o docker-compose.yaml \
 docker compose up
 ```
 
-This will use the directory where you have placed docker-compose.yaml for both metadata and binary storage, which is usually fine. If you wish to select another directory, simply create a `.env` with storage paths, then bring the stack up:
+This will use the directory where you have placed docker-compose.yaml for both metadata and binary storage, which is usually fine. If you wish to select another directory or change the published ports, create a `.env`, then bring the stack up:
 
 ```bash
 cat > .env << EOF
 REPLYCANT_DATA_DIR=/var/lib/replycant/data
 REPLYCANT_LFS_DIR=/var/lib/replycant/lfs
+REPLYCANT_GIT_PORT=8443
+REPLYCANT_CA_PORT=8080
 EOF
 ```
 
-The Git server listens on port `8443` (HTTPS). On the LAN it advertises as
-`<hostname>.local`.
+The Git server listens on port `8443` (HTTPS) by default. On the LAN it
+advertises as `<hostname>.local`. Set `REPLYCANT_GIT_PORT` and
+`REPLYCANT_CA_PORT` when those defaults are already in use.
 
 **2. Install the iOS client**
 
@@ -46,7 +49,7 @@ The Git server listens on port `8443` (HTTPS). On the LAN it advertises as
 
 **3. Link a device**
 
-Using your computer, open the URL that you host the server on. Usually, this is http://localhost:8080. Start the iOS app and scan the QR code.
+Using your computer, open the URL that you host the server on. Usually, this is http://localhost:8080 (or `http://localhost:$REPLYCANT_CA_PORT` if you changed the CA port). Start the iOS app and scan the QR code.
 
 ## Policies and support
 

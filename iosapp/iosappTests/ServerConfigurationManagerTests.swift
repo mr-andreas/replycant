@@ -85,6 +85,10 @@ struct ServerConfigurationManagerTests {
             ServerConfigurationManager.deriveLFSURL(from: "mtls+https://git.example:8443/repo.git")
             == "https://git.example:8443/lfs"
         )
+        #expect(
+            ServerConfigurationManager.deriveLFSURL(from: "https://git.example:9443/repo.git")
+            == "https://git.example:9443/lfs"
+        )
     }
 
     // Confirms every backend service resolves to a gitd route on the git origin.
@@ -104,6 +108,29 @@ struct ServerConfigurationManagerTests {
             == "https://git.example/decryptd"
         )
         #expect(ServerConfigurationManager.deriveServiceURL(from: "not a url", path: "/decryptd") == nil)
+        #expect(
+            ServerConfigurationManager.deriveServiceURL(from: "https://git.example:9443/repo.git", path: "/decryptd")
+            == "https://git.example:9443/decryptd"
+        )
+    }
+
+    // Confirms simulator auto-connect honors a local git-url override so
+    // debug launches follow a remapped gitd port instead of always using 8443.
+    @Test func testResolveSimulatorGitURLPrefersBundledOverride() {
+        #expect(
+            ServerConfigurationManager.resolveSimulatorGitURL(bundledGitURL: nil)
+            == "https://replycant.local:8443"
+        )
+        #expect(
+            ServerConfigurationManager.resolveSimulatorGitURL(bundledGitURL: "   ")
+            == "https://replycant.local:8443"
+        )
+        #expect(
+            ServerConfigurationManager.resolveSimulatorGitURL(
+                bundledGitURL: "https://replycant.local:9443\n"
+            )
+            == "https://replycant.local:9443"
+        )
     }
 }
 

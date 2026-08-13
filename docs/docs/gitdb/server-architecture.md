@@ -4,15 +4,18 @@ gitd is a Go-based Git server that provides authenticated access to repositories
 
 ## Overview
 
-gitd runs three HTTP servers:
+gitd runs three HTTP servers. Git and CA ports default to 8443 and 8080;
+compose publishes them from `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT`,
+and gitd listens on the same values via `--addr` and `--ca-addr` so QR
+and `/config.json` advertise the host-facing Git port.
 
-| Server | Port | Protocol | Purpose |
-|--------|------|----------|---------|
+| Server | Default port | Protocol | Purpose |
+|--------|--------------|----------|---------|
 | Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP, native `/lfs`, media proxies |
 | CA Server | 8080 | HTTP | Certificate distribution for device onboarding |
 | Internal LFS | 8085 | HTTP | Read-only LFS for compose-network services |
 
-Only 8443 and 8080 are published to the host. Media backends sit on the
+Only the Git and CA ports are published to the host. Media backends sit on the
 internal Docker network:
 
 | Route | Implementation | Purpose |
@@ -198,6 +201,7 @@ gitd \
   --decryptd-url http://decryptd:8084 \
   --transcoded-url http://transcoded:8082 \
   --addr :8443 \
+  --ca-addr :8080 \
   --cache-ttl 5m
 ```
 
@@ -213,6 +217,7 @@ gitd \
 | `--decryptd-url` | Yes | - | Internal upstream decryptd URL proxied at `/decryptd` |
 | `--transcoded-url` | Yes | - | Internal upstream transcoded URL proxied at `/transcoded` |
 | `--addr` | No | `:8443` | Git server listen address |
+| `--ca-addr` | No | `:8080` | CA distribution listen address |
 | `--cache-ttl` | No | `5m` | Key cache TTL |
 
 ## Webapp Proxy mTLS Bridging

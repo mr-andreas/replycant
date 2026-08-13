@@ -78,7 +78,8 @@ final class ServerConfigurationManager {
     }
 
     // Applies optional local simulator endpoints and CA when present so debug launches can skip QR onboarding.
-    // The CA is never shipped in-repo; developers place it under SimulatorCredentials/ locally.
+    // The CA and optional git-url are never shipped in-repo; developers place
+    // them under SimulatorCredentials/ locally.
     func applyBundledSimulatorConfigurationIfNeeded() throws {
         #if DEBUG && targetEnvironment(simulator)
         if isConfigured {
@@ -92,10 +93,22 @@ final class ServerConfigurationManager {
         }
 
         try configure(
-            url: "https://replycant.local:8443",
+            url: Self.resolveSimulatorGitURL(
+                bundledGitURL: loadBundledCredential(named: "git-url", ext: nil)
+            ),
             caCertificate: caPEM
         )
         #endif
+    }
+
+    // Prefers a local SimulatorCredentials/git-url so debug launches can
+    // follow a remapped gitd port without changing compiled defaults.
+    static func resolveSimulatorGitURL(bundledGitURL: String?) -> String {
+        let trimmed = bundledGitURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            return "https://replycant.local:8443"
+        }
+        return trimmed
     }
     
     // Returns the current configuration if available.
@@ -254,8 +267,9 @@ final class ServerConfigurationManager {
         }
     }
 
-    // Reads optional local simulator CA resources from the app bundle when present.
-    private func loadBundledCredential(named name: String, ext: String) -> String? {
+    // Reads optional local simulator CA or git-url files from the app bundle
+    // when present so debug launches can skip QR onboarding.
+    private func loadBundledCredential(named name: String, ext: String?) -> String? {
         let subdirectories: [String?] = ["SimulatorCredentials", "Resources/SimulatorCredentials", nil]
 
         for subdirectory in subdirectories {

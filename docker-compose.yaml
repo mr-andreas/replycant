@@ -87,8 +87,11 @@ services:
       target: gitd
     container_name: gitd
     ports:
-      - "8443:8443"
-      - "8080:8080"
+      - "${REPLYCANT_GIT_PORT:-8443}:${REPLYCANT_GIT_PORT:-8443}"
+      - "${REPLYCANT_CA_PORT:-8080}:${REPLYCANT_CA_PORT:-8080}"
+    environment:
+      REPLYCANT_GIT_PORT: ${REPLYCANT_GIT_PORT:-8443}
+      REPLYCANT_CA_PORT: ${REPLYCANT_CA_PORT:-8080}
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo
@@ -101,7 +104,7 @@ services:
       - -xec
       - |
         . /data/hostname/hostname.env
-        exec gitd --repo=/data/repo --addr=:8443 --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082
+        exec gitd --repo=/data/repo --addr=:${REPLYCANT_GIT_PORT:-8443} --ca-addr=:${REPLYCANT_CA_PORT:-8080} --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082
 
   # Decrypts encrypted LFS objects on the fly. Reachable only through gitd's
   # mTLS-authenticated /decryptd route, so no host port is published.

@@ -23,7 +23,10 @@ import (
 // Provides secure, certificate-based access to Git repositories.
 type CLI struct {
 	Repo     string        `required:"" help:"Path to Git repository (must be a bare repository)" type:"path"`
-	Addr     string        `default:":8443" help:"Server address to listen on"`
+	Addr string `default:":8443" help:"Server address to listen on"`
+	// CaAddr is independent of --addr so operators can remap onboarding
+	// without moving the mTLS Git listener.
+	CaAddr string `default:":8080" help:"CA distribution listen address"`
 	Cert     string        `required:"" help:"Path to server TLS certificate" type:"path"`
 	Key      string        `required:"" help:"Path to server TLS private key" type:"path"`
 	CA       string        `required:"" help:"Path to CA certificate for client trust" type:"path"`
@@ -48,6 +51,12 @@ func (c *CLI) Validate() error {
 	return nil
 }
 
+// Builds the Git URL shown in QR and /config.json so onboarding clients
+// connect to the same host and port gitd is listening on.
+func advertisedServerURL(hostname, addr string) string {
+	return fmt.Sprintf("https://%s%s/", hostname, addr)
+}
+
 // Wires CA distribution, mTLS gitd, and the internal read-only LFS listener so
 // clients bootstrap and route Git/LFS through one endpoint while media services
 // can fetch objects without mTLS.
@@ -66,19 +75,18 @@ func main() {
 	caData, err := os.ReadFile(cli.CA)
 	ctx.FatalIfErrorf(err)
 
-	// Build server URL for QR code
-	serverURL := fmt.Sprintf("https://%s%s/", cli.Hostname, cli.Addr)
+	serverURL := advertisedServerURL(cli.Hostname, cli.Addr)
 
 	// Start CA distribution HTTP server
 	caHandler, err := caserver.NewHandler(string(caData), serverURL)
 	ctx.FatalIfErrorf(err)
 	httpServer := &http.Server{
-		Addr:    ":8080",
+		Addr:    cli.CaAddr,
 		Handler: caHandler,
 	}
 
 	go func() {
-		log.Printf("Starting CA server on :8080")
+		log.Printf("Starting CA server on %s", cli.CaAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("CA server failed: %v", err)
 		}

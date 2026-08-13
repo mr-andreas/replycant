@@ -4,6 +4,7 @@ import { createSetupState, deriveLfsBaseUrl } from "./setupState";
 describe("deriveLfsBaseUrl", () => {
   it("keeps protocol and port while forcing /lfs path", () => {
     expect(deriveLfsBaseUrl("https://git.example:8443/repo.git")).toBe("https://git.example:8443/lfs");
+    expect(deriveLfsBaseUrl("https://git.example:9443/repo.git")).toBe("https://git.example:9443/lfs");
   });
 
   it("drops credentials, path, and query", () => {
