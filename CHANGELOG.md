@@ -18,6 +18,7 @@
 
 ### Fixes
 
+- iosapp: fix random crash while browsing timeline media
+- iosapp: timeline and photo sync now recover after resetting local state instead of staying empty until the app is relaunched
 - replycant-importer: failed or interrupted commits no longer leave staged-but-deleted files that permanently block push/rebase
 - replycant-importer: ctrl+c now stops in-flight work immediately, flushes pending commits, and a second ctrl+c cancels the flush
-- iosapp: timeline and photo sync now recover after resetting local state instead of staying empty until the app is relaunched

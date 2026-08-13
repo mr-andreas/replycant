@@ -93,10 +93,14 @@ public final class GitLFS: NSObject {
     private let password: String?
     private let clientIdentity: SecIdentity?
     private let pinnedCA: SecCertificate?
-    private let sessionConfiguration: URLSessionConfiguration
-    private var progressHandler: ((Int64, Int64) -> Void)?
-    private var uploadSession: URLSession?
-    private var activeUploadTask: URLSessionTask?
+    // Session delegate is a separate object because URLSession retains its
+    // delegate until invalidation; using `self` would leak the client.
+    private let authDelegate: MTLSURLSessionAuthDelegate
+    // One long-lived session per client so concurrent timeline downloads
+    // do not create/invalidate sessions that CFNetwork still holds.
+    private let session: URLSession
+    private let uploadTaskLock = NSLock()
+    private var activeUploadTasks: [ObjectIdentifier: URLSessionTask] = [:]
     
     // Stores transport configuration so tests and app code can control URL loading behavior consistently.
     public init(
@@ -130,7 +134,20 @@ public final class GitLFS: NSObject {
         self.password = extractedPassword
         self.clientIdentity = clientIdentity
         self.pinnedCA = pinnedCA
-        self.sessionConfiguration = sessionConfiguration
+        self.authDelegate = MTLSURLSessionAuthDelegate(
+            clientIdentity: clientIdentity,
+            pinnedCA: pinnedCA
+        )
+        // Copy so caller-owned configs (including test protocolClasses) are
+        // not mutated; disable URLCache because LFS blobs already go through
+        // ImageDiskCacheManager and cache writes raced session teardown.
+        let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
+        configuration.urlCache = nil
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: self.authDelegate,
+            delegateQueue: nil
+        )
         
         super.init()
         
@@ -139,14 +156,37 @@ public final class GitLFS: NSObject {
         }
     }
 
-    // Cancels the active transfer session so higher-level sync cancellation stops network activity promptly.
+    // Releases the shared session when the client is discarded so the
+    // auth delegate is not retained for the rest of the process lifetime.
+    deinit {
+        session.finishTasksAndInvalidate()
+    }
+
+    // Cancels in-flight PUT tasks so sync abort stops uploads without
+    // tearing down the shared session used by concurrent downloads.
     public func cancelActiveUpload() {
         print("LFS: Cancelling active upload session")
-        activeUploadTask?.cancel()
-        uploadSession?.invalidateAndCancel()
-        activeUploadTask = nil
-        uploadSession = nil
-        progressHandler = nil
+        uploadTaskLock.lock()
+        let tasks = Array(activeUploadTasks.values)
+        activeUploadTasks.removeAll()
+        uploadTaskLock.unlock()
+        for task in tasks {
+            task.cancel()
+        }
+    }
+
+    // Records an upload task so cancelActiveUpload can target PUTs only.
+    private func trackUpload(_ task: URLSessionTask) {
+        uploadTaskLock.lock()
+        activeUploadTasks[ObjectIdentifier(task)] = task
+        uploadTaskLock.unlock()
+    }
+
+    // Drops a finished or cancelled upload so the cancel set stays accurate.
+    private func untrackUpload(_ task: URLSessionTask) {
+        uploadTaskLock.lock()
+        activeUploadTasks.removeValue(forKey: ObjectIdentifier(task))
+        uploadTaskLock.unlock()
     }
     
     @available(iOS 13.0, macOS 10.15, *)
@@ -198,7 +238,7 @@ public final class GitLFS: NSObject {
             throw LFSError.fileReadError("Could not read file data")
         }
         
-        try await upload(data: fileData, oid: oid, size: size)
+        try await upload(data: fileData, oid: oid, size: size, progressHandler: nil)
         
         return LFSPointer(oid: oid, size: size)
     }
@@ -206,12 +246,10 @@ public final class GitLFS: NSObject {
     @available(iOS 13.0, macOS 10.15, *)
     public func uploadData(_ data: Data, progressHandler: ((Int64, Int64) -> Void)? = nil) async throws -> LFSPointer {
         print("LFS: Starting upload of \(data.count) bytes")
-        self.progressHandler = progressHandler
         let (oid, size) = calculateHash(for: data)
         print("LFS: Calculated SHA-256: \(oid)")
-        try await upload(data: data, oid: oid, size: size)
+        try await upload(data: data, oid: oid, size: size, progressHandler: progressHandler)
         print("LFS: Upload complete for OID: \(oid)")
-        self.progressHandler = nil
         return LFSPointer(oid: oid, size: size)
     }
 
@@ -225,7 +263,6 @@ public final class GitLFS: NSObject {
         progressHandler: ((Int64, Int64) -> Void)? = nil
     ) async throws -> LFSPointer {
         print("LFS: Starting streaming encrypted upload for OID: \(oid)")
-        self.progressHandler = progressHandler
 
         let uploadInfo = try await requestBatchUpload(oid: oid, size: size)
 
@@ -235,7 +272,6 @@ public final class GitLFS: NSObject {
                 throw LFSError.serverError(error.code, error.message)
             }
             print("LFS: No upload action required (object may already exist)")
-            self.progressHandler = nil
             return LFSPointer(oid: oid, size: size)
         }
 
@@ -270,14 +306,12 @@ public final class GitLFS: NSObject {
         ) {
             try EncryptingInputStream(fileURL: fileURL, dek: dek)
         }
-        let session = URLSession(configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
-        self.uploadSession = session
 
+        var uploadTask: URLSessionTask?
         defer {
-            session.finishTasksAndInvalidate()
-            self.activeUploadTask = nil
-            self.uploadSession = nil
-            self.progressHandler = nil
+            if let uploadTask {
+                untrackUpload(uploadTask)
+            }
         }
 
         let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Swift.Error>) in
@@ -293,8 +327,10 @@ public final class GitLFS: NSObject {
                 continuation.resume(returning: response)
             }
 
-            let task = session.uploadTask(withStreamedRequest: request)
-            self.activeUploadTask = task
+            let task = self.session.uploadTask(withStreamedRequest: request)
+            task.delegate = delegate
+            uploadTask = task
+            self.trackUpload(task)
             task.resume()
         }
 
@@ -308,7 +344,12 @@ public final class GitLFS: NSObject {
     
     // Performs one LFS upload transaction so object registration and binary transfer stay atomic per object.
     @available(iOS 13.0, macOS 10.15, *)
-    private func upload(data: Data, oid: String, size: Int64) async throws {
+    private func upload(
+        data: Data,
+        oid: String,
+        size: Int64,
+        progressHandler: ((Int64, Int64) -> Void)?
+    ) async throws {
         print("LFS: Requesting batch upload for OID: \(oid)")
         let uploadInfo = try await requestBatchUpload(oid: oid, size: size)
         
@@ -355,24 +396,25 @@ public final class GitLFS: NSObject {
             clientIdentity: clientIdentity,
             pinnedCA: pinnedCA
         )
-        let session = URLSession(configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
-        self.uploadSession = session
-        
+
+        var uploadTask: URLSessionTask?
         defer {
-            session.finishTasksAndInvalidate()
-            self.activeUploadTask = nil
-            self.uploadSession = nil
+            if let uploadTask {
+                untrackUpload(uploadTask)
+            }
         }
         
         let (_, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
-            let task = session.uploadTask(with: request, from: data) { data, response, error in
+            let task = self.session.uploadTask(with: request, from: data) { data, response, error in
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
                     continuation.resume(returning: (data ?? Data(), response))
                 }
             }
-            self.activeUploadTask = task
+            task.delegate = delegate
+            uploadTask = task
+            self.trackUpload(task)
             task.resume()
         }
         
@@ -396,8 +438,6 @@ public final class GitLFS: NSObject {
     // total elapsed time.
     @available(iOS 13.0, macOS 10.15, *)
     public func downloadData(oid: String, size: Int64, progressHandler: ((Int64, Int64) -> Void)? = nil) async throws -> Data {
-        self.progressHandler = progressHandler
-
         let downloadInfo = try await requestBatchDownload(oid: oid, size: size)
 
         guard let downloadAction = downloadInfo.actions?.download else {
@@ -442,24 +482,12 @@ public final class GitLFS: NSObject {
             clientIdentity: clientIdentity,
             pinnedCA: pinnedCA
         )
-        let session = URLSession(
-            configuration: sessionConfiguration,
-            delegate: delegate,
-            delegateQueue: nil
-        )
-        self.uploadSession = session
-
-        defer {
-            session.finishTasksAndInvalidate()
-            self.uploadSession = nil
-            self.progressHandler = nil
-        }
 
         let requestStart = DispatchTime.now()
 
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
-                let task = session.dataTask(with: request) {
+                let task = self.session.dataTask(with: request) {
                     data, response, error in
                     if let error = error {
                         continuation.resume(throwing: error)
@@ -469,6 +497,7 @@ public final class GitLFS: NSObject {
                         )
                     }
                 }
+                task.delegate = delegate
                 task.resume()
             }
 
@@ -550,12 +579,9 @@ public final class GitLFS: NSObject {
         let encoder = JSONEncoder()
         request.httpBody = try encoder.encode(batchRequest)
 
-        let delegate = MTLSURLSessionAuthDelegate(clientIdentity: clientIdentity, pinnedCA: pinnedCA)
-        let session = URLSession(configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
-                let task = session.dataTask(with: request) {
+                let task = self.session.dataTask(with: request) {
                     data, response, error in
                     if let error = error {
                         continuation.resume(throwing: error)
@@ -634,11 +660,8 @@ public final class GitLFS: NSObject {
         request.httpBody = try encoder.encode(batchRequest)
         
         print("LFS: Sending batch request...")
-        let delegate = MTLSURLSessionAuthDelegate(clientIdentity: clientIdentity, pinnedCA: pinnedCA)
-        let session = URLSession(configuration: sessionConfiguration, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
         let (data, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
-            let task = session.dataTask(with: request) { data, response, error in
+            let task = self.session.dataTask(with: request) { data, response, error in
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
