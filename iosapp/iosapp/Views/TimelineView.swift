@@ -1400,9 +1400,10 @@ final class FullResolutionImageLoader: ObservableObject {
     }
 
     // Preserves play intent across direct-play byte-range replacement so
-    // buffering updates do not leave fullscreen video unexpectedly paused,
-    // while capturing the player weakly so dismiss teardown can outrun a late
-    // resume callback.
+    // buffering updates do not leave fullscreen video unexpectedly paused.
+    // Weak self plus an owner check are required because a dismissed
+    // AVPlayer can still be retained by the dismiss animation; capturing
+    // the player weakly is not enough to outrun a late resume callback.
     private func wireDirectPlaySeekResume(
         on loader: DirectPlayResourceLoader,
         player: AVPlayer,
@@ -1412,8 +1413,8 @@ final class FullResolutionImageLoader: ObservableObject {
         if armResume {
             _ = seekResumeGate.handleReplacementStarted(isPlayingOrWaiting: true)
         }
-        loader.onSeekRangeReplacementStarted = { [weak player] in
-            guard let player else { return }
+        loader.onSeekRangeReplacementStarted = { [weak self, weak player] in
+            guard let self, let player, self.player === player else { return }
             let shouldPause = seekResumeGate.handleReplacementStarted(
                 isPlayingOrWaiting: player.rate > 0
                     || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
@@ -1422,12 +1423,10 @@ final class FullResolutionImageLoader: ObservableObject {
                 player.pause()
             }
         }
-        loader.onSeekRangeReplacementReady = { [weak player] in
-            if seekResumeGate.handleReplacementReady() {
-                Task { @MainActor in
-                    player?.play()
-                }
-            }
+        loader.onSeekRangeReplacementReady = { [weak self, weak player] in
+            guard let self, let player, self.player === player else { return }
+            guard seekResumeGate.handleReplacementReady() else { return }
+            player.play()
         }
     }
 
