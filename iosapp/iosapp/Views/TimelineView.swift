@@ -64,6 +64,9 @@ struct TimelineView: View {
                     timelineList
                 }
             }
+            .fullScreenCover(item: $selectedItem) { selected in
+                FullScreenMediaView(initialItemId: selected.id, timelineManager: timelineManager)
+            }
             .navigationTitle("Timeline")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -181,9 +184,6 @@ struct TimelineView: View {
             if showMonthSidebar && !timelineManager.monthIndex.isEmpty {
                 TimelineMonthSidebar(timelineManager: timelineManager)
             }
-        }
-        .fullScreenCover(item: $selectedItem) { selected in
-            FullScreenMediaView(initialItemId: selected.id, timelineManager: timelineManager)
         }
     }
 }
@@ -824,10 +824,12 @@ enum TimelineThumbnailLoadPolicy {
 
 // Thin SwiftUI wrapper that presents the UIKit full-screen media page
 // controller so the rest of the SwiftUI view hierarchy can still use
-// fullScreenCover and @Environment(\.dismiss).
+// fullScreenCover and @Environment(\.dismiss). Holds the manager by
+// value so commit-driven TimelineManager publishes cannot rebuild the
+// live zoom session.
 struct FullScreenMediaView: View {
     let initialItemId: String
-    @ObservedObject var timelineManager: TimelineManager
+    let timelineManager: TimelineManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {

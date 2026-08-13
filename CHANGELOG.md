@@ -22,6 +22,7 @@
 - iosapp: stop video playback when a video opened by swiping is dismissed
 - iosapp: fix random crash while browsing timeline media
 - iosapp: timeline and photo sync now recover after resetting local state instead of staying empty until the app is relaunched
+- iosapp: zoomed fullscreen photos no longer reset or shrink when new photos sync in
 - replycant-importer: failed or interrupted commits no longer leave staged-but-deleted files that permanently block push/rebase
 - replycant-importer: ctrl+c now stops in-flight work immediately, flushes pending commits, and a second ctrl+c cancels the flush
 - webapp: fix timeline tiles staying blank after switching commits until you scroll

@@ -157,6 +157,8 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
 
     // MARK: - Content sizing
 
+    // Relays bounds changes into the zoom viewport without resetting an
+    // in-progress pinch when SwiftUI issues a no-op layout pass.
     private func layoutForCurrentBounds() {
         let viewSize = view.bounds.size
         guard viewSize.width > 0, viewSize.height > 0 else { return }
@@ -188,25 +190,71 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
         }
     }
 
-    private func centerImageInZoomView() {
-        guard let image = imageView.image else {
-            imageView.frame = zoomScrollView.bounds
+    // Applies a new zoom-scroll-view frame while keeping the user's relative
+    // scale and focal point, so rotation and details-panel animation do not
+    // snap the photo back to 1x.
+    private func setZoomViewport(_ frame: CGRect) {
+        guard frame.width > 0, frame.height > 0 else { return }
+        if zoomScrollView.frame == frame {
             return
         }
-        let viewSize = zoomScrollView.bounds.size
-        let imageAspect = image.size.width / image.size.height
-        let viewAspect = viewSize.width / viewSize.height
 
-        var imageFrame: CGRect
-        if imageAspect > viewAspect {
-            let height = viewSize.width / imageAspect
-            imageFrame = CGRect(x: 0, y: (viewSize.height - height) / 2, width: viewSize.width, height: height)
-        } else {
-            let width = viewSize.height * imageAspect
-            imageFrame = CGRect(x: (viewSize.width - width) / 2, y: 0, width: width, height: viewSize.height)
+        let minimumScale = zoomScrollView.minimumZoomScale
+        let relativeScale = minimumScale > 0
+            ? zoomScrollView.zoomScale / minimumScale
+            : 1
+        let focal = ZoomableImageLayout.focalPoint(
+            contentOffset: zoomScrollView.contentOffset,
+            viewportSize: zoomScrollView.bounds.size,
+            contentSize: zoomScrollView.contentSize
+        )
+
+        zoomScrollView.frame = frame
+        applyFittedImageLayout()
+
+        let restoredScale = relativeScale * zoomScrollView.minimumZoomScale
+        zoomScrollView.zoomScale = restoredScale
+        zoomScrollView.contentOffset = ZoomableImageLayout.contentOffset(
+            focalPoint: focal,
+            viewportSize: zoomScrollView.bounds.size,
+            contentSize: zoomScrollView.contentSize
+        )
+        recenterZoomedImageIfNeeded()
+        updateZoomAccessibilityValue()
+    }
+
+    // Fits the image at zoomScale 1 so layout state cannot disagree with
+    // the scroll view's recorded scale after a bounds reset.
+    private func applyFittedImageLayout() {
+        zoomScrollView.zoomScale = 1.0
+        guard let image = imageView.image else {
+            imageView.frame = zoomScrollView.bounds
+            zoomScrollView.contentSize = zoomScrollView.bounds.size
+            updateZoomAccessibilityValue()
+            return
         }
+        let imageFrame = ZoomableImageLayout.fittedFrame(
+            imageSize: image.size,
+            viewportSize: zoomScrollView.bounds.size
+        )
         imageView.frame = imageFrame
         zoomScrollView.contentSize = imageFrame.size
+        updateZoomAccessibilityValue()
+    }
+
+    // Keeps VoiceOver and UI tests in sync with the actual zoomScale after
+    // layout restores a pinch, not only during gesture callbacks.
+    private func updateZoomAccessibilityValue() {
+        let isZoomed = (zoomScrollView?.zoomScale ?? 1.0) > 1.0
+        imageView.accessibilityValue = isZoomed ? "zoomed" : "normal"
+    }
+
+    // Reuses the pinch-zoom centering rule so restored scale after a
+    // viewport change still sits in the middle when content is smaller
+    // than the scroll view.
+    private func recenterZoomedImageIfNeeded() {
+        guard zoomScrollView != nil else { return }
+        scrollViewDidZoom(zoomScrollView)
     }
 
     // MARK: - Image loading
@@ -230,16 +278,20 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
         loader.loadOriginal(for: item, isVideo: false)
     }
 
+    // Shows the decoded original at 1x fit so the first paint matches the
+    // viewport before the user pinches.
     private func applyLoadedImage(_ image: UIImage) {
         imageView.image = image
         spinner.stopAnimating()
-        centerImageInZoomView()
+        applyFittedImageLayout()
     }
 
     private func panelHeight(for viewSize: CGSize) -> CGFloat {
         viewSize.height * 0.5
     }
 
+    // Drives image height and panel offset together so opening metadata
+    // keeps the current zoom instead of refitting the photo at 1x.
     private func applyDetailsProgress(_ progress: CGFloat) {
         let clamped = min(max(progress, 0), 1)
         let viewSize = view.bounds.size
@@ -248,9 +300,7 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
         let panelHeight = panelHeight(for: viewSize)
         let hiddenZoomFrame = CGRect(x: 0, y: 0, width: viewSize.width, height: viewSize.height)
         let shownZoomFrame = CGRect(x: 0, y: 0, width: viewSize.width, height: viewSize.height - panelHeight)
-        zoomScrollView.frame = hiddenZoomFrame.interpolated(to: shownZoomFrame, progress: clamped)
-        imageView.frame = zoomScrollView.bounds
-        centerImageInZoomView()
+        setZoomViewport(hiddenZoomFrame.interpolated(to: shownZoomFrame, progress: clamped))
 
         let hiddenPanelFrame = CGRect(x: 0, y: viewSize.height, width: viewSize.width, height: panelHeight)
         let shownPanelFrame = CGRect(x: 0, y: viewSize.height - panelHeight, width: viewSize.width, height: panelHeight)
@@ -379,6 +429,8 @@ extension ImagePreviewViewController: UIScrollViewDelegate {
         isInteractivelyClosing = false
     }
 
+    // Recenters a zoomed image that no longer fills the viewport so pinch-out
+    // and restored scale after rotation do not pin the photo to a corner.
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         guard scrollView === zoomScrollView else { return }
         // Center image if smaller than scroll view bounds
@@ -395,15 +447,14 @@ extension ImagePreviewViewController: UIScrollViewDelegate {
             frameToCenter.origin.y = 0
         }
         imageView.frame = frameToCenter
-
-        let isZoomed = scrollView.zoomScale > 1.0
-        imageView.accessibilityValue = isZoomed ? "zoomed" : "normal"
+        updateZoomAccessibilityValue()
     }
 
+    // Snaps accessibility to the final scale so UI tests observe "zoomed"
+    // only while the scroll view is actually above 1x.
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
         guard scrollView === zoomScrollView else { return }
-        let isZoomed = scale > 1.0
-        imageView.accessibilityValue = isZoomed ? "zoomed" : "normal"
+        updateZoomAccessibilityValue()
     }
 }
 
@@ -444,3 +495,40 @@ private extension CGRect {
         )
     }
 }
+
+#if DEBUG
+// Exposes zoom layout internals so unit tests can assert scale/frame
+// consistency without putting the controller in a window.
+extension ImagePreviewViewController {
+    // Installs a decoded image through the production load path so tests
+    // exercise the same 1x fit as a successful LFS fetch.
+    func testingApplyImage(_ image: UIImage) {
+        applyLoadedImage(image)
+    }
+
+    var testingZoomScale: CGFloat { zoomScrollView.zoomScale }
+    var testingImageFrame: CGRect { imageView.frame }
+    var testingContentSize: CGSize { zoomScrollView.contentSize }
+    var testingContentOffset: CGPoint { zoomScrollView.contentOffset }
+
+    // Applies a pinch scale without animation so tests can start from a
+    // known zoomed state before a layout pass.
+    func testingSetZoomScale(_ scale: CGFloat) {
+        zoomScrollView.setZoomScale(scale, animated: false)
+        recenterZoomedImageIfNeeded()
+        updateZoomAccessibilityValue()
+    }
+
+    // Pans the zoomed content so rotation tests can check a non-centered
+    // focal point rather than the default midpoint.
+    func testingSetContentOffset(_ offset: CGPoint) {
+        zoomScrollView.contentOffset = offset
+    }
+
+    // Drives the zoom-preserving viewport funnel directly so tests can
+    // change bounds without waiting for a full view layout cycle.
+    func testingSetViewportFrame(_ frame: CGRect) {
+        setZoomViewport(frame)
+    }
+}
+#endif
