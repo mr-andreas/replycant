@@ -63,8 +63,10 @@ struct FullscreenVideoDismissPlaybackTests {
         )
     }
 
-    // Ensures stopPlayback detaches the player item so a late play() cannot
-    // keep producing audio after the fullscreen UI is gone.
+    // Ensures stopPlayback detaches the player item so a later play()
+    // cannot produce audio. AVPlayer.play() still sets rate to 1.0 with
+    // no item; the detached currentItem is the invariant that proves
+    // nothing can decode.
     @Test func stopPlaybackDetachesPlayerItem() {
         let controller = VideoPreviewViewController(
             item: makeItem(id: "video-1", mediaType: "video"),
@@ -80,12 +82,11 @@ struct FullscreenVideoDismissPlaybackTests {
         #expect(player.rate == 0)
         #expect(player.currentItem == nil)
         player.play()
-        #expect(player.rate == 0)
         #expect(player.currentItem == nil)
     }
 
-    // Reproduces the direct-play seek-resume race: an in-flight ready callback
-    // must not restart audio after teardown has already run.
+    // Reproduces the direct-play seek-resume race: in-flight started and
+    // ready callbacks captured before teardown must not restart audio.
     @Test func lateSeekResumeCannotRestartAfterTeardown() async throws {
         let loader = FullResolutionImageLoader(timelineManager: makeIsolatedManager())
         let player = makePlayer()
@@ -95,6 +96,7 @@ struct FullscreenVideoDismissPlaybackTests {
             loader: directPlayLoader,
             armResume: true
         )
+        let pendingStarted = try #require(directPlayLoader.onSeekRangeReplacementStarted)
         let pendingReady = try #require(directPlayLoader.onSeekRangeReplacementReady)
 
         loader.teardownPlayback()
@@ -103,6 +105,14 @@ struct FullscreenVideoDismissPlaybackTests {
         #expect(directPlayLoader.onSeekRangeReplacementStarted == nil)
         #expect(player.currentItem == nil)
 
+        pendingReady()
+        await Task.yield()
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(player.rate == 0)
+        #expect(player.currentItem == nil)
+
+        pendingStarted()
         pendingReady()
         await Task.yield()
         try await Task.sleep(nanoseconds: 20_000_000)
