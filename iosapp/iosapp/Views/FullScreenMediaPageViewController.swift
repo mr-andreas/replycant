@@ -18,6 +18,9 @@ final class FullScreenMediaPageViewController: UIViewController {
     private var pageScrollView: UIScrollView?
 
     private let imagePreloader = FullScreenImagePreloader()
+    // Weakly tracks every video page this session created so dismiss can
+    // stop playback even if that page is not the visible child.
+    private let vendedVideoControllers = NSHashTable<VideoPreviewViewController>.weakObjects()
 
     // Dismiss gesture state
     private var dismissPanRecognizer: UIPanGestureRecognizer!
@@ -73,8 +76,19 @@ final class FullScreenMediaPageViewController: UIViewController {
 
     override var prefersStatusBarHidden: Bool { true }
 
+    // Stops every video this pager has vended, including ones created during
+    // a page swipe that never became the visible child, so dismiss cannot
+    // leave audio running in the background.
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        stopAllVideoPlayback()
+    }
+
     // MARK: - Child factory
 
+    // Builds the image or video page for one timeline item and tracks video
+    // controllers so dismiss can stop playback even if that page was only
+    // created as a paging neighbor.
     private func makeChildController(for itemId: String) -> UIViewController? {
         guard let item = timelineManager.loadedItems.first(where: { $0.id == itemId }) else {
             return nil
@@ -82,6 +96,7 @@ final class FullScreenMediaPageViewController: UIViewController {
         let isVideo = item.original.spec.mediaType == "video"
         if isVideo {
             let controller = VideoPreviewViewController(item: item, timelineManager: timelineManager, onDismiss: onDismiss)
+            vendedVideoControllers.add(controller)
             wireDetailsStateCallback(for: controller)
             return controller
         } else {
@@ -133,8 +148,8 @@ final class FullScreenMediaPageViewController: UIViewController {
 
     // MARK: - Dismiss pan handling
 
-    // Applies dismissal thresholds and pauses active video before closing so
-    // swipe-down dismiss matches Done button and page-swipe cleanup behavior.
+    // Applies dismissal thresholds and stops every vended video before closing
+    // so swipe-down cannot leave audio running after the cover is gone.
     @objc private func handleDismissPan(_ recognizer: UIPanGestureRecognizer) {
         let translationY = max(recognizer.translation(in: view).y, 0)
         let velocityY = recognizer.velocity(in: view).y
@@ -152,9 +167,7 @@ final class FullScreenMediaPageViewController: UIViewController {
 
         case .ended, .cancelled, .failed:
             if InteractiveDismissDecision.shouldDismiss(translationY: translationY, velocityY: velocityY) {
-                if let videoVC = currentChild as? VideoPreviewViewController {
-                    videoVC.pausePlayback()
-                }
+                stopAllVideoPlayback()
                 onDismiss()
             } else {
                 UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0) {
@@ -183,6 +196,14 @@ final class FullScreenMediaPageViewController: UIViewController {
     private func updatePagingEnabledForCurrentChild() {
         let detailsVisible = currentChild?.isShowingDetails == true
         pageScrollView?.isScrollEnabled = !detailsVisible
+    }
+
+    // Tears down every tracked video so paging-created controllers are not
+    // left playing after the fullscreen cover dismisses.
+    private func stopAllVideoPlayback() {
+        for videoVC in vendedVideoControllers.allObjects {
+            videoVC.stopPlayback()
+        }
     }
 }
 
@@ -265,3 +286,12 @@ extension FullScreenMediaPageViewController: UIGestureRecognizerDelegate {
         return otherGestureRecognizer === outerPan && child.outerScrollView.contentOffset.y <= 0
     }
 }
+
+#if DEBUG
+// Exposes the hosted pager so unit tests can vend neighbor pages the same
+// way a user swipe would, without presenting the fullscreen cover.
+extension FullScreenMediaPageViewController {
+    // Exposes the pager so dismiss tests can vend neighbor video pages.
+    var testingPageViewController: UIPageViewController { pageController }
+}
+#endif

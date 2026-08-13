@@ -1077,6 +1077,9 @@ final class FullResolutionImageLoader: ObservableObject {
     // Retained for the lifetime of playback because AVAssetResourceLoader holds
     // its delegate weakly; letting it deallocate stalls the stream.
     private var hlsLoader: HLSResourceLoader?
+    // Stored so dismiss teardown can remove observers that would otherwise
+    // leak and keep a discarded player item alive.
+    private var playerItemObservers: [NSObjectProtocol] = []
     nonisolated static let playbackMIMETypeAssetOptionKey = "AVURLAssetOutOfBandMIMETypeKey"
 
     // Carries request-scoped playback values so backend decrypting services can stream plaintext without KEK access.
@@ -1337,7 +1340,7 @@ final class FullResolutionImageLoader: ObservableObject {
         
         if usesHLS {
             // Observe access log to track bitrate changes for adaptive streams.
-            NotificationCenter.default.addObserver(
+            playerItemObservers.append(NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemNewAccessLogEntry,
                 object: playerItem,
                 queue: .main
@@ -1345,7 +1348,7 @@ final class FullResolutionImageLoader: ObservableObject {
                 Task { @MainActor in
                     self.logAccessLog(playerItem: playerItem)
                 }
-            }
+            })
         }
         
         let avPlayer = AVPlayer(playerItem: playerItem)
@@ -1353,25 +1356,7 @@ final class FullResolutionImageLoader: ObservableObject {
         // byte ranges buffer; HLS keeps the faster startup behavior.
         avPlayer.automaticallyWaitsToMinimizeStalling = !usesHLS
         if !usesHLS, let directPlayLoader = self.directPlayLoader {
-            var seekResumeGate = DirectPlayResumeGate()
-
-            directPlayLoader.onSeekRangeReplacementStarted = { [weak avPlayer] in
-                guard let avPlayer else { return }
-                let shouldPause = seekResumeGate.handleReplacementStarted(
-                    isPlayingOrWaiting: avPlayer.rate > 0
-                        || avPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate
-                )
-                if shouldPause {
-                    avPlayer.pause()
-                }
-            }
-            directPlayLoader.onSeekRangeReplacementReady = {
-                if seekResumeGate.handleReplacementReady() {
-                    Task { @MainActor in
-                        avPlayer.play()
-                    }
-                }
-            }
+            wireDirectPlaySeekResume(on: directPlayLoader, player: avPlayer)
         }
         self.player = avPlayer
         logDebug("Successfully created \(modeDescription) player for video (LFS OID: \(objectIDForPlayback))", context: "FullScreen")
@@ -1380,7 +1365,7 @@ final class FullResolutionImageLoader: ObservableObject {
         qualityMonitoringTask = nil
 
         // Surfaces silent AVPlayerItem failures so direct-play issues are diagnosable from logs.
-        NotificationCenter.default.addObserver(
+        playerItemObservers.append(NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: playerItem,
             queue: .main
@@ -1389,8 +1374,8 @@ final class FullResolutionImageLoader: ObservableObject {
                 let err = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
                 logError("PlayerItem failed to play to end: \(err?.localizedDescription ?? "unknown")", context: "FullScreen")
             }
-        }
-        NotificationCenter.default.addObserver(
+        })
+        playerItemObservers.append(NotificationCenter.default.addObserver(
             forName: .AVPlayerItemNewErrorLogEntry,
             object: playerItem,
             queue: .main
@@ -1400,7 +1385,7 @@ final class FullResolutionImageLoader: ObservableObject {
                     logError("[ERROR LOG] status=\(last.errorStatusCode) domain=\(last.errorDomain) comment=\(last.errorComment ?? "none") uri=\(last.uri ?? "none")", context: "FullScreen")
                 }
             }
-        }
+        })
 
         if usesHLS {
             // Logs quality evolution for adaptive streams to validate bitrate switching behavior.
@@ -1412,6 +1397,60 @@ final class FullResolutionImageLoader: ObservableObject {
                 await self.startQualityMonitoring(playerItem: playerItem)
             }
         }
+    }
+
+    // Preserves play intent across direct-play byte-range replacement so
+    // buffering updates do not leave fullscreen video unexpectedly paused,
+    // while capturing the player weakly so dismiss teardown can outrun a late
+    // resume callback.
+    private func wireDirectPlaySeekResume(
+        on loader: DirectPlayResourceLoader,
+        player: AVPlayer,
+        armResume: Bool = false
+    ) {
+        var seekResumeGate = DirectPlayResumeGate()
+        if armResume {
+            _ = seekResumeGate.handleReplacementStarted(isPlayingOrWaiting: true)
+        }
+        loader.onSeekRangeReplacementStarted = { [weak player] in
+            guard let player else { return }
+            let shouldPause = seekResumeGate.handleReplacementStarted(
+                isPlayingOrWaiting: player.rate > 0
+                    || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            )
+            if shouldPause {
+                player.pause()
+            }
+        }
+        loader.onSeekRangeReplacementReady = { [weak player] in
+            if seekResumeGate.handleReplacementReady() {
+                Task { @MainActor in
+                    player?.play()
+                }
+            }
+        }
+    }
+
+    // Stops playback authoritatively on dismiss so a late seek-resume callback
+    // cannot restart audio after the fullscreen UI is gone.
+    func teardownPlayback() {
+        directPlayLoader?.onSeekRangeReplacementStarted = nil
+        directPlayLoader?.onSeekRangeReplacementReady = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        for observer in playerItemObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        playerItemObservers.removeAll()
+        directPlayLoader?.invalidate()
+        hlsLoader?.invalidate()
+        directPlayLoader = nil
+        hlsLoader = nil
+        loadTask?.cancel()
+        qualityMonitoringTask?.cancel()
+        loadTask = nil
+        qualityMonitoringTask = nil
+        player = nil
     }
 
     // Resolves a local video URL when the performance toggle is enabled so fullscreen playback can avoid server startup latency.
@@ -1642,6 +1681,23 @@ final class FullResolutionImageLoader: ObservableObject {
         qualityMonitoringTask?.cancel()
     }
 }
+
+#if DEBUG
+// Lets dismiss tests install the production seek-resume wiring without a live
+// stream so late play() callbacks can be asserted against teardown.
+extension FullResolutionImageLoader {
+    // Lets tests reproduce the dismiss-vs-seek-resume race without a live stream.
+    func testingInstallDirectPlayResumeGate(
+        player: AVPlayer,
+        loader: DirectPlayResourceLoader,
+        armResume: Bool
+    ) {
+        self.player = player
+        self.directPlayLoader = loader
+        wireDirectPlaySeekResume(on: loader, player: player, armResume: armResume)
+    }
+}
+#endif
 
 // Resolves the thumbnail manifest for one original so callers can share the
 // same mapping logic across timeline and fullscreen preview surfaces.

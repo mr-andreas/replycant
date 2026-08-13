@@ -87,6 +87,24 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         super.init()
     }
 
+    // Stops in-flight range requests and breaks the URLSession-to-delegate
+    // retain so a dismissed player cannot keep streaming after teardown.
+    func invalidate() {
+        onSeekRangeReplacementStarted = nil
+        onSeekRangeReplacementReady = nil
+        lock.lock()
+        let pending = Array(tasks.values)
+        tasks.removeAll()
+        tasksByTaskID.removeAll()
+        sessions.removeAll()
+        seekReplacementTaskIDs.removeAll()
+        lock.unlock()
+        for task in pending {
+            task.cancel()
+        }
+        urlSession.invalidateAndCancel()
+    }
+
     static func customSchemeURL(from httpURL: URL) -> URL? {
         guard var components = URLComponents(url: httpURL, resolvingAgainstBaseURL: false) else {
             return nil

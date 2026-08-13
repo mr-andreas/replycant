@@ -85,6 +85,14 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         fullResLoader?.player?.pause()
     }
 
+    // Tears the player down so dismiss cannot leave audio running after a
+    // late direct-play seek-resume callback. Page swipes keep pausePlayback()
+    // so swipe-back can still restart the same player.
+    func stopPlayback() {
+        pausePlayback()
+        fullResLoader?.teardownPlayback()
+    }
+
     // Replays this video from the start when paging returns to a cached video
     // controller so navigation feels consistent with first-open autoplay.
     func restartPlayback() {
@@ -326,10 +334,16 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         host.didMove(toParent: self)
     }
 
+    // Tears playback down if the pager never got a chance to stop this
+    // controller, so a leaked player cannot keep playing after dismiss.
     deinit {
         posterLoadTask?.cancel()
         playerReadyObservation = nil
         playerRateObservation = nil
+        let loader = fullResLoader
+        Task { @MainActor in
+            loader?.teardownPlayback()
+        }
     }
 }
 
@@ -366,6 +380,7 @@ extension VideoPreviewViewController {
     // Injects a known player so lifecycle tests can verify pause semantics.
     @MainActor
     func testingInjectPlayerForLifecycle(_ player: AVPlayer) {
+        fullResLoader?.teardownPlayback()
         let loader = FullResolutionImageLoader(timelineManager: timelineManager)
         loader.player = player
         fullResLoader = loader

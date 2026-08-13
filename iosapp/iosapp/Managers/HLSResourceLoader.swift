@@ -49,6 +49,19 @@ final class HLSResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         super.init()
     }
 
+    // Stops in-flight playlist and segment fetches and breaks the
+    // URLSession-to-delegate retain so dismissed HLS playback cannot continue.
+    func invalidate() {
+        lock.lock()
+        let pending = Array(tasks.values)
+        tasks.removeAll()
+        lock.unlock()
+        for task in pending {
+            task.cancel()
+        }
+        urlSession.invalidateAndCancel()
+    }
+
     /// Rewrites an https playlist URL into the custom scheme so AVFoundation
     /// routes it, and everything it resolves relative to it, through this loader.
     static func customSchemeURL(from httpURL: URL) -> URL? {
