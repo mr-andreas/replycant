@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
+	"github.com/mr-andreas/replycant/internal/gittest"
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -706,6 +707,7 @@ func createTestBareRepo(t *testing.T, recipientAgePub []byte, plaintext []byte) 
 	testRunGit(t, workDir, "add", ".")
 	testRunGit(t, workDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "fixtures")
 	testRunGit(t, "", "clone", "--bare", workDir, bareDir)
+	gittest.DisableAutoMaintenance(t, bareDir)
 	testRunGit(t, bareDir, "config", "http.receivepack", "true")
 	testRunGit(t, bareDir, "update-server-info")
 	return projectRoot, repoName
@@ -747,6 +749,7 @@ func createTestBareRepoWithLFS(t *testing.T, recipientAgePub []byte, manifestPla
 	testRunGit(t, workDir, "add", ".")
 	testRunGit(t, workDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "fixtures")
 	testRunGit(t, "", "clone", "--bare", workDir, bareDir)
+	gittest.DisableAutoMaintenance(t, bareDir)
 	testRunGit(t, bareDir, "config", "http.receivepack", "true")
 	testRunGit(t, bareDir, "update-server-info")
 	return projectRoot, repoName, objectOID, encryptedBinary
@@ -786,6 +789,7 @@ func createTestBareRepoWithLFSMissingEpoch(t *testing.T, manifestPlaintext []byt
 	testRunGit(t, workDir, "add", ".")
 	testRunGit(t, workDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "fixtures")
 	testRunGit(t, "", "clone", "--bare", workDir, bareDir)
+	gittest.DisableAutoMaintenance(t, bareDir)
 	testRunGit(t, bareDir, "config", "http.receivepack", "true")
 	testRunGit(t, bareDir, "update-server-info")
 	return projectRoot, repoName, objectOID, encryptedBinary

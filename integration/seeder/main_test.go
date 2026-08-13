@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mr-andreas/replycant/internal/gittest"
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +38,7 @@ func TestSeedRepositoryAppendMediaOnly(t *testing.T) {
 	bareRepo := filepath.Join(tempDir, "repo.git")
 	outputDir := filepath.Join(tempDir, "identity")
 	runGitForTest(t, "", "init", "--initial-branch=main", "--bare", bareRepo)
+	gittest.DisableAutoMaintenance(t, bareRepo)
 
 	err := seedRepository(seederConfig{
 		bareRepo:    bareRepo,
@@ -86,6 +88,7 @@ func TestSeedRepositoryEncryptedManifest(t *testing.T) {
 	bareRepo := filepath.Join(tempDir, "repo.git")
 	outputDir := filepath.Join(tempDir, "identity")
 	runGitForTest(t, "", "init", "--initial-branch=main", "--bare", bareRepo)
+	gittest.DisableAutoMaintenance(t, bareRepo)
 
 	err := seedRepository(seederConfig{
 		bareRepo:    bareRepo,

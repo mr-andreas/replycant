@@ -24,6 +24,7 @@ import (
 
 	"github.com/bep/imagemeta"
 	"github.com/google/uuid"
+	"github.com/mr-andreas/replycant/internal/gittest"
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	"github.com/mr-andreas/replycant/pkg/lfsclient"
 	"gopkg.in/yaml.v3"
@@ -1948,6 +1949,7 @@ func initTempRepoWithRemote(t *testing.T) string {
 	repo := initTempRepo(t)
 	remote := t.TempDir()
 	mustRun(t, remote, "git", "init", "--bare")
+	gittest.DisableAutoMaintenance(t, remote)
 	mustRun(t, repo, "git", "remote", "set-url", "origin", remote)
 	mustRun(t, repo, "git", "push", "-u", "origin", "main")
 	return repo
