@@ -32,10 +32,97 @@ jobs:
           : "${version:?Could not resolve release version}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  release-server:
-    name: Build and publish server images
-    runs-on: ubuntu-latest
+  # Native amd64 and arm64 builds, pushed by digest so the two
+  # runners cannot overwrite each other's tags. A later job stitches
+  # those digests into a multi-arch manifest users can pull on either
+  # architecture.
+  build-server-images:
+    name: Build server images (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image prefix
+        run: |
+          set -euo pipefail
+          owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          repo_lc="${repo_name,,}"
+          echo "IMAGE_PREFIX=ghcr.io/${owner_lc}/${repo_lc}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push gitd by digest
+        id: gitd
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: gitd
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}/gitd,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build and push decryptd by digest
+        id: decryptd
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: decryptd
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}/decryptd,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build and push transcoded by digest
+        id: transcoded
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: transcoded
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}/transcoded,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export image digests
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          printf '%s' "${{ steps.gitd.outputs.digest }}" > digests/gitd
+          printf '%s' "${{ steps.decryptd.outputs.digest }}" > digests/decryptd
+          printf '%s' "${{ steps.transcoded.outputs.digest }}" > digests/transcoded
+
+      - name: Upload image digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-digests-${{ matrix.arch }}
+          path: digests/
+
+  publish-server-images:
+    name: Publish multi-arch server images
+    runs-on: ubuntu-latest
+    needs: [version, build-server-images]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,6 +145,9 @@ jobs:
             echo "REPLYCANT_TRANSCODED_IMAGE=${image_prefix}/transcoded:${INPUT_VERSION}"
           } >> "$GITHUB_ENV"
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -65,22 +155,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build release images
-        run: docker compose build gitd decryptd transcoded
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: server-digests-*
+          path: digests
 
-      - name: Push versioned images
-        run: docker compose push gitd decryptd transcoded
-
-      - name: Tag and push latest images
+      - name: Create multi-arch manifests
         run: |
           set -euo pipefail
-          docker tag "$REPLYCANT_GITD_IMAGE" "$IMAGE_PREFIX/gitd:latest"
-          docker tag "$REPLYCANT_DECRYPTD_IMAGE" "$IMAGE_PREFIX/decryptd:latest"
-          docker tag "$REPLYCANT_TRANSCODED_IMAGE" "$IMAGE_PREFIX/transcoded:latest"
-
-          docker push "$IMAGE_PREFIX/gitd:latest"
-          docker push "$IMAGE_PREFIX/decryptd:latest"
-          docker push "$IMAGE_PREFIX/transcoded:latest"
+          for image in gitd decryptd transcoded; do
+            refs=()
+            for digest_file in digests/server-digests-*/"$image"; do
+              [ -f "$digest_file" ]
+              refs+=("$IMAGE_PREFIX/$image@$(cat "$digest_file")")
+            done
+            if [ "${#refs[@]}" -ne 2 ]; then
+              echo "expected 2 digests for $image, got ${#refs[@]}" >&2
+              exit 1
+            fi
+            docker buildx imagetools create \
+              -t "$IMAGE_PREFIX/$image:$VERSION" \
+              -t "$IMAGE_PREFIX/$image:latest" \
+              "${refs[@]}"
+          done
 
       - name: Install yq
         run: |
@@ -269,7 +367,7 @@ jobs:
   publish:
     name: Publish unified release
     runs-on: ubuntu-latest
-    needs: [version, release-server, build-cli, build-desktop]
+    needs: [version, publish-server-images, build-cli, build-desktop]
     steps:
       - name: Download server release asset
         uses: actions/download-artifact@v4
