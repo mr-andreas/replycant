@@ -1,4 +1,5 @@
 import Testing
+import UIKit
 @testable import iosapp
 
 // Verifies recovery wizard routing stays deterministic and easy to follow as screens evolve.
@@ -32,6 +33,12 @@ struct RecoveryWizardTests {
         #expect(RecoveryView.continueCtaLabel == "Continue")
         #expect(RecoveryView.revokeDoneMessage == "Used key revoked. Create a new recovery key in Settings.")
         #expect(RecoveryView.cancelCtaLabel == "Cancel")
+    }
+
+    // Ensures step 1 starts with the current device name so users can accept it without typing.
+    @Test func recoveryKeyDefaultLabelUsesDeviceName() {
+        #expect(RecoveryKeyView.defaultLabel() == UIDevice.current.name)
+        #expect(RecoveryKeyView.canAdvanceFromName(label: RecoveryKeyView.defaultLabel()))
     }
 
     // Ensures create wizard only advances when label is non-empty and password fields match.

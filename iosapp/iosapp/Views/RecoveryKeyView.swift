@@ -31,7 +31,7 @@ struct RecoveryKeyView: View {
     @State private var currentStep: RecoveryKeyStep = .status
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var label = ""
+    @State private var label = Self.defaultLabel()
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var createdKey: RecoveryKeyManager.CreatedRecoveryKey?
@@ -130,7 +130,7 @@ struct RecoveryKeyView: View {
             Section {
                 Button("Create recovery key") {
                     errorMessage = nil
-                    label = ""
+                    label = Self.defaultLabel()
                     password = ""
                     confirmPassword = ""
                     createdKey = nil
@@ -187,18 +187,11 @@ struct RecoveryKeyView: View {
 
             Spacer()
 
-            VStack(spacing: 12) {
-                Button("Next") {
-                    currentStep = .password
-                }
-                .disabled(!Self.canAdvanceFromName(label: label))
-                .buttonStyle(PairingPrimaryButtonStyle(disabled: !Self.canAdvanceFromName(label: label)))
-
-                Button("Back") {
-                    currentStep = .status
-                }
-                .buttonStyle(PairingTertiaryButtonStyle())
+            Button("Next") {
+                currentStep = .password
             }
+            .disabled(!Self.canAdvanceFromName(label: label))
+            .buttonStyle(PairingPrimaryButtonStyle(disabled: !Self.canAdvanceFromName(label: label)))
             .padding(.horizontal)
             .padding(.bottom, 40)
         }
@@ -225,21 +218,20 @@ struct RecoveryKeyView: View {
 
             Spacer()
 
-            VStack(spacing: 12) {
-                Button("Create recovery key") {
-                    Task { await createRecoveryKey() }
-                }
-                .disabled(!Self.canAdvanceFromPassword(password: password, confirmPassword: confirmPassword) || isLoading)
-                .buttonStyle(PairingPrimaryButtonStyle(disabled: !Self.canAdvanceFromPassword(password: password, confirmPassword: confirmPassword) || isLoading))
-
-                Button("Back") {
-                    currentStep = .name
-                }
-                .buttonStyle(PairingTertiaryButtonStyle())
+            Button("Create recovery key") {
+                Task { await createRecoveryKey() }
             }
+            .disabled(!Self.canAdvanceFromPassword(password: password, confirmPassword: confirmPassword) || isLoading)
+            .buttonStyle(PairingPrimaryButtonStyle(disabled: !Self.canAdvanceFromPassword(password: password, confirmPassword: confirmPassword) || isLoading))
             .padding(.horizontal)
             .padding(.bottom, 40)
         }
+    }
+
+    // Prefills the name field with the current device so users can accept a
+    // recognizable default instead of inventing a label from scratch.
+    static func defaultLabel() -> String {
+        UIDevice.current.name
     }
 
     // Keeps wizard progression logic pure so tests can assert button enablement without rendering.
