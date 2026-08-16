@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Manages recovery-key lifecycle so users can create, export, and rotate disaster-recovery credentials.
 struct RecoveryKeyView: View {
@@ -75,6 +76,22 @@ struct RecoveryKeyView: View {
         }
         .navigationTitle(currentStep.title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(currentStep != .status)
+        .toolbar {
+            if let destination = Self.backDestination(from: currentStep) {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        currentStep = destination
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .accessibilityLabel("Back")
+                }
+            }
+        }
+        .background {
+            InteractivePopGestureController(isEnabled: currentStep == .status)
+        }
         .task {
             guard !isPreview else { return }
             await refresh()
@@ -228,6 +245,19 @@ struct RecoveryKeyView: View {
         }
     }
 
+    // Keeps wizard back navigation one step at a time so the chevron never
+    // skips from a create step straight out to Settings.
+    static func backDestination(from step: RecoveryKeyStep) -> RecoveryKeyStep? {
+        switch step {
+        case .status, .processing:
+            return nil
+        case .name, .error:
+            return .status
+        case .password:
+            return .name
+        }
+    }
+
     // Prefills the name field with the current device so users can accept a
     // recognizable default instead of inventing a label from scratch.
     static func defaultLabel() -> String {
@@ -333,6 +363,46 @@ struct RecoveryKeyView: View {
             return [textSource, RecoveryShareImage(image: cardImage)]
         }
         return [textSource]
+    }
+}
+
+// Blocks the system edge-swipe while the create wizard is mid-flow so a
+// swipe cannot skip steps and pop straight back to Settings.
+private struct InteractivePopGestureController: UIViewControllerRepresentable {
+    let isEnabled: Bool
+
+    // Hosts an invisible controller so the pop-gesture flag can reach UIKit.
+    func makeUIViewController(context: Context) -> Controller {
+        Controller()
+    }
+
+    // Pushes the latest enabled flag after SwiftUI updates the wizard step.
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.isPopEnabled = isEnabled
+    }
+
+    // Applies the pop-gesture flag on the hosting navigation controller.
+    final class Controller: UIViewController {
+        var isPopEnabled = true {
+            didSet { apply() }
+        }
+
+        // Applies the flag once this controller is actually in the nav stack.
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            apply()
+        }
+
+        // Restores swipe-back for Settings after this wizard leaves the stack.
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+        }
+
+        // Re-reads the current flag after the controller joins the nav stack.
+        private func apply() {
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = isPopEnabled
+        }
     }
 }
 

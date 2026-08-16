@@ -41,6 +41,15 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.canAdvanceFromName(label: RecoveryKeyView.defaultLabel()))
     }
 
+    // Ensures the nav chevron walks one wizard step instead of always leaving to Settings.
+    @Test func recoveryKeyWizardBackDestinations() {
+        #expect(RecoveryKeyView.backDestination(from: .status) == nil)
+        #expect(RecoveryKeyView.backDestination(from: .name) == .status)
+        #expect(RecoveryKeyView.backDestination(from: .password) == .name)
+        #expect(RecoveryKeyView.backDestination(from: .error) == .status)
+        #expect(RecoveryKeyView.backDestination(from: .processing) == nil)
+    }
+
     // Ensures create wizard only advances when label is non-empty and password fields match.
     @Test func recoveryKeyWizardAdvancePredicates() {
         #expect(!RecoveryKeyView.canAdvanceFromName(label: ""))
