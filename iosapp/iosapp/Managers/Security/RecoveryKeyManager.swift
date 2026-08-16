@@ -142,6 +142,7 @@ final class RecoveryKeyManager {
             message: "Add recovery key \(normalizedLabel) (\(uuid))",
             files: files
         )
+        Self.postRecoveryKeysDidChange()
         let branchName = repository.currentBranch() ?? "main"
         try repository.push(remoteName: "origin", branchName: branchName)
 
@@ -188,6 +189,7 @@ final class RecoveryKeyManager {
             files: [],
             deletions: [record.pubPath, record.agePath]
         )
+        Self.postRecoveryKeysDidChange()
         let branchName = repository.currentBranch() ?? "main"
         try repository.push(remoteName: "origin", branchName: branchName)
     }
@@ -393,4 +395,16 @@ final class RecoveryKeyManager {
             .replacingOccurrences(of: "'", with: "")
             .lowercased()
     }
+
+    // Broadcasts local key-set changes so Settings can drop or restore the
+    // recovery warning without waiting for the next app launch.
+    static func postRecoveryKeysDidChange(to center: NotificationCenter = .default) {
+        center.post(name: .recoveryKeysDidChange, object: nil)
+    }
+}
+
+// Broadcasts recovery-key create/delete so the Settings badge can refresh
+// immediately after the local repository commit succeeds.
+extension Notification.Name {
+    static let recoveryKeysDidChange = Notification.Name("recoveryKeysDidChange")
 }

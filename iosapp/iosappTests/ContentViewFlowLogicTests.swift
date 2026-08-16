@@ -65,4 +65,11 @@ struct ContentViewFlowLogicTests {
             ) == false
         )
     }
+
+    // Keeps the Settings badge visible only while no recovery key exists so
+    // users are nudged before a lockout, then cleared after a key is created.
+    @Test func shouldShowRecoveryWarningWhenNoRecoveryKeyExists() {
+        #expect(ContentView.shouldShowRecoveryWarning(hasRecoveryKey: false) == true)
+        #expect(ContentView.shouldShowRecoveryWarning(hasRecoveryKey: true) == false)
+    }
 }

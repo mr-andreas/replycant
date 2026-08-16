@@ -147,6 +147,14 @@ struct ContentView: View {
             updatePeriodicSyncLifecycle()
             await refreshRecoveryWarning()
         }
+        .task {
+            guard previewState == nil,
+                  !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment)
+            else { return }
+            for await _ in NotificationCenter.default.notifications(named: .recoveryKeysDidChange) {
+                await refreshRecoveryWarning()
+            }
+        }
         .onChange(of: recoveryRouter.pendingInput) { _, _ in
             consumeRecoveryInputIfAvailable()
         }
@@ -335,6 +343,12 @@ struct ContentView: View {
         return isConfigured && hasIdentity
     }
 
+    // Keeps the Settings badge tied to missing recovery keys so users are
+    // nudged before lockout and the mark clears as soon as a key exists.
+    static func shouldShowRecoveryWarning(hasRecoveryKey: Bool) -> Bool {
+        !hasRecoveryKey
+    }
+
     // Keeps periodic sync active only while the main authenticated tab flow is visible.
     private func updatePeriodicSyncLifecycle() {
         if shouldShowMainTabs && !isResyncing {
@@ -360,7 +374,7 @@ struct ContentView: View {
         do {
             let repository = try RepositoryManager.shared.getRepository()
             let hasRecovery = try RecoveryKeyManager().hasRecoveryKey(repository: repository)
-            showRecoveryWarning = !hasRecovery
+            showRecoveryWarning = Self.shouldShowRecoveryWarning(hasRecoveryKey: hasRecovery)
         } catch {
             showRecoveryWarning = false
         }

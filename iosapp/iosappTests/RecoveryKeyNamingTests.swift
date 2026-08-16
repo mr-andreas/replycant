@@ -30,4 +30,21 @@ struct RecoveryKeyNamingTests {
         #expect(records[0].label == validLabel)
         #expect(records[0].uuid == validUUID)
     }
+
+    // Confirms create/delete broadcasts so Settings can drop the recovery
+    // warning without waiting for the next app launch.
+    @Test func postRecoveryKeysDidChangePostsNotification() async {
+        let center = NotificationCenter()
+        let stream = center.notifications(named: .recoveryKeysDidChange)
+        let waiter = Task {
+            for await _ in stream {
+                return true
+            }
+            return false
+        }
+
+        RecoveryKeyManager.postRecoveryKeysDidChange(to: center)
+        let didReceive = await waiter.value
+        #expect(didReceive)
+    }
 }

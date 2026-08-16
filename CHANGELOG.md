@@ -20,6 +20,7 @@
 
 ### Fixes
 
+- iosapp: clear the settings recovery warning as soon as a recovery key is created
 - iosapp: stop video playback when a video opened by swiping is dismissed
 - iosapp: fix random crash while browsing timeline media
 - iosapp: timeline and photo sync now recover after resetting local state instead of staying empty until the app is relaunched
