@@ -6,6 +6,8 @@ struct RecoveryKeyView: View {
     static let savePromptMessage = "You must save this backup before continuing."
     static let savePromptConfirmLabel = "Yes, I saved it"
     static let savePromptShowAgainLabel = "Show share dialog again"
+    static let statusDescription =
+        "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
 
     enum RecoveryKeyStep {
         case status
@@ -105,6 +107,12 @@ struct RecoveryKeyView: View {
     // Keeps the status/dashboard screen compact while letting users branch into the wizard.
     private var statusView: some View {
         List {
+            Section {
+                Text(Self.statusDescription)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Status") {
                 if records.isEmpty {
                     Label("No recovery key found", systemImage: "exclamationmark.triangle.fill")

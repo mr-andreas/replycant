@@ -18,6 +18,14 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.savePromptShowAgainLabel == "Show share dialog again")
     }
 
+    // Ensures the status screen explains why creating a recovery key matters.
+    @Test func recoveryKeyStatusDescriptionCopy() {
+        #expect(
+            RecoveryKeyView.statusDescription
+                == "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
+        )
+    }
+
     // Ensures revoke guidance copy remains explicit after successful recovery.
     @Test func recoveryWizardRevokeCopy() {
         #expect(RecoveryView.revokeCtaLabel == "Revoke used key")
