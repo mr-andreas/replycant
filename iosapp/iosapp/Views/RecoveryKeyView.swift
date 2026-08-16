@@ -3,10 +3,6 @@ import UIKit
 
 // Manages recovery-key lifecycle so users can create, export, and rotate disaster-recovery credentials.
 struct RecoveryKeyView: View {
-    static let savePromptTitle = "Did you save your recovery key?"
-    static let savePromptMessage = "You must save this backup before continuing."
-    static let savePromptConfirmLabel = "Yes, I saved it"
-    static let savePromptShowAgainLabel = "Show share dialog again"
     static let statusDescription =
         "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
     static let nameStepHeading = "Name this recovery key"
@@ -16,12 +12,18 @@ struct RecoveryKeyView: View {
     static let passwordStepSubtitle =
         "This password encrypts the backup and cannot be reset. You will need it to recover access."
     static let passwordMismatchMessage = "Passwords do not match."
+    static let createdStepHeading = "Recovery key created"
+    static let createdStepBody =
+        "Save this backup outside this device. The password is not included."
+    static let createdStepShareLabel = "Share recovery key"
+    static let createdStepDoneLabel = "Done"
 
     enum RecoveryKeyStep {
         case status
         case name
         case password
         case processing
+        case created
         case error
 
         var title: String {
@@ -30,6 +32,7 @@ struct RecoveryKeyView: View {
             case .name: return "Recovery Key"
             case .password: return "Recovery Key"
             case .processing: return "Creating Key"
+            case .created: return "Recovery Key Created"
             case .error: return "Error"
             }
         }
@@ -44,7 +47,7 @@ struct RecoveryKeyView: View {
     @State private var confirmPassword = ""
     @State private var createdKey: RecoveryKeyManager.CreatedRecoveryKey?
     @State private var isShowingShareSheet = false
-    @State private var isShowingSavePrompt = false
+    @State private var hasSharedCreatedKey = false
 
     private let manager = RecoveryKeyManager()
     // Keeps Canvas from touching libgit2, which is not initialized in previews.
@@ -72,6 +75,8 @@ struct RecoveryKeyView: View {
                     isProcessing: true,
                     message: "Creating recovery key..."
                 )
+            case .created:
+                createdStepView
             case .error:
                 PairingErrorView(
                     title: "Recovery Key Error",
@@ -108,27 +113,11 @@ struct RecoveryKeyView: View {
             await refresh()
         }
         .sheet(isPresented: $isShowingShareSheet, onDismiss: {
-            if createdKey != nil {
-                isShowingSavePrompt = true
-            }
+            hasSharedCreatedKey = true
         }) {
             if let createdKey {
                 ActivityShareSheet(items: shareItems(for: createdKey))
             }
-        }
-        .alert(Self.savePromptTitle, isPresented: $isShowingSavePrompt) {
-            Button(Self.savePromptShowAgainLabel) {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    isShowingShareSheet = true
-                }
-            }
-            Button(Self.savePromptConfirmLabel) {
-                createdKey = nil
-                isShowingSavePrompt = false
-            }
-        } message: {
-            Text(Self.savePromptMessage)
         }
     }
 
@@ -158,7 +147,7 @@ struct RecoveryKeyView: View {
                     password = ""
                     confirmPassword = ""
                     createdKey = nil
-                    isShowingSavePrompt = false
+                    hasSharedCreatedKey = false
                     currentStep = .name
                 }
                 .buttonStyle(PairingPrimaryButtonStyle())
@@ -271,11 +260,54 @@ struct RecoveryKeyView: View {
         }
     }
 
+    // Holds the user on a dedicated save step so the key cannot be left
+    // behind on this device without first opening the share sheet.
+    private var createdStepView: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Text(Self.createdStepHeading)
+                .font(.title2)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+
+            Text(Self.createdStepBody)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 32)
+
+            Spacer()
+
+            VStack(spacing: 12) {
+                Button(Self.createdStepShareLabel) {
+                    isShowingShareSheet = true
+                }
+                .buttonStyle(PairingPrimaryButtonStyle())
+
+                Button(Self.createdStepDoneLabel) {
+                    createdKey = nil
+                    hasSharedCreatedKey = false
+                    currentStep = .status
+                }
+                .disabled(!Self.canDismissCreatedKey(hasShared: hasSharedCreatedKey))
+                .buttonStyle(
+                    PairingPrimaryButtonStyle(
+                        disabled: !Self.canDismissCreatedKey(hasShared: hasSharedCreatedKey)
+                    )
+                )
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 40)
+        }
+    }
+
     // Keeps wizard back navigation one step at a time so the chevron never
     // skips from a create step straight out to Settings.
     static func backDestination(from step: RecoveryKeyStep) -> RecoveryKeyStep? {
         switch step {
-        case .status, .processing:
+        case .status, .processing, .created:
             return nil
         case .name, .error:
             return .status
@@ -298,6 +330,12 @@ struct RecoveryKeyView: View {
     // Keeps create action disabled until users intentionally confirm matching credentials.
     static func canAdvanceFromPassword(password: String, confirmPassword: String) -> Bool {
         !password.isEmpty && password == confirmPassword
+    }
+
+    // Keeps Done disabled until the share sheet has been opened, so the
+    // created key cannot be dismissed without a save attempt.
+    static func canDismissCreatedKey(hasShared: Bool) -> Bool {
+        hasShared
     }
 
     // Shows mismatch copy only after both fields are filled and disagree,
@@ -341,8 +379,7 @@ struct RecoveryKeyView: View {
             password = ""
             confirmPassword = ""
             await refresh()
-            currentStep = .status
-            isShowingShareSheet = true
+            currentStep = .created
         } catch {
             errorMessage = error.localizedDescription
             currentStep = .error
@@ -456,5 +493,11 @@ private struct InteractivePopGestureController: UIViewControllerRepresentable {
 #Preview("Password Step") {
     NavigationStack {
         RecoveryKeyView(preview: .password)
+    }
+}
+
+#Preview("Created") {
+    NavigationStack {
+        RecoveryKeyView(preview: .created)
     }
 }

@@ -8,15 +8,8 @@ struct RecoveryWizardTests {
     @Test func recoveryKeyWizardStepTitles() {
         #expect(RecoveryKeyView.RecoveryKeyStep.status.title == "Recovery Key")
         #expect(RecoveryKeyView.RecoveryKeyStep.processing.title == "Creating Key")
+        #expect(RecoveryKeyView.RecoveryKeyStep.created.title == "Recovery Key Created")
         #expect(RecoveryKeyView.RecoveryKeyStep.error.title == "Error")
-    }
-
-    // Ensures save-confirmation prompt copy remains explicit about the required acknowledgement loop.
-    @Test func recoveryKeySavePromptCopy() {
-        #expect(RecoveryKeyView.savePromptTitle == "Did you save your recovery key?")
-        #expect(RecoveryKeyView.savePromptMessage == "You must save this backup before continuing.")
-        #expect(RecoveryKeyView.savePromptConfirmLabel == "Yes, I saved it")
-        #expect(RecoveryKeyView.savePromptShowAgainLabel == "Show share dialog again")
     }
 
     // Ensures the status screen explains why creating a recovery key matters.
@@ -48,6 +41,22 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.backDestination(from: .password) == .name)
         #expect(RecoveryKeyView.backDestination(from: .error) == .status)
         #expect(RecoveryKeyView.backDestination(from: .processing) == nil)
+        #expect(RecoveryKeyView.backDestination(from: .created) == nil)
+    }
+
+    // Ensures Done stays locked until the share sheet has been opened.
+    @Test func recoveryKeyCreatedStepDismissal() {
+        #expect(!RecoveryKeyView.canDismissCreatedKey(hasShared: false))
+        #expect(RecoveryKeyView.canDismissCreatedKey(hasShared: true))
+    }
+
+    // Ensures the created-step copy tells users to save the backup off-device.
+    @Test func recoveryKeyCreatedStepCopy() {
+        #expect(RecoveryKeyView.createdStepHeading == "Recovery key created")
+        #expect(RecoveryKeyView.createdStepBody.contains("outside this device"))
+        #expect(RecoveryKeyView.createdStepBody.contains("password is not included"))
+        #expect(RecoveryKeyView.createdStepShareLabel == "Share recovery key")
+        #expect(RecoveryKeyView.createdStepDoneLabel == "Done")
     }
 
     // Ensures create-wizard headings and subtitles stay consistent with
