@@ -135,11 +135,15 @@ struct ContentView: View {
             consumeRecoveryInputIfAvailable()
         }
         .task {
-            guard previewState == nil else { return }
+            guard previewState == nil,
+                  !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment)
+            else { return }
             await initializeRepositoryState()
         }
         .task(id: shouldShowMainTabs && !isResyncing) {
-            guard previewState == nil else { return }
+            guard previewState == nil,
+                  !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment)
+            else { return }
             updatePeriodicSyncLifecycle()
             await refreshRecoveryWarning()
         }
@@ -311,6 +315,11 @@ struct ContentView: View {
     // Isolates onboarding skip decisions so tests can verify simulator installs do not bypass onboarding implicitly.
     static func shouldSkipOnboarding(environment: [String: String]) -> Bool {
         environment["SKIP_ONBOARDING"] == "1"
+    }
+
+    // Detects Xcode Canvas so launch and repository tasks can stay inert in previews.
+    static func isRunningForPreviews(environment: [String: String]) -> Bool {
+        environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
     }
 
     // Encodes when a missing repository should auto-clone from server credentials instead of showing onboarding.

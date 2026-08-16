@@ -39,9 +39,12 @@ struct RecoveryKeyView: View {
     @State private var isShowingSavePrompt = false
 
     private let manager = RecoveryKeyManager()
+    // Keeps Canvas from touching libgit2, which is not initialized in previews.
+    private let isPreview: Bool
 
     // Supports deterministic previews for each wizard step without running async repository calls.
     init(preview step: RecoveryKeyStep? = nil) {
+        isPreview = step != nil
         if let step {
             _currentStep = State(initialValue: step)
         }
@@ -73,10 +76,11 @@ struct RecoveryKeyView: View {
         .navigationTitle(currentStep.title)
         .navigationBarTitleDisplayMode(.inline)
         .task {
+            guard !isPreview else { return }
             await refresh()
         }
         .refreshable {
-            guard currentStep == .status else { return }
+            guard currentStep == .status, !isPreview else { return }
             await refresh()
         }
         .sheet(isPresented: $isShowingShareSheet, onDismiss: {

@@ -4,6 +4,13 @@ import Testing
 // Verifies ContentView flow decisions use shared auto-resync behavior for fresh installs.
 struct ContentViewFlowLogicTests {
 
+    // Ensures Canvas is detected only from the Xcode preview environment flag.
+    @Test func isRunningForPreviewsRequiresXcodePreviewFlag() {
+        #expect(ContentView.isRunningForPreviews(environment: [:]) == false)
+        #expect(ContentView.isRunningForPreviews(environment: ["XCODE_RUNNING_FOR_PREVIEWS": "0"]) == false)
+        #expect(ContentView.isRunningForPreviews(environment: ["XCODE_RUNNING_FOR_PREVIEWS": "1"]) == true)
+    }
+
     // Ensures onboarding is skipped only when an explicit environment override is present.
     @Test func shouldSkipOnboardingRequiresExplicitEnvironmentFlag() {
         #expect(ContentView.shouldSkipOnboarding(environment: [:]) == false)

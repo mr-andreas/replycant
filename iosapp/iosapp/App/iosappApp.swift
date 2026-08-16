@@ -13,6 +13,12 @@ struct iosappApp: App {
     
     // Runs launch-time setup so simulator debug sessions can connect immediately without QR onboarding.
     init() {
+        // Canvas hosts the real app process; skip launch I/O so #Preview
+        // does not clone the library or trip libgit2/keychain setup.
+        if ContentView.isRunningForPreviews(environment: ProcessInfo.processInfo.environment) {
+            return
+        }
+
         let appInitSignpost = AppSignposts.begin("AppInit")
         defer {
             AppSignposts.end("AppInit", appInitSignpost)
