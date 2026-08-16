@@ -75,6 +75,22 @@ struct PairingTertiaryButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - Field Chrome
+
+// Keeps pairing and recovery inputs visible against the plain step
+// background so password, label, and URL fields share one capsule style.
+extension View {
+    // Applies the filled rounded field chrome used throughout wizard steps.
+    // The padding parameter exists because the recovery bundle editor uses
+    // a tighter inset than single-line fields.
+    func pairingFieldBackground(padding: CGFloat = 16) -> some View {
+        self
+            .padding(padding)
+            .background(Color.gray.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
 // MARK: - Shared Status Views
 
 // Defines the two visual phases so both devices keep the same step language

@@ -181,9 +181,7 @@ struct RecoveryView: View {
 
             TextEditor(text: $input)
                 .frame(minHeight: 160)
-                .padding(8)
-                .background(Color.gray.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .pairingFieldBackground(padding: 8)
                 .padding(.horizontal)
 
             if let errorMessage {
@@ -276,9 +274,7 @@ struct RecoveryView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
-                .padding()
-                .background(Color.gray.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .pairingFieldBackground()
                 .padding(.horizontal)
 
             if let errorMessage {

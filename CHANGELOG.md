@@ -20,6 +20,7 @@
 
 ### Fixes
 
+- iosapp: make recovery password fields visible and show password strength and mismatch feedback
 - iosapp: clear the settings recovery warning as soon as a recovery key is created
 - iosapp: stop video playback when a video opened by swiping is dismissed
 - iosapp: fix random crash while browsing timeline media

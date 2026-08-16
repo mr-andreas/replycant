@@ -50,6 +50,28 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.backDestination(from: .processing) == nil)
     }
 
+    // Ensures create-wizard headings and subtitles stay consistent with
+    // other pairing steps and warn that the backup password cannot be reset.
+    @Test func recoveryKeyWizardStepCopy() {
+        #expect(RecoveryKeyView.nameStepHeading == "Name this recovery key")
+        #expect(!RecoveryKeyView.nameStepSubtitle.isEmpty)
+        #expect(RecoveryKeyView.passwordStepHeading == "Set a backup password")
+        #expect(RecoveryKeyView.passwordStepSubtitle.contains("cannot be reset"))
+    }
+
+    // Ensures mismatch copy appears only after both fields are filled
+    // and disagree, so empty or in-progress entry is not treated as an error.
+    @Test func recoveryKeyPasswordWarning() {
+        #expect(RecoveryKeyView.passwordWarning(password: "", confirmPassword: "") == nil)
+        #expect(RecoveryKeyView.passwordWarning(password: "secret", confirmPassword: "") == nil)
+        #expect(RecoveryKeyView.passwordWarning(password: "", confirmPassword: "secret") == nil)
+        #expect(RecoveryKeyView.passwordWarning(password: "secret", confirmPassword: "secret") == nil)
+        #expect(
+            RecoveryKeyView.passwordWarning(password: "secret", confirmPassword: "other")
+                == RecoveryKeyView.passwordMismatchMessage
+        )
+    }
+
     // Ensures create wizard only advances when label is non-empty and password fields match.
     @Test func recoveryKeyWizardAdvancePredicates() {
         #expect(!RecoveryKeyView.canAdvanceFromName(label: ""))

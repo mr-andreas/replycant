@@ -9,6 +9,13 @@ struct RecoveryKeyView: View {
     static let savePromptShowAgainLabel = "Show share dialog again"
     static let statusDescription =
         "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
+    static let nameStepHeading = "Name this recovery key"
+    static let nameStepSubtitle =
+        "This label appears in Settings and in the backup you save."
+    static let passwordStepHeading = "Set a backup password"
+    static let passwordStepSubtitle =
+        "This password encrypts the backup and cannot be reset. You will need it to recover access."
+    static let passwordMismatchMessage = "Passwords do not match."
 
     enum RecoveryKeyStep {
         case status
@@ -183,23 +190,28 @@ struct RecoveryKeyView: View {
 
     // Step 1 gathers a human-readable label that is reused in filenames and exported backup text.
     private var nameStepView: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 20) {
             Spacer()
 
             PairingStepIndicator(step: 1, of: 2, phase: .sendKey)
 
-            Text("Name this recovery key")
+            Text(Self.nameStepHeading)
                 .font(.title2)
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
+
+            Text(Self.nameStepSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 32)
 
             TextField("Label", text: $label)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.username)
-                .padding()
-                .background(Color.gray.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .pairingFieldBackground()
                 .padding(.horizontal)
 
             Spacer()
@@ -221,10 +233,17 @@ struct RecoveryKeyView: View {
 
             PairingStepIndicator(step: 2, of: 2, phase: .sendKey)
 
-            Text("Set a backup password")
+            Text(Self.passwordStepHeading)
                 .font(.title2)
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
+
+            Text(Self.passwordStepSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 32)
 
             PasswordEntryView(
                 mode: .create,
@@ -232,6 +251,13 @@ struct RecoveryKeyView: View {
                 confirmPassword: $confirmPassword
             )
             .padding(.horizontal)
+
+            if let warning = Self.passwordWarning(password: password, confirmPassword: confirmPassword) {
+                Text(warning)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+            }
 
             Spacer()
 
@@ -272,6 +298,15 @@ struct RecoveryKeyView: View {
     // Keeps create action disabled until users intentionally confirm matching credentials.
     static func canAdvanceFromPassword(password: String, confirmPassword: String) -> Bool {
         !password.isEmpty && password == confirmPassword
+    }
+
+    // Shows mismatch copy only after both fields are filled and disagree,
+    // so empty or in-progress entry is not treated as an error.
+    static func passwordWarning(password: String, confirmPassword: String) -> String? {
+        guard !password.isEmpty, !confirmPassword.isEmpty, password != confirmPassword else {
+            return nil
+        }
+        return passwordMismatchMessage
     }
 
     // Reloads repository-backed key state so settings warnings and row actions stay synchronized.
@@ -415,5 +450,11 @@ private struct InteractivePopGestureController: UIViewControllerRepresentable {
 #Preview("Name Step") {
     NavigationStack {
         RecoveryKeyView(preview: .name)
+    }
+}
+
+#Preview("Password Step") {
+    NavigationStack {
+        RecoveryKeyView(preview: .password)
     }
 }
