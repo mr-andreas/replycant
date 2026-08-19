@@ -35,4 +35,11 @@ struct PasswordStrengthTests {
         #expect(PasswordEntryView.strengthFillCount(for: "") == 0)
         #expect(PasswordEntryView.strengthFillCount(for: "S7f!9xQ2m#1Lb@8nR5t$0wZk") == 3)
     }
+
+    // Unlocking an existing recovery key does not need strength
+    // guidance; only creating a new backup password does.
+    @Test func recoverModeHidesStrengthMeter() {
+        #expect(!PasswordEntryView.showsStrengthMeter(for: .recover))
+        #expect(PasswordEntryView.showsStrengthMeter(for: .create))
+    }
 }

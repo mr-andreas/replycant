@@ -20,6 +20,7 @@
 
 ### Fixes
 
+- iosapp: hide the password strength meter when unlocking with a recovery key
 - iosapp: show a success icon on the recovery-key created step and keep Done locked until the key is shared
 - iosapp: share a recovery key as titled text plus a QR card so mail and notes-style destinations can receive both as inline content
 - iosapp: make recovery password fields visible and show password strength and mismatch feedback

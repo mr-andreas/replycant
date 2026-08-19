@@ -38,25 +38,33 @@ struct PasswordEntryView: View {
                     .pairingFieldBackground()
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 4) {
-                    ForEach(0..<3, id: \.self) { index in
-                        Capsule()
-                            .fill(segmentFill(at: index))
-                            .frame(height: 6)
+            if Self.showsStrengthMeter(for: mode) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 4) {
+                        ForEach(0..<3, id: \.self) { index in
+                            Capsule()
+                                .fill(segmentFill(at: index))
+                                .frame(height: 6)
+                        }
                     }
-                }
 
-                HStack {
-                    Text("Strength:")
-                    Text(Self.strengthLabel(for: password))
-                        .fontWeight(password.isEmpty ? .regular : .semibold)
-                        .foregroundStyle(password.isEmpty ? Color.secondary : color(for: score.level))
+                    HStack {
+                        Text("Strength:")
+                        Text(Self.strengthLabel(for: password))
+                            .fontWeight(password.isEmpty ? .regular : .semibold)
+                            .foregroundStyle(password.isEmpty ? Color.secondary : color(for: score.level))
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
             }
         }
+    }
+
+    // Hides the meter when unlocking an existing recovery key so users
+    // are not scored on a password they already chose and cannot change.
+    static func showsStrengthMeter(for mode: Mode) -> Bool {
+        mode == .create
     }
 
     // Keeps the empty-field strength copy neutral so an untouched form
