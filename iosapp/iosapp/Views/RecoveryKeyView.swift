@@ -16,6 +16,7 @@ struct RecoveryKeyView: View {
     static let createdStepBody =
         "Save this backup outside this device. The password is not included."
     static let createdStepShareLabel = "Share recovery key"
+    static let createdStepShareAgainLabel = "Share again"
     static let createdStepDoneLabel = "Done"
 
     enum RecoveryKeyStep {
@@ -46,19 +47,21 @@ struct RecoveryKeyView: View {
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var createdKey: RecoveryKeyManager.CreatedRecoveryKey?
-    @State private var isShowingShareSheet = false
     @State private var hasSharedCreatedKey = false
+    @State private var shareBundle: RecoveryShareBundle?
 
     private let manager = RecoveryKeyManager()
     // Keeps Canvas from touching libgit2, which is not initialized in previews.
     private let isPreview: Bool
 
-    // Supports deterministic previews for each wizard step without running async repository calls.
-    init(preview step: RecoveryKeyStep? = nil) {
+    // Supports deterministic previews for each wizard step, including the
+    // post-share created state, without running async repository calls.
+    init(preview step: RecoveryKeyStep? = nil, hasShared: Bool = false) {
         isPreview = step != nil
         if let step {
             _currentStep = State(initialValue: step)
         }
+        _hasSharedCreatedKey = State(initialValue: hasShared)
     }
 
     var body: some View {
@@ -112,12 +115,10 @@ struct RecoveryKeyView: View {
             guard currentStep == .status, !isPreview else { return }
             await refresh()
         }
-        .sheet(isPresented: $isShowingShareSheet, onDismiss: {
+        .sheet(item: $shareBundle, onDismiss: {
             hasSharedCreatedKey = true
-        }) {
-            if let createdKey {
-                ActivityShareSheet(items: shareItems(for: createdKey))
-            }
+        }) { bundle in
+            ActivityShareSheet(items: bundle.items)
         }
     }
 
@@ -266,6 +267,10 @@ struct RecoveryKeyView: View {
         VStack(spacing: 20) {
             Spacer()
 
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 60))
+                .foregroundStyle(Color.brandGreen)
+
             Text(Self.createdStepHeading)
                 .font(.title2)
                 .fontWeight(.semibold)
@@ -281,10 +286,7 @@ struct RecoveryKeyView: View {
             Spacer()
 
             VStack(spacing: 12) {
-                Button(Self.createdStepShareLabel) {
-                    isShowingShareSheet = true
-                }
-                .buttonStyle(PairingPrimaryButtonStyle())
+                createdStepShareButton
 
                 Button(Self.createdStepDoneLabel) {
                     createdKey = nil
@@ -300,6 +302,24 @@ struct RecoveryKeyView: View {
             }
             .padding(.horizontal)
             .padding(.bottom, 40)
+        }
+    }
+
+    // Swaps Share from the required purple CTA to a quieter repeat action
+    // so Done is the only primary button after the first share attempt.
+    private var createdStepShareButton: some View {
+        let title = Self.createdStepShareTitle(hasShared: hasSharedCreatedKey)
+        let shareButton = Button(title) {
+            if let createdKey {
+                shareBundle = makeShareBundle(for: createdKey)
+            }
+        }
+        return Group {
+            if hasSharedCreatedKey {
+                shareButton.buttonStyle(PairingTertiaryButtonStyle())
+            } else {
+                shareButton.buttonStyle(PairingPrimaryButtonStyle())
+            }
         }
     }
 
@@ -336,6 +356,12 @@ struct RecoveryKeyView: View {
     // created key cannot be dismissed without a save attempt.
     static func canDismissCreatedKey(hasShared: Bool) -> Bool {
         hasShared
+    }
+
+    // Relabels the share action after a first attempt so the button reads as
+    // an optional repeat rather than a still-pending required step.
+    static func createdStepShareTitle(hasShared: Bool) -> String {
+        hasShared ? createdStepShareAgainLabel : createdStepShareLabel
     }
 
     // Shows mismatch copy only after both fields are filled and disagree,
@@ -404,37 +430,36 @@ struct RecoveryKeyView: View {
         }
     }
 
-    // Builds share payload text that can be stored with the QR image in password managers and offline backups.
-    private func shareItems(for createdKey: RecoveryKeyManager.CreatedRecoveryKey) -> [Any] {
+    // Builds the text and image items from the created key so the
+    // share sheet can offer a deep-link backup plus a QR card.
+    private func makeShareBundle(
+        for createdKey: RecoveryKeyManager.CreatedRecoveryKey
+    ) -> RecoveryShareBundle {
         let host = URL(string: ServerConfigurationManager.shared.loadURL() ?? "")?.host ?? "unknown-host"
-        let text = """
-        Replycant recovery key
-        Label: \(createdKey.label)
-        ID: \(createdKey.uuid)
-        Server: \(host)
-        Deep link: \(createdKey.deepLink)
-
-        Password is required and is not included in this share.
-        """
-        let textSource = RecoveryShareText(
-            plainText: text,
-            label: createdKey.label
+        let text = RecoveryShareText.compose(
+            label: createdKey.label,
+            uuid: createdKey.uuid,
+            host: host,
+            deepLink: createdKey.deepLink
         )
         let qrImage = QRCodeDisplayView.generateQRCodeImage(
             from: createdKey.envelopeJSON,
             side: 1024,
             correctionLevel: "H"
         )
-        if let qrImage {
-            let cardImage = RecoveryShareCard.render(
-                qr: qrImage,
+        let cardImage = qrImage.map { qr in
+            RecoveryShareCard.render(
+                qr: qr,
                 label: createdKey.label,
                 uuid: createdKey.uuid,
                 host: host
             )
-            return [textSource, RecoveryShareImage(image: cardImage)]
         }
-        return [textSource]
+        return RecoveryShareBundle(
+            plainText: text,
+            label: createdKey.label,
+            cardImage: cardImage
+        )
     }
 }
 
@@ -499,5 +524,11 @@ private struct InteractivePopGestureController: UIViewControllerRepresentable {
 #Preview("Created") {
     NavigationStack {
         RecoveryKeyView(preview: .created)
+    }
+}
+
+#Preview("Created After Share") {
+    NavigationStack {
+        RecoveryKeyView(preview: .created, hasShared: true)
     }
 }

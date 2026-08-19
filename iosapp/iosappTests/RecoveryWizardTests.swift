@@ -59,6 +59,19 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.createdStepDoneLabel == "Done")
     }
 
+    // Ensures Share relabels after the first attempt so it reads as an
+    // optional repeat rather than a still-pending required step.
+    @Test func recoveryKeyCreatedStepShareTitle() {
+        #expect(
+            RecoveryKeyView.createdStepShareTitle(hasShared: false)
+                == RecoveryKeyView.createdStepShareLabel
+        )
+        #expect(
+            RecoveryKeyView.createdStepShareTitle(hasShared: true)
+                == RecoveryKeyView.createdStepShareAgainLabel
+        )
+    }
+
     // Ensures create-wizard headings and subtitles stay consistent with
     // other pairing steps and warn that the backup password cannot be reset.
     @Test func recoveryKeyWizardStepCopy() {

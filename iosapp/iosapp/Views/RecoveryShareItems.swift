@@ -1,56 +1,118 @@
+import LinkPresentation
+import UniformTypeIdentifiers
 import UIKit
 
-// Adapts recovery export text to destination app capabilities so recipients keep readable metadata.
-final class RecoveryShareText: NSObject, UIActivityItemSource {
+// Hosts bundle lookup so tests and the share sheet find ReplycantLogo
+// in the app target instead of the test bundle.
+private final class RecoveryShareResourceAnchor {}
+
+// Shared header copy so the text item, card, compose helper, and
+// tests name the export the same way.
+enum RecoveryShareHeader {
+    static let title = "Replycant recovery key"
+}
+
+// Builds the pasteable backup so destinations that accept text can
+// carry the deep link while the QR card remains the image fallback.
+enum RecoveryShareText {
+    static func compose(
+        label: String,
+        uuid: String,
+        host: String,
+        deepLink: String
+    ) -> String {
+        """
+        \(RecoveryShareHeader.title)
+        Label: \(label)
+        ID: \(uuid)
+        Server: \(host)
+        Deep link: \(deepLink)
+
+        Password is required and is not included in this share.
+        """
+    }
+}
+
+// Supplies the textual backup as its own activity item because one
+// UIActivityItemSource can return only one payload per destination.
+final class RecoveryShareTextItem: NSObject, UIActivityItemSource {
     private let plainText: String
     private let label: String
 
+    // Carries the key label so Mail can name the message after
+    // the share sheet is dismissed.
     init(plainText: String, label: String) {
         self.plainText = plainText
         self.label = label
     }
 
-    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+    func activityViewControllerPlaceholderItem(
+        _ activityViewController: UIActivityViewController
+    ) -> Any {
         plainText
     }
 
+    // Returns the same backup to every destination so Gmail and
+    // Copy receive the deep link when they ask for text.
     func activityViewController(
         _ activityViewController: UIActivityViewController,
         itemForActivityType activityType: UIActivity.ActivityType?
     ) -> Any? {
-        return plainText
+        plainText
     }
 
     func activityViewController(
         _ activityViewController: UIActivityViewController,
         dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?
     ) -> String {
-        "public.plain-text"
+        UTType.plainText.identifier
     }
 
+    // Names the Mail subject so recipients can identify the backup
+    // after they leave the share sheet.
     func activityViewController(
         _ activityViewController: UIActivityViewController,
         subjectForActivityType activityType: UIActivity.ActivityType?
     ) -> String {
-        "Replycant recovery key: \(label)"
+        "\(RecoveryShareHeader.title): \(label)"
     }
 
+    // Supplies title-and-icon metadata with no URL so the two-item
+    // sheet can still name the export. The image item returns nil
+    // so iOS does not replace this titled preview with an aggregate.
+    func activityViewControllerLinkMetadata(
+        _ activityViewController: UIActivityViewController
+    ) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.title = RecoveryShareHeader.title
+        if let icon = UIImage(
+            named: "ReplycantLogo",
+            in: Bundle(for: RecoveryShareResourceAnchor.self),
+            compatibleWith: nil
+        ) ?? UIImage(named: "ReplycantLogo") {
+            metadata.iconProvider = NSItemProvider(object: icon)
+        }
+        return metadata
+    }
 }
 
-// Provides an image-only backup payload for share extensions that keep only one attachment.
-final class RecoveryShareImage: NSObject, UIActivityItemSource {
+// Supplies the QR card as a UIImage so destinations that keep an
+// image can still recover the envelope from the encoded JSON.
+final class RecoveryShareImageItem: NSObject, UIActivityItemSource {
     private let image: UIImage
 
+    // Holds the rendered card so the share sheet can pass a real
+    // UIImage to Signal and Notes.
     init(image: UIImage) {
         self.image = image
     }
 
-    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 12, height: 12))
-        return renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 12, height: 12))
-        }
+    // Advertises the card so image activities stay in the sheet.
+    // Returning the retained image avoids a dummy bitmap.
+    func activityViewControllerPlaceholderItem(
+        _ activityViewController: UIActivityViewController
+    ) -> Any {
+        image
     }
 
     func activityViewController(
@@ -64,11 +126,41 @@ final class RecoveryShareImage: NSObject, UIActivityItemSource {
         _ activityViewController: UIActivityViewController,
         dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?
     ) -> String {
-        "public.png"
+        UTType.png.identifier
+    }
+
+    // Leaves header metadata to the text item so iOS does not
+    // replace the titled preview with a generic aggregate.
+    func activityViewControllerLinkMetadata(
+        _ activityViewController: UIActivityViewController
+    ) -> LPLinkMetadata? {
+        nil
     }
 }
 
-// Renders QR code plus essential metadata so image-only shares still contain human-readable context.
+// Groups the text and image sources so SwiftUI can present the
+// share sheet from one Identifiable value.
+struct RecoveryShareBundle: Identifiable {
+    let id = UUID()
+    let items: [Any]
+
+    // Offers text first, then the card, so destinations that
+    // accept both receive copy plus image. Gmail takes both,
+    // Signal takes the image, and Notes keeps only the image.
+    // Image-only is still recoverable: the QR encodes envelope
+    // JSON that RecoveryBundle.parseEnvelope accepts directly.
+    init(plainText: String, label: String, cardImage: UIImage?) {
+        let text = RecoveryShareTextItem(plainText: plainText, label: label)
+        if let cardImage {
+            items = [text, RecoveryShareImageItem(image: cardImage)]
+        } else {
+            items = [text]
+        }
+    }
+}
+
+// Renders QR code plus essential metadata so image-only shares
+// still contain human-readable context.
 enum RecoveryShareCard {
     static func render(qr: UIImage, label: String, uuid: String, host: String) -> UIImage {
         let qrSide = max(qr.size.width, 1)
@@ -78,7 +170,7 @@ enum RecoveryShareCard {
         let bottomMargin: CGFloat = 56
         let cardWidth = qrSide + (horizontalMargin * 2)
 
-        let title = "Replycant recovery key"
+        let title = RecoveryShareHeader.title
         let details = """
         Label: \(label)
         ID: \(uuid)
