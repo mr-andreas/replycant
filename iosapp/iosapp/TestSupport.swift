@@ -372,8 +372,7 @@ class TestSupport {
             do {
                 RepositoryManager.shared.clearRepository()
                 GitDBManager.shared.clearGitDB()
-                ManifestLoaderManager.shared.clearLoader()
-                try ManifestLoaderManager.shared.deleteDatabaseFile()
+                try await ManifestLoaderManager.shared.deleteDatabaseFile()
                 let gitDB = try GitDBManager.shared.getGitDB()
                 try await gitDB.syncToHead(progressHandler: nil)
                 await markFixturesReady()

@@ -286,6 +286,12 @@ public actor ManifestDatabase {
         }
     }
 
+    // Releases the GRDB queue so wipe paths can unlink the sqlite file
+    // without leaving a live descriptor on a deleted vnode.
+    public func close() throws {
+        try dbQueue.close()
+    }
+
     // Deletes all stored rows to support explicit app-level reset flows.
     public func clearAll() throws {
         let registrations = registry.allRegistrations()

@@ -170,4 +170,15 @@ struct ManifestDatabaseTests {
             #expect(false)
         }
     }
+
+    // Closing releases the GRDB queue so wipe paths can unlink the
+    // sqlite file without leaving a live descriptor on a deleted vnode.
+    @Test func closePreventsFurtherReads() async throws {
+        let (database, _) = try makeDatabase()
+        try await database.writeSyncedCommitHashOnly("c1")
+        try await database.close()
+        await #expect(throws: (any Error).self) {
+            _ = try await database.readSyncedCommitHash()
+        }
+    }
 }

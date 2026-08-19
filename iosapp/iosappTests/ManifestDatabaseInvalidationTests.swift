@@ -27,8 +27,8 @@ struct ManifestDatabaseInvalidationTests {
     // announcing invalidation on the default center makes every live manager in
     // the process reload, which stampedes suites running in parallel.
     private func countInvalidations(
-        during action: (ManifestLoaderManager) throws -> Void
-    ) rethrows -> Int {
+        during action: (ManifestLoaderManager) async throws -> Void
+    ) async rethrows -> Int {
         let center = NotificationCenter()
         let loader = ManifestLoaderManager(notificationCenter: center)
         let counter = InvalidationCounter()
@@ -41,14 +41,14 @@ struct ManifestDatabaseInvalidationTests {
         }
         defer { center.removeObserver(token) }
 
-        try action(loader)
+        try await action(loader)
         return counter.count
     }
 
     // Dropping the shared instance must be announced: callers that already hold
     // the old database would otherwise keep using it indefinitely.
-    @Test func clearLoaderBroadcastsInvalidation() {
-        let count = countInvalidations { loader in
+    @Test func clearLoaderBroadcastsInvalidation() async {
+        let count = await countInvalidations { loader in
             loader.clearLoader()
         }
 
@@ -57,9 +57,9 @@ struct ManifestDatabaseInvalidationTests {
 
     // Deleting the backing file is the destructive half of a reset, and is what
     // UITest fixture seeding uses before rebuilding the cache from HEAD.
-    @Test func deleteDatabaseFileBroadcastsInvalidation() throws {
-        let count = try countInvalidations { loader in
-            try loader.deleteDatabaseFile()
+    @Test func deleteDatabaseFileBroadcastsInvalidation() async throws {
+        let count = try await countInvalidations { loader in
+            try await loader.deleteDatabaseFile()
         }
 
         #expect(count == 1)

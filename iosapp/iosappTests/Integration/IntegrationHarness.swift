@@ -33,8 +33,8 @@ enum IntegrationHarness {
     }
 
     // Resets app-local state so integration tests can emulate uninstall/reinstall before recovery.
-    static func resetLocalInstallState() throws {
-        try wipeLocalState()
+    static func resetLocalInstallState() async throws {
+        try await wipeLocalState()
     }
 
     // Creates one unique path under tmp for isolated repositories used in failing-auth push tests.
@@ -58,11 +58,10 @@ enum IntegrationHarness {
     }
 
     // Clears app caches and filesystem state so each integration test starts as a fresh install.
-    private static func wipeLocalState() throws {
+    private static func wipeLocalState() async throws {
         RepositoryManager.shared.clearRepository()
         GitDBManager.shared.clearGitDB()
-        ManifestLoaderManager.shared.clearLoader()
-        try ManifestLoaderManager.shared.deleteDatabaseFile()
+        try await ManifestLoaderManager.shared.deleteDatabaseFile()
         let repoPath = RepositoryManager.shared.repositoryPath()
         if FileManager.default.fileExists(atPath: repoPath) {
             try FileManager.default.removeItem(atPath: repoPath)
@@ -74,7 +73,7 @@ enum IntegrationHarness {
 
     // Prepares repository control state, onboarding config, and mTLS credentials for one test scenario.
     private static func prepare(seedContainerRepo: Bool, provisionDevice: Bool) async throws -> PreparedContext {
-        try wipeLocalState()
+        try await wipeLocalState()
         try await IntegrationEnvironment.resetRepository(seed: seedContainerRepo)
         let discovery = try await IntegrationEnvironment.discoverConfig()
         try ServerConfigurationManager.shared.configure(url: discovery.url, caCertificate: discovery.ca)

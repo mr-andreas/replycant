@@ -45,3 +45,11 @@ After every write, `ManifestDatabase` emits:
 - `removed: [(kind: String, id: String)]`
 
 This lets `TimelineManager` rebuild sparse state deterministically while app-specific projections remain query-driven.
+
+## Cache Lifecycle
+
+The shared sqlite file stays open for the process lifetime. Reset and wipe paths follow one invariant so GRDB never reads a deleted vnode:
+
+- Index rebuilds (`hydrateIndex(resetDatabase:)`) truncate tables in place and keep the live connection.
+- Full wipes close the GRDB queue before unlinking the file.
+- Every holder of the shared database, including `GitDBManager`, rebinds when `ManifestLoaderManager` broadcasts invalidation.

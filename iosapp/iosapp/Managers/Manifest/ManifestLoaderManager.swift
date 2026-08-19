@@ -62,14 +62,20 @@ final class ManifestLoaderManager {
         broadcastInvalidation()
     }
 
-    // Removes all cached rows while preserving the sqlite file and connection.
+    // Empties every table on the shared connection so reset flows can
+    // rebuild from HEAD without unlinking a file that still has open
+    // GRDB readers.
     func clearCache() async throws {
-        guard let database else { return }
+        let database = try getDatabase()
         try await database.clearAll()
     }
 
-    // Deletes the sqlite file so reset flows start from a cold cache on next launch.
-    func deleteDatabaseFile() throws {
+    // Closes the live connection, then deletes the sqlite file so full
+    // wipes do not unlink a vnode that GRDB is still using.
+    func deleteDatabaseFile() async throws {
+        if let database {
+            try? await database.close()
+        }
         let url = GitDB.ManifestDatabase.defaultDatabaseURL()
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)

@@ -26,15 +26,15 @@ enum RepositoryBootstrap {
         }
     }
 
-    // Rebuilds the manifest index after clone so local SQL cache converges to repository HEAD.
+    // Rebuilds the manifest index after clone so local SQL cache converges
+    // to repository HEAD. Resets truncate in place so an already-open
+    // GitDB connection is not left pointing at a deleted sqlite file.
     static func hydrateIndex(
         resetDatabase: Bool,
         progress: ((String, Double) -> Void)? = nil
     ) async throws {
         if resetDatabase {
-            try await MainActor.run {
-                try ManifestLoaderManager.shared.deleteDatabaseFile()
-            }
+            try await ManifestLoaderManager.shared.clearCache()
         }
 
         let gitDB = try await MainActor.run {

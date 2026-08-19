@@ -215,7 +215,7 @@ struct GitdIntegrationTests {
             .filter { $0.hasSuffix(".pub") && !$0.contains(".recovery.") }
             .count
 
-        try IntegrationHarness.resetLocalInstallState()
+        try await IntegrationHarness.resetLocalInstallState()
         try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "ios-recovered-device")
 
         _ = try await manager.recover(input: created.deepLink, password: "correct horse battery staple")

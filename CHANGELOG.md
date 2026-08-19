@@ -20,6 +20,7 @@
 
 ### Fixes
 
+- iosapp: fix recovery failing with a disk I/O error while rebuilding the media index
 - iosapp: say the recovery password is incorrect instead of showing a crypto error
 - iosapp: hide the password strength meter when unlocking with a recovery key
 - iosapp: show a success icon on the recovery-key created step and keep Done locked until the key is shared
