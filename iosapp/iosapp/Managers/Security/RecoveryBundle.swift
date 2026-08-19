@@ -4,8 +4,9 @@ import Foundation
 
 // Encapsulates the password-protected recovery-key format so backups can be restored across app reinstall.
 enum RecoveryBundle {
-    // Names bundle parsing and crypto failures so recovery UI can show specific guidance instead of generic errors.
-    enum Error: Swift.Error {
+    // Names bundle parsing and crypto failures so recovery UI can show
+    // specific guidance instead of raw CryptoKit or generic errors.
+    enum Error: Swift.Error, Equatable, LocalizedError {
         case invalidUTF8
         case invalidEnvelopeJSON
         case unsupportedVersion
@@ -17,6 +18,18 @@ enum RecoveryBundle {
         case keyDerivationFailed
         case malformedInput
         case malformedDeepLink
+        case wrongPassword
+
+        // Maps GCM authentication failure to copy users can act on
+        // when the typed password does not unlock the recovery key.
+        var errorDescription: String? {
+            switch self {
+            case .wrongPassword:
+                return "The recovery password is incorrect."
+            default:
+                return nil
+            }
+        }
     }
 
     // Captures PBKDF2 metadata required to derive the AES key from the user password.
@@ -96,7 +109,8 @@ enum RecoveryBundle {
         )
     }
 
-    // Decrypts a bundle envelope and restores the recovery metadata used by the registration flow.
+    // Decrypts a bundle envelope and restores recovery metadata,
+    // mapping GCM auth failure to a typed wrong-password error.
     static func decrypt(envelope: Envelope, password: String) throws -> Plaintext {
         guard envelope.v == envelopeVersion else {
             throw Error.unsupportedVersion
@@ -118,7 +132,12 @@ enum RecoveryBundle {
         let ciphertext = try decodeBase64(envelope.ciphertext)
         let key = try deriveKey(password: password, salt: salt, iterations: envelope.kdf.iterations)
         let box = try AES.GCM.SealedBox(combined: ciphertext)
-        let plaintextData = try AES.GCM.open(box, using: SymmetricKey(data: key))
+        let plaintextData: Data
+        do {
+            plaintextData = try AES.GCM.open(box, using: SymmetricKey(data: key))
+        } catch CryptoKitError.authenticationFailure {
+            throw Error.wrongPassword
+        }
         let decoder = JSONDecoder()
         return try decoder.decode(Plaintext.self, from: plaintextData)
     }

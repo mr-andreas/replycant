@@ -170,9 +170,10 @@ struct GitdIntegrationTests {
         do {
             _ = try await manager.recover(input: created.deepLink, password: "definitely-wrong")
             Issue.record("recovery unexpectedly succeeded with wrong password")
+        } catch RecoveryBundle.Error.wrongPassword {
+            // Expected: decrypt maps GCM auth failure to a typed password error.
         } catch {
-            let message = String(describing: error).lowercased()
-            #expect(message.contains("cipher") || message.contains("decrypt") || message.contains("auth"))
+            Issue.record("unexpected error \(error)")
         }
     }
 

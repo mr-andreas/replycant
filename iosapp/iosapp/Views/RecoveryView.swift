@@ -6,6 +6,9 @@ struct RecoveryView: View {
     static let continueCtaLabel = "Continue"
     static let revokeDoneMessage = "Used key revoked. Create a new recovery key in Settings."
     static let cancelCtaLabel = "Cancel"
+    // Tells the user a typo or wrong secret is why unlock failed,
+    // instead of a Recovery Failed screen with a CryptoKit code.
+    static let wrongPasswordMessage = "The recovery password is incorrect."
 
     enum RecoveryStep {
         case start
@@ -430,7 +433,9 @@ struct RecoveryView: View {
         return (try? RecoveryBundle.parseEnvelope(from: input)) != nil ? .password : .error
     }
 
-    // Executes recover path and exposes manual discovery fallback when the original endpoint is unreachable.
+    // Executes recover path, keeps wrong passwords on the password
+    // step, and exposes discovery fallback when the endpoint is
+    // unreachable.
     private func runRecovery() async {
         errorMessage = nil
         isBusy = true
@@ -452,6 +457,9 @@ struct RecoveryView: View {
             completedRecovery = result
             didRevokeUsedKey = false
             currentStep = .done
+        } catch RecoveryBundle.Error.wrongPassword {
+            errorMessage = Self.wrongPasswordMessage
+            currentStep = .password
         } catch ConfigurationError.discoveryFetchFailed {
             errorMessage = "Discovery endpoint unreachable. Enter a new discovery URL and retry."
             if manualDiscoveryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

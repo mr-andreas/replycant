@@ -20,6 +20,15 @@ struct RecoveryWizardTests {
         )
     }
 
+    // Ensures a wrong recovery password uses explicit copy instead of
+    // a raw CryptoKit failure on the password step.
+    @Test func recoveryWizardWrongPasswordCopy() {
+        #expect(
+            RecoveryView.wrongPasswordMessage
+                == "The recovery password is incorrect."
+        )
+    }
+
     // Ensures revoke guidance copy remains explicit after successful recovery.
     @Test func recoveryWizardRevokeCopy() {
         #expect(RecoveryView.revokeCtaLabel == "Revoke used key")

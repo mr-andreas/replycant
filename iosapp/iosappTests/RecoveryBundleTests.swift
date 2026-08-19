@@ -38,18 +38,24 @@ struct RecoveryBundleTests {
         #expect(decrypted == Self.samplePlaintext)
     }
 
-    // Verifies wrong passwords fail closed so weak UX cannot silently accept the wrong secret.
+    // Verifies wrong passwords fail as a typed error with copy the
+    // recovery UI can show instead of a raw CryptoKit failure.
     @Test func wrongPasswordIsRejected() throws {
         let envelope = try RecoveryBundle.encrypt(
             plaintext: Self.samplePlaintext,
             password: "correct horse battery staple"
         )
-        #expect(throws: (any Error).self) {
+        #expect(throws: RecoveryBundle.Error.wrongPassword) {
             _ = try RecoveryBundle.decrypt(envelope: envelope, password: "wrong password")
         }
+        #expect(
+            RecoveryBundle.Error.wrongPassword.errorDescription
+                == "The recovery password is incorrect."
+        )
     }
 
-    // Verifies ciphertext tampering is detected by AES-GCM authentication tags.
+    // Verifies ciphertext tampering fails the same way as a wrong
+    // password because AES-GCM cannot distinguish the two cases.
     @Test func tamperedCiphertextIsRejected() throws {
         let envelope = try RecoveryBundle.encrypt(
             plaintext: Self.samplePlaintext,
@@ -65,8 +71,11 @@ struct RecoveryBundleTests {
             ciphertext: RecoveryBundle.encodeBase64(bytes)
         )
 
-        #expect(throws: (any Error).self) {
-            _ = try RecoveryBundle.decrypt(envelope: tampered, password: "correct horse battery staple")
+        #expect(throws: RecoveryBundle.Error.wrongPassword) {
+            _ = try RecoveryBundle.decrypt(
+                envelope: tampered,
+                password: "correct horse battery staple"
+            )
         }
     }
 
