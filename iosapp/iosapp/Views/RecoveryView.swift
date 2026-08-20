@@ -9,7 +9,11 @@ struct RecoveryView: View {
     // Tells the user a typo or wrong secret is why unlock failed,
     // instead of a Recovery Failed screen with a CryptoKit code.
     static let wrongPasswordMessage = "The recovery password is incorrect."
+    // Discovery already pinned this server's CA, so a 401 means the key
+    // used to be registered here and has since been deleted.
+    static let keyRejectedMessage = "The server rejected this recovery key. It matches this server's certificate, so it was registered here before and has since been deleted. Use a different recovery key, or pair from a device that still has access."
 
+    // Names each recovery-wizard screen so routing and titles stay explicit.
     enum RecoveryStep {
         case start
         case bundle
@@ -17,6 +21,7 @@ struct RecoveryView: View {
         case processing
         case serverUnreachable
         case blocked
+        case keyRejected
         case done
         case error
 
@@ -26,6 +31,7 @@ struct RecoveryView: View {
             case .processing: return "Recovering"
             case .serverUnreachable: return "Server Unreachable"
             case .blocked: return "Recovery Blocked"
+            case .keyRejected: return "Recovery Key Rejected"
             case .done: return "Recovery Complete"
             case .error: return "Error"
             }
@@ -79,6 +85,14 @@ struct RecoveryView: View {
                 serverUnreachableStepView
             case .blocked:
                 blockedStepView
+            case .keyRejected:
+                PairingErrorView(
+                    title: "Recovery Key Not Registered",
+                    message: Self.keyRejectedMessage,
+                    retryLabel: "Use a different key",
+                    onRetry: { currentStep = .start },
+                    onCancel: onCancel
+                )
             case .done:
                 doneStepView
             case .error:
@@ -434,8 +448,8 @@ struct RecoveryView: View {
     }
 
     // Executes recover path, keeps wrong passwords on the password
-    // step, and exposes discovery fallback when the endpoint is
-    // unreachable.
+    // step, exposes discovery fallback when the endpoint is
+    // unreachable, and treats a 401 as a deleted recovery key.
     private func runRecovery() async {
         errorMessage = nil
         isBusy = true
@@ -468,6 +482,8 @@ struct RecoveryView: View {
             currentStep = .serverUnreachable
         } catch RecoveryKeyManager.Error.alreadyConfiguredDevice {
             currentStep = .blocked
+        } catch RecoveryKeyManager.Error.recoveryKeyNotAuthorized {
+            currentStep = .keyRejected
         } catch {
             errorMessage = error.localizedDescription
             currentStep = .error

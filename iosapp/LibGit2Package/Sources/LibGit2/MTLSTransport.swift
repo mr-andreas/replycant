@@ -766,4 +766,11 @@ public enum MTLSTransportError: Error, LocalizedError {
             return "Network error: \(message)"
         }
     }
+
+    // libgit2 flattens typed transport errors into a message string, so callers
+    // that need to act on a specific status (a 401 during recovery means the key
+    // is not authorized, not that the network failed) match it back out here.
+    public static func indicatesHTTPStatus(_ status: Int, in error: Error) -> Bool {
+        error.localizedDescription.contains("HTTP error \(status)")
+    }
 }

@@ -41,6 +41,7 @@ final class RecoveryKeyManager {
         case missingClientIdentity
         case missingPinnedCA
         case malformedRecoveryAgeKey
+        case recoveryKeyNotAuthorized
 
         // Explains why recovery-key operations failed so users know whether to retry or reconfigure.
         var errorDescription: String? {
@@ -61,6 +62,8 @@ final class RecoveryKeyManager {
                 return "Server trust configuration is missing."
             case .malformedRecoveryAgeKey:
                 return "Recovery key age secret is malformed."
+            case .recoveryKeyNotAuthorized:
+                return "This recovery key is not registered on the server."
             }
         }
     }
@@ -71,6 +74,14 @@ final class RecoveryKeyManager {
         repositoryExists: Bool
     ) -> Bool {
         isServerConfigured || repositoryExists
+    }
+
+    // Discovery already pinned the CA, so a 401 while presenting the recovery
+    // identity means the server no longer lists this key, not a transport fault.
+    static func mapRecoveryAuthError(_ error: Swift.Error) -> Swift.Error {
+        MTLSTransportError.indicatesHTTPStatus(401, in: error)
+            ? Error.recoveryKeyNotAuthorized
+            : error
     }
 
     // Returns true when at least one marked recovery key exists in pubkeys/.
@@ -242,11 +253,15 @@ final class RecoveryKeyManager {
         try MTLSTransport.shared.configure(clientIdentity: temporaryIdentity, pinnedCA: pinnedCA)
 
         progress?("Cloning with recovery identity...", 35)
-        try await RepositoryBootstrap.clone(
-            serverURL: discovered.url,
-            repositoryPath: repositoryPath
-        ) { message, cloneProgress in
-            progress?(message, RepositoryBootstrap.scaled(cloneProgress, into: 35...70))
+        do {
+            try await RepositoryBootstrap.clone(
+                serverURL: discovered.url,
+                repositoryPath: repositoryPath
+            ) { message, cloneProgress in
+                progress?(message, RepositoryBootstrap.scaled(cloneProgress, into: 35...70))
+            }
+        } catch {
+            throw Self.mapRecoveryAuthError(error)
         }
 
         let repository = try await MainActor.run {
@@ -282,7 +297,11 @@ final class RecoveryKeyManager {
         )
         progress?("Pushing recovered device key...", 75)
         let branchName = repository.currentBranch() ?? "main"
-        try repository.push(remoteName: "origin", branchName: branchName)
+        do {
+            try repository.push(remoteName: "origin", branchName: branchName)
+        } catch {
+            throw Self.mapRecoveryAuthError(error)
+        }
 
         progress?("Building media index...", 80)
         try await RepositoryBootstrap.hydrateIndex(
