@@ -263,7 +263,7 @@ final class RecoveryKeyManager {
         let ownPubPath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).pub"
         let ownAgePath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).age"
 
-        progress?("Re-wrapping encryption keys for this device...", 72)
+        progress?("Re-wrapping encryption keys for this device...", 70)
         let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
         let allRecipients = Array(Set(existingAgeRecipients + [ownAgePublic]))
         let epochFiles = try KEKEpochManager(
@@ -276,18 +276,19 @@ final class RecoveryKeyManager {
             (path: ownAgePath, content: ownAgePublic),
         ]
         files.append(contentsOf: epochFiles)
-        try await gitDB.commitFiles(
+        try await gitDB.commitFilesWithoutSync(
             message: "Recover device key for \(ownDeviceName) (\(ownDeviceUUID))",
             files: files
         )
+        progress?("Pushing recovered device key...", 75)
         let branchName = repository.currentBranch() ?? "main"
         try repository.push(remoteName: "origin", branchName: branchName)
 
-        progress?("Building media index...", 75)
+        progress?("Building media index...", 80)
         try await RepositoryBootstrap.hydrateIndex(
             resetDatabase: true
         ) { message, hydrateProgress in
-            progress?(message, RepositoryBootstrap.scaled(hydrateProgress, into: 75...95))
+            progress?(message, RepositoryBootstrap.scaled(hydrateProgress, into: 80...99))
         }
 
         guard let primaryIdentity = ClientIdentityManager.shared.loadSecIdentity() else {

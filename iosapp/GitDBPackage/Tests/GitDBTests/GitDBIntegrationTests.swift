@@ -69,4 +69,60 @@ struct GitDBIntegrationTests {
         try await gitDB.syncToHead(progressHandler: nil)
         #expect(try await database.readSyncedCommitHash() == repository.headOID())
     }
+
+    // Recovery must enroll a device key without hydrating SQL so the
+    // later resync is the only index build.
+    @Test func commitFilesWithoutSyncLeavesCacheUnhydrated() async throws {
+        let (repository, database, registry, repoPath, dbURL) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+            try? FileManager.default.removeItem(at: dbURL)
+        }
+
+        let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
+        try await gitDB.commitFilesWithoutSync(
+            message: "enroll device key",
+            files: [
+                (path: "pubkeys/device-a.pub", content: "ssh-ed25519 AAAATEST device-a"),
+            ]
+        )
+
+        #expect(repository.headOID() != nil)
+        #expect(try await database.readSyncedCommitHash() == nil)
+
+        try await gitDB.syncToHead(progressHandler: nil)
+        #expect(try await database.readSyncedCommitHash() == repository.headOID())
+    }
+
+    // The bootstrap API is only valid before the cache has ever been
+    // hydrated, so a later caller cannot skip sync by accident.
+    @Test func commitFilesWithoutSyncRejectsHydratedCache() async throws {
+        let (repository, database, registry, repoPath, dbURL) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+            try? FileManager.default.removeItem(at: dbURL)
+        }
+
+        try repository.createCommit(
+            message: "c1",
+            files: [
+                ("pubkeys/a.pub", "ssh-ed25519 AAAATEST a"),
+            ]
+        )
+
+        let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
+        try await gitDB.syncToHead(progressHandler: nil)
+
+        do {
+            try await gitDB.commitFilesWithoutSync(
+                message: "should fail",
+                files: [
+                    (path: "pubkeys/b.pub", content: "ssh-ed25519 AAAATEST b"),
+                ]
+            )
+            Issue.record("commitFilesWithoutSync unexpectedly succeeded on a hydrated cache")
+        } catch GitDatabase.Error.cacheAlreadyHydrated {
+            // Expected: bootstrap commits are refused after first hydration.
+        }
+    }
 }

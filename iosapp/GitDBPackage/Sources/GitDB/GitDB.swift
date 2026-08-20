@@ -19,8 +19,25 @@ private enum GitDBSignposts {
     }
 }
 
-// Enforces that every HEAD mutation also synchronizes the SQL manifest database.
+// Enforces that HEAD mutations route through GitDB so SQL cache
+// consistency is not left to each caller. Recovery may skip the
+// first sync only before the cache has ever been hydrated.
 public final class GitDatabase: Sendable {
+    // Names bootstrap-commit failures so recovery cannot skip sync
+    // after the cache has already been hydrated.
+    public enum Error: Swift.Error, Equatable, LocalizedError {
+        case cacheAlreadyHydrated
+
+        // Explains why a pre-hydration commit was refused so callers
+        // fall back to the syncing commit path.
+        public var errorDescription: String? {
+            switch self {
+            case .cacheAlreadyHydrated:
+                return "commitFilesWithoutSync is only valid before the cache has been hydrated."
+            }
+        }
+    }
+
     private let repository: Repository
     private let database: ManifestDatabase
     private let syncEngine: ManifestSyncEngine
@@ -87,6 +104,35 @@ public final class GitDatabase: Sendable {
         try await repository.withMutationLock {
             try repository.createCommit(message: message, files: files, deletions: deletions)
             try await syncEngine.syncToHead(progressHandler: nil)
+        }
+        succeeded = true
+    }
+
+    // Commits raw files without hydrating SQL so recovery can enroll a
+    // device key and push before the first (and only) index build.
+    public func commitFilesWithoutSync(
+        message: String,
+        files: [(path: String, content: String)],
+        deletions: [String] = []
+    ) async throws {
+        let signpost = GitDBSignposts.begin("GitDBCommitFilesWithoutSync")
+        var succeeded = false
+        defer {
+            if succeeded {
+                GitDBSignposts.signposter.endInterval(
+                    "GitDBCommitFilesWithoutSync",
+                    signpost,
+                    "files=\(files.count, privacy: .public) deletions=\(deletions.count, privacy: .public)"
+                )
+            } else {
+                GitDBSignposts.end("GitDBCommitFilesWithoutSync", signpost)
+            }
+        }
+        try await repository.withMutationLock {
+            if try await database.readSyncedCommitHash() != nil {
+                throw Error.cacheAlreadyHydrated
+            }
+            try repository.createCommit(message: message, files: files, deletions: deletions)
         }
         succeeded = true
     }

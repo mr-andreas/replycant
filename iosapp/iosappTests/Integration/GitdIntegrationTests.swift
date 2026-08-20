@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import LibGit2
-import GitDB
+@testable import GitDB
 @testable import iosapp
 
 // Verifies iOS git/LFS/GitDB workflows against the real dockerized gitd integration stack.
@@ -219,6 +219,10 @@ struct GitdIntegrationTests {
         try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "ios-recovered-device")
 
         _ = try await manager.recover(input: created.deepLink, password: "correct horse battery staple")
+
+        let recoveredLocal = try RepositoryManager.shared.getRepository()
+        let database = try ManifestLoaderManager.shared.getDatabase()
+        #expect(try await database.readSyncedCommitHash() == recoveredLocal.headOID())
 
         let recoveredRepository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
         let afterPubCount = try recoveredRepository

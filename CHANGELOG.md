@@ -20,6 +20,7 @@
 
 ### Fixes
 
+- iosapp: recovery no longer builds the media index twice, roughly halving recovery time and pushing the new device key before indexing starts
 - iosapp: fix recovery failing with a disk I/O error while rebuilding the media index
 - iosapp: say the recovery password is incorrect instead of showing a crypto error
 - iosapp: hide the password strength meter when unlocking with a recovery key
