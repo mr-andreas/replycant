@@ -1,0 +1,11 @@
+---
+description: Recover the iOS app in a simulator from RecoveryKeys.md
+alwaysApply: true
+---
+
+# Simulator Recovery Testing
+
+To run the iOS app against real data in a simulator, follow the
+`simulator-recovery-testing` skill and recover from a key in the gitignored
+`RecoveryKeys.md`. Recovery only works on a fresh install, so uninstall the
+app first. Never echo a recovery link or password anywhere.

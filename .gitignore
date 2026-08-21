@@ -15,3 +15,8 @@
 # Personal source photos used only to generate sanitized ScreenshotMedia fixtures.
 # These often contain GPS/EXIF and must never be committed.
 /demoimages
+
+# Local recovery keys used to recover a simulator against a real server.
+# Each entry holds a live recovery deep link and password, so the file
+# must never be committable.
+/RecoveryKeys.md
