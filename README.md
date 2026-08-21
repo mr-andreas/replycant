@@ -40,8 +40,10 @@ EOF
 ```
 
 The Git server listens on port `8443` (HTTPS) by default. On the LAN it
-advertises as `<hostname>.local`. Set `REPLYCANT_GIT_PORT` and
-`REPLYCANT_CA_PORT` when those defaults are already in use.
+advertises as `<hostname>.local`. Set `REPLYCANT_HOSTNAME` to override
+that name, and `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT` when those
+defaults are already in use. Already-linked devices need re-onboarding
+after a hostname or port change.
 
 **2. Install the iOS client**
 

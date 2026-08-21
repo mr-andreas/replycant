@@ -1,10 +1,18 @@
 services:
-  # Run a one-shot container on the host network to detect the hostname.
+  # Write the advertised hostname, preferring REPLYCANT_HOSTNAME over
+  # the host's <hostname>.local so TLS SANs and gitd stay in sync.
   hostname-detect:
     image: alpine:3.23
+    environment:
+      - REPLYCANT_HOSTNAME
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname
-    command: sh -c "printf 'REPLYCANT_HOSTNAME=%s.local\\n' $(hostname) > /data/hostname/hostname.env"
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        printf 'REPLYCANT_HOSTNAME=%s\n' "$${REPLYCANT_HOSTNAME:-$$(hostname).local}" \
+          > /data/hostname/hostname.env
     network_mode: host
 
   init-repo:
@@ -38,13 +46,9 @@ services:
         . /data/hostname/hostname.env
 
         cd /data/
-        if [ -f server.key ]; then
-          echo 'Server key already exists'
-          exit 0
-        fi
-
-        # Create OpenSSL config for CA extensions
-        cat > ca.cnf << CAEOF
+        if [ ! -f ca.key ]; then
+          # Create OpenSSL config for CA extensions
+          cat > ca.cnf << CAEOF
         [req]
         distinguished_name = req_dn
         x509_extensions = v3_ca
@@ -59,11 +63,19 @@ services:
         subjectKeyIdentifier = hash
         CAEOF
 
-        # Generate CA key and self-signed certificate with CA extensions (P-256/prime256v1)
-        openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out ca.key
-        openssl req -new -x509 -key ca.key -out ca.crt -days 3650 -config ca.cnf
+          # Generate CA key and self-signed certificate with CA extensions (P-256/prime256v1)
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out ca.key
+          openssl req -new -x509 -key ca.key -out ca.crt -days 3650 -config ca.cnf
+        fi
 
-        # Generate server key and certificate with SAN so Go TLS clients (git-lfs) accept the hostname
+        if [ -f server.crt ] && openssl x509 -in server.crt -noout -ext subjectAltName \
+             | tr ',' '\n' | tr -d ' ' | grep -Fqx "DNS:$$REPLYCANT_HOSTNAME"; then
+          echo "Server certificate already matches $$REPLYCANT_HOSTNAME"
+          exit 0
+        fi
+
+        # Re-issue the server cert from the existing CA when the hostname
+        # changes so already-linked devices keep trusting the same CA.
         openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out server.key
         openssl req -new -key server.key -out server.csr \
           -subj "/CN=$$REPLYCANT_HOSTNAME" \
