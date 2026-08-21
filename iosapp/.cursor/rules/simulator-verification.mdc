@@ -1,0 +1,26 @@
+---
+description: Build every iOS change and verify user-visible ones in a recovered simulator
+alwaysApply: true
+---
+
+# Simulator Verification
+
+Every `iosapp/` change must build. User-visible behavior and UI changes
+must also be run and verified in a simulator before the task is done.
+Pure refactors, logging, and internal cleanups only need to build.
+
+This does not replace unit tests, and tests do not replace it. The iOS
+suite is run manually by a developer, so the simulator check is the
+agent's only runtime evidence.
+
+- Build and launch with XcodeBuildMCP against the already-booted
+  simulator. Do not use raw `xcodebuild` with a hardcoded device.
+- Verify against a recovered library. If the simulator is not recovered
+  yet, follow the `simulator-recovery-testing` skill. Once recovered,
+  rebuild and relaunch is enough. Do not uninstall, since that forces
+  a fresh recovery.
+- Confirm the change with `screenshot` or `snapshot_ui`. If it broke
+  something, fix it and re-verify.
+- For a new feature, record a walkthrough as described in the skill.
+
+A task is NOT complete until simulator verification passes.
