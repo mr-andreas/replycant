@@ -233,19 +233,7 @@ reinstall first to avoid mixing recovery with an existing identity context.
 
 ## Key Cache Behavior
 
-When a new device is authorized, there may be a delay before the server recognizes it due to key caching.
-
-### Retry Logic
-
-The server handles this automatically:
-
-1. New device attempts to connect
-2. Authentication fails (key not in cache)
-3. Server invalidates cache
-4. Authentication retried with fresh keys from repository
-5. If key now exists, authentication succeeds
-
-This allows newly authorized devices to connect immediately without waiting for cache expiry (default: 5 minutes).
+An authorized device connects on its first attempt after the pubkey push lands on `main`. A removed key stops working just as promptly. The server reloads authorized keys whenever `main` moves, so enrollment and revocation do not wait on a cache timer.
 
 ## Security Properties
 

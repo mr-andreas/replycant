@@ -32,6 +32,7 @@ type Authenticator struct {
 
 	mu          sync.RWMutex
 	cachedKeys  map[string]*ecdsa.PublicKey // filename -> public key
+	cachedHead  plumbing.Hash
 	cacheExpiry time.Time
 }
 
@@ -45,63 +46,47 @@ func NewAuthenticator(repoPath string, cacheTTL time.Duration) *Authenticator {
 	}
 }
 
-// Detects whether the repository is completely empty (no branches at all).
-// Used to enable bootstrap mode where any valid P-256 certificate can push the initial commit.
-func (a *Authenticator) isRepositoryEmpty() (bool, error) {
+// Opens the bare repo once so auth can decide between bootstrap mode and
+// a main-commit cache key without a second repository open.
+func (a *Authenticator) repoState() (hasBranch bool, mainHash plumbing.Hash, err error) {
 	repo, err := git.PlainOpen(a.repoPath)
 	if err != nil {
-		return false, fmt.Errorf("failed to open repository: %w", err)
+		return false, plumbing.ZeroHash, fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	// Get all references
 	refs, err := repo.References()
 	if err != nil {
-		return false, fmt.Errorf("failed to read references: %w", err)
+		return false, plumbing.ZeroHash, fmt.Errorf("failed to read references: %w", err)
 	}
 
-	// Check if there are any branch references
-	hasBranch := false
 	errStop := errors.New("stop")
 	err = refs.ForEach(func(ref *plumbing.Reference) error {
 		if ref.Name().IsBranch() {
 			hasBranch = true
-			return errStop // Early exit
+			return errStop
 		}
 		return nil
 	})
-	// Ignore our "stop" error
 	if err != nil && err != errStop {
-		return false, fmt.Errorf("error checking branches: %w", err)
+		return false, plumbing.ZeroHash, fmt.Errorf("error checking branches: %w", err)
 	}
 
-	// Repository is empty only if there are no branches at all
-	return !hasBranch, nil
+	if !hasBranch {
+		return false, plumbing.ZeroHash, nil
+	}
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	if err != nil {
+		return true, plumbing.ZeroHash, fmt.Errorf("failed to find main branch: %w", err)
+	}
+	return true, ref.Hash(), nil
 }
 
 // Validates that the client certificate contains an authorized P-256 public key.
 // Returns the username (filename without .pub extension) if authorized.
 // For empty repositories, returns ErrUnauthorizedBootstrap to signal that bootstrap mode
 // should be used (allows any valid P-256 certificate to push).
-// Retries once with a fresh cache if authentication fails to handle recently added keys.
 func (a *Authenticator) Authenticate(clientCert *x509.Certificate) (string, error) {
-	username, err := a.tryAuthenticate(clientCert)
-	if err == nil {
-		return username, nil
-	}
-
-	// If authentication failed due to unauthorized key, clear cache and retry once
-	// This handles the case where a key was recently added but not yet in cache
-	if errors.Is(err, ErrUnauthorized) && strings.Contains(err.Error(), "public key not authorized") {
-		a.clearCache()
-		return a.tryAuthenticate(clientCert)
-	}
-
-	return username, err
-}
-
-// Performs a single authentication attempt against the cached authorized keys.
-// Used by Authenticate() to enable retry logic with cache clearing.
-func (a *Authenticator) tryAuthenticate(clientCert *x509.Certificate) (string, error) {
 	if clientCert == nil {
 		return "", fmt.Errorf("%w: no client certificate provided", ErrUnauthorized)
 	}
@@ -111,17 +96,18 @@ func (a *Authenticator) tryAuthenticate(clientCert *x509.Certificate) (string, e
 		return "", fmt.Errorf("%w: invalid certificate: %s", ErrUnauthorized, err)
 	}
 
-	// Check if repository is empty (bootstrap mode)
-	empty, err := a.isRepositoryEmpty()
-	if err != nil {
+	hasBranch, mainHash, err := a.repoState()
+	if err != nil && !hasBranch {
 		return "", fmt.Errorf("%w: failed to check repository state: %s", ErrUnauthorized, err)
 	}
-	if empty {
-		// Return special error to signal bootstrap mode to the server
+	if !hasBranch {
 		return "bootstrap", ErrUnauthorizedBootstrap
 	}
+	if err != nil {
+		return "", fmt.Errorf("%w: failed to load authorized keys: %s", ErrUnauthorized, err)
+	}
 
-	keys, err := a.loadAuthorizedKeys()
+	keys, err := a.loadAuthorizedKeys(mainHash)
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to load authorized keys: %s", ErrUnauthorized, err)
 	}
@@ -135,19 +121,11 @@ func (a *Authenticator) tryAuthenticate(clientCert *x509.Certificate) (string, e
 	return "", fmt.Errorf("%w: public key not authorized", ErrUnauthorized)
 }
 
-// Invalidates the key cache, forcing a fresh read from repository on next load.
-// Used when authentication fails to handle recently added keys.
-func (a *Authenticator) clearCache() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cacheExpiry = time.Time{} // Set to zero time to invalidate
-}
-
-// Loads authorized keys from pubkeys/ directory on main branch.
-// Results are cached to minimize repository reads.
-func (a *Authenticator) loadAuthorizedKeys() (map[string]*ecdsa.PublicKey, error) {
+// Reloads pubkeys when main has moved so a pushed revocation or enrollment
+// takes effect on the next request instead of waiting out the TTL.
+func (a *Authenticator) loadAuthorizedKeys(head plumbing.Hash) (map[string]*ecdsa.PublicKey, error) {
 	a.mu.RLock()
-	if time.Now().Before(a.cacheExpiry) {
+	if head == a.cachedHead && time.Now().Before(a.cacheExpiry) {
 		keys := a.cachedKeys
 		a.mu.RUnlock()
 		return keys, nil
@@ -157,35 +135,30 @@ func (a *Authenticator) loadAuthorizedKeys() (map[string]*ecdsa.PublicKey, error
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if time.Now().Before(a.cacheExpiry) {
+	if head == a.cachedHead && time.Now().Before(a.cacheExpiry) {
 		return a.cachedKeys, nil
 	}
 
-	keys, err := a.readKeysFromRepo()
+	keys, err := a.readKeysFromCommit(head)
 	if err != nil {
 		return nil, err
 	}
 
 	a.cachedKeys = keys
+	a.cachedHead = head
 	a.cacheExpiry = time.Now().Add(a.cacheTTL)
 
 	return keys, nil
 }
 
-// Reads all .pub files from pubkeys/ directory on main branch.
-func (a *Authenticator) readKeysFromRepo() (map[string]*ecdsa.PublicKey, error) {
+// Reads all .pub files from the pubkeys/ tree of a specific main commit.
+func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecdsa.PublicKey, error) {
 	repo, err := git.PlainOpen(a.repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find main branch: %w", err)
-	}
-
-	commit, err := repo.CommitObject(ref.Hash())
+	commit, err := repo.CommitObject(head)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit: %w", err)
 	}

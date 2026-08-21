@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,8 +166,8 @@ func TestAuthenticator_Authenticate_Success(t *testing.T) {
 	pubKey2 := &privKey2.PublicKey
 
 	// Add keys to repository
-	addKeyToRepo(t, testRepo, "alice", pubKey1)
-	addKeyToRepo(t, testRepo, "bob", pubKey2)
+	addKeyToRepo(t, testRepo, "alice.pub", pubKey1)
+	addKeyToRepo(t, testRepo, "bob.pub", pubKey2)
 
 	// Create authenticator using the bare repo
 	auth := NewAuthenticator(testRepo.BareRepo, 1*time.Minute)
@@ -194,7 +195,7 @@ func TestAuthenticator_Authenticate_Unauthorized(t *testing.T) {
 	privKey1, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	pubKey1 := &privKey1.PublicKey
-	addKeyToRepo(t, testRepo, "alice", pubKey1)
+	addKeyToRepo(t, testRepo, "alice.pub", pubKey1)
 
 	// Create authenticator using the bare repo
 	auth := NewAuthenticator(testRepo.BareRepo, 1*time.Minute)
@@ -218,7 +219,7 @@ func TestAuthenticator_Caching(t *testing.T) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	pubKey := &privKey.PublicKey
-	addKeyToRepo(t, testRepo, "alice", pubKey)
+	addKeyToRepo(t, testRepo, "alice.pub", pubKey)
 
 	// Create authenticator with short cache TTL using the bare repo
 	auth := NewAuthenticator(testRepo.BareRepo, 100*time.Millisecond)
@@ -241,6 +242,90 @@ func TestAuthenticator_Caching(t *testing.T) {
 	username, err = auth.Authenticate(cert)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", username)
+}
+
+// Proves a deleted device key is rejected on the next request even when
+// the cache TTL has not expired, so revocation cannot wait on the timer.
+func TestAuthenticator_RevokedKeyRejectedAfterPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	pubKey := &privKey.PublicKey
+	addKeyToRepo(t, testRepo, "alice.pub", pubKey)
+
+	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
+	cert := createTestCertificate(t, pubKey, privKey)
+	username, err := auth.Authenticate(cert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+
+	removeKeyFromRepo(t, testRepo, "alice.pub")
+
+	_, err = auth.Authenticate(cert)
+	assert.ErrorIs(t, err, ErrUnauthorized)
+}
+
+// Locks recovery keys onto the same revocation path as device keys so a
+// deleted .recovery.pub cannot keep authorizing the recovery identity.
+func TestAuthenticator_RevokedRecoveryKeyRejectedAfterPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	deviceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "iphone.pub", &deviceKey.PublicKey)
+
+	recoveryKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	recoveryFile := "iphone-2428c55c-2fa0-4a99-8b76-a85160ea6714.recovery.pub"
+	addKeyToRepo(t, testRepo, recoveryFile, &recoveryKey.PublicKey)
+
+	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
+	recoveryCert := createTestCertificate(t, &recoveryKey.PublicKey, recoveryKey)
+	username, err := auth.Authenticate(recoveryCert)
+	require.NoError(t, err)
+	assert.Equal(t, "iphone-2428c55c-2fa0-4a99-8b76-a85160ea6714.recovery", username)
+
+	removeKeyFromRepo(t, testRepo, recoveryFile)
+
+	_, err = auth.Authenticate(recoveryCert)
+	assert.ErrorIs(t, err, ErrUnauthorized)
+
+	deviceCert := createTestCertificate(t, &deviceKey.PublicKey, deviceKey)
+	deviceName, err := auth.Authenticate(deviceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "iphone", deviceName)
+}
+
+// Covers enrollment after a warm cache so newly pushed keys authenticate
+// immediately without the old fail-then-retry cache clear.
+func TestAuthenticator_NewKeyAuthorizedAfterPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	aliceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "alice.pub", &aliceKey.PublicKey)
+
+	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
+	aliceCert := createTestCertificate(t, &aliceKey.PublicKey, aliceKey)
+	username, err := auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+
+	bobKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "bob.pub", &bobKey.PublicKey)
+
+	bobCert := createTestCertificate(t, &bobKey.PublicKey, bobKey)
+	bobName, err := auth.Authenticate(bobCert)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", bobName)
 }
 
 // Tests authentication with nil certificate.
@@ -266,7 +351,7 @@ func TestServer_HandleGitRequest_Unauthorized(t *testing.T) {
 	authorizedPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	authorizedPubKey := &authorizedPrivKey.PublicKey
-	addKeyToRepo(t, testRepo, "authorized", authorizedPubKey)
+	addKeyToRepo(t, testRepo, "authorized.pub", authorizedPubKey)
 
 	certFile := filepath.Join(t.TempDir(), "server.crt")
 	keyFile := filepath.Join(t.TempDir(), "server.key")
@@ -610,30 +695,29 @@ func simulateBootstrapPush(t *testing.T, bareRepo string, username string, pubKe
 	}
 }
 
-// Helper: adds a public key file to the working directory and pushes to bare repo.
-func addKeyToRepo(t *testing.T, testRepo gittest.TestRepo, username string, pubKey *ecdsa.PublicKey) {
+// Commits an explicit pubkey filename so tests can cover both device
+// keys and marked recovery keys through the same helper.
+func addKeyToRepo(t *testing.T, testRepo gittest.TestRepo, fileName string, pubKey *ecdsa.PublicKey) {
 	repo, err := git.PlainOpen(testRepo.WorkDir)
 	require.NoError(t, err)
 
 	worktree, err := repo.Worktree()
 	require.NoError(t, err)
 
-	// Create SSH format key
 	keyType := "ecdsa-sha2-nistp256"
 	wireFormat := encodeSSHPublicKey(keyType, pubKey)
 	encoded := base64.StdEncoding.EncodeToString(wireFormat)
+	username := strings.TrimSuffix(fileName, ".pub")
 	sshKey := keyType + " " + encoded + " " + username + "@test\n"
 
-	// Write key file
-	keyFile := filepath.Join(testRepo.WorkDir, "pubkeys", username+".pub")
+	keyFile := filepath.Join(testRepo.WorkDir, "pubkeys", fileName)
 	err = os.WriteFile(keyFile, []byte(sshKey), 0644)
 	require.NoError(t, err)
 
-	// Add and commit
-	_, err = worktree.Add("pubkeys/" + username + ".pub")
+	_, err = worktree.Add("pubkeys/" + fileName)
 	require.NoError(t, err)
 
-	_, err = worktree.Commit("Add key for "+username, &git.CommitOptions{
+	_, err = worktree.Commit("Add key "+fileName, &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "Test",
 			Email: "test@example.com",
@@ -642,7 +726,31 @@ func addKeyToRepo(t *testing.T, testRepo gittest.TestRepo, username string, pubK
 	})
 	require.NoError(t, err)
 
-	// Push to bare repo
+	err = repo.Push(&git.PushOptions{})
+	require.NoError(t, err)
+}
+
+// Pushes a pubkey deletion so revocation tests can move main after the
+// authenticator has already cached the previous authorized set.
+func removeKeyFromRepo(t *testing.T, testRepo gittest.TestRepo, fileName string) {
+	repo, err := git.PlainOpen(testRepo.WorkDir)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	_, err = worktree.Remove("pubkeys/" + fileName)
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Revoke "+fileName, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
 	err = repo.Push(&git.PushOptions{})
 	require.NoError(t, err)
 }

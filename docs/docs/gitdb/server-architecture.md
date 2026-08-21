@@ -146,24 +146,15 @@ discover configuration programmatically.
 
 ## Key Caching
 
-Authorized keys from the `pubkeys/` directory are cached to minimize repository reads.
+Authorized keys from the `pubkeys/` directory are cached to minimize tree walks and blob parses. The cache is keyed on the `main` commit hash, so a push that adds or removes a `.pub` file is picked up on the next request.
 
 ### Cache Behavior
 
-- **Default TTL**: 5 minutes (configurable via `--cache-ttl` flag)
-- **Cache invalidation**: Expired entries are reloaded from repository
-- **Retry on failure**: If authentication fails, cache is cleared and authentication retried once
+- **Cache key**: the `main` commit hash. Any push that changes `pubkeys/` reloads the authorized set on the next request.
+- **Refresh bound**: `--cache-ttl` (default 5 minutes) only limits cache age while `main` has not moved.
+- **Enrollment and revocation**: both take effect on the next request after the push.
 
-### Retry Logic
-
-The retry mechanism handles the case where a key was recently added but not yet in cache:
-
-1. Authentication attempt fails with "public key not authorized"
-2. Cache is immediately invalidated
-3. Authentication is retried with fresh keys from repository
-4. If retry also fails, authentication is denied
-
-This allows newly authorized devices to connect without waiting for cache expiry.
+A deleted `.pub` never fails authentication against a stale cache, so revocation cannot wait on a failed-auth retry. Reloading when `main` moves is what makes revocation immediate.
 
 ## Bootstrap Mode
 

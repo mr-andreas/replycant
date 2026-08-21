@@ -180,7 +180,7 @@ Each `.pub` file contains a single P-256 ECDSA public key in SSH format.
 2. User shares their `.pub` file with an admin
 3. Admin adds the `.pub` file to `pubkeys/username.pub`
 4. Admin commits and pushes to main branch
-5. Keys are cached for 5 minutes; user can authenticate immediately after cache refresh
+5. The new key is authorized on the next request after the push. The cache TTL is only a refresh bound when the repository has not changed.
 
 ### Revoking Access
 
@@ -191,7 +191,7 @@ git commit -m "Revoke access for username"
 git push origin main
 ```
 
-Access revocation takes effect after the cache TTL expires (default: 5 minutes).
+Access revocation takes effect on the next request after the push. The cache TTL is only a refresh bound when the repository has not changed.
 
 ### Key Rotation
 

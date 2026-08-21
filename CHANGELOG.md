@@ -35,4 +35,5 @@
 - iosapp: zoomed fullscreen photos no longer reset or shrink when new photos sync in
 - replycant-importer: failed or interrupted commits no longer leave staged-but-deleted files that permanently block push/rebase
 - replycant-importer: ctrl+c now stops in-flight work immediately, flushes pending commits, and a second ctrl+c cancels the flush
+- server: revoking a device or recovery key now blocks it immediately instead of leaving it usable for up to five minutes
 - webapp: fix timeline tiles staying blank after switching commits until you scroll
