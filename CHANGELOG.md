@@ -21,6 +21,7 @@
 
 ### Fixes
 
+- iosapp: generate a simulator device key when bundled credentials are missing so recovery can enroll a new device
 - iosapp: say a recovery key was deleted from the server instead of showing an HTTP 401 error
 - iosapp: recovery no longer builds the media index twice, roughly halving recovery time and pushing the new device key before indexing starts
 - iosapp: fix recovery failing with a disk I/O error while rebuilding the media index

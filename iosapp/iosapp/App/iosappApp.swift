@@ -69,9 +69,13 @@ struct iosappApp: App {
         }
 
         #if DEBUG && targetEnvironment(simulator)
-        // Avoids generating simulator-only identities when a bundled identity is required.
-        if SimulatorAutoConnectManager.shared.isAutoConnectEnabled {
-            log("Skipping generated device key because simulator auto-connect is enabled", context: "App")
+        // Avoids generating a throwaway identity when bundled
+        // SimulatorCredentials will be imported instead.
+        if SimulatorAutoConnectManager.shouldSkipGeneratedDeviceKey(
+            isAutoConnectEnabled: SimulatorAutoConnectManager.shared.isAutoConnectEnabled,
+            hasBundledSimulatorCredentials: ClientIdentityManager.shared.hasBundledSimulatorCredentials()
+        ) {
+            log("Skipping generated device key because bundled simulator credentials are present", context: "App")
             return
         }
         #endif

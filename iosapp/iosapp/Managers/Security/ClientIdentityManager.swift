@@ -62,6 +62,18 @@ final class ClientIdentityManager {
         }
     }
 
+    // Lets launch skip key generation only when bundled simulator
+    // credentials are actually present to import.
+    func hasBundledSimulatorCredentials() -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return loadBundledCredential(named: "device", ext: "crt") != nil
+            && loadBundledCredential(named: "device", ext: "key") != nil
+            && loadBundledCredential(named: "identity", ext: "json") != nil
+        #else
+        return false
+        #endif
+    }
+
     // Imports an optional local simulator identity when present so debug builds can skip QR onboarding.
     // Credentials are never shipped in-repo; developers place them under SimulatorCredentials/ locally.
     func importBundledSimulatorIdentityIfNeeded() throws {

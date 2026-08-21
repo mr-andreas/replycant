@@ -16,6 +16,15 @@ final class SimulatorAutoConnectManager {
         #endif
     }
 
+    // Skips generated keys only when bundled credentials will replace
+    // them. Recovery on a fresh simulator still needs a device key.
+    static func shouldSkipGeneratedDeviceKey(
+        isAutoConnectEnabled: Bool,
+        hasBundledSimulatorCredentials: Bool
+    ) -> Bool {
+        isAutoConnectEnabled && hasBundledSimulatorCredentials
+    }
+
     // Prepares keychain identity and server configuration early enough for mTLS transport setup.
     func prepareForLaunchIfNeeded() {
         guard isAutoConnectEnabled else { return }
