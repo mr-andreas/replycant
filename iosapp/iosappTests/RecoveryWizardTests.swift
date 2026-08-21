@@ -103,6 +103,43 @@ struct RecoveryWizardTests {
         )
     }
 
+    // Ensures delete copy names the key and states that revocation cannot
+    // be undone, so the confirmation is not a generic discard dialog.
+    @Test func recoveryKeyDeleteCopy() {
+        #expect(RecoveryKeyView.deleteButtonLabel == "Delete")
+        #expect(
+            RecoveryKeyView.deleteConfirmationTitle(label: "home-safe")
+                == "Delete “home-safe”?"
+        )
+        #expect(
+            RecoveryKeyView.deleteConfirmationBody
+                .contains("stops working")
+        )
+        #expect(
+            RecoveryKeyView.deleteConfirmationBody
+                .contains("cannot be undone")
+        )
+        #expect(RecoveryKeyView.deleteConfirmActionLabel == "Delete Key")
+        #expect(RecoveryKeyView.deleteCancelLabel == "Cancel")
+    }
+
+    // Ensures VoiceOver can tell which recovery key a trash button targets.
+    @Test func recoveryKeyDeleteAccessibilityLabel() {
+        #expect(
+            RecoveryKeyView.deleteAccessibilityLabel(label: "home-safe")
+                == "Delete recovery key home-safe"
+        )
+    }
+
+    // Ensures the per-row spinner tracks only in-flight deletions so other
+    // keys stay tappable while one revoke is still pushing.
+    @Test func recoveryKeyDeleteBusyState() {
+        let inFlight: Set<String> = ["aaaa-bbbb"]
+        #expect(RecoveryKeyView.isDeleting(uuid: "aaaa-bbbb", in: inFlight))
+        #expect(!RecoveryKeyView.isDeleting(uuid: "cccc-dddd", in: inFlight))
+        #expect(!RecoveryKeyView.isDeleting(uuid: "aaaa-bbbb", in: []))
+    }
+
     // Ensures create wizard only advances when label is non-empty and password fields match.
     @Test func recoveryKeyWizardAdvancePredicates() {
         #expect(!RecoveryKeyView.canAdvanceFromName(label: ""))

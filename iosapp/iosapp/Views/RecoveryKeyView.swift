@@ -18,6 +18,11 @@ struct RecoveryKeyView: View {
     static let createdStepShareLabel = "Share recovery key"
     static let createdStepShareAgainLabel = "Share again"
     static let createdStepDoneLabel = "Done"
+    static let deleteButtonLabel = "Delete"
+    static let deleteConfirmationBody =
+        "This recovery key stops working immediately and cannot be undone."
+    static let deleteConfirmActionLabel = "Delete Key"
+    static let deleteCancelLabel = "Cancel"
 
     enum RecoveryKeyStep {
         case status
@@ -49,6 +54,8 @@ struct RecoveryKeyView: View {
     @State private var createdKey: RecoveryKeyManager.CreatedRecoveryKey?
     @State private var hasSharedCreatedKey = false
     @State private var shareBundle: RecoveryShareBundle?
+    @State private var pendingDeletion: RecoveryKeyManager.RecoveryKeyRecord?
+    @State private var deletingUUIDs: Set<String> = []
 
     private let manager = RecoveryKeyManager()
     // Keeps Canvas from touching libgit2, which is not initialized in previews.
@@ -157,14 +164,31 @@ struct RecoveryKeyView: View {
             if !records.isEmpty {
                 Section("Existing Recovery Keys") {
                     ForEach(records, id: \.uuid) { record in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(record.label)
-                            Text(record.uuid)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(record.label)
+                                Text(record.uuid)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if Self.isDeleting(uuid: record.uuid, in: deletingUUIDs) {
+                                ProgressView()
+                            } else {
+                                Button(role: .destructive) {
+                                    pendingDeletion = record
+                                } label: {
+                                    Label(Self.deleteButtonLabel, systemImage: "trash")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel(
+                                    Self.deleteAccessibilityLabel(label: record.label)
+                                )
+                            }
                         }
                     }
-                    .onDelete(perform: deleteRecords)
+                    .onDelete(perform: confirmDeleteRecords)
                 }
             }
 
@@ -176,6 +200,27 @@ struct RecoveryKeyView: View {
                 }
             }
         }
+        .alert(
+            pendingDeletion.map { Self.deleteConfirmationTitle(label: $0.label) } ?? "",
+            isPresented: isDeleteConfirmationPresented,
+            presenting: pendingDeletion
+        ) { record in
+            Button(Self.deleteCancelLabel, role: .cancel) {}
+            Button(Self.deleteConfirmActionLabel, role: .destructive) {
+                Task { await deleteRecord(record) }
+            }
+        } message: { _ in
+            Text(Self.deleteConfirmationBody)
+        }
+    }
+
+    // Bridges the optional pending key into alert's isPresented flag so
+    // swipe and the trash button share one confirmation.
+    private var isDeleteConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { pendingDeletion != nil },
+            set: { if !$0 { pendingDeletion = nil } }
+        )
     }
 
     // Step 1 gathers a human-readable label that is reused in filenames and exported backup text.
@@ -364,6 +409,22 @@ struct RecoveryKeyView: View {
         hasShared ? createdStepShareAgainLabel : createdStepShareLabel
     }
 
+    // Names the key in the confirmation title so users know which backup
+    // they are about to revoke.
+    static func deleteConfirmationTitle(label: String) -> String {
+        "Delete “\(label)”?"
+    }
+
+    // Distinguishes trash buttons when several keys are listed.
+    static func deleteAccessibilityLabel(label: String) -> String {
+        "Delete recovery key \(label)"
+    }
+
+    // Drives the per-row spinner so only the in-flight revoke shows busy.
+    static func isDeleting(uuid: String, in deletingUUIDs: Set<String>) -> Bool {
+        deletingUUIDs.contains(uuid)
+    }
+
     // Shows mismatch copy only after both fields are filled and disagree,
     // so empty or in-progress entry is not treated as an error.
     static func passwordWarning(password: String, confirmPassword: String) -> String? {
@@ -412,21 +473,30 @@ struct RecoveryKeyView: View {
         }
     }
 
-    // Deletes selected recovery keys so users can revoke compromised or superseded backups.
-    private func deleteRecords(at offsets: IndexSet) {
-        Task {
-            for index in offsets {
-                let record = records[index]
-                do {
-                    let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
-                    let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-                    try await manager.deleteRecoveryKey(uuid: record.uuid, repository: repository, gitDB: gitDB)
-                } catch {
-                    errorMessage = error.localizedDescription
-                    return
-                }
-            }
+    // Routes swipe-to-delete through the same confirmation as the trash
+    // button so a swipe cannot revoke a key without naming it first.
+    private func confirmDeleteRecords(at offsets: IndexSet) {
+        guard let index = offsets.first else { return }
+        pendingDeletion = records[index]
+    }
+
+    // Revokes one recovery key by uuid so a later refresh cannot delete
+    // the wrong row if the list changes mid-push.
+    private func deleteRecord(_ record: RecoveryKeyManager.RecoveryKeyRecord) async {
+        errorMessage = nil
+        deletingUUIDs.insert(record.uuid)
+        defer { deletingUUIDs.remove(record.uuid) }
+        do {
+            let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
+            let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
+            try await manager.deleteRecoveryKey(
+                uuid: record.uuid,
+                repository: repository,
+                gitDB: gitDB
+            )
             await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
