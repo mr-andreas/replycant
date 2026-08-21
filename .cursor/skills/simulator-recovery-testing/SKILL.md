@@ -1,6 +1,6 @@
 ---
 name: simulator-recovery-testing
-description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md; covers the fresh-install requirement and the recovery deep link flow.
+description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md; covers the fresh-install requirement, the recovery deep link flow, and recording a video walkthrough of a feature under test.
 ---
 
 # Simulator Recovery Testing
@@ -87,6 +87,37 @@ is already configured or a local repo exists, and the app lands on
 QR images are not supported. The simulator has no camera, and the share
 text always includes the deep link.
 
+## Recording a feature walkthrough
+
+Record after recovery reaches the timeline, when the run exists to try
+out a new or changed feature. Plain recovery runs with no feature to
+show do not need a recording.
+
+Write files to `recordings/<YYYYMMDD-HHMMSS>-<feature-slug>.mp4` at the
+repo root. Create the directory if it is missing. It is gitignored.
+
+1. Get the app into the state the walkthrough starts from before
+   starting the recording, so the clip opens on something meaningful.
+2. Start: `record_sim_video({ start: true, outputFile: "recordings/<name>.mp4" })`.
+3. Drive the feature with the UI automation tools, pausing briefly on
+   each screen that matters so the result is visible at normal playback
+   speed.
+4. Capture a still with `screenshot` at each significant step, and copy
+   each one next to the video as `recordings/<name>-NN.png` so it
+   survives temp cleanup.
+5. Stop: `record_sim_video({ stop: true })`.
+6. Confirm the MP4 exists and is non-empty before reporting it.
+
+Keep clips short. Stop the recording as soon as the walkthrough ends
+rather than leaving it running through a long sync.
+
+A recovered library shows the user's real photos. Recordings stay in
+the gitignored directory. Never commit them, attach them to a commit
+message, or copy them into docs.
+
+If `record_sim_video` is unavailable, use the bundled AXe `record-video`
+subcommand against the simulator UDID.
+
 ## Server and Path
 
 The discovery URL and pinned CA hash are sealed inside the encrypted
@@ -142,7 +173,7 @@ Do not wipe the data directory unless the keys are expendable.
 - Never echo a recovery link, payload, or password
 - Never tap `Revoke used key`
 - Never wipe a key's `replycant-data` as part of bringing the stack up
-- Never write `RecoveryKeys.md` into git
+- Never write `RecoveryKeys.md` or `recordings/` into git
 
 ## Final output to user
 
@@ -151,3 +182,6 @@ Report:
 - Which key heading was used (not the link or password)
 - Whether recovery completed, was rejected as revoked, or failed
 - Whether the local stack was started or live-patched
+- The path to the walkthrough MP4, when one was recorded
+- Key frames embedded inline as `![step](recordings/<name>-NN.png)`,
+  since chat cannot play video

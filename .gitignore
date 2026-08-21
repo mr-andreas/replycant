@@ -20,3 +20,7 @@
 # Each entry holds a live recovery deep link and password, so the file
 # must never be committable.
 /RecoveryKeys.md
+
+# Simulator walkthrough captures of a recovered library. These show
+# the user's real photos, so they must never be committable.
+/recordings
