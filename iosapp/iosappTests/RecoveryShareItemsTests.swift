@@ -158,6 +158,8 @@ struct RecoveryShareItemsTests {
         #expect(text.contains("Server: example.com"))
         #expect(text.contains("Deep link: \(deepLink)"))
         #expect(text.contains("Password is required and is not included in this share."))
+        #expect(text.contains(RecoveryShareText.restoreInstruction))
+        #expect(RecoveryShareText.restoreInstruction.contains("Connect to an existing library"))
     }
 
     // Ensures the image placeholder is a real bitmap so image
@@ -182,6 +184,10 @@ struct RecoveryShareItemsTests {
         )
 
         #expect(rendered.size.height > qr.size.height)
+        #expect(
+            RecoveryShareCard.details(label: "home-safe", uuid: "1234", host: "example.com")
+                .contains(RecoveryShareText.restoreInstruction)
+        )
     }
 
     // Builds the textual source so destination tests do not repeat

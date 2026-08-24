@@ -213,8 +213,8 @@ starts from a recovery bundle instead of a pairing QR from another device.
 
 ### Recovery entry points
 
-- Onboarding action: **Recover with a recovery key**
-- In-app recovery scanner: QR mode that accepts recovery envelope JSON
+- Onboarding: **Connect to an existing library**, then scan the recovery QR
+  (or paste backup text)
 - Deep link: `replycant://recover?v=1&d=...`
 
 ### Recovery sequence

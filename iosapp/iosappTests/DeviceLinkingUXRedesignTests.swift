@@ -28,7 +28,10 @@ struct DeviceLinkingUXRedesignTests {
         #expect(OnboardingView.connectToExistingStepOneInstruction == "On your other device, go to Settings → Link a New Device and scan this code")
         #expect(OnboardingView.connectToExistingStepOneContinueLabel == "Next")
         #expect(OnboardingView.connectToExistingStepOneWaitingLabel == "Waiting for your other device to scan...")
-        #expect(OnboardingView.connectToExistingStepTwoHint == "Your other device should now be showing a green-bordered QR code")
+        #expect(OnboardingView.connectToExistingRecoveryShortcutLabel == "I have a recovery key")
+        #expect(OnboardingView.connectToExistingPasteBackupLabel == "Paste backup text")
+        #expect(OnboardingView.connectToExistingStepTwoHint == "Your other device should now be showing a green-bordered QR code. You can also scan a recovery QR here.")
+        #expect(OnboardingView.connectToExistingRecoveryScanHint == "Scan your saved recovery QR, or paste backup text.")
     }
 
     // Ensures old-device copy clearly separates the grant-access success state

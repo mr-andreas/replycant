@@ -11,6 +11,7 @@
 ### Features
 
 - add regenerable iOS and Electron product screenshots in the README (`make readme-screenshots`)
+- iosapp: recover access by scanning a recovery QR from Connect to an existing library
 - iosapp: adds recovery key creation, deep-link and QR recovery flows, and fresh-install repository recovery with key re-enrollment
 - replycant-importer: encrypts binaries and uploads them to LFS before commit, writing only pointer files into the worktree for much faster import/rebase
 - replycant-importer: starts encrypting and uploading while the source tree is still being scanned; progress shows `(calculating, N found)` until the scan finishes

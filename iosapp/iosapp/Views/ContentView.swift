@@ -170,6 +170,10 @@ struct ContentView: View {
                     onCancel: {
                         showRecoveryFlow = false
                         pendingRecoveryInput = nil
+                    },
+                    onScanAgain: {
+                        showRecoveryFlow = false
+                        pendingRecoveryInput = nil
                     }
                 )
             }

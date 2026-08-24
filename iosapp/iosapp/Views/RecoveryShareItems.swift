@@ -15,6 +15,13 @@ enum RecoveryShareHeader {
 // Builds the pasteable backup so destinations that accept text can
 // carry the deep link while the QR card remains the image fallback.
 enum RecoveryShareText {
+    // Tells the recipient how to use the backup so they do not look
+    // for a separate recover-from-QR onboarding action.
+    static let restoreInstruction =
+        "To restore: on a fresh install, choose Connect to an existing library and scan this QR."
+
+    // Builds the pasteable backup, including how to restore from
+    // Connect to an existing library, so the share is self-contained.
     static func compose(
         label: String,
         uuid: String,
@@ -29,6 +36,7 @@ enum RecoveryShareText {
         Deep link: \(deepLink)
 
         Password is required and is not included in this share.
+        \(restoreInstruction)
         """
     }
 }
@@ -162,6 +170,20 @@ struct RecoveryShareBundle: Identifiable {
 // Renders QR code plus essential metadata so image-only shares
 // still contain human-readable context.
 enum RecoveryShareCard {
+    // Keeps card caption text testable and aligned with the textual
+    // backup so image-only shares still describe how to restore.
+    static func details(label: String, uuid: String, host: String) -> String {
+        """
+        Label: \(label)
+        ID: \(uuid)
+        Server: \(host)
+        Password required, not included here.
+        \(RecoveryShareText.restoreInstruction)
+        """
+    }
+
+    // Renders the printed QR card so image-only shares still include
+    // restore instructions next to the scannable envelope.
     static func render(qr: UIImage, label: String, uuid: String, host: String) -> UIImage {
         let qrSide = max(qr.size.width, 1)
         let horizontalMargin: CGFloat = 56
@@ -171,12 +193,7 @@ enum RecoveryShareCard {
         let cardWidth = qrSide + (horizontalMargin * 2)
 
         let title = RecoveryShareHeader.title
-        let details = """
-        Label: \(label)
-        ID: \(uuid)
-        Server: \(host)
-        Password required, not included here.
-        """
+        let details = details(label: label, uuid: uuid, host: host)
 
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 40, weight: .semibold),

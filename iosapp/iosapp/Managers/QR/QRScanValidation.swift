@@ -19,6 +19,25 @@ enum QRScanValidation {
         let rawJSON: String
     }
 
+    // Distinguishes pairing vs recovery so connect-to-existing can route
+    // after a single scan without reparsing the payload.
+    enum ConnectPayloadKind: Equatable {
+        case serverConfig
+        case recoveryBundle
+    }
+
+    // Classifies a connect-flow scan so recovery QRs can reuse the same
+    // camera step as a server-config pairing QR.
+    static func connectPayloadKind(code: String) -> ConnectPayloadKind? {
+        if isServerConfig(code) {
+            return .serverConfig
+        }
+        if (try? RecoveryBundle.parseEnvelope(from: code)) != nil {
+            return .recoveryBundle
+        }
+        return nil
+    }
+
     // Validates scanned QR content for a specific flow and returns the next scanner action.
     static func validate(code: String, mode: QRCodeScannerView.ValidationMode) -> Decision {
         switch mode {
@@ -49,13 +68,23 @@ enum QRScanValidation {
                     rawJSON: code
                 )
             )
-        case .recoveryBundle:
-            guard (try? RecoveryBundle.parseEnvelope(from: code)) != nil else {
-                return .reject("Unsupported recovery QR code. Expected recovery envelope JSON or replycant recovery link.")
+        case .connectOrRecovery:
+            guard connectPayloadKind(code: code) != nil else {
+                return .reject("Unsupported QR code. Expected server configuration or a recovery key.")
             }
             return .acceptRaw
         case .any:
             return .acceptRaw
         }
+    }
+
+    // Recognizes pairing config JSON so connect-or-recovery classification
+    // can prefer the existing-device path over a recovery envelope.
+    private static func isServerConfig(_ code: String) -> Bool {
+        guard let data = code.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return false
+        }
+        return json["ca"] != nil && json["url"] != nil
     }
 }

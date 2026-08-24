@@ -2,13 +2,17 @@ import SwiftUI
 import LibGit2
 
 // Guides first-time users through secure library setup via QR code scanning.
-// Supports creating a new library or connecting to an existing one.
+// Supports creating a new library or connecting to an existing one,
+// including recovery by scanning a recovery QR on the connect path.
 struct OnboardingView: View {
     let onComplete: () -> Void
     static let connectToExistingStepOneInstruction = "On your other device, go to Settings → Link a New Device and scan this code"
     static let connectToExistingStepOneContinueLabel = "Next"
     static let connectToExistingStepOneWaitingLabel = "Waiting for your other device to scan..."
-    static let connectToExistingStepTwoHint = "Your other device should now be showing a green-bordered QR code"
+    static let connectToExistingRecoveryShortcutLabel = "I have a recovery key"
+    static let connectToExistingPasteBackupLabel = "Paste backup text"
+    static let connectToExistingStepTwoHint = "Your other device should now be showing a green-bordered QR code. You can also scan a recovery QR here."
+    static let connectToExistingRecoveryScanHint = "Scan your saved recovery QR, or paste backup text."
     static let serverSetupGuideText = "Before you continue, set up a Replycant server and make sure it's reachable from this device. Follow the guide below, then return here to scan your server QR code."
     static let serverSetupGuideURL = URL(string: "https://github.com/mr-andreas/replycant#getting-started")!
     
@@ -22,6 +26,8 @@ struct OnboardingView: View {
     @State private var deviceName: String
     @State private var deviceUUID: String
     @State private var isConnectToExistingFlow: Bool
+    @State private var recoveryInput: String?
+    @State private var connectScanIntent: ConnectScanIntent
 
     // Initializes the onboarding router so first-launch users see product context before setup actions.
     init(onComplete: @escaping () -> Void) {
@@ -34,6 +40,8 @@ struct OnboardingView: View {
         _deviceName = State(initialValue: "")
         _deviceUUID = State(initialValue: "")
         _isConnectToExistingFlow = State(initialValue: false)
+        _recoveryInput = State(initialValue: nil)
+        _connectScanIntent = State(initialValue: .pairing)
     }
 
     /// Preview-only initializer that parks the view at a specific step
@@ -59,6 +67,8 @@ struct OnboardingView: View {
         _deviceName = State(initialValue: deviceName)
         _deviceUUID = State(initialValue: "preview-uuid")
         _isConnectToExistingFlow = State(initialValue: step == .showPublicKey || step == .scanConfig)
+        _recoveryInput = State(initialValue: nil)
+        _connectScanIntent = State(initialValue: .pairing)
     }
     
     var body: some View {
@@ -87,9 +97,10 @@ struct OnboardingView: View {
                     errorView
                 case .recover:
                     RecoveryView(
-                        initialInput: nil,
+                        initialInput: recoveryInput,
                         onCompleted: onComplete,
-                        onCancel: { currentStep = .welcome }
+                        onCancel: { currentStep = .showPublicKey },
+                        onScanAgain: { currentStep = .scanConfig }
                     )
                 }
             }
@@ -193,14 +204,6 @@ struct OnboardingView: View {
                     HStack {
                         Image(systemName: "arrow.down.circle")
                         Text("Connect to an existing library")
-                    }
-                }
-                .buttonStyle(PairingSecondaryButtonStyle())
-
-                Button(action: { currentStep = .recover }) {
-                    HStack {
-                        Image(systemName: "key.viewfinder")
-                        Text("Recover with a recovery key")
                     }
                 }
                 .buttonStyle(PairingSecondaryButtonStyle())
@@ -328,7 +331,7 @@ struct OnboardingView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.horizontal)
 
-                Button(action: { currentStep = .scanConfig }) {
+                Button(action: startPairingScan) {
                     HStack {
                         Image(systemName: "arrow.right.circle")
                         Text(Self.connectToExistingStepOneContinueLabel)
@@ -337,27 +340,46 @@ struct OnboardingView: View {
                 .buttonStyle(PairingPrimaryButtonStyle(disabled: devicePublicKeyQR == nil))
                 .disabled(devicePublicKeyQR == nil)
                 .padding(.horizontal)
+
+                Button(action: startRecoveryScan) {
+                    Text(Self.connectToExistingRecoveryShortcutLabel)
+                }
+                .buttonStyle(PairingTertiaryButtonStyle())
+                .padding(.horizontal)
                 .padding(.bottom, 40)
             }
         }
     }
 
-    // Wraps the scanner with explicit Step 2 cues so users can confirm they
-    // are scanning the correct follow-up QR from the other device.
+    // Wraps the scanner so it can accept either the other device's
+    // server-config QR or a recovery QR from the same camera step.
     private var scanConfigView: some View {
         QRCodeScannerView(
-            onScan: handleConfigScanned,
+            onScan: handleConnectScanned,
             onCancel: { currentStep = .showPublicKey },
-            validationMode: .serverConfig
+            validationMode: .connectOrRecovery
         )
         .safeAreaInset(edge: .top) {
-            PairingStepIndicator(step: 2, of: 2, phase: .shareConfig)
-                .padding(.top, 12)
+            if connectScanIntent == .pairing {
+                PairingStepIndicator(step: 2, of: 2, phase: .shareConfig)
+                    .padding(.top, 12)
+            }
         }
         .safeAreaInset(edge: .bottom) {
-            PairingHintBox(message: Self.connectToExistingStepTwoHint, phase: .shareConfig)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
+            VStack(spacing: 12) {
+                PairingHintBox(
+                    message: connectScanIntent == .recovery
+                        ? Self.connectToExistingRecoveryScanHint
+                        : Self.connectToExistingStepTwoHint,
+                    phase: .shareConfig
+                )
+                Button(action: startRecoveryPaste) {
+                    Text(Self.connectToExistingPasteBackupLabel)
+                }
+                .buttonStyle(PairingTertiaryButtonStyle())
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
         }
     }
     
@@ -410,6 +432,42 @@ struct OnboardingView: View {
         }
     }
     
+    // Routes a connect-flow scan to pairing or recovery so one camera step
+    // can restore access without a separate recovery entry point.
+    private func handleConnectScanned(_ scanned: String) {
+        switch QRScanValidation.connectPayloadKind(code: scanned) {
+        case .serverConfig:
+            handleConfigScanned(scanned)
+        case .recoveryBundle:
+            recoveryInput = scanned
+            currentStep = .recover
+        case nil:
+            errorMessage = "Unsupported QR code. Expected server configuration or a recovery key."
+            currentStep = .error
+        }
+    }
+
+    // Continues the existing-device pairing dance after this device's key QR
+    // has been shown for the other device to scan.
+    private func startPairingScan() {
+        connectScanIntent = .pairing
+        currentStep = .scanConfig
+    }
+
+    // Jumps from the device-key screen to the same scanner when the user
+    // already has a recovery QR instead of another paired device.
+    private func startRecoveryScan() {
+        connectScanIntent = .recovery
+        currentStep = .scanConfig
+    }
+
+    // Opens the paste path so recovery still works when the backup is
+    // text rather than a QR code.
+    private func startRecoveryPaste() {
+        recoveryInput = nil
+        currentStep = .recover
+    }
+
     // Handles the config QR scanned from Device A during "Connect to Existing" flow.
     private func handleConfigScanned(_ jsonString: String) {
         currentStep = .processing
@@ -447,6 +505,8 @@ struct OnboardingView: View {
     private func startConnectToExisting() {
         log("=== STARTING CONNECT TO EXISTING FLOW ===", context: "Onboarding")
         isConnectToExistingFlow = true
+        recoveryInput = nil
+        connectScanIntent = .pairing
         currentStep = .showPublicKey
         
         Task {
@@ -674,6 +734,13 @@ struct OnboardingView: View {
 // MARK: - Supporting Types
 
 // Represents the onboarding router states used to control secure setup progression.
+// Distinguishes pairing vs recovery on the shared connect scanner so
+// step chrome and hint copy match why the user opened the camera.
+enum ConnectScanIntent {
+    case pairing
+    case recovery
+}
+
 enum OnboardingStep {
     case intro
     case welcome

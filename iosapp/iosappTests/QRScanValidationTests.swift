@@ -68,23 +68,47 @@ struct QRScanValidationTests {
         #expect(message.contains("device-link QR"))
     }
 
-    // Verifies recovery mode accepts raw encrypted envelope JSON used by offline QR backups.
-    @Test func recoveryBundleAcceptsEnvelopeJSON() {
-        let decision = QRScanValidation.validate(code: Self.recoveryEnvelopeJSON, mode: .recoveryBundle)
+    // Verifies connect-or-recovery mode accepts pairing server-config QRs.
+    @Test func connectOrRecoveryAcceptsServerConfig() {
+        let code = #"{"ca":"pem","url":"https://example.com/repo.git"}"#
+        let decision = QRScanValidation.validate(code: code, mode: .connectOrRecovery)
         #expect(decision == .acceptRaw)
+        #expect(QRScanValidation.connectPayloadKind(code: code) == .serverConfig)
     }
 
-    // Verifies recovery mode accepts custom-scheme links used by share sheets.
-    @Test func recoveryBundleAcceptsDeepLink() {
+    // Verifies connect-or-recovery mode accepts raw encrypted envelope JSON used by offline QR backups.
+    @Test func connectOrRecoveryAcceptsEnvelopeJSON() {
+        let decision = QRScanValidation.validate(code: Self.recoveryEnvelopeJSON, mode: .connectOrRecovery)
+        #expect(decision == .acceptRaw)
+        #expect(QRScanValidation.connectPayloadKind(code: Self.recoveryEnvelopeJSON) == .recoveryBundle)
+    }
+
+    // Verifies connect-or-recovery mode accepts custom-scheme links used by share sheets.
+    @Test func connectOrRecoveryAcceptsDeepLink() {
         let envelope = Data(Self.recoveryEnvelopeJSON.utf8)
             .base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+        let deepLink = "replycant://recover?v=1&d=\(envelope)"
         let decision = QRScanValidation.validate(
-            code: "replycant://recover?v=1&d=\(envelope)",
-            mode: .recoveryBundle
+            code: deepLink,
+            mode: .connectOrRecovery
         )
         #expect(decision == .acceptRaw)
+        #expect(QRScanValidation.connectPayloadKind(code: deepLink) == .recoveryBundle)
+    }
+
+    // Verifies connect-or-recovery mode keeps scanning when the QR is neither pairing nor recovery.
+    @Test func connectOrRecoveryRejectsUnknownPayload() {
+        let decision = QRScanValidation.validate(code: "not-a-supported-qr", mode: .connectOrRecovery)
+
+        guard case .reject(let message) = decision else {
+            Issue.record("Expected rejection for unknown connect/recovery payload")
+            return
+        }
+
+        #expect(message.contains("server configuration") || message.contains("recovery"))
+        #expect(QRScanValidation.connectPayloadKind(code: "not-a-supported-qr") == nil)
     }
 }

@@ -12,11 +12,12 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.RecoveryKeyStep.error.title == "Error")
     }
 
-    // Ensures the status screen explains why creating a recovery key matters.
+    // Ensures the status screen explains why creating a recovery key matters
+    // and how to restore via the connect-to-existing flow.
     @Test func recoveryKeyStatusDescriptionCopy() {
         #expect(
             RecoveryKeyView.statusDescription
-                == "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
+                == "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server. On a fresh install, choose Connect to an existing library and scan the recovery QR."
         )
     }
 
@@ -148,10 +149,10 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.canAdvanceFromPassword(password: "same", confirmPassword: "same"))
     }
 
-    // Ensures deep-link input bypasses the bundle collection steps and goes straight to password.
+    // Ensures scanned or deep-link input goes to password, and paste starts at the bundle field.
     @Test func recoveryWizardInitialStepFromDeepLink() {
-        #expect(RecoveryView.initialStep(for: nil) == .start)
-        #expect(RecoveryView.initialStep(for: "") == .start)
+        #expect(RecoveryView.initialStep(for: nil) == .bundle)
+        #expect(RecoveryView.initialStep(for: "") == .bundle)
         #expect(RecoveryView.initialStep(for: "replycant://recover?v=1&d=abc") == .password)
     }
 
@@ -178,6 +179,5 @@ struct RecoveryWizardTests {
 
         #expect(RecoveryView.nextStepAfterBundleValidation(input: validJSON) == .password)
         #expect(RecoveryView.nextStepAfterBundleValidation(input: "not-valid-json") == .error)
-        #expect(RecoveryView.bundleBackDestination() == .start)
     }
 }

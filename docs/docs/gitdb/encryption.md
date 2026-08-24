@@ -302,7 +302,8 @@ No hosted web domain is required for recovery transport.
 ### Recovery behavior
 
 Recovery is allowed only on fresh installs (no configured server and no local
-repository). The flow:
+repository). On iOS, recovery starts from **Connect to an existing library**
+by scanning the recovery QR (or pasting backup text). The flow:
 
 1. Decrypt bundle with user password
 2. Discover server config and verify CA hash

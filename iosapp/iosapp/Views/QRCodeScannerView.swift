@@ -19,7 +19,7 @@ struct QRCodeScannerView: View {
     enum ValidationMode {
         case serverConfig    // Requires: ca, url
         case devicePublicKey // Requires: pubkey, name, uuid
-        case recoveryBundle  // Requires: recovery envelope JSON, replycant:// URL, or base64url payload
+        case connectOrRecovery // Accepts server config or a recovery envelope / replycant link
         case any             // No validation, accepts any valid JSON
     }
 

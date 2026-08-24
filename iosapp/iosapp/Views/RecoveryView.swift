@@ -15,7 +15,6 @@ struct RecoveryView: View {
 
     // Names each recovery-wizard screen so routing and titles stay explicit.
     enum RecoveryStep {
-        case start
         case bundle
         case password
         case processing
@@ -25,9 +24,11 @@ struct RecoveryView: View {
         case done
         case error
 
+        // Keeps navigation titles aligned with the remaining
+        // password, paste, and outcome screens.
         var title: String {
             switch self {
-            case .start, .bundle, .password: return "Recover Access"
+            case .bundle, .password: return "Recover Access"
             case .processing: return "Recovering"
             case .serverUnreachable: return "Server Unreachable"
             case .blocked: return "Recovery Blocked"
@@ -41,8 +42,9 @@ struct RecoveryView: View {
     let initialInput: String?
     let onCompleted: () -> Void
     let onCancel: () -> Void
+    let onScanAgain: () -> Void
 
-    @State private var currentStep: RecoveryStep = .start
+    @State private var currentStep: RecoveryStep = .bundle
     @State private var input = ""
     @State private var password = ""
     @State private var progressMessage: String?
@@ -50,17 +52,23 @@ struct RecoveryView: View {
     @State private var errorMessage: String?
     @State private var manualDiscoveryURL = ""
     @State private var isBusy = false
-    @State private var showScanner = false
     @State private var completedRecovery: RecoveryKeyManager.RecoveryResult?
     @State private var didRevokeUsedKey = false
 
     private let manager = RecoveryKeyManager()
 
     // Supports deterministic previews for each wizard state without invoking recovery side effects.
-    init(initialInput: String?, onCompleted: @escaping () -> Void, onCancel: @escaping () -> Void, previewStep: RecoveryStep? = nil) {
+    init(
+        initialInput: String?,
+        onCompleted: @escaping () -> Void,
+        onCancel: @escaping () -> Void,
+        onScanAgain: @escaping () -> Void = {},
+        previewStep: RecoveryStep? = nil
+    ) {
         self.initialInput = initialInput
         self.onCompleted = onCompleted
         self.onCancel = onCancel
+        self.onScanAgain = onScanAgain
         if let previewStep {
             _currentStep = State(initialValue: previewStep)
         }
@@ -69,8 +77,6 @@ struct RecoveryView: View {
     var body: some View {
         Group {
             switch currentStep {
-            case .start:
-                startStepView
             case .bundle:
                 bundleStepView
             case .password:
@@ -90,7 +96,7 @@ struct RecoveryView: View {
                     title: "Recovery Key Not Registered",
                     message: Self.keyRejectedMessage,
                     retryLabel: "Use a different key",
-                    onRetry: { currentStep = .start },
+                    onRetry: onScanAgain,
                     onCancel: onCancel
                 )
             case .done:
@@ -99,7 +105,7 @@ struct RecoveryView: View {
                 PairingErrorView(
                     title: "Recovery Failed",
                     message: errorMessage,
-                    onRetry: { currentStep = Self.initialStep(for: initialInput) },
+                    onRetry: onScanAgain,
                     onCancel: onCancel
                 )
             }
@@ -107,17 +113,10 @@ struct RecoveryView: View {
         .navigationTitle(currentStep.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if currentStep == .start {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(Self.cancelCtaLabel) {
-                        onCancel()
-                    }
-                }
-            }
             if currentStep == .bundle {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        currentStep = Self.bundleBackDestination()
+                        onCancel()
                     } label: {
                         Image(systemName: "chevron.left")
                     }
@@ -130,58 +129,6 @@ struct RecoveryView: View {
             if let initialInput {
                 input = initialInput
             }
-        }
-        .sheet(isPresented: $showScanner) {
-            NavigationStack {
-                QRCodeScannerView(
-                    onScan: { scanned in
-                        input = scanned
-                        showScanner = false
-                        currentStep = .password
-                    },
-                    onCancel: { showScanner = false },
-                    validationMode: .recoveryBundle
-                )
-            }
-        }
-    }
-
-    // Starts with two simple options so users quickly pick scan vs paste without extra form fields.
-    private var startStepView: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            PairingStepIndicator(step: 1, phase: .sendKey)
-
-            Image(systemName: "key.viewfinder")
-                .font(.system(size: 68))
-                .foregroundStyle(Color.brandGradient)
-
-            Text("Recover with your backup")
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            Text("Use your saved recovery QR or backup text.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                Button("Scan recovery QR") {
-                    showScanner = true
-                }
-                .buttonStyle(PairingPrimaryButtonStyle())
-
-                Button("Paste backup text") {
-                    currentStep = .bundle
-                }
-                .buttonStyle(PairingSecondaryButtonStyle())
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 40)
         }
     }
 
@@ -426,17 +373,12 @@ struct RecoveryView: View {
         if let initialInput, !initialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .password
         }
-        return .start
+        return .bundle
     }
 
     // Keeps bundle parsing step-button enablement simple and testable.
     static func canAdvanceFromBundle(input: String) -> Bool {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    // Keeps bundle-step back navigation deterministic for tests and deep-link safety.
-    static func bundleBackDestination() -> RecoveryStep {
-        .start
     }
 
     // Encodes bundle validation routing so tests can assert password vs error transitions.
@@ -508,9 +450,9 @@ struct RecoveryView: View {
     }
 }
 
-#Preview("Recovery Start") {
+#Preview("Recovery Bundle") {
     NavigationStack {
-        RecoveryView(initialInput: nil, onCompleted: {}, onCancel: {}, previewStep: .start)
+        RecoveryView(initialInput: nil, onCompleted: {}, onCancel: {}, previewStep: .bundle)
     }
 }
 
