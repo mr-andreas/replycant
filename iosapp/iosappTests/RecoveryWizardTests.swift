@@ -156,6 +156,39 @@ struct RecoveryWizardTests {
         #expect(RecoveryView.initialStep(for: "replycant://recover?v=1&d=abc") == .password)
     }
 
+    // Ensures an injected Canvas step is not overwritten by input-based
+    // routing, so outcome screens stay reachable in the gallery.
+    @Test func recoveryWizardResolvedInitialStepPrefersPreview() {
+        #expect(
+            RecoveryView.resolvedInitialStep(previewStep: .done, initialInput: nil)
+                == .done
+        )
+        #expect(
+            RecoveryView.resolvedInitialStep(
+                previewStep: .keyRejected,
+                initialInput: "replycant://recover?v=1&d=abc"
+            ) == .keyRejected
+        )
+    }
+
+    // Ensures production routing is unchanged when no preview step is injected.
+    @Test func recoveryWizardResolvedInitialStepWithoutPreview() {
+        #expect(
+            RecoveryView.resolvedInitialStep(previewStep: nil, initialInput: nil)
+                == .bundle
+        )
+        #expect(
+            RecoveryView.resolvedInitialStep(previewStep: nil, initialInput: "")
+                == .bundle
+        )
+        #expect(
+            RecoveryView.resolvedInitialStep(
+                previewStep: nil,
+                initialInput: "replycant://recover?v=1&d=abc"
+            ) == .password
+        )
+    }
+
     // Ensures bundle validation routes to password when valid and to error when malformed.
     @Test func recoveryWizardBundleValidationRouting() throws {
         let plaintext = RecoveryBundle.Plaintext(

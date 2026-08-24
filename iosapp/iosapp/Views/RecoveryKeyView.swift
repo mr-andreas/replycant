@@ -24,7 +24,10 @@ struct RecoveryKeyView: View {
     static let deleteConfirmActionLabel = "Delete Key"
     static let deleteCancelLabel = "Cancel"
 
-    enum RecoveryKeyStep {
+    // Names each create-wizard screen so routing and titles stay explicit.
+    // CaseIterable lets the screen gallery fail a test when a new step is
+    // added without a corresponding canvas tile.
+    enum RecoveryKeyStep: CaseIterable {
         case status
         case name
         case password

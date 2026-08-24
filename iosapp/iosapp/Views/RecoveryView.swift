@@ -14,7 +14,9 @@ struct RecoveryView: View {
     static let keyRejectedMessage = "The server rejected this recovery key. It matches this server's certificate, so it was registered here before and has since been deleted. Use a different recovery key, or pair from a device that still has access."
 
     // Names each recovery-wizard screen so routing and titles stay explicit.
-    enum RecoveryStep {
+    // CaseIterable lets the screen gallery fail a test when a new step is
+    // added without a corresponding canvas tile.
+    enum RecoveryStep: CaseIterable {
         case bundle
         case password
         case processing
@@ -56,6 +58,9 @@ struct RecoveryView: View {
     @State private var didRevokeUsedKey = false
 
     private let manager = RecoveryKeyManager()
+    // Keeps an injected Canvas step available after appear so outcome
+    // screens are not overwritten by input-based initial routing.
+    private let previewStep: RecoveryStep?
 
     // Supports deterministic previews for each wizard state without invoking recovery side effects.
     init(
@@ -69,6 +74,7 @@ struct RecoveryView: View {
         self.onCompleted = onCompleted
         self.onCancel = onCancel
         self.onScanAgain = onScanAgain
+        self.previewStep = previewStep
         if let previewStep {
             _currentStep = State(initialValue: previewStep)
         }
@@ -125,7 +131,10 @@ struct RecoveryView: View {
             }
         }
         .onAppear {
-            currentStep = Self.initialStep(for: initialInput)
+            currentStep = Self.resolvedInitialStep(
+                previewStep: previewStep,
+                initialInput: initialInput
+            )
             if let initialInput {
                 input = initialInput
             }
@@ -374,6 +383,16 @@ struct RecoveryView: View {
             return .password
         }
         return .bundle
+    }
+
+    // Keeps an injected preview step from being overwritten on appear, so
+    // Canvas can park the wizard on outcome screens that no real input
+    // can reach.
+    static func resolvedInitialStep(
+        previewStep: RecoveryStep?,
+        initialInput: String?
+    ) -> RecoveryStep {
+        previewStep ?? initialStep(for: initialInput)
     }
 
     // Keeps bundle parsing step-button enablement simple and testable.

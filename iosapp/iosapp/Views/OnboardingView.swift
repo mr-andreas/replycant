@@ -741,7 +741,10 @@ enum ConnectScanIntent {
     case recovery
 }
 
-enum OnboardingStep {
+// Names each first-launch screen so routing and titles stay explicit.
+// CaseIterable lets the screen gallery fail a test when a new step is
+// added without a corresponding canvas tile.
+enum OnboardingStep: CaseIterable {
     case intro
     case welcome
     case serverSetupGuide
