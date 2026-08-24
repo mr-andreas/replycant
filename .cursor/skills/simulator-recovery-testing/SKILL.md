@@ -96,27 +96,91 @@ show do not need a recording.
 Write files to `recordings/<YYYYMMDD-HHMMSS>-<feature-slug>.mp4` at the
 repo root. Create the directory if it is missing. It is gitignored.
 
-1. Get the app into the state the walkthrough starts from before
-   starting the recording, so the clip opens on something meaningful.
-2. Start: `record_sim_video({ start: true, outputFile: "recordings/<name>.mp4" })`.
-3. Drive the feature with the UI automation tools, pausing briefly on
-   each screen that matters so the result is visible at normal playback
-   speed.
-4. Capture a still with `screenshot` at each significant step, and copy
-   each one next to the video as `recordings/<name>-NN.png` so it
-   survives temp cleanup.
-5. Stop: `record_sim_video({ stop: true })`.
-6. Confirm the MP4 exists and is non-empty before reporting it.
+Agent inference between UI tool calls is several seconds. Driving a
+walkthrough one tap at a time therefore fills the clip with dead air.
+Script the interactions into one AXe batch so pauses are explicit
+`sleep` steps, not round-trip latency.
 
-Keep clips short. Stop the recording as soon as the walkthrough ends
-rather than leaving it running through a long sync.
+The MCP `batch` tool is tap-only and same-screen. Use the bundled AXe
+binary instead, at
+`~/.npm/_npx/*/node_modules/xcodebuildmcp/bundled/axe`. Resolve the
+path once per session. Do not commit a wrapper.
+
+### 1. Rehearse off camera
+
+Walk the feature with `snapshot_ui` / `wait_for_ui` and collect a
+stable selector for every step. Prefer `--id`, then `--label` narrowed
+by `--element-type` (`Button`, `TextField`, `Switch`). That
+disambiguation is what avoids "Multiple accessibility elements
+matched" and the brittle `-x -y` fallback.
+
+Return the app to the walkthrough's starting state. All exploration
+and failed selector attempts stay off camera.
+
+### 2. Record one batch
+
+Write the rehearsed steps to a temp file. Do not commit it.
+
+```
+tap --label "Recovery Key" --element-type Button
+sleep 1
+tap --label "Delete" --element-type Button
+sleep 1.5
+```
+
+`sleep 0.8`–`1.5` is enough to read a screen. Use `sleep 2` after a
+transition that animates. Those are the only pauses the clip should
+contain.
+
+Start the recorder, run the batch, and stop the recorder in one
+shell so agent round trips never land in the clip. Use an absolute
+output path; a relative `recordings/` path can resolve to `$HOME`.
+Do not call `screenshot`, `wait_for_ui`, or `snapshot_ui` while
+the recorder is running.
+
+```bash
+OUT="$(pwd)/recordings/<YYYYMMDD-HHMMSS>-<feature-slug>.mp4"
+"$AXE" record-video --udid <udid> --fps 30 --output "$OUT" &
+REC=$!
+sleep 0.3
+"$AXE" batch --udid <udid> --file /tmp/walkthrough.steps \
+  --ax-cache perStep --wait-timeout 5
+kill -INT "$REC"
+wait "$REC"
+```
+
+`--ax-cache perStep` refreshes the accessibility tree between steps.
+`--wait-timeout 5` lets a later step poll across a screen transition.
+
+If AXe `record-video` is unavailable, `record_sim_video` start/stop
+works but each MCP hop adds a few seconds of lead-in or tail.
+
+Confirm the MP4 exists and is non-empty before reporting it. Stop as
+soon as the walkthrough ends rather than leaving it running through a
+long sync.
+
+### 3. Extract stills from the MP4
+
+Do not take screenshots during the recording. Pull key frames after
+it stops:
+
+```bash
+ffmpeg -i recordings/<name>.mp4 -vf "select='gt(scene,0.08)'" \
+  -vsync vfr recordings/<name>-%02d.png
+```
+
+If scene detection misses a subtle change, extract that frame by
+timestamp instead (`ffmpeg -ss <t> -i ... -frames:v 1`).
+
+### Branching walkthroughs
+
+A walkthrough that must read a value and then decide can still be
+driven step by step. Split it so each scripted stretch is one batch
+and only the decision points cost a round trip.
 
 A recovered library shows the user's real photos. Recordings stay in
 the gitignored directory. Never commit them, attach them to a commit
 message, or copy them into docs.
-
-If `record_sim_video` is unavailable, use the bundled AXe `record-video`
-subcommand against the simulator UDID.
 
 ## Server and Path
 
