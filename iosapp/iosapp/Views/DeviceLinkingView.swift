@@ -9,7 +9,6 @@ struct DeviceLinkingView: View {
     static let shareConfigSuccessLabel = "Access granted!"
     static let shareConfigHeading = "Now let the new device scan this"
     static let shareConfigBody = "On the new device, tap Next and point its camera at this code"
-    static let shareConfigSubtitle = "Server Configuration"
     
     @State private var currentStep: LinkingStep
     @State private var isProcessing: Bool
@@ -143,7 +142,9 @@ struct DeviceLinkingView: View {
     }
     
     // MARK: - Show Config View
-    
+
+    // Hands the new device the connection QR after access is granted,
+    // completing the old-device side of pairing.
     private var showConfigView: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -173,7 +174,6 @@ struct DeviceLinkingView: View {
                     QRCodeDisplayView(
                         data: configJSON,
                         title: "",
-                        subtitle: Self.shareConfigSubtitle,
                         borderColor: .brandGreen
                     )
                 } else {

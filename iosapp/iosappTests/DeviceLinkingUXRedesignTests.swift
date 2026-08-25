@@ -41,6 +41,5 @@ struct DeviceLinkingUXRedesignTests {
         #expect(DeviceLinkingView.shareConfigSuccessLabel == "Access granted!")
         #expect(DeviceLinkingView.shareConfigHeading == "Now let the new device scan this")
         #expect(DeviceLinkingView.shareConfigBody == "On the new device, tap Next and point its camera at this code")
-        #expect(DeviceLinkingView.shareConfigSubtitle == "Server Configuration")
     }
 }
