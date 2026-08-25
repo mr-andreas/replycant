@@ -34,6 +34,10 @@ struct RecoveryWizardTests {
     @Test func recoveryWizardRevokeCopy() {
         #expect(RecoveryView.revokeCtaLabel == "Revoke used key")
         #expect(RecoveryView.continueCtaLabel == "Continue")
+        #expect(
+            RecoveryView.revokeGuidanceMessage
+                == "For best security, revoke the recovery key you just used. You can create a new one after you get into the app."
+        )
         #expect(RecoveryView.revokeDoneMessage == "Used key revoked. Create a new recovery key in Settings.")
         #expect(RecoveryView.cancelCtaLabel == "Cancel")
     }

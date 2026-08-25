@@ -4,6 +4,10 @@ import SwiftUI
 struct RecoveryView: View {
     static let revokeCtaLabel = "Revoke used key"
     static let continueCtaLabel = "Continue"
+    // Explains why revoke is the safer next step and that a replacement
+    // key can wait until the user is inside the recovered app.
+    static let revokeGuidanceMessage =
+        "For best security, revoke the recovery key you just used. You can create a new one after you get into the app."
     static let revokeDoneMessage = "Used key revoked. Create a new recovery key in Settings."
     static let cancelCtaLabel = "Cancel"
     // Tells the user a typo or wrong secret is why unlock failed,
@@ -315,17 +319,14 @@ struct RecoveryView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            PairingStepIndicator(step: 4, phase: .shareConfig)
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 60))
+                .foregroundColor(.green)
 
-            HStack(spacing: 10) {
-                Image(systemName: "checkmark.circle.fill")
-                Text("Recovery complete")
-                    .fontWeight(.semibold)
-            }
-            .font(.title3)
-            .foregroundStyle(Color.brandGreen)
+            Text("Recovery complete")
+                .font(.headline)
 
-            Text("For best security, revoke the recovery key you just used.")
+            Text(Self.revokeGuidanceMessage)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
