@@ -55,4 +55,62 @@ struct PreviewRuntimeGuardTests {
             ) == false
         )
     }
+
+    // Ensures repository settings skip git status work in Canvas and
+    // gallery tiles, where Git.initialize() never ran.
+    @Test func shouldLoadRepositoryStatusOnlyOutsidePreviewsWithoutPreviewState() {
+        #expect(
+            RepositorySettingsView.shouldLoadRepositoryStatus(
+                previewState: nil,
+                isRunningForPreviews: false
+            ) == true
+        )
+        #expect(
+            RepositorySettingsView.shouldLoadRepositoryStatus(
+                previewState: nil,
+                isRunningForPreviews: true
+            ) == false
+        )
+        #expect(
+            RepositorySettingsView.shouldLoadRepositoryStatus(
+                previewState: .sample,
+                isRunningForPreviews: false
+            ) == false
+        )
+        #expect(
+            RepositorySettingsView.shouldLoadRepositoryStatus(
+                previewState: .sample,
+                isRunningForPreviews: true
+            ) == false
+        )
+    }
+
+    // Ensures cache settings skip disk-stat I/O in Canvas and seed
+    // representative numbers from a parked snapshot instead.
+    @Test func shouldLoadDiskStatsOnlyOutsidePreviewsWithoutPreviewStats() {
+        #expect(
+            CacheSettingsView.shouldLoadDiskStats(
+                previewStats: nil,
+                isRunningForPreviews: false
+            ) == true
+        )
+        #expect(
+            CacheSettingsView.shouldLoadDiskStats(
+                previewStats: nil,
+                isRunningForPreviews: true
+            ) == false
+        )
+        #expect(
+            CacheSettingsView.shouldLoadDiskStats(
+                previewStats: .sample,
+                isRunningForPreviews: false
+            ) == false
+        )
+        #expect(
+            CacheSettingsView.shouldLoadDiskStats(
+                previewStats: .sample,
+                isRunningForPreviews: true
+            ) == false
+        )
+    }
 }

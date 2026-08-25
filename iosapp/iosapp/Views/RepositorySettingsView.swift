@@ -12,19 +12,65 @@ import LibGit2
 // Provides access to git plumbing operations like push, pull, and status checking.
 
 struct RepositorySettingsView: View {
+    // Parks clone metadata so Canvas and the gallery can render this
+    // screen without opening an uninitialized libgit2 repository.
+    struct PreviewState {
+        let repoPath: String
+        let currentBranch: String
+        let gitOriginUrl: String
+        let lfsUrl: String
+        let gitStatus: String
+        let timelineItemCountText: String
+
+        // Supplies one representative clone snapshot using public
+        // example hosts so gallery tiles stay readable without a live repo.
+        static let sample = PreviewState(
+            repoPath: "/example/library",
+            currentBranch: "main",
+            gitOriginUrl: "https://git.example.com",
+            lfsUrl: "https://lfs.example.com",
+            gitStatus: "On branch main\nnothing to commit, working tree clean",
+            timelineItemCountText: "Timeline items: 42"
+        )
+    }
+
+    private let previewState: PreviewState?
     @State private var errorMessage: String?
     @State private var successMessage: String?
-    @State private var repoPath: String = ""
-    @State private var currentBranch: String = "Unknown"
-    @State private var lfsUrl: String = ""
-    @State private var gitOriginUrl: String = ""
-    @State private var originUrlDraft: String = ""
-    @State private var gitStatus: String = ""
+    @State private var repoPath: String
+    @State private var currentBranch: String
+    @State private var lfsUrl: String
+    @State private var gitOriginUrl: String
+    @State private var originUrlDraft: String
+    @State private var gitStatus: String
     @State private var isPulling = false
     @State private var isCheckingStatus = false
     @State private var pullProgress: Double = 0.0
     @State private var pullProgressMessage: String = ""
-    @State private var timelineItemCountText: String = "Timeline items: --"
+    @State private var timelineItemCountText: String
+
+    // Allows callers to inject parked metadata and skip git I/O.
+    init(previewState: PreviewState? = nil) {
+        self.previewState = previewState
+        _repoPath = State(initialValue: previewState?.repoPath ?? "")
+        _currentBranch = State(initialValue: previewState?.currentBranch ?? "Unknown")
+        _lfsUrl = State(initialValue: previewState?.lfsUrl ?? "")
+        _gitOriginUrl = State(initialValue: previewState?.gitOriginUrl ?? "")
+        _originUrlDraft = State(initialValue: previewState?.gitOriginUrl ?? "")
+        _gitStatus = State(initialValue: previewState?.gitStatus ?? "")
+        _timelineItemCountText = State(
+            initialValue: previewState?.timelineItemCountText ?? "Timeline items: --"
+        )
+    }
+
+    // Canvas and the --gallery host skip Git.initialize(), so a real
+    // status load would take the whole preview down with it.
+    static func shouldLoadRepositoryStatus(
+        previewState: PreviewState?,
+        isRunningForPreviews: Bool
+    ) -> Bool {
+        previewState == nil && !isRunningForPreviews
+    }
     
     var body: some View {
         VStack(spacing: 20) {
@@ -201,6 +247,12 @@ struct RepositorySettingsView: View {
         }
         .navigationTitle("Repository")
         .task {
+            guard Self.shouldLoadRepositoryStatus(
+                previewState: previewState,
+                isRunningForPreviews: ContentView.isRunningForPreviews(
+                    environment: ProcessInfo.processInfo.environment
+                )
+            ) else { return }
             checkRepositoryStatus()
         }
     }

@@ -6,9 +6,13 @@ import SwiftUI
 enum GallerySection: String, CaseIterable, Identifiable {
     case onboarding
     case linking
-    case recoveryKey
+    case recoveryKeys
+    case createRecoveryKey
     case recovery
-    case main
+    case appShell
+    case timeline
+    case upload
+    case settings
     case components
 
     var id: String { rawValue }
@@ -18,10 +22,14 @@ enum GallerySection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .onboarding: return "Onboarding"
-        case .linking: return "Linking"
-        case .recoveryKey: return "Recovery Key"
-        case .recovery: return "Recovery"
-        case .main: return "Main"
+        case .linking: return "Link a new device"
+        case .recoveryKeys: return "Recovery keys"
+        case .createRecoveryKey: return "Create recovery key"
+        case .recovery: return "Recover access"
+        case .appShell: return "App shell"
+        case .timeline: return "Timeline"
+        case .upload: return "Upload"
+        case .settings: return "Settings"
         case .components: return "Components"
         }
     }
@@ -44,7 +52,8 @@ enum AppScreenGallery {
         "{\"url\":\"https://git.example.com\",\"ca\":\"-----BEGIN CERTIFICATE-----\\nMIIB...\\n-----END CERTIFICATE-----\"}"
 
     static let all: [GalleryScreen] =
-        onboarding + linking + recoveryKey + recovery + main + components
+        onboarding + linking + recoveryKeys + createRecoveryKey
+        + recovery + appShell + timeline + upload + settings + components
 
     // Filters the catalog so a section preview only instantiates that
     // group's screens.
@@ -147,31 +156,28 @@ enum AppScreenGallery {
                 preview: .error,
                 errorMessage: "Server URL not configured"
             )
-        },
-        tile("Onboarding / recover", section: .onboarding) {
-            OnboardingView(preview: .recover)
         }
     ]
 
     private static let linking: [GalleryScreen] = [
-        stacked("Linking / scanPublicKey", section: .linking) {
+        stacked("Link a new device / scanPublicKey", section: .linking) {
             DeviceLinkingView(preview: .scanPublicKey)
         },
-        stacked("Linking / processing", section: .linking) {
+        stacked("Link a new device / processing", section: .linking) {
             DeviceLinkingView(
                 preview: .processing,
                 isProcessing: true,
                 progressMessage: "Adding device key..."
             )
         },
-        stacked("Linking / showConfig", section: .linking) {
+        stacked("Link a new device / showConfig", section: .linking) {
             DeviceLinkingView(
                 preview: .showConfig,
                 scannedDeviceName: "preview-iphone",
                 configJSON: sampleConfigJSON
             )
         },
-        stacked("Linking / error", section: .linking) {
+        stacked("Link a new device / error", section: .linking) {
             DeviceLinkingView(
                 preview: .error,
                 errorMessage: "mTLS credentials not configured. Please complete initial setup first."
@@ -179,32 +185,35 @@ enum AppScreenGallery {
         }
     ]
 
-    private static let recoveryKey: [GalleryScreen] = [
-        stacked("Recovery Key / status", section: .recoveryKey) {
+    private static let recoveryKeys: [GalleryScreen] = [
+        stacked("Recovery keys / status", section: .recoveryKeys) {
             RecoveryKeyView(preview: .status)
-        },
-        stacked("Recovery Key / name", section: .recoveryKey) {
+        }
+    ]
+
+    private static let createRecoveryKey: [GalleryScreen] = [
+        stacked("Create recovery key / name", section: .createRecoveryKey) {
             RecoveryKeyView(preview: .name)
         },
-        stacked("Recovery Key / password", section: .recoveryKey) {
+        stacked("Create recovery key / password", section: .createRecoveryKey) {
             RecoveryKeyView(preview: .password)
         },
-        stacked("Recovery Key / processing", section: .recoveryKey) {
+        stacked("Create recovery key / processing", section: .createRecoveryKey) {
             RecoveryKeyView(preview: .processing)
         },
-        stacked("Recovery Key / created", section: .recoveryKey) {
+        stacked("Create recovery key / created", section: .createRecoveryKey) {
             RecoveryKeyView(preview: .created)
         },
-        stacked("Recovery Key / created after share", section: .recoveryKey) {
+        stacked("Create recovery key / created after share", section: .createRecoveryKey) {
             RecoveryKeyView(preview: .created, hasShared: true)
         },
-        stacked("Recovery Key / error", section: .recoveryKey) {
+        stacked("Create recovery key / error", section: .createRecoveryKey) {
             RecoveryKeyView(preview: .error)
         }
     ]
 
     private static let recovery: [GalleryScreen] = [
-        stacked("Recovery / bundle", section: .recovery) {
+        stacked("Recover access / bundle", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -212,7 +221,7 @@ enum AppScreenGallery {
                 previewStep: .bundle
             )
         },
-        stacked("Recovery / password", section: .recovery) {
+        stacked("Recover access / password", section: .recovery) {
             RecoveryView(
                 initialInput: "replycant://recover?v=1&d=abc",
                 onCompleted: {},
@@ -220,7 +229,7 @@ enum AppScreenGallery {
                 previewStep: .password
             )
         },
-        stacked("Recovery / processing", section: .recovery) {
+        stacked("Recover access / processing", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -228,7 +237,7 @@ enum AppScreenGallery {
                 previewStep: .processing
             )
         },
-        stacked("Recovery / serverUnreachable", section: .recovery) {
+        stacked("Recover access / serverUnreachable", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -236,7 +245,7 @@ enum AppScreenGallery {
                 previewStep: .serverUnreachable
             )
         },
-        stacked("Recovery / blocked", section: .recovery) {
+        stacked("Recover access / blocked", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -244,7 +253,7 @@ enum AppScreenGallery {
                 previewStep: .blocked
             )
         },
-        stacked("Recovery / keyRejected", section: .recovery) {
+        stacked("Recover access / keyRejected", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -252,7 +261,7 @@ enum AppScreenGallery {
                 previewStep: .keyRejected
             )
         },
-        stacked("Recovery / done", section: .recovery) {
+        stacked("Recover access / done", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -260,7 +269,7 @@ enum AppScreenGallery {
                 previewStep: .done
             )
         },
-        stacked("Recovery / error", section: .recovery) {
+        stacked("Recover access / error", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
                 onCompleted: {},
@@ -270,8 +279,8 @@ enum AppScreenGallery {
         }
     ]
 
-    private static let main: [GalleryScreen] = [
-        tile("Main / tabs", section: .main) {
+    private static let appShell: [GalleryScreen] = [
+        tile("App shell / tabs", section: .appShell) {
             ContentView(
                 previewState: .init(
                     errorMessage: nil,
@@ -283,7 +292,7 @@ enum AppScreenGallery {
                 )
             )
         },
-        tile("Main / resync", section: .main) {
+        tile("App shell / resync", section: .appShell) {
             ContentView(
                 previewState: .init(
                     errorMessage: nil,
@@ -294,20 +303,26 @@ enum AppScreenGallery {
                     resyncProgressMessage: "Building media index... (1260/2000)"
                 )
             )
-        },
-        tile("Main / timeline empty", section: .main) {
+        }
+    ]
+
+    private static let timeline: [GalleryScreen] = [
+        tile("Timeline / empty", section: .timeline) {
             TimelineView(previewState: .empty)
         },
-        tile("Main / timeline loading", section: .main) {
+        tile("Timeline / loading", section: .timeline) {
             TimelineView(previewState: .loading)
         },
-        tile("Main / timeline error", section: .main) {
+        tile("Timeline / error", section: .timeline) {
             TimelineView(previewState: .error("LFS URL not configured"))
-        },
-        tile("Main / upload idle", section: .main) {
+        }
+    ]
+
+    private static let upload: [GalleryScreen] = [
+        tile("Upload / idle", section: .upload) {
             GalleryPhotoSyncPreview(state: .idle, isSyncing: false)
         },
-        tile("Main / upload syncing", section: .main) {
+        tile("Upload / syncing", section: .upload) {
             GalleryPhotoSyncPreview(
                 state: .syncing(
                     current: 7,
@@ -319,13 +334,13 @@ enum AppScreenGallery {
                 isSyncing: true
             )
         },
-        tile("Main / upload completed", section: .main) {
+        tile("Upload / completed", section: .upload) {
             GalleryPhotoSyncPreview(
                 state: .completed(total: 24),
                 isSyncing: false
             )
         },
-        tile("Main / upload failed", section: .main) {
+        tile("Upload / failed", section: .upload) {
             GalleryPhotoSyncPreview(
                 state: .failed(
                     NSError(
@@ -338,29 +353,31 @@ enum AppScreenGallery {
                 ),
                 isSyncing: false
             )
-        },
-        tile("Main / settings", section: .main) {
+        }
+    ]
+
+    private static let settings: [GalleryScreen] = [
+        tile("Settings / list", section: .settings) {
             SettingsView(onWipeAndResync: {}, showRecoveryWarning: false)
         },
-        tile("Main / settings warning", section: .main) {
+        tile("Settings / recovery warning", section: .settings) {
             SettingsView(onWipeAndResync: {}, showRecoveryWarning: true)
+        },
+        stacked("Settings / repository", section: .settings) {
+            RepositorySettingsView(previewState: .sample)
+        },
+        stacked("Settings / sync", section: .settings) {
+            SyncSettingsView()
+        },
+        stacked("Settings / playback", section: .settings) {
+            PlaybackSettingsView()
+        },
+        stacked("Settings / cache", section: .settings) {
+            CacheSettingsView(previewStats: .sample)
         }
     ]
 
     private static let components: [GalleryScreen] = [
-        tile("Components / QR with subtitle", section: .components) {
-            QRCodeDisplayView(
-                data: sampleDevicePublicKeyQR,
-                title: "preview-iphone",
-                subtitle: "Device Public Key"
-            )
-        },
-        tile("Components / QR without subtitle", section: .components) {
-            QRCodeDisplayView(
-                data: sampleConfigJSON,
-                title: "Scan on New Device"
-            )
-        },
         stacked("Components / scanner scanning", section: .components) {
             QRCodeScannerView(previewState: .scanning)
         },
@@ -370,42 +387,11 @@ enum AppScreenGallery {
         stacked("Components / scanner error", section: .components) {
             QRCodeScannerView(previewState: .scanError("Invalid QR code format"))
         },
-        tile("Components / pairing step", section: .components) {
-            PairingStepIndicator(step: 2, of: 4, phase: .sendKey)
-                .padding()
-        },
-        tile("Components / pairing hint", section: .components) {
-            PairingHintBox(
-                message: "Ask the other device to show its pairing QR.",
-                phase: .sendKey
-            )
-            .padding()
-        },
-        tile("Components / pairing progress", section: .components) {
-            PairingProgressView(
-                isProcessing: true,
-                message: "Cloning repository...",
-                progress: 42
-            )
-        },
-        tile("Components / pairing complete", section: .components) {
+        tile("Components / progress complete", section: .components) {
             PairingProgressView(
                 isProcessing: false,
                 message: "Setup complete!"
             )
-        },
-        tile("Components / pairing error", section: .components) {
-            PairingErrorView(
-                message: "Server URL not configured",
-                onRetry: {},
-                onCancel: {}
-            )
-        },
-        tile("Components / password create", section: .components) {
-            GalleryPasswordEntryPreview(mode: .create)
-        },
-        tile("Components / password recover", section: .components) {
-            GalleryPasswordEntryPreview(mode: .recover)
         }
     ]
 }
@@ -421,23 +407,6 @@ private struct GalleryPhotoSyncPreview: View {
         manager.syncState = state
         manager.isSyncing = isSyncing
         return PhotoSyncView(syncManager: manager)
-    }
-}
-
-// Holds password bindings for the create and recover form tiles so those
-// screens can appear without a parent wizard.
-private struct GalleryPasswordEntryPreview: View {
-    let mode: PasswordEntryView.Mode
-    @State private var password = ""
-    @State private var confirmPassword = ""
-
-    var body: some View {
-        PasswordEntryView(
-            mode: mode,
-            password: $password,
-            confirmPassword: $confirmPassword
-        )
-        .padding()
     }
 }
 
@@ -487,45 +456,73 @@ struct AppScreenGalleryBoard: View {
     }
 }
 
-#Preview("Onboarding", traits: .fixedLayout(width: 2170, height: 1876)) {
+#Preview("Onboarding", traits: .fixedLayout(width: 1744, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .onboarding),
-        columns: 5
+        columns: 4
     )
 }
 
-#Preview("Linking", traits: .fixedLayout(width: 1744, height: 958)) {
+#Preview("Link a new device", traits: .fixedLayout(width: 1744, height: 958)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .linking),
         columns: 4
     )
 }
 
-#Preview("Recovery Key", traits: .fixedLayout(width: 1744, height: 1876)) {
+#Preview("Recovery keys", traits: .fixedLayout(width: 466, height: 958)) {
     AppScreenGalleryBoard(
-        screens: AppScreenGallery.screens(in: .recoveryKey),
-        columns: 4
+        screens: AppScreenGallery.screens(in: .recoveryKeys),
+        columns: 1
     )
 }
 
-#Preview("Recovery", traits: .fixedLayout(width: 1744, height: 1876)) {
+#Preview("Create recovery key", traits: .fixedLayout(width: 1318, height: 1876)) {
+    AppScreenGalleryBoard(
+        screens: AppScreenGallery.screens(in: .createRecoveryKey),
+        columns: 3
+    )
+}
+
+#Preview("Recover access", traits: .fixedLayout(width: 1744, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .recovery),
         columns: 4
     )
 }
 
-#Preview("Main", traits: .fixedLayout(width: 2596, height: 1876)) {
+#Preview("App shell", traits: .fixedLayout(width: 892, height: 958)) {
     AppScreenGalleryBoard(
-        screens: AppScreenGallery.screens(in: .main),
-        columns: 6
+        screens: AppScreenGallery.screens(in: .appShell),
+        columns: 2
     )
 }
 
-#Preview("Components", traits: .fixedLayout(width: 2596, height: 1876)) {
+#Preview("Timeline", traits: .fixedLayout(width: 1318, height: 958)) {
+    AppScreenGalleryBoard(
+        screens: AppScreenGallery.screens(in: .timeline),
+        columns: 3
+    )
+}
+
+#Preview("Upload", traits: .fixedLayout(width: 1744, height: 958)) {
+    AppScreenGalleryBoard(
+        screens: AppScreenGallery.screens(in: .upload),
+        columns: 4
+    )
+}
+
+#Preview("Settings", traits: .fixedLayout(width: 1318, height: 1876)) {
+    AppScreenGalleryBoard(
+        screens: AppScreenGallery.screens(in: .settings),
+        columns: 3
+    )
+}
+
+#Preview("Components", traits: .fixedLayout(width: 1744, height: 958)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .components),
-        columns: 6
+        columns: 4
     )
 }
 #endif

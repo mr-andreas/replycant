@@ -3,6 +3,7 @@ import SwiftUI
 // Displays and allows editing of cache settings for both
 // in-memory preloading and the two-tier disk LRU cache.
 struct CacheSettingsView: View {
+    private let previewStats: ImageDiskCacheManager.CacheStats?
     @State private var imagesBeforeViewport: Int
     @State private var imagesAfterViewport: Int
     @State private var maxCacheSizeMB: Int
@@ -15,7 +16,10 @@ struct CacheSettingsView: View {
     @State private var diskStats: ImageDiskCacheManager.CacheStats?
     @State private var isClearing = false
 
-    init() {
+    // Seeds optional disk-cache numbers so gallery tiles can show the
+    // stats rows without reading the on-device cache directories.
+    init(previewStats: ImageDiskCacheManager.CacheStats? = nil) {
+        self.previewStats = previewStats
         let manager = CacheSettingsManager.shared
         _imagesBeforeViewport = State(initialValue: manager.imagesBeforeViewport)
         _imagesAfterViewport = State(initialValue: manager.imagesAfterViewport)
@@ -26,6 +30,16 @@ struct CacheSettingsView: View {
         _topDiskLimitMB = State(initialValue: manager.topDiskCacheLimitMB)
         _mainWarmCount = State(initialValue: manager.mainCacheWarmItemCount)
         _topWarmCount = State(initialValue: manager.topCacheWarmItemCount)
+        _diskStats = State(initialValue: previewStats)
+    }
+
+    // Canvas and gallery tiles skip disk I/O so the preview stays a
+    // parked snapshot instead of probing empty simulator caches.
+    static func shouldLoadDiskStats(
+        previewStats: ImageDiskCacheManager.CacheStats?,
+        isRunningForPreviews: Bool
+    ) -> Bool {
+        previewStats == nil && !isRunningForPreviews
     }
 
     var body: some View {
@@ -213,6 +227,12 @@ struct CacheSettingsView: View {
         }
         .navigationTitle("Cache")
         .task {
+            guard Self.shouldLoadDiskStats(
+                previewStats: previewStats,
+                isRunningForPreviews: ContentView.isRunningForPreviews(
+                    environment: ProcessInfo.processInfo.environment
+                )
+            ) else { return }
             diskStats = await ImageDiskCacheManager.shared.stats()
         }
     }
@@ -315,4 +335,17 @@ struct CacheSettingsView: View {
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(bytes))
     }
+}
+
+// Holds a parked cache snapshot so preview tiles can fill the stats
+// rows without probing empty simulator directories.
+extension ImageDiskCacheManager.CacheStats {
+    // Supplies representative disk-cache numbers so gallery tiles
+    // show stats rows without reading the on-device cache.
+    static let sample = ImageDiskCacheManager.CacheStats(
+        mainSizeBytes: 256_000_000,
+        mainItemCount: 840,
+        topSizeBytes: 18_000_000,
+        topItemCount: 120
+    )
 }
