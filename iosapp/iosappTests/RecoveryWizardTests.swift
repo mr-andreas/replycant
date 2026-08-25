@@ -136,6 +136,25 @@ struct RecoveryWizardTests {
         )
     }
 
+    // Ensures parked gallery states actually depict a listed set,
+    // an in-flight revoke on a listed key, and a failed revoke,
+    // so a tile cannot claim a state it does not render.
+    @Test func recoveryKeyPreviewStatesDepictListAndDeleteFlow() {
+        let listed = RecoveryKeyView.PreviewState.keysListed
+        #expect(listed.records.count > 1)
+        #expect(listed.deletingUUIDs.isEmpty)
+        #expect(listed.errorMessage == nil)
+
+        let deleting = RecoveryKeyView.PreviewState.deleting
+        let listedUUIDs = Set(deleting.records.map(\.uuid))
+        #expect(!deleting.deletingUUIDs.isEmpty)
+        #expect(deleting.deletingUUIDs.isSubset(of: listedUUIDs))
+
+        let failed = RecoveryKeyView.PreviewState.deleteFailed
+        #expect(!failed.records.isEmpty)
+        #expect(failed.errorMessage != nil)
+    }
+
     // Ensures the per-row spinner tracks only in-flight deletions so other
     // keys stay tappable while one revoke is still pushing.
     @Test func recoveryKeyDeleteBusyState() {

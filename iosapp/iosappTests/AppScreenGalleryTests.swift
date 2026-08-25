@@ -113,6 +113,31 @@ struct AppScreenGalleryTests {
         #expect(byId["Settings / recovery warning"] == .settings)
     }
 
+    // Pins Recovery keys to the empty status plus the parked list
+    // and delete-flow tiles so a populated or revoke state cannot
+    // ship without a canvas tile.
+    @Test func recoveryKeysSectionCoversListAndDeleteStates() {
+        let ids = AppScreenGallery.screens(in: .recoveryKeys).map(\.id)
+        #expect(ids == [
+            "Recovery keys / status",
+            "Recovery keys / keys listed",
+            "Recovery keys / deleting",
+            "Recovery keys / delete failed",
+        ])
+    }
+
+    // Keeps the Recovery keys board on one row at the 1744x958
+    // trait so adding a fifth tile cannot silently overflow Canvas.
+    @Test func recoveryKeysSectionFitsOneRow() {
+        let layout = AppScreenGallery.canvasLayout(
+            tileCount: AppScreenGallery.screens(in: .recoveryKeys).count
+        )
+        #expect(layout.columns == 4)
+        #expect(layout.rows == 1)
+        #expect(layout.width == 1744)
+        #expect(layout.height == 958)
+    }
+
     // Pins Settings to the list, warning badge, and every Advanced
     // destination so a new settings page cannot ship without a tile.
     @Test func settingsSectionCoversEverySubScreen() {

@@ -60,18 +60,71 @@ struct RecoveryKeyView: View {
     @State private var pendingDeletion: RecoveryKeyManager.RecoveryKeyRecord?
     @State private var deletingUUIDs: Set<String> = []
 
+    // Parks the repository-backed list so gallery tiles can show
+    // configured keys, an in-flight revoke, and a failed revoke
+    // without reading pubkeys/ or pushing to the server.
+    struct PreviewState {
+        var records: [RecoveryKeyManager.RecoveryKeyRecord]
+        var deletingUUIDs: Set<String> = []
+        var errorMessage: String? = nil
+
+        // Two labeled keys so the status screen can show a configured
+        // list instead of the empty warning.
+        static let keysListed = PreviewState(records: sampleRecords)
+
+        // Marks one listed key as in-flight so the row spinner is
+        // visible without starting a revoke.
+        static let deleting = PreviewState(
+            records: sampleRecords,
+            deletingUUIDs: [sampleRecords[0].uuid]
+        )
+
+        // Keeps the list on screen with a revoke error so the red
+        // footnote is reviewable without a failed push.
+        static let deleteFailed = PreviewState(
+            records: sampleRecords,
+            errorMessage: "Failed to revoke recovery key"
+        )
+
+        // Shared synthetic keys so listed, deleting, and failed tiles
+        // stay visually comparable.
+        private static let sampleRecords = [
+            RecoveryKeyManager.RecoveryKeyRecord(
+                label: "home-safe",
+                uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                pubPath: "pubkeys/home-safe-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.recovery.pub",
+                agePath: "pubkeys/home-safe-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.recovery.age"
+            ),
+            RecoveryKeyManager.RecoveryKeyRecord(
+                label: "office-drawer",
+                uuid: "11111111-2222-3333-4444-555555555555",
+                pubPath: "pubkeys/office-drawer-11111111-2222-3333-4444-555555555555.recovery.pub",
+                agePath: "pubkeys/office-drawer-11111111-2222-3333-4444-555555555555.recovery.age"
+            )
+        ]
+    }
+
     private let manager = RecoveryKeyManager()
     // Keeps Canvas from touching libgit2, which is not initialized in previews.
     private let isPreview: Bool
 
-    // Supports deterministic previews for each wizard step, including the
-    // post-share created state, without running async repository calls.
-    init(preview step: RecoveryKeyStep? = nil, hasShared: Bool = false) {
-        isPreview = step != nil
+    // Supports deterministic previews for each wizard step and parked
+    // list/delete states without running async repository calls.
+    init(
+        preview step: RecoveryKeyStep? = nil,
+        hasShared: Bool = false,
+        previewState: PreviewState? = nil
+    ) {
+        isPreview = step != nil || previewState != nil
         if let step {
             _currentStep = State(initialValue: step)
         }
         _hasSharedCreatedKey = State(initialValue: hasShared)
+        if let previewState {
+            _records = State(initialValue: previewState.records)
+            _deletingUUIDs = State(initialValue: previewState.deletingUUIDs)
+            _errorMessage = State(initialValue: previewState.errorMessage)
+        }
     }
 
     var body: some View {

@@ -188,6 +188,15 @@ enum AppScreenGallery {
     private static let recoveryKeys: [GalleryScreen] = [
         stacked("Recovery keys / status", section: .recoveryKeys) {
             RecoveryKeyView(preview: .status)
+        },
+        stacked("Recovery keys / keys listed", section: .recoveryKeys) {
+            RecoveryKeyView(previewState: .keysListed)
+        },
+        stacked("Recovery keys / deleting", section: .recoveryKeys) {
+            RecoveryKeyView(previewState: .deleting)
+        },
+        stacked("Recovery keys / delete failed", section: .recoveryKeys) {
+            RecoveryKeyView(previewState: .deleteFailed)
         }
     ]
 
@@ -470,10 +479,10 @@ struct AppScreenGalleryBoard: View {
     )
 }
 
-#Preview("Recovery keys", traits: .fixedLayout(width: 466, height: 958)) {
+#Preview("Recovery keys", traits: .fixedLayout(width: 1744, height: 958)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .recoveryKeys),
-        columns: 1
+        columns: 4
     )
 }
 
