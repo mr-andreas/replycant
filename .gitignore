@@ -24,3 +24,7 @@
 # Simulator walkthrough captures of a recovered library. These show
 # the user's real photos, so they must never be committable.
 /recordings
+
+# Xcode Canvas diagnostics the user may export while debugging
+# previews. A stale copy already got treated as current evidence.
+/preview.log

@@ -49,6 +49,15 @@ struct TimelineView: View {
         _timelineManager = StateObject(wrappedValue: TimelineManager())
     }
 
+    // Canvas skips app launch setup, so a real load would reach an
+    // uninitialized libgit2 and take the whole preview down with it.
+    static func shouldLoadTimeline(
+        previewState: PreviewState?,
+        isRunningForPreviews: Bool
+    ) -> Bool {
+        previewState == nil && !isRunningForPreviews
+    }
+
     var body: some View {
         // NavigationStack keeps timeline content in the primary column on iPad;
         // NavigationView would park it in a collapsed sidebar with an empty detail pane.
@@ -97,12 +106,22 @@ struct TimelineView: View {
                 }
             }
             .refreshable {
-                guard previewState == nil else { return }
+                guard Self.shouldLoadTimeline(
+                    previewState: previewState,
+                    isRunningForPreviews: ContentView.isRunningForPreviews(
+                        environment: ProcessInfo.processInfo.environment
+                    )
+                ) else { return }
                 TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
                 await timelineManager.loadTimeline(force: true)
             }
             .task {
-                guard previewState == nil else { return }
+                guard Self.shouldLoadTimeline(
+                    previewState: previewState,
+                    isRunningForPreviews: ContentView.isRunningForPreviews(
+                        environment: ProcessInfo.processInfo.environment
+                    )
+                ) else { return }
                 TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
                 await timelineManager.loadTimeline()
             }

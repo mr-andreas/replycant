@@ -18,6 +18,13 @@ struct iosappApp: App {
         if ContentView.isRunningForPreviews(environment: ProcessInfo.processInfo.environment) {
             return
         }
+        #if DEBUG
+        if AppScreenGallery.shouldShowGallery(
+            arguments: ProcessInfo.processInfo.arguments
+        ) {
+            return
+        }
+        #endif
 
         let appInitSignpost = AppSignposts.begin("AppInit")
         defer {
@@ -52,11 +59,32 @@ struct iosappApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .onOpenURL { url in
-                    RecoveryDeepLinkRouter.shared.handle(url: url)
+            #if DEBUG
+            if AppScreenGallery.shouldShowGallery(
+                arguments: ProcessInfo.processInfo.arguments
+            ) {
+                ScrollView([.horizontal, .vertical]) {
+                    AppScreenGalleryBoard(
+                        screens: AppScreenGallery.all,
+                        columns: 4
+                    )
                 }
+            } else {
+                contentRoot
+            }
+            #else
+            contentRoot
+            #endif
         }
+    }
+
+    // Keeps the production root in one place so the debug gallery
+    // host can replace it without duplicating the deep-link hook.
+    private var contentRoot: some View {
+        ContentView()
+            .onOpenURL { url in
+                RecoveryDeepLinkRouter.shared.handle(url: url)
+            }
     }
     
     // Creates the device key on first boot. Called exactly once per app installation.

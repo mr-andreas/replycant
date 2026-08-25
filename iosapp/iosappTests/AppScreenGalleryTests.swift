@@ -37,4 +37,45 @@ struct AppScreenGalleryTests {
         let ids = AppScreenGallery.all.map(\.id)
         #expect(Set(ids).count == ids.count)
     }
+
+    // Keeps the in-app gallery host off unless an explicit launch
+    // argument asks for it, so normal debug launches still show
+    // ContentView.
+    @Test func shouldShowGalleryRequiresExplicitLaunchArgument() {
+        #expect(AppScreenGallery.shouldShowGallery(arguments: []) == false)
+        #expect(
+            AppScreenGallery.shouldShowGallery(arguments: ["--uitesting"]) == false
+        )
+        #expect(
+            AppScreenGallery.shouldShowGallery(arguments: ["--gallery"]) == true
+        )
+    }
+
+    // Canvas silently blanks boards at 3000pt tall while 2200pt
+    // boards render. Two rows stay under that working height.
+    @Test func canvasLayoutKeepsEverySectionUnderWorkingHeight() {
+        for section in GallerySection.allCases {
+            let layout = AppScreenGallery.canvasLayout(
+                tileCount: AppScreenGallery.screens(in: section).count
+            )
+            #expect(layout.height <= AppScreenGallery.workingCanvasHeight)
+            #expect(layout.rows <= 2)
+        }
+    }
+
+    // Nine onboarding tiles need five columns to stay on two rows
+    // instead of the three-row 3000pt board that Canvas left blank.
+    @Test func canvasLayoutUsesTwoRowsOnceASectionExceedsFourTiles() {
+        let onboarding = AppScreenGallery.canvasLayout(tileCount: 9)
+        #expect(onboarding.columns == 5)
+        #expect(onboarding.rows == 2)
+        #expect(onboarding.width == 2170)
+        #expect(onboarding.height == 1876)
+
+        let linking = AppScreenGallery.canvasLayout(tileCount: 4)
+        #expect(linking.columns == 4)
+        #expect(linking.rows == 1)
+        #expect(linking.width == 1744)
+        #expect(linking.height == 958)
+    }
 }

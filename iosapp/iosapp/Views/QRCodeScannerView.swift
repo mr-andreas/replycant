@@ -159,8 +159,23 @@ struct QRCodeScannerView: View {
             checkCameraAuthorization()
         }
     }
+
+    // Canvas has no capture device and cannot answer a TCC prompt, so
+    // previews show the scanner chrome over a placeholder instead of a
+    // live session.
+    static func shouldUseLiveCamera(environment: [String: String]) -> Bool {
+        !ContentView.isRunningForPreviews(environment: environment)
+    }
     
+    // Parks Canvas on the scanning overlay instead of prompting for a
+    // camera that the Previews agent cannot open.
     private func checkCameraAuthorization() {
+        guard Self.shouldUseLiveCamera(
+            environment: ProcessInfo.processInfo.environment
+        ) else {
+            isAuthorized = true
+            return
+        }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             isAuthorized = true
@@ -222,8 +237,14 @@ struct QRCodeScannerView: View {
 private struct CameraPreviewView: UIViewRepresentable {
     let onScan: (String) -> Bool
     
+    // Builds a capture view that never opens a session in Canvas, so
+    // scanner tiles can show overlay chrome without a live camera.
     func makeUIView(context: Context) -> CameraPreviewUIView {
-        let view = CameraPreviewUIView()
+        let view = CameraPreviewUIView(
+            usesLiveCamera: QRCodeScannerView.shouldUseLiveCamera(
+                environment: ProcessInfo.processInfo.environment
+            )
+        )
         view.onScan = onScan
         return view
     }
@@ -247,9 +268,13 @@ private class CameraPreviewUIView: UIView {
     private let metadataQueue = DispatchQueue(label: "iosapp.qr.metadata")
     private let sessionQueue = DispatchQueue(label: "iosapp.qr.session", qos: .userInitiated)
     
-    override init(frame: CGRect) {
+    // Skips AVCaptureSession construction in Canvas, where no capture
+    // device exists and session setup would take the preview down.
+    init(frame: CGRect = .zero, usesLiveCamera: Bool = true) {
         super.init(frame: frame)
-        setupCamera()
+        if usesLiveCamera {
+            setupCamera()
+        }
     }
     
     required init?(coder: NSCoder) {

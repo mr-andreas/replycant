@@ -52,6 +52,43 @@ enum AppScreenGallery {
         all.filter { $0.section == section }
     }
 
+    // Hosts the same board in the running app so Canvas-blank tiles
+    // can be inspected without a preview time limit.
+    static func shouldShowGallery(arguments: [String]) -> Bool {
+        arguments.contains("--gallery")
+    }
+
+    // Tallest fixedLayout that still painted in Canvas. Boards at
+    // 3000pt rendered as a blank frame with no timeout banner.
+    static let workingCanvasHeight: CGFloat = 2200
+
+    static let tileWidth: CGFloat = 402
+    static let tileHeight: CGFloat = 874
+    static let tileCaptionHeight: CGFloat = 20
+    static let gridSpacing: CGFloat = 24
+    static let boardPadding: CGFloat = 32
+
+    // Sizes a section board to at most two rows so Canvas stays
+    // under the height that silently blanks.
+    static func canvasLayout(tileCount: Int) -> CanvasLayout {
+        let count = max(tileCount, 1)
+        let columns = count <= 4 ? count : Int(ceil(Double(count) / 2.0))
+        let rows = Int(ceil(Double(count) / Double(columns)))
+        let width = boardPadding * 2
+            + CGFloat(columns) * tileWidth
+            + CGFloat(max(columns - 1, 0)) * gridSpacing
+        let rowHeight = tileCaptionHeight + tileHeight
+        let height = boardPadding * 2
+            + CGFloat(rows) * rowHeight
+            + CGFloat(max(rows - 1, 0)) * gridSpacing
+        return CanvasLayout(
+            columns: columns,
+            rows: rows,
+            width: width,
+            height: height
+        )
+    }
+
     // Wraps a preview view so the catalog can store it without
     // specializing the array element type.
     private static func tile<Content: View>(
@@ -404,84 +441,91 @@ private struct GalleryPasswordEntryPreview: View {
     }
 }
 
-// Lays out labeled phone-sized tiles so many screens can sit on one
-// canvas without a device bezel.
+// Records the column count and canvas size for one gallery board so
+// section previews can stay under the height Canvas will paint.
+struct CanvasLayout: Equatable {
+    let columns: Int
+    let rows: Int
+    let width: CGFloat
+    let height: CGFloat
+}
+
+// Lays out labeled phone-sized tiles eagerly so Canvas cannot skip
+// them the way LazyVGrid does when the preview viewport is empty.
 struct AppScreenGalleryBoard: View {
     let screens: [GalleryScreen]
     var columns: Int = 10
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            LazyVGrid(
-                columns: Array(
-                    repeating: GridItem(.fixed(402), spacing: 24),
-                    count: columns
-                ),
-                spacing: 24
-            ) {
-                ForEach(screens) { screen in
-                    VStack(spacing: 6) {
-                        Text(screen.id)
-                            .font(.caption2)
-                            .lineLimit(1)
-                        screen.makeView()
-                            .frame(width: 402, height: 874)
-                            .clipShape(RoundedRectangle(cornerRadius: 24))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 24)
-                                    .stroke(.quaternary)
-                            )
+        Grid(alignment: .top, horizontalSpacing: 24, verticalSpacing: 24) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                GridRow(alignment: .top) {
+                    ForEach(row) { screen in
+                        VStack(spacing: 6) {
+                            Text(screen.id)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            screen.makeView()
+                                .frame(width: 402, height: 874)
+                                .clipShape(RoundedRectangle(cornerRadius: 24))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 24)
+                                        .stroke(.quaternary)
+                                )
+                        }
                     }
                 }
             }
-            .padding(32)
+        }
+        .padding(32)
+    }
+
+    private var rows: [[GalleryScreen]] {
+        stride(from: 0, to: screens.count, by: max(columns, 1)).map {
+            Array(screens[$0 ..< min($0 + max(columns, 1), screens.count)])
         }
     }
 }
 
-#Preview("All Screens", traits: .fixedLayout(width: 4300, height: 5800)) {
-    AppScreenGalleryBoard(screens: AppScreenGallery.all)
-}
-
-#Preview("Onboarding", traits: .fixedLayout(width: 1800, height: 3000)) {
+#Preview("Onboarding", traits: .fixedLayout(width: 2170, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .onboarding),
-        columns: 3
+        columns: 5
     )
 }
 
-#Preview("Linking", traits: .fixedLayout(width: 1800, height: 1200)) {
+#Preview("Linking", traits: .fixedLayout(width: 1744, height: 958)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .linking),
         columns: 4
     )
 }
 
-#Preview("Recovery Key", traits: .fixedLayout(width: 1800, height: 2200)) {
+#Preview("Recovery Key", traits: .fixedLayout(width: 1744, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .recoveryKey),
         columns: 4
     )
 }
 
-#Preview("Recovery", traits: .fixedLayout(width: 1800, height: 2200)) {
+#Preview("Recovery", traits: .fixedLayout(width: 1744, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .recovery),
         columns: 4
     )
 }
 
-#Preview("Main", traits: .fixedLayout(width: 1800, height: 3200)) {
+#Preview("Main", traits: .fixedLayout(width: 2596, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .main),
-        columns: 4
+        columns: 6
     )
 }
 
-#Preview("Components", traits: .fixedLayout(width: 1800, height: 3200)) {
+#Preview("Components", traits: .fixedLayout(width: 2596, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .components),
-        columns: 4
+        columns: 6
     )
 }
 #endif
