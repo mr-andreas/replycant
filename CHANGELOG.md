@@ -22,6 +22,7 @@
 
 ### Fixes
 
+- iosapp: remove the device name and public-key labels from the connect QR screen
 - iosapp: show an explicit delete button and confirmation for existing recovery keys
 - iosapp: generate a simulator device key when bundled credentials are missing so recovery can enroll a new device
 - iosapp: say a recovery key was deleted from the server instead of showing an HTTP 401 error

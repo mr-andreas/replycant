@@ -310,8 +310,7 @@ struct OnboardingView: View {
                 if let qrData = devicePublicKeyQR {
                     QRCodeDisplayView(
                         data: qrData,
-                        title: deviceName,
-                        subtitle: "Device Public Key"
+                        title: ""
                     )
                 } else {
                     ProgressView("Generating key...")
