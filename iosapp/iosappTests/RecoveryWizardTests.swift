@@ -64,11 +64,14 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.canDismissCreatedKey(hasShared: true))
     }
 
-    // Ensures the created-step copy tells users to save the backup off-device.
+    // Ensures the created step tells users to store the key and its
+    // password separately so one shared item cannot expose both.
     @Test func recoveryKeyCreatedStepCopy() {
         #expect(RecoveryKeyView.createdStepHeading == "Recovery key created")
-        #expect(RecoveryKeyView.createdStepBody.contains("outside this device"))
-        #expect(RecoveryKeyView.createdStepBody.contains("password is not included"))
+        #expect(
+            RecoveryKeyView.createdStepBody
+                == "Save this recovery key somewhere safe. The password needed to unlock it is not included, so keep it separately."
+        )
         #expect(RecoveryKeyView.createdStepShareLabel == "Share recovery key")
         #expect(RecoveryKeyView.createdStepDoneLabel == "Done")
     }

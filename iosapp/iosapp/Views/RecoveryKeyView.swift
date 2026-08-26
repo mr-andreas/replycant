@@ -14,7 +14,7 @@ struct RecoveryKeyView: View {
     static let passwordMismatchMessage = "Passwords do not match."
     static let createdStepHeading = "Recovery key created"
     static let createdStepBody =
-        "Save this backup outside this device. The password is not included."
+        "Save this recovery key somewhere safe. The password needed to unlock it is not included, so keep it separately."
     static let createdStepShareLabel = "Share recovery key"
     static let createdStepShareAgainLabel = "Share again"
     static let createdStepDoneLabel = "Done"
