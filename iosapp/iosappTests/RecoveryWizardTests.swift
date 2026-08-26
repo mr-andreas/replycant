@@ -12,12 +12,12 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.RecoveryKeyStep.error.title == "Error")
     }
 
-    // Ensures the status screen explains why creating a recovery key matters
-    // and how to restore via the connect-to-existing flow.
+    // Ensures the status screen explains why creating a recovery key
+    // matters without walking through the restore path.
     @Test func recoveryKeyStatusDescriptionCopy() {
         #expect(
             RecoveryKeyView.statusDescription
-                == "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server. On a fresh install, choose Connect to an existing library and scan the recovery QR."
+                == "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
         )
     }
 

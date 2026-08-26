@@ -22,6 +22,7 @@
 
 ### Fixes
 
+- iosapp: drop the fresh-install restore sentence from the recovery key settings description
 - iosapp: remove the device name and public-key labels from the connect QR screen
 - iosapp: show an explicit delete button and confirmation for existing recovery keys
 - iosapp: generate a simulator device key when bundled credentials are missing so recovery can enroll a new device
