@@ -4,7 +4,7 @@ import UIKit
 // Manages recovery-key lifecycle so users can create, export, and rotate disaster-recovery credentials.
 struct RecoveryKeyView: View {
     static let statusDescription =
-        "Protect yourself from being locked out. A recovery key restores access when you can’t use an existing device to connect to your Replycant server."
+        "A recovery key is a password-protected link or QR code that you should store somewhere safe. Use it to restore access to your Replycant server if you lose access to all your connected devices."
     static let nameStepHeading = "Name this recovery key"
     static let nameStepSubtitle =
         "This label appears in Settings and in the backup you save."

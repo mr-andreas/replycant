@@ -22,6 +22,7 @@
 
 ### Fixes
 
+- iosapp: explain that a recovery key is a password-protected link or QR code for restoring access
 - iosapp: drop the fresh-install restore sentence from the recovery key settings description
 - iosapp: remove the device name and public-key labels from the connect QR screen
 - iosapp: show an explicit delete button and confirmation for existing recovery keys
