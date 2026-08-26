@@ -355,6 +355,153 @@ struct GitRepositoryTests {
         #expect(local.fileExists(at: "remote.txt"))
     }
 
+    // Verifies two clones that rebase the same local commit onto the same
+    // upstream converge on one SHA so retries do not manufacture duplicates.
+    @Test func testPullRebaseIsDeterministicAcrossClones() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("pull-rebase-deterministic-\(UUID().uuidString)")
+        let remotePath = (root as NSString).appendingPathComponent("remote.git")
+        let seedPath = (root as NSString).appendingPathComponent("seed")
+        let sharedLocalPath = (root as NSString).appendingPathComponent("shared-local")
+        let localAPath = (root as NSString).appendingPathComponent("local-a")
+        let localBPath = (root as NSString).appendingPathComponent("local-b")
+        let writerPath = (root as NSString).appendingPathComponent("writer")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        _ = try Repository.create(at: remotePath, bare: true)
+
+        let seed = try Repository.create(at: seedPath, bare: false)
+        try seed.createCommit(
+            message: "seed",
+            files: [(path: "seed.txt", content: "seed")]
+        )
+        try seed.addRemote(name: "origin", url: remotePath)
+        try seed.push(remoteName: "origin", branchName: "main")
+
+        let sharedLocal = try Repository.clone(from: remotePath, to: sharedLocalPath)
+        try sharedLocal.createCommit(
+            message: "local change",
+            files: [(path: "local.txt", content: "local")]
+        )
+
+        let localA = try Repository.clone(from: sharedLocalPath, to: localAPath)
+        let localB = try Repository.clone(from: sharedLocalPath, to: localBPath)
+        try localA.addRemote(name: "origin", url: remotePath)
+        try localB.addRemote(name: "origin", url: remotePath)
+
+        let writer = try Repository.clone(from: remotePath, to: writerPath)
+        try writer.createCommit(
+            message: "remote change",
+            files: [(path: "remote.txt", content: "remote")]
+        )
+        try writer.push(remoteName: "origin", branchName: "main")
+
+        try localA.pullRebase(remoteName: "origin", branchName: "main")
+        let headA = try #require(localA.headOID())
+
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        try localB.pullRebase(remoteName: "origin", branchName: "main")
+        let headB = try #require(localB.headOID())
+
+        #expect(headA == headB)
+        #expect(localA.fileExists(at: "local.txt"))
+        #expect(localA.fileExists(at: "remote.txt"))
+        #expect(localB.fileExists(at: "local.txt"))
+        #expect(localB.fileExists(at: "remote.txt"))
+    }
+
+    // Verifies pullRebase leaves HEAD unchanged when local is only ahead of
+    // upstream, so a concurrent push cannot race a rewritten SHA.
+    @Test func testPullRebaseNoOpWhenLocalIsAheadOfUpstream() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("pull-rebase-ahead-\(UUID().uuidString)")
+        let remotePath = (root as NSString).appendingPathComponent("remote.git")
+        let seedPath = (root as NSString).appendingPathComponent("seed")
+        let localPath = (root as NSString).appendingPathComponent("local")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        _ = try Repository.create(at: remotePath, bare: true)
+
+        let seed = try Repository.create(at: seedPath, bare: false)
+        try seed.createCommit(
+            message: "seed",
+            files: [(path: "seed.txt", content: "seed")]
+        )
+        try seed.addRemote(name: "origin", url: remotePath)
+        try seed.push(remoteName: "origin", branchName: "main")
+
+        let local = try Repository.clone(from: remotePath, to: localPath)
+        try local.createCommit(
+            message: "local ahead",
+            files: [(path: "local.txt", content: "ahead")]
+        )
+        let headBeforePull = try #require(local.headOID())
+
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        try local.pullRebase(remoteName: "origin", branchName: "main")
+        #expect(local.headOID() == headBeforePull)
+        #expect(local.fileExists(at: "local.txt"))
+    }
+
+    // Verifies pullRebase skips an already-applied local duplicate so a
+    // device that rewrote a pushed commit can fast-forward back to origin.
+    @Test func testPullRebaseSkipsAlreadyAppliedDuplicateCommit() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("pull-rebase-eapplied-\(UUID().uuidString)")
+        let remotePath = (root as NSString).appendingPathComponent("remote.git")
+        let seedPath = (root as NSString).appendingPathComponent("seed")
+        let writerPath = (root as NSString).appendingPathComponent("writer")
+        let localPath = (root as NSString).appendingPathComponent("local")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        _ = try Repository.create(at: remotePath, bare: true)
+
+        let seed = try Repository.create(at: seedPath, bare: false)
+        try seed.createCommit(
+            message: "seed",
+            files: [
+                (path: "keep.txt", content: "keep"),
+                (path: "pubkeys/recovery.recovery.pub", content: "ssh"),
+                (path: "pubkeys/recovery.recovery.age", content: "age"),
+            ]
+        )
+        try seed.addRemote(name: "origin", url: remotePath)
+        try seed.push(remoteName: "origin", branchName: "main")
+
+        let local = try Repository.clone(from: remotePath, to: localPath)
+        let writer = try Repository.clone(from: remotePath, to: writerPath)
+
+        try writer.createCommit(
+            message: "Remove recovery key remote",
+            files: [],
+            deletions: [
+                "pubkeys/recovery.recovery.pub",
+                "pubkeys/recovery.recovery.age",
+            ]
+        )
+        let remoteHead = try #require(writer.headOID())
+        try writer.push(remoteName: "origin", branchName: "main")
+
+        try local.createCommit(
+            message: "Remove recovery key local",
+            files: [],
+            deletions: [
+                "pubkeys/recovery.recovery.pub",
+                "pubkeys/recovery.recovery.age",
+            ]
+        )
+        #expect(local.headOID() != remoteHead)
+
+        try local.pullRebase(remoteName: "origin", branchName: "main")
+        #expect(local.headOID() == remoteHead)
+        #expect(local.fileExists(at: "keep.txt"))
+        #expect(!local.fileExists(at: "pubkeys/recovery.recovery.pub"))
+
+        try local.push(remoteName: "origin", branchName: "main")
+    }
+
     // Verifies Git operation signposts do not change commit success behavior.
     @Test func testSignpostedCreateCommitStillSucceeds() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("signpost-commit-\(UUID().uuidString)")

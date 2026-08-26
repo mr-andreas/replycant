@@ -22,6 +22,7 @@
 
 ### Fixes
 
+- iosapp: stop sync from wedging after deleting a recovery key; rebases are now deterministic instead of re-stamping commits with a new timestamp, and the app recovers automatically from duplicated commits
 - iosapp: explain that a recovery key is a password-protected link or QR code for restoring access
 - iosapp: drop the fresh-install restore sentence from the recovery key settings description
 - iosapp: remove the device name and public-key labels from the connect QR screen

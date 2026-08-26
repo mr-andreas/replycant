@@ -1014,6 +1014,8 @@ public final class Repository: @unchecked Sendable {
     }
     
     // Pulls remote changes while preserving local commits, and bootstraps empty local branches by fast-forwarding.
+    // Rebases are deterministic (original committer kept) and skip already-applied
+    // patches so a retry cannot wedge behind a rewritten SHA.
     public func pullRebase(remoteName: String = "origin", branchName: String? = nil, progressCallback: ((GitProgress) -> Void)? = nil) throws {
         let pullSignpost = GitSignposts.begin("GitPullRebase")
         var pullSucceeded = false
@@ -1220,6 +1222,34 @@ public final class Repository: @unchecked Sendable {
                 log("REBASE - Warning - Last git error: \(errorMessage) (class: \(errorClass))")
             }
         }
+
+        // Local already contains every upstream commit, so rewriting HEAD would
+        // only change SHAs and can race a concurrent push of the original tip.
+        let headDescendsFromUpstream = git_graph_descendant_of(repo, &headOid, &upstreamOid)
+        if headDescendsFromUpstream == 1 {
+            logDebug("REBASE - Local branch is ahead of upstream with no divergence, skipping rebase")
+
+            container?.flush()
+
+            do {
+                try setUpstreamBranch(localBranch: actualBranch, remoteName: remoteName, remoteBranch: actualBranch)
+            } catch {
+                log("REBASE - Warning - Failed to set upstream tracking: \(error.localizedDescription)")
+            }
+
+            let totalDuration = Date().timeIntervalSince(startTime)
+            logDebug("REBASE - Successfully completed pull with rebase in \(String(format: "%.2f", totalDuration))s")
+            pullSucceeded = true
+            return
+        }
+        if headDescendsFromUpstream < 0 {
+            log("REBASE - Warning - Failed to compute ancestry for ahead check; falling back to rebase path")
+            if let lastError = git_error_last() {
+                let errorMessage = String(cString: lastError.pointee.message)
+                let errorClass = lastError.pointee.klass
+                log("REBASE - Warning - Last git error: \(errorMessage) (class: \(errorClass))")
+            }
+        }
         
         log("REBASE - HEAD differs from upstream, proceeding with rebase")
 
@@ -1308,16 +1338,40 @@ public final class Repository: @unchecked Sendable {
             opIndex += 1
             logDebug("REBASE - Applying operation \(opIndex)/\(opCount)...")
             
-            if let op = operation?.pointee {
-                var opOid = op.id
-                var opOidStr = [Int8](repeating: 0, count: 41)
-                git_oid_tostr(&opOidStr, 41, &opOid)
-                let opSha = String(cString: opOidStr)
-                logDebug("REBASE - Operation type: \(op.type.rawValue), commit: \(opSha)")
+            guard let op = operation?.pointee else {
+                log("REBASE ERROR - Missing rebase operation payload")
+                git_rebase_abort(gitRebase)
+                throw GitError.repositoryError("Failed to apply rebase operation")
             }
-            
+
+            var opOid = op.id
+            var opOidStr = [Int8](repeating: 0, count: 41)
+            git_oid_tostr(&opOidStr, 41, &opOid)
+            let opSha = String(cString: opOidStr)
+            logDebug("REBASE - Operation type: \(op.type.rawValue), commit: \(opSha)")
+
+            var originalCommit: OpaquePointer?
+            let originalLookup = git_commit_lookup(&originalCommit, repo, &opOid)
+            guard originalLookup == 0, let sourceCommit = originalCommit else {
+                log("REBASE ERROR - Failed to lookup original commit \(opSha), error code: \(originalLookup)")
+                git_rebase_abort(gitRebase)
+                throw GitError.repositoryError("Failed to apply rebase operation")
+            }
+            defer { git_commit_free(sourceCommit) }
+
+            guard let committer = git_commit_committer(sourceCommit) else {
+                log("REBASE ERROR - Original commit \(opSha) has no committer")
+                git_rebase_abort(gitRebase)
+                throw GitError.repositoryError("Failed to apply rebase operation")
+            }
+
             var newCommitOid = git_oid()
-            let commitResult = git_rebase_commit(&newCommitOid, gitRebase, nil, signature, nil, nil)
+            let commitResult = git_rebase_commit(&newCommitOid, gitRebase, nil, committer, nil, nil)
+            if commitResult == Int32(GIT_EAPPLIED.rawValue) {
+                log("REBASE - Operation \(opIndex)/\(opCount) already applied upstream, skipping")
+                nextResult = git_rebase_next(&operation, gitRebase)
+                continue
+            }
             if commitResult != 0 {
                 log("REBASE ERROR - Failed to commit during rebase, error code: \(commitResult)")
                 if let lastError = git_error_last() {
