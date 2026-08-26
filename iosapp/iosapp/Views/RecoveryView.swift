@@ -324,7 +324,8 @@ struct RecoveryView: View {
                 .foregroundColor(.green)
 
             Text("Recovery complete")
-                .font(.headline)
+                .font(.title2)
+                .fontWeight(.semibold)
 
             Text(Self.revokeGuidanceMessage)
                 .font(.subheadline)
