@@ -40,6 +40,11 @@ struct RecoveryWizardTests {
         )
         #expect(RecoveryView.revokeDoneMessage == "Used key revoked. Create a new recovery key in Settings.")
         #expect(RecoveryView.cancelCtaLabel == "Cancel")
+        #expect(RecoveryView.revokingCtaLabel == "Revoking used key...")
+        #expect(RecoveryView.revokeCtaTitle(isRevoking: false) == RecoveryView.revokeCtaLabel)
+        #expect(RecoveryView.revokeCtaTitle(isRevoking: true) == RecoveryView.revokingCtaLabel)
+        #expect(RecoveryView.canDismissDoneStep(isRevoking: false))
+        #expect(!RecoveryView.canDismissDoneStep(isRevoking: true))
     }
 
     // Ensures step 1 starts with the current device name so users can accept it without typing.

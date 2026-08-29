@@ -3,6 +3,7 @@ import SwiftUI
 // Runs the end-user recovery flow from a scanned/pasted bundle and returns to normal app identity afterwards.
 struct RecoveryView: View {
     static let revokeCtaLabel = "Revoke used key"
+    static let revokingCtaLabel = "Revoking used key..."
     static let continueCtaLabel = "Continue"
     // Explains why revoke is the safer next step and that a replacement
     // key can wait until the user is inside the recovered app.
@@ -60,6 +61,7 @@ struct RecoveryView: View {
     @State private var isBusy = false
     @State private var completedRecovery: RecoveryKeyManager.RecoveryResult?
     @State private var didRevokeUsedKey = false
+    @State private var isRevokingUsedKey = false
 
     private let manager = RecoveryKeyManager()
     // Keeps an injected Canvas step available after appear so outcome
@@ -72,7 +74,8 @@ struct RecoveryView: View {
         onCompleted: @escaping () -> Void,
         onCancel: @escaping () -> Void,
         onScanAgain: @escaping () -> Void = {},
-        previewStep: RecoveryStep? = nil
+        previewStep: RecoveryStep? = nil,
+        previewIsRevoking: Bool = false
     ) {
         self.initialInput = initialInput
         self.onCompleted = onCompleted
@@ -82,6 +85,7 @@ struct RecoveryView: View {
         if let previewStep {
             _currentStep = State(initialValue: previewStep)
         }
+        _isRevokingUsedKey = State(initialValue: previewIsRevoking)
     }
 
     var body: some View {
@@ -362,14 +366,24 @@ struct RecoveryView: View {
                             .padding(.horizontal, 28)
                     }
 
-                    Button(Self.revokeCtaLabel) {
+                    Button {
                         Task { await revokeUsedRecoveryKey() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isRevokingUsedKey {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text(Self.revokeCtaTitle(isRevoking: isRevokingUsedKey))
+                        }
                     }
-                    .buttonStyle(PairingPrimaryButtonStyle())
+                    .disabled(isRevokingUsedKey)
+                    .buttonStyle(PairingPrimaryButtonStyle(disabled: isRevokingUsedKey))
 
                     Button("Not now") {
                         onCompleted()
                     }
+                    .disabled(!Self.canDismissDoneStep(isRevoking: isRevokingUsedKey))
                     .buttonStyle(PairingTertiaryButtonStyle())
                 }
 
@@ -400,6 +414,18 @@ struct RecoveryView: View {
     // Keeps bundle parsing step-button enablement simple and testable.
     static func canAdvanceFromBundle(input: String) -> Bool {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    // Relabels the revoke CTA while the commit-and-push is in flight
+    // so the same button shows that work is happening.
+    static func revokeCtaTitle(isRevoking: Bool) -> String {
+        isRevoking ? revokingCtaLabel : revokeCtaLabel
+    }
+
+    // Blocks leaving Recovery Complete mid-revoke so a push cannot be
+    // abandoned by tapping Not now.
+    static func canDismissDoneStep(isRevoking: Bool) -> Bool {
+        !isRevoking
     }
 
     // Encodes bundle validation routing so tests can assert password vs error transitions.
@@ -455,12 +481,15 @@ struct RecoveryView: View {
 
     // Revokes used recovery material so one-time credentials cannot be reused after account recovery.
     private func revokeUsedRecoveryKey() async {
+        guard !isRevokingUsedKey else { return }
         guard let completedRecovery else {
             onCompleted()
             return
         }
+        errorMessage = nil
+        isRevokingUsedKey = true
+        defer { isRevokingUsedKey = false }
         do {
-            errorMessage = nil
             let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
             try await manager.deleteRecoveryKey(uuid: completedRecovery.usedRecoveryUUID, repository: repository, gitDB: gitDB)

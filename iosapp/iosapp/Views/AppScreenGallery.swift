@@ -278,6 +278,15 @@ enum AppScreenGallery {
                 previewStep: .done
             )
         },
+        stacked("Recover access / done revoking", section: .recovery) {
+            RecoveryView(
+                initialInput: nil,
+                onCompleted: {},
+                onCancel: {},
+                previewStep: .done,
+                previewIsRevoking: true
+            )
+        },
         stacked("Recover access / error", section: .recovery) {
             RecoveryView(
                 initialInput: nil,
@@ -493,10 +502,10 @@ struct AppScreenGalleryBoard: View {
     )
 }
 
-#Preview("Recover access", traits: .fixedLayout(width: 1744, height: 1876)) {
+#Preview("Recover access", traits: .fixedLayout(width: 2170, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .recovery),
-        columns: 4
+        columns: 5
     )
 }
 
