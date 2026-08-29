@@ -12,6 +12,8 @@
 
 - add regenerable iOS and Electron product screenshots in the README (`make readme-screenshots`)
 - iosapp: create a password-protected recovery key, share it as a link or QR code, and use it to restore access to your library on a new or wiped device; existing keys can be reviewed and deleted from settings
+- iosapp: skip the post-recovery revoke prompt when a recovery link includes `keep=1`
+- iosapp: start recovery immediately when a recovery link includes `pw=` so testing and App Review need no password typing
 - replycant-importer: encrypts binaries and uploads them to LFS before commit, writing only pointer files into the worktree for much faster import/rebase
 - replycant-importer: starts encrypting and uploading while the source tree is still being scanned; progress shows `(calculating, N found)` until the scan finishes
 - server: git and CA listen ports can be set with `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT`; already-linked devices need re-onboarding or a stored URL update after a port change

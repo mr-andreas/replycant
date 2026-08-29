@@ -82,6 +82,12 @@ enum RecoveryBundle {
     static let nonceLength = 12
     // Routes tap-to-open recovery links into the app without contacting any server.
     static let deepLinkPrefix = "replycant://recover?v=1&d="
+    // Names the optional deep-link query that skips the post-recovery
+    // revoke prompt so reusable keys stay on the server.
+    static let keepKeyQueryName = "keep"
+    // Names the optional deep-link query that unlocks the bundle so
+    // testing and App Review can recover without typing the password.
+    static let passwordQueryName = "pw"
 
     // Encrypts plaintext recovery metadata into a shareable envelope guarded by a user-chosen password.
     static func encrypt(plaintext: Plaintext, password: String) throws -> Envelope {
@@ -165,6 +171,26 @@ enum RecoveryBundle {
     // Creates a custom-scheme link that opens the app directly into recovery mode.
     static func deepLinkString(for envelope: Envelope) throws -> String {
         deepLinkPrefix + (try base64EnvelopeString(envelope))
+    }
+
+    // Reads the keep hint from a recovery deep link so reusable keys
+    // skip the revoke prompt without changing the encrypted envelope.
+    static func requestsKeepingRecoveryKey(in rawInput: String) -> Bool {
+        guard let value = deepLinkQueryValue(named: keepKeyQueryName, from: rawInput) else {
+            return false
+        }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "1" || normalized == "true"
+    }
+
+    // Reads an embedded password from a recovery deep link so
+    // automated recoveries can start without a password prompt.
+    static func embeddedPassword(in rawInput: String) -> String? {
+        guard let value = deepLinkQueryValue(named: passwordQueryName, from: rawInput) else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     // Parses a scanned or pasted recovery payload from JSON, custom link, or bare base64url text.
@@ -268,6 +294,12 @@ enum RecoveryBundle {
 
     // Extracts the `d` payload from a replycant deep link string for base64url decoding.
     private static func extractDeepLinkPayload(from input: String) -> String? {
+        deepLinkQueryValue(named: "d", from: input)
+    }
+
+    // Shares one scheme-checked query lookup so envelope, keep, and
+    // password flags cannot drift onto different URL parsers.
+    private static func deepLinkQueryValue(named name: String, from input: String) -> String? {
         guard let url = URL(string: input),
               url.scheme?.lowercased() == "replycant" else {
             return nil
@@ -275,7 +307,7 @@ enum RecoveryBundle {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
-        return components.queryItems?.first(where: { $0.name == "d" })?.value
+        return components.queryItems?.first(where: { $0.name == name })?.value
     }
 }
 

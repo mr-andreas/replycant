@@ -11,7 +11,7 @@ Description: ~50 photos, fast clone, good for quick UI checks
 Server: http://EXAMPLE-HOST.local:8080
 Path: ~/tmp/replycant-test-server-50-images
 Password: EXAMPLE_PASSWORD
-Link: replycant://recover?v=1&d=EXAMPLE_PAYLOAD
+Link: replycant://recover?v=1&d=EXAMPLE_PAYLOAD&keep=1&pw=EXAMPLE_PASSWORD
 
 ## big-repo
 Description: 10k images, use for sync and timeline performance work

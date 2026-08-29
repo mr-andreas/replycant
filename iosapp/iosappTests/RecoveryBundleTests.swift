@@ -97,6 +97,59 @@ struct RecoveryBundleTests {
         }
     }
 
+    // Ensures keep=1 on a recovery deep link is the only input
+    // that asks the done step to skip the revoke prompt.
+    @Test func requestsKeepingRecoveryKeyFromDeepLinkQuery() throws {
+        let envelope = try RecoveryBundle.encrypt(
+            plaintext: Self.samplePlaintext,
+            password: "correct horse battery staple"
+        )
+        let deepLink = try RecoveryBundle.deepLinkString(for: envelope)
+        let keepTrue = deepLink + "&keep=1"
+        let keepWord = deepLink + "&keep=true"
+        let keepUpper = deepLink + "&keep=TRUE"
+        let keepZero = deepLink + "&keep=0"
+        let json = try RecoveryBundle.envelopeJSONString(envelope)
+        let bareBase64 = try RecoveryBundle.base64EnvelopeString(envelope)
+
+        #expect(RecoveryBundle.requestsKeepingRecoveryKey(in: keepTrue))
+        #expect(RecoveryBundle.requestsKeepingRecoveryKey(in: keepWord))
+        #expect(RecoveryBundle.requestsKeepingRecoveryKey(in: keepUpper))
+        #expect(!RecoveryBundle.requestsKeepingRecoveryKey(in: deepLink))
+        #expect(!RecoveryBundle.requestsKeepingRecoveryKey(in: keepZero))
+        #expect(!RecoveryBundle.requestsKeepingRecoveryKey(in: json))
+        #expect(!RecoveryBundle.requestsKeepingRecoveryKey(in: bareBase64))
+        #expect(
+            !RecoveryBundle.requestsKeepingRecoveryKey(
+                in: "https://example.com/recover?v=1&d=abc&keep=1"
+            )
+        )
+    }
+
+    // Ensures an embedded pw query unlocks recovery without a
+    // prompt, while JSON, bare payload, and foreign schemes stay empty.
+    @Test func embeddedPasswordFromDeepLinkQuery() throws {
+        let envelope = try RecoveryBundle.encrypt(
+            plaintext: Self.samplePlaintext,
+            password: "correct horse battery staple"
+        )
+        let deepLink = try RecoveryBundle.deepLinkString(for: envelope)
+        let json = try RecoveryBundle.envelopeJSONString(envelope)
+        let bareBase64 = try RecoveryBundle.base64EnvelopeString(envelope)
+
+        #expect(RecoveryBundle.embeddedPassword(in: deepLink + "&pw=secret") == "secret")
+        #expect(RecoveryBundle.embeddedPassword(in: deepLink + "&pw=a%20b%26c") == "a b&c")
+        #expect(RecoveryBundle.embeddedPassword(in: deepLink + "&pw=") == nil)
+        #expect(RecoveryBundle.embeddedPassword(in: deepLink) == nil)
+        #expect(RecoveryBundle.embeddedPassword(in: json) == nil)
+        #expect(RecoveryBundle.embeddedPassword(in: bareBase64) == nil)
+        #expect(
+            RecoveryBundle.embeddedPassword(
+                in: "https://example.com/recover?v=1&d=abc&pw=secret"
+            ) == nil
+        )
+    }
+
     // Verifies all supported input forms parse to the same envelope payload.
     @Test func parseAcceptsJSONURLAndBareBase64() throws {
         let envelope = try RecoveryBundle.encrypt(

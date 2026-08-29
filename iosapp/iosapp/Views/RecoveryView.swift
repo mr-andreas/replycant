@@ -9,6 +9,10 @@ struct RecoveryView: View {
     // key can wait until the user is inside the recovered app.
     static let revokeGuidanceMessage =
         "For best security, revoke the recovery key you just used. You can create a new one after you get into the app."
+    // Explains that a keep-flagged link leaves the key on the server
+    // so the same link can recover again later.
+    static let keepGuidanceMessage =
+        "This recovery key is marked to keep. It stays active so you can recover again. Revoke it later from Settings if you no longer need it."
     static let revokeDoneMessage = "Used key revoked. Create a new recovery key in Settings."
     static let cancelCtaLabel = "Cancel"
     // Tells the user a typo or wrong secret is why unlock failed,
@@ -62,6 +66,13 @@ struct RecoveryView: View {
     @State private var completedRecovery: RecoveryKeyManager.RecoveryResult?
     @State private var didRevokeUsedKey = false
     @State private var isRevokingUsedKey = false
+    @State private var didAutoStartRecovery = false
+
+    // Reads the keep query from the current recovery input so a
+    // pasted keep-link skips revoke the same way a tapped one does.
+    private var keepsUsedKey: Bool {
+        RecoveryBundle.requestsKeepingRecoveryKey(in: input)
+    }
 
     private let manager = RecoveryKeyManager()
     // Keeps an injected Canvas step available after appear so outcome
@@ -145,6 +156,15 @@ struct RecoveryView: View {
             )
             if let initialInput {
                 input = initialInput
+            }
+            if !didAutoStartRecovery,
+               let autoPassword = Self.autoStartPassword(
+                initialInput: initialInput,
+                previewStep: previewStep
+               ) {
+                didAutoStartRecovery = true
+                password = autoPassword
+                Task { await runRecovery() }
             }
         }
     }
@@ -331,7 +351,7 @@ struct RecoveryView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text(Self.revokeGuidanceMessage)
+            Text(Self.doneGuidance(keepUsedKey: keepsUsedKey, didRevokeUsedKey: didRevokeUsedKey))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -346,18 +366,7 @@ struct RecoveryView: View {
             Spacer()
 
             VStack(spacing: 12) {
-                if didRevokeUsedKey {
-                    Text(Self.revokeDoneMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 28)
-
-                    Button(Self.continueCtaLabel) {
-                        onCompleted()
-                    }
-                    .buttonStyle(PairingPrimaryButtonStyle())
-                } else {
+                if Self.showsRevokeCta(keepUsedKey: keepsUsedKey, didRevokeUsedKey: didRevokeUsedKey) {
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.footnote)
@@ -385,6 +394,11 @@ struct RecoveryView: View {
                     }
                     .disabled(!Self.canDismissDoneStep(isRevoking: isRevokingUsedKey))
                     .buttonStyle(PairingTertiaryButtonStyle())
+                } else {
+                    Button(Self.continueCtaLabel) {
+                        onCompleted()
+                    }
+                    .buttonStyle(PairingPrimaryButtonStyle())
                 }
 
             }
@@ -395,10 +409,26 @@ struct RecoveryView: View {
 
     // Keeps initial routing deterministic for tests and deep-link behavior.
     static func initialStep(for initialInput: String?) -> RecoveryStep {
-        if let initialInput, !initialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .password
+        guard let initialInput,
+              !initialInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .bundle
         }
-        return .bundle
+        if RecoveryBundle.embeddedPassword(in: initialInput) != nil {
+            return .processing
+        }
+        return .password
+    }
+
+    // Reads an embedded password only for a real recovery open, so
+    // Canvas previews cannot start a recover against the live app.
+    static func autoStartPassword(
+        initialInput: String?,
+        previewStep: RecoveryStep?
+    ) -> String? {
+        guard previewStep == nil, let initialInput else {
+            return nil
+        }
+        return RecoveryBundle.embeddedPassword(in: initialInput)
     }
 
     // Keeps an injected preview step from being overwritten on appear, so
@@ -414,6 +444,24 @@ struct RecoveryView: View {
     // Keeps bundle parsing step-button enablement simple and testable.
     static func canAdvanceFromBundle(input: String) -> Bool {
         !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    // Hides revoke when the link asked to keep the key, or after
+    // a successful revoke has already finished.
+    static func showsRevokeCta(keepUsedKey: Bool, didRevokeUsedKey: Bool) -> Bool {
+        !keepUsedKey && !didRevokeUsedKey
+    }
+
+    // Picks done-step copy so keep-links, default recoveries, and
+    // completed revokes each explain the next action.
+    static func doneGuidance(keepUsedKey: Bool, didRevokeUsedKey: Bool) -> String {
+        if didRevokeUsedKey {
+            return revokeDoneMessage
+        }
+        if keepUsedKey {
+            return keepGuidanceMessage
+        }
+        return revokeGuidanceMessage
     }
 
     // Relabels the revoke CTA while the commit-and-push is in flight

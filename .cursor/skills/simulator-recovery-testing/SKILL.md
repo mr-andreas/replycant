@@ -28,8 +28,9 @@ stop. Do not invent keys.
 
 ## Secrecy
 
-`RecoveryKeys.md` holds live recovery bundles and passwords. Never echo a
-link, payload, or password into chat, commit messages, `CHANGELOG.md`, or
+`RecoveryKeys.md` holds live recovery bundles and passwords. A link
+that contains `pw=` is itself a credential. Never echo a link,
+payload, or password into chat, commit messages, `CHANGELOG.md`, or
 `MISTAKES.md`. Refer to keys by their heading and description only.
 
 ## Preconditions
@@ -64,12 +65,16 @@ is already configured or a local repo exists, and the app lands on
    already match that project, scheme, and simulator.
 5. With the app running, open the recovery deep link:
    - `xcrun simctl openurl <udid> '<link>'`
-   The app presents `RecoveryView` as a sheet on the password step.
-6. Drive the password step with XcodeBuildMCP UI automation:
+   A `pw=` link presents `RecoveryView` on the recovering step and
+   starts immediately. A link without `pw=` presents the password
+   step instead.
+6. If the link has no `pw=`, drive the password step with
+   XcodeBuildMCP UI automation:
    - `snapshot_ui`
    - tap the `Recovery password` secure field
    - `type-text` the password from the selected key
    - tap `Recover`
+   Skip this step when the link already includes `pw=`.
 7. Verify the outcome by screenshot against
    `RecoveryView.RecoveryStep.title`:
    - `Recovery Complete` is success.
@@ -80,7 +85,9 @@ is already configured or a local repo exists, and the app lands on
      step 3.
    - `Error` means recovery failed. Report the on-screen message and
      stop.
-8. On the completion screen choose `Continue`. Never choose
+8. On the completion screen choose `Continue`. Append `&keep=1` to
+   reusable dev keys so this screen shows only `Continue` and never
+   offers `Revoke used key`. If a link lacks the flag, never tap
    `Revoke used key`. Revoking deletes the key from the server and
    makes that entry in `RecoveryKeys.md` dead.
 

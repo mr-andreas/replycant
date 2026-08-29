@@ -216,6 +216,11 @@ starts from a recovery bundle instead of a pairing QR from another device.
 - Onboarding: **Connect to an existing library**, then scan the recovery QR
   (or paste backup text)
 - Deep link: `replycant://recover?v=1&d=...`
+  (`&keep=1` skips the post-recovery revoke prompt so the same key can
+  be reused; `&pw=` starts recovery without a password prompt. Both
+  are for automated testing and App Review only: `pw` collapses the
+  two-channel split of key and password. Neither changes
+  authentication or crypto.)
 
 ### Recovery sequence
 

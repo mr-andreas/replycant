@@ -38,6 +38,10 @@ struct RecoveryWizardTests {
             RecoveryView.revokeGuidanceMessage
                 == "For best security, revoke the recovery key you just used. You can create a new one after you get into the app."
         )
+        #expect(
+            RecoveryView.keepGuidanceMessage
+                == "This recovery key is marked to keep. It stays active so you can recover again. Revoke it later from Settings if you no longer need it."
+        )
         #expect(RecoveryView.revokeDoneMessage == "Used key revoked. Create a new recovery key in Settings.")
         #expect(RecoveryView.cancelCtaLabel == "Cancel")
         #expect(RecoveryView.revokingCtaLabel == "Revoking used key...")
@@ -45,6 +49,35 @@ struct RecoveryWizardTests {
         #expect(RecoveryView.revokeCtaTitle(isRevoking: true) == RecoveryView.revokingCtaLabel)
         #expect(RecoveryView.canDismissDoneStep(isRevoking: false))
         #expect(!RecoveryView.canDismissDoneStep(isRevoking: true))
+    }
+
+    // Ensures the done step hides revoke when the link asked to
+    // keep the key, and after a successful revoke.
+    @Test func recoveryWizardDoneStepHidesRevokeWhenKeepingKey() {
+        #expect(RecoveryView.showsRevokeCta(keepUsedKey: false, didRevokeUsedKey: false))
+        #expect(!RecoveryView.showsRevokeCta(keepUsedKey: true, didRevokeUsedKey: false))
+        #expect(!RecoveryView.showsRevokeCta(keepUsedKey: false, didRevokeUsedKey: true))
+        #expect(!RecoveryView.showsRevokeCta(keepUsedKey: true, didRevokeUsedKey: true))
+    }
+
+    // Ensures done-step guidance matches keep, revoke, and default states.
+    @Test func recoveryWizardDoneGuidance() {
+        #expect(
+            RecoveryView.doneGuidance(keepUsedKey: false, didRevokeUsedKey: false)
+                == RecoveryView.revokeGuidanceMessage
+        )
+        #expect(
+            RecoveryView.doneGuidance(keepUsedKey: true, didRevokeUsedKey: false)
+                == RecoveryView.keepGuidanceMessage
+        )
+        #expect(
+            RecoveryView.doneGuidance(keepUsedKey: false, didRevokeUsedKey: true)
+                == RecoveryView.revokeDoneMessage
+        )
+        #expect(
+            RecoveryView.doneGuidance(keepUsedKey: true, didRevokeUsedKey: true)
+                == RecoveryView.revokeDoneMessage
+        )
     }
 
     // Ensures step 1 starts with the current device name so users can accept it without typing.
@@ -180,11 +213,40 @@ struct RecoveryWizardTests {
         #expect(RecoveryKeyView.canAdvanceFromPassword(password: "same", confirmPassword: "same"))
     }
 
-    // Ensures scanned or deep-link input goes to password, and paste starts at the bundle field.
+    // Ensures scanned or deep-link input goes to password, a pw link
+    // skips that step, and paste starts at the bundle field.
     @Test func recoveryWizardInitialStepFromDeepLink() {
         #expect(RecoveryView.initialStep(for: nil) == .bundle)
         #expect(RecoveryView.initialStep(for: "") == .bundle)
         #expect(RecoveryView.initialStep(for: "replycant://recover?v=1&d=abc") == .password)
+        #expect(
+            RecoveryView.initialStep(for: "replycant://recover?v=1&d=abc&pw=secret")
+                == .processing
+        )
+    }
+
+    // Ensures a pw link auto-starts recovery in production and never
+    // from a Canvas preview that parks on a specific step.
+    @Test func recoveryWizardAutoStartPassword() {
+        #expect(
+            RecoveryView.autoStartPassword(
+                initialInput: "replycant://recover?v=1&d=abc&pw=secret",
+                previewStep: nil
+            ) == "secret"
+        )
+        #expect(
+            RecoveryView.autoStartPassword(
+                initialInput: "replycant://recover?v=1&d=abc&pw=secret",
+                previewStep: .password
+            ) == nil
+        )
+        #expect(
+            RecoveryView.autoStartPassword(
+                initialInput: "replycant://recover?v=1&d=abc",
+                previewStep: nil
+            ) == nil
+        )
+        #expect(RecoveryView.autoStartPassword(initialInput: nil, previewStep: nil) == nil)
     }
 
     // Ensures an injected Canvas step is not overwritten by input-based
@@ -217,6 +279,12 @@ struct RecoveryWizardTests {
                 previewStep: nil,
                 initialInput: "replycant://recover?v=1&d=abc"
             ) == .password
+        )
+        #expect(
+            RecoveryView.resolvedInitialStep(
+                previewStep: nil,
+                initialInput: "replycant://recover?v=1&d=abc&pw=secret"
+            ) == .processing
         )
     }
 

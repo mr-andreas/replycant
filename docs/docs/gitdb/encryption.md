@@ -296,6 +296,11 @@ The app exports:
 
 - QR payload: raw envelope JSON
 - Deep link: `replycant://recover?v=1&d=<base64url envelope>`
+  (`&keep=1` is an optional transport hint that skips the post-recovery
+  revoke prompt; `&pw=` starts recovery without a password prompt.
+  Both are for automated testing and App Review only: `pw` collapses
+  the two-channel split of key and password. Neither changes
+  authentication or crypto.)
 
 No hosted web domain is required for recovery transport.
 
