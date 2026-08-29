@@ -4,6 +4,9 @@ import LibGit2
 @testable import GitDB
 @testable import iosapp
 
+// Both modules declare KEKEpochManager and ClientIdentityManager, so
+// references below are module-qualified to select the app's copies.
+
 // Verifies iOS git/LFS/GitDB workflows against the real dockerized gitd integration stack.
 @MainActor
 @Suite(.serialized, .enabled(if: IntegrationEnvironment.isEnabled))
@@ -19,7 +22,7 @@ struct GitdIntegrationTests {
         }
         try Git.initialize()
         let repository = try Repository.create(at: repoPath, bare: false)
-        let keyManager = KEKEpochManager(repository: repository)
+        let keyManager = iosapp.KEKEpochManager(repository: repository)
         var files = try keyManager.bootstrapFilesForFirstEpoch(
             recipientAgePubkeys: [identity.agePublicKey]
         )
@@ -55,7 +58,7 @@ struct GitdIntegrationTests {
     func provisionCloneAndDecryptEpoch() async throws {
         let context = try await IntegrationHarness.prepareSeededAndProvisioned()
         let repository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
-        let keyManager = KEKEpochManager(repository: repository)
+        let keyManager = iosapp.KEKEpochManager(repository: repository)
         let kek = try keyManager.loadKEK(epoch: 1)
         #expect(!kek.isEmpty)
         // The Go seeder writes the envelope body as raw AES-GCM bytes rather than
@@ -94,7 +97,7 @@ struct GitdIntegrationTests {
     func lfsUploadDownloadRoundTrip() async throws {
         _ = try await IntegrationHarness.prepareSeededAndProvisioned()
         let lfsURL = try #require(ServerConfigurationManager.shared.loadLFSURL())
-        let identity = try #require(ClientIdentityManager.shared.loadSecIdentity())
+        let identity = try #require(iosapp.ClientIdentityManager.shared.loadSecIdentity())
         let pinnedCA = try #require(ServerConfigurationManager.shared.loadSecCertificate())
         let lfsClient = GitLFS(serverURL: lfsURL, clientIdentity: identity, pinnedCA: pinnedCA)
         let payload = Data((0..<4096).map { UInt8($0 % 251) })
@@ -216,7 +219,7 @@ struct GitdIntegrationTests {
             .count
 
         try await IntegrationHarness.resetLocalInstallState()
-        try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "ios-recovered-device")
+        try iosapp.ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "ios-recovered-device")
 
         _ = try await manager.recover(input: created.deepLink, password: "correct horse battery staple")
 

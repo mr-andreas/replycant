@@ -18,7 +18,9 @@ final class SimulatorAutoConnectManager {
 
     // Skips generated keys only when bundled credentials will replace
     // them. Recovery on a fresh simulator still needs a device key.
-    static func shouldSkipGeneratedDeviceKey(
+    // Deliberately nonisolated: a pure predicate over two flags, so
+    // callers and tests do not need the main actor to ask the question.
+    nonisolated static func shouldSkipGeneratedDeviceKey(
         isAutoConnectEnabled: Bool,
         hasBundledSimulatorCredentials: Bool
     ) -> Bool {
