@@ -11,8 +11,7 @@
 ### Features
 
 - add regenerable iOS and Electron product screenshots in the README (`make readme-screenshots`)
-- iosapp: recover access by scanning a recovery QR from Connect to an existing library
-- iosapp: adds recovery key creation, deep-link and QR recovery flows, and fresh-install repository recovery with key re-enrollment
+- iosapp: create a password-protected recovery key, share it as a link or QR code, and use it to restore access to your library on a new or wiped device; existing keys can be reviewed and deleted from settings
 - replycant-importer: encrypts binaries and uploads them to LFS before commit, writing only pointer files into the worktree for much faster import/rebase
 - replycant-importer: starts encrypting and uploading while the source tree is still being scanned; progress shows `(calculating, N found)` until the scan finishes
 - server: git and CA listen ports can be set with `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT`; already-linked devices need re-onboarding or a stored URL update after a port change
@@ -22,22 +21,8 @@
 
 ### Fixes
 
-- iosapp: show progress while revoking the used recovery key after recovery
 - iosapp: stop sync from wedging after deleting a recovery key; rebases are now deterministic instead of re-stamping commits with a new timestamp, and the app recovers automatically from duplicated commits
-- iosapp: explain that a recovery key is a password-protected link or QR code for restoring access
-- iosapp: drop the fresh-install restore sentence from the recovery key settings description
 - iosapp: remove the device name and public-key labels from the connect QR screen
-- iosapp: show an explicit delete button and confirmation for existing recovery keys
-- iosapp: generate a simulator device key when bundled credentials are missing so recovery can enroll a new device
-- iosapp: say a recovery key was deleted from the server instead of showing an HTTP 401 error
-- iosapp: recovery no longer builds the media index twice, roughly halving recovery time and pushing the new device key before indexing starts
-- iosapp: fix recovery failing with a disk I/O error while rebuilding the media index
-- iosapp: say the recovery password is incorrect instead of showing a crypto error
-- iosapp: hide the password strength meter when unlocking with a recovery key
-- iosapp: show a success icon on the recovery-key created step and keep Done locked until the key is shared
-- iosapp: share a recovery key as titled text plus a QR card so mail and notes-style destinations can receive both as inline content
-- iosapp: make recovery password fields visible and show password strength and mismatch feedback
-- iosapp: clear the settings recovery warning as soon as a recovery key is created
 - iosapp: stop video playback when a video opened by swiping is dismissed
 - iosapp: fix random crash while browsing timeline media
 - iosapp: timeline and photo sync now recover after resetting local state instead of staying empty until the app is relaunched

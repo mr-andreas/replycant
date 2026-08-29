@@ -26,6 +26,17 @@ When a change is significant, update `CHANGELOG.md` in the same commit.
 - Within each category, keep entries sorted by component so related changes
   stay adjacent. Put cross-cutting entries first.
 
+## One entry per feature
+
+- A feature is one entry, however many commits it took to build. When a later
+  commit in the same branch refines the feature, update the existing entry
+  instead of adding another one.
+- Fold copy tweaks, UI polish, and bugs found while building the feature into
+  that entry. Users never saw the intermediate states, so they are not fixes.
+- Keep a separate entry only when the change stands on its own: it changes
+  behavior outside the new feature, or it matters to someone who never uses
+  the feature.
+
 ## What to include
 
 - Include user-visible behavior changes, new capabilities, breaking
