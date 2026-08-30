@@ -7,7 +7,7 @@ import Testing
 // manifest database is invalidated, so the next getGitDB() cannot
 // return a connection bound to a discarded sqlite file.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .sharedAppState)
 struct GitDBManagerInvalidationTests {
 
     // The cache must clear on the posting thread. A deferred main-queue

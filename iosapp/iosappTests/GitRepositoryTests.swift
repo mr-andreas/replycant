@@ -5,6 +5,7 @@ import LibGit2
 
 // Tests that demonstrate using the test fixtures with git repository and LFS
 @MainActor
+@Suite(.sharedAppState)
 struct GitRepositoryTests {
     // Captures lock timeline events so serialization assertions do not rely on wall-clock timing.
     private actor MutationLockTimeline {

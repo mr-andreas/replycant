@@ -463,7 +463,7 @@ final class MockUploadedMediaCache: UploadedMediaCaching {
 
 // Test suite for PhotoSyncManager
 @MainActor
-@Suite("PhotoSyncManager Tests", .serialized)
+@Suite("PhotoSyncManager Tests", .serialized, .sharedAppState)
 struct PhotoSyncManagerTests {
     
     // MARK: - Test Setup Helpers

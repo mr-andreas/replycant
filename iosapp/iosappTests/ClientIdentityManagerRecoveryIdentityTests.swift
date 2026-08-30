@@ -5,11 +5,11 @@ import Testing
 
 // Verifies recovery identity import uses separate keychain tags from the device identity.
 @MainActor
+@Suite(.sharedAppState)
 struct ClientIdentityManagerRecoveryIdentityTests {
     // Ensures temporary recovery identity lifecycle never replaces the persistent device identity.
     @Test func temporaryIdentityDoesNotOverrideDeviceIdentity() throws {
         #if DEBUG
-        try ClientIdentityManager.shared.resetIdentityForTesting()
         try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "primary-device")
         let beforeSSH = try ClientIdentityManager.shared.sshPublicKey(comment: "before")
         let beforeCert = try ClientIdentityManager.shared.loadCertificate()

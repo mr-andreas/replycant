@@ -120,7 +120,7 @@ final class MockLFSURLProtocol: URLProtocol {
 }
 
 // Verifies encrypted LFS pointer metadata in fixtures can be decrypted through Repository.loadLFSData.
-@Suite("Repository Encrypted LFS Load Tests", .serialized)
+@Suite("Repository Encrypted LFS Load Tests", .serialized, .sharedAppState)
 struct RepositoryEncryptedLFSLoadTests {
     // Creates isolated test repository paths so encryption fixtures do not affect other tests.
     private func makeRepositoryPath() -> String {

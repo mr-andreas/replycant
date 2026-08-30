@@ -6,7 +6,7 @@ import LibGit2
 
 // Verifies ManifestManager keeps git-first writes and database reads consistent in one call path.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .sharedAppState)
 struct ManifestManagerIntegrationTests {
     // Shards manifest fixture names so integration tests follow production git layout.
     private func shardName(_ name: String) -> String {

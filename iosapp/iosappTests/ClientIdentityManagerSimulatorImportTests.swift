@@ -4,6 +4,7 @@ import Testing
 
 // Verifies simulator bootstrap stays optional so the repo never needs committed private keys.
 @MainActor
+@Suite(.sharedAppState)
 struct ClientIdentityManagerSimulatorImportTests {
 
     // Confirms missing local SimulatorCredentials do not fail launch prep.

@@ -29,8 +29,17 @@ struct ManifestDatabaseInvalidationTests {
     private func countInvalidations(
         during action: (ManifestLoaderManager) async throws -> Void
     ) async rethrows -> Int {
+        let isolatedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "replycant-invalidation-\(UUID().uuidString).sqlite"
+            )
+        defer { try? FileManager.default.removeItem(at: isolatedURL) }
+
         let center = NotificationCenter()
-        let loader = ManifestLoaderManager(notificationCenter: center)
+        let loader = ManifestLoaderManager(
+            notificationCenter: center,
+            databaseURL: isolatedURL
+        )
         let counter = InvalidationCounter()
         let token = center.addObserver(
             forName: ManifestLoaderManager.databaseDidInvalidateNotification,
@@ -53,6 +62,42 @@ struct ManifestDatabaseInvalidationTests {
         }
 
         #expect(count == 1)
+    }
+
+    // A private loader must not unlink the process-wide cache. Parallel
+    // suites keep an open GRDB connection on that file, and deleting it
+    // produced SQLite error 10 during recovery hydration.
+    @Test func deleteDatabaseFileUsesInjectedURL() async throws {
+        let isolatedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "replycant-loader-isolation-\(UUID().uuidString).sqlite"
+            )
+        defer { try? FileManager.default.removeItem(at: isolatedURL) }
+
+        let defaultURL = ManifestDatabase.defaultDatabaseURL()
+        let createdDefaultSentinel = !FileManager.default.fileExists(
+            atPath: defaultURL.path
+        )
+        if createdDefaultSentinel {
+            try Data().write(to: defaultURL)
+        }
+        defer {
+            if createdDefaultSentinel {
+                try? FileManager.default.removeItem(at: defaultURL)
+            }
+        }
+
+        let loader = ManifestLoaderManager(
+            notificationCenter: NotificationCenter(),
+            databaseURL: isolatedURL
+        )
+        _ = try loader.getDatabase()
+        #expect(FileManager.default.fileExists(atPath: isolatedURL.path))
+
+        try await loader.deleteDatabaseFile()
+
+        #expect(!FileManager.default.fileExists(atPath: isolatedURL.path))
+        #expect(FileManager.default.fileExists(atPath: defaultURL.path))
     }
 
     // Deleting the backing file is the destructive half of a reset, and is what

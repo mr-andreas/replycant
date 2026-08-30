@@ -17,13 +17,17 @@ final class ManifestLoaderManager {
     private var database: GitDB.ManifestDatabase?
     private var registry: GitDB.ManifestRegistry?
     private let notificationCenter: NotificationCenter
+    private let databaseURL: URL?
 
-    // The notification center is injectable so a test can verify the broadcast
-    // on a private center. Every live manager in the process reacts to this
-    // notification by reloading, so announcing it on the default center from a
-    // test stampedes unrelated suites running in parallel.
-    init(notificationCenter: NotificationCenter = .default) {
+    // The notification center and database path are injectable so a test
+    // can verify the broadcast on a private center without unlinking the
+    // process-wide cache that parallel suites still hold open.
+    init(
+        notificationCenter: NotificationCenter = .default,
+        databaseURL: URL? = nil
+    ) {
         self.notificationCenter = notificationCenter
+        self.databaseURL = databaseURL
     }
 
     // Returns the shared manifest registry with app schema registrations.
@@ -45,7 +49,10 @@ final class ManifestLoaderManager {
         }
         let databaseOpenSignpost = AppSignposts.begin("ManifestDatabaseOpen")
         do {
-            let database = try GitDB.ManifestDatabase(registry: getRegistry())
+            let database = try GitDB.ManifestDatabase(
+                databaseURL: databaseURL,
+                registry: getRegistry()
+            )
             AppSignposts.end("ManifestDatabaseOpen", databaseOpenSignpost)
             self.database = database
             return database
@@ -76,7 +83,7 @@ final class ManifestLoaderManager {
         if let database {
             try? await database.close()
         }
-        let url = GitDB.ManifestDatabase.defaultDatabaseURL()
+        let url = databaseURL ?? GitDB.ManifestDatabase.defaultDatabaseURL()
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }

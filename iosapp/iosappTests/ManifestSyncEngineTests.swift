@@ -6,6 +6,7 @@ import LibGit2
 
 // Verifies commit-diff synchronization keeps the manifest database aligned with git HEAD.
 @MainActor
+@Suite(.sharedAppState)
 struct ManifestSyncEngineTests {
     // Shards manifest fixture names so sync tests exercise the production tree layout.
     private func shardName(_ name: String) -> String {

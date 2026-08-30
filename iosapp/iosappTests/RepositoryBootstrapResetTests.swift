@@ -7,7 +7,7 @@ import Testing
 // Guards the recovery hydrate path against unlinking the shared sqlite
 // file while GitDB still holds an open GRDB connection to it.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .sharedAppState)
 struct RepositoryBootstrapResetTests {
 
     // Recovery opens GitDB for the key-rewrap commit and then rebuilds

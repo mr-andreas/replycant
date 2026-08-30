@@ -6,6 +6,7 @@ import LibGit2
 // Comprehensive tests for GitCommitService covering commit operations, path generation,
 // content validation, and edge cases to ensure reliable manifest and LFS pointer commits.
 @MainActor
+@Suite(.sharedAppState)
 struct GitCommitServiceTests {
     // Shards expected manifest and pointer filenames so assertions mirror production git layout.
     private func shardName(_ name: String) -> String {

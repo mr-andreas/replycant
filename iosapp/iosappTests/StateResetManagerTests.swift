@@ -5,7 +5,7 @@ import LibGit2
 
 // Verifies reset behavior wipes local git state while preserving long-lived configuration and identity prerequisites.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .sharedAppState)
 struct StateResetManagerTests {
 
     // Ensures the wipe routine deletes local repository data and clears cached runtime state without deleting server defaults.
