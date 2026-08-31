@@ -5,8 +5,9 @@ alwaysApply: true
 
 # Mistakes Log
 
-Maintain `MISTAKES.md` at the repo root. This file is an explicit exception
-to the "don't create markdown" guidance in `less-is-more.mdc`.
+Maintain a local, untracked `MISTAKES.md` at the repo root. This file is
+an explicit exception to the "don't create markdown" guidance in
+`less-is-more.mdc`.
 
 Log when one of these happens, in the same turn, without being asked:
 
@@ -39,8 +40,8 @@ Each entry:
 Do not automatically create a Cursor rule from a repeated mistake.
 Promoting a pattern into a rule is a manual process.
 
-Leave the `MISTAKES.md` edit uncommitted so the user can review it. Do not
-fold it into the commit for the work in progress.
+`MISTAKES.md` is gitignored and local-only. Never commit it, and never
+exclude it from a commit: git already ignores it.
 
 Entries follow `public-repo-no-private-data.mdc`: never quote real
 credentials, hostnames, or user data from the failing context.

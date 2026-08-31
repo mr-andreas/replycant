@@ -28,3 +28,7 @@
 # Xcode Canvas diagnostics the user may export while debugging
 # previews. A stale copy already got treated as current evidence.
 /preview.log
+
+# Local log of AI mistakes, maintained per mistakes-log.mdc. It is agent
+# churn about this working copy, not repo content, so it stays local.
+/MISTAKES.md
