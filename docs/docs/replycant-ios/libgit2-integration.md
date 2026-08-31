@@ -15,10 +15,16 @@ libgit2 was chosen for its reliability and active community support.
 
 ## Integration Architecture
 
+LibGit2 is vanilla git: repository open/clone/commit, remotes, and
+opaque Git LFS batch upload/download. Replycant encryption, key
+epochs, and encrypted pointer metadata live in GitDB.
+
 ```
 Swift App
     ↓
-LibGit2 Swift Package (wrapper layer)
+GitDB (encryption, SQL cache, commit paths)
+    ↓
+LibGit2 Swift Package (vanilla git + LFS transport)
     ↓
 libgit2.xcframework (C library)
     ↓
@@ -32,6 +38,7 @@ Git Repository (local filesystem)
 | `libgit2.xcframework` | Project root | Compiled C library for iOS |
 | `LibGit2Package` | `LibGit2Package/` | Swift Package wrapper |
 | `LibGit2.swift` | `LibGit2Package/Sources/LibGit2/` | Swift API layer |
+| `GitLFS.swift` | `LibGit2Package/Sources/LibGit2/` | Vanilla LFS batch + PUT/GET |
 | `MTLSTransport.swift` | `LibGit2Package/Sources/LibGit2/` | Custom mTLS transport |
 
 ## Building libgit2

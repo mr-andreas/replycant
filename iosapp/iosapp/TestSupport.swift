@@ -262,7 +262,7 @@ class TestSupport {
                     kekEpoch: kekEpoch,
                     server: TestLFSServer.shared
                 )
-                originalPointer = LFSPointer(
+                originalPointer = EncryptedLFSPointer(
                     oid: encryptedOriginal.encryptedOID,
                     size: encryptedOriginal.encryptedSize,
                     kekEpoch: kekEpoch,
@@ -326,7 +326,7 @@ class TestSupport {
                 thumbnailEntryLines.append("      height: \(thumbnail.height)")
                 thumbnailEntryLines.append("      filesize: \(thumbnailData.count)")
                 
-                let thumbnailPointer = LFSPointer(
+                let thumbnailPointer = EncryptedLFSPointer(
                     oid: encryptedThumbnail.encryptedOID,
                     size: encryptedThumbnail.encryptedSize,
                     kekEpoch: kekEpoch,

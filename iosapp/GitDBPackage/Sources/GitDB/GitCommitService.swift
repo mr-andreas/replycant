@@ -42,8 +42,8 @@ public protocol GitCommitService {
 // Represents items to be committed: manifests (as YAML) or LFS pointers.
 public enum GitCommitItem {
     case manifest(_ manifest: any Manifest)
-    case lfs(forManifest: any Manifest, pointer: LFSPointer)
-    case lfsEntry(apiVersion: String, kind: String, name: String, pointer: LFSPointer)
+    case lfs(forManifest: any Manifest, pointer: EncryptedLFSPointer)
+    case lfsEntry(apiVersion: String, kind: String, name: String, pointer: EncryptedLFSPointer)
 }
 
 // Error thrown when a manifest name violates ADR-0003 naming conventions.
@@ -142,13 +142,11 @@ public final class DefaultGitCommitService: GitCommitService {
         for manifest: any Manifest,
         progressHandler: ((Int64, Int64) -> Void)?
     ) async throws -> LFSPointer {
-        let path = "binary/\(deviceSpace)/\(manifest.apiVersionValue)/\(manifest.kindValue)/\(shardName(manifest.id))"
-        return try await repository.addLFSFileEncrypting(
-            at: fileURL,
+        return try await EncryptedLFS.uploadEncrypted(
+            fileURL: fileURL,
             dek: dek,
             oid: oid,
             size: size,
-            toPath: path,
             lfsClient: lfsClient,
             progressHandler: progressHandler
         )

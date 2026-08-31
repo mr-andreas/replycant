@@ -6,3 +6,6 @@ typealias EncryptionUtils = GitDB.EncryptionUtils
 typealias AgeCrypto = GitDB.AgeCrypto
 typealias Bech32 = GitDB.Bech32
 typealias IdentityError = GitDB.IdentityError
+typealias EncryptedLFSPointer = GitDB.EncryptedLFSPointer
+typealias EncryptedLFSError = GitDB.EncryptedLFSError
+typealias EncryptedLFS = GitDB.EncryptedLFS

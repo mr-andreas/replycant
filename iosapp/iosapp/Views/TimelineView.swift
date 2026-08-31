@@ -1566,48 +1566,19 @@ final class FullResolutionImageLoader: ObservableObject {
         let deviceSpace = item.original.metadata.deviceSpace
         let pointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
         let pointerContent = try repository.readFile(at: pointerPath)
-        let pointer = try parseVideoPointer(pointerContent)
-        guard let epoch = pointer.kekEpoch,
-              let wrappedDEK = pointer.wrappedDEK else {
-            throw LFSError.invalidEncryptionMetadata
-        }
+        let pointer = try EncryptedLFSPointer.parse(pointerContent)
 
-        let kek = try KEKEpochManager(repository: repository).loadKEK(epoch: epoch)
-        guard let wrappedDEKData = Data(base64Encoded: wrappedDEK) else {
-            throw LFSError.invalidEncryptionMetadata
+        let kek = try KEKEpochManager(repository: repository).loadKEK(epoch: pointer.kekEpoch)
+        guard let wrappedDEKData = Data(base64Encoded: pointer.wrappedDEK) else {
+            throw EncryptedLFSError.invalidEncryptionMetadata
         }
-        let dek = try EncryptionUtils.unwrapDEK(wrappedDEKData, withKEK: kek, kekEpoch: epoch)
+        let dek = try EncryptionUtils.unwrapDEK(
+            wrappedDEKData,
+            withKEK: kek,
+            kekEpoch: pointer.kekEpoch
+        )
         let dekBase64 = dek.base64EncodedString()
         return VideoPlaybackContext(encryptedOID: pointer.oid, dekBase64: dekBase64)
-    }
-
-    // Parses pointer metadata required for decryptd-backed playback from the git working copy.
-    private static func parseVideoPointer(_ pointerContent: String) throws -> LFSPointer {
-        let lines = pointerContent.components(separatedBy: .newlines)
-        var oid: String?
-        var size: Int64?
-        var kekEpoch: Int?
-        var wrappedDEK: String?
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("oid sha256:") {
-                oid = String(trimmed.dropFirst("oid sha256:".count))
-            } else if trimmed.hasPrefix("size ") {
-                size = Int64(trimmed.dropFirst("size ".count))
-            } else if trimmed.hasPrefix("x-replycant-kek-epoch ") {
-                kekEpoch = Int(trimmed.dropFirst("x-replycant-kek-epoch ".count))
-            } else if trimmed.hasPrefix("x-replycant-wrapped-dek ") {
-                wrappedDEK = String(trimmed.dropFirst("x-replycant-wrapped-dek ".count))
-            }
-        }
-
-        guard let oid,
-              oid.count == 64,
-              size != nil else {
-            throw LFSError.invalidEncryptionMetadata
-        }
-        return LFSPointer(oid: oid, size: size ?? 0, kekEpoch: kekEpoch, wrappedDEK: wrappedDEK)
     }
 
     // Logs current video quality from the player item's selected tracks

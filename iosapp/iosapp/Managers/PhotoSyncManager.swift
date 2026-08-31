@@ -380,7 +380,7 @@ final class PhotoSyncManager: ObservableObject {
             var lastUpdateTime = startTime
             var lastBytesSent: Int64 = 0
             let wrappedDEK = try EncryptionUtils.wrapDEK(dek, withKEK: activeKEK.kek, kekEpoch: activeKEK.epoch).base64EncodedString()
-            var pointer = try await manager.addLFSFileEncrypting(
+            let uploaded = try await manager.addLFSFileEncrypting(
                 at: assetFileURL,
                 dek: dek,
                 oid: hashes.encryptedOID,
@@ -412,9 +412,9 @@ final class PhotoSyncManager: ObservableObject {
                     lastBytesSent = bytesSent
                 }
             }
-            pointer = LFSPointer(
-                oid: pointer.oid,
-                size: pointer.size,
+            let pointer = EncryptedLFSPointer(
+                oid: uploaded.oid,
+                size: uploaded.size,
                 kekEpoch: activeKEK.epoch,
                 wrappedDEK: wrappedDEK
             )
@@ -469,15 +469,15 @@ final class PhotoSyncManager: ObservableObject {
                             dek: thumbnailDEK
                         )
                         let thumbnailWrappedDEK = try EncryptionUtils.wrapDEK(thumbnailDEK, withKEK: activeKEK.kek, kekEpoch: activeKEK.epoch).base64EncodedString()
-                        var thumbnailPointer = try await manager.addLFSData(
+                        let uploadedThumbnail = try await manager.addLFSData(
                             thumbnailEncrypted,
                             apiVersion: ThumbnailSetManifest.apiVersion,
                             kind: ThumbnailSetManifest.kind,
                             name: thumbnailName
                         ) { _, _ in }
-                        thumbnailPointer = LFSPointer(
-                            oid: thumbnailPointer.oid,
-                            size: thumbnailPointer.size,
+                        let thumbnailPointer = EncryptedLFSPointer(
+                            oid: uploadedThumbnail.oid,
+                            size: uploadedThumbnail.size,
                             kekEpoch: activeKEK.epoch,
                             wrappedDEK: thumbnailWrappedDEK
                         )

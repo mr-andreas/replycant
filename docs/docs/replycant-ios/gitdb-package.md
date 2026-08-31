@@ -1,6 +1,6 @@
 # GitDB Package
 
-GitDB is the iOS app's local Swift package that owns git-backed SQLite storage, manifest sync, and encrypted commit paths.
+GitDB is the iOS app's local Swift package that owns git-backed SQLite storage, manifest sync, key handling, and encrypted commit paths. LibGit2 stays vanilla git; the app owns manifest types such as `Original` and `ThumbnailSet`.
 
 ## Purpose
 
@@ -70,6 +70,9 @@ Timeline and sync UI code subscribe to these events to refresh local state.
 
 - Building manifest and binary file paths
 - Encrypting manifest payloads at commit time
-- Writing commits and LFS pointers
+- Writing commits and encrypted LFS pointers
+
+Encrypted LFS objects use `EncryptedLFSPointer` so kek-epoch and wrapped-DEK
+metadata stay in GitDB. LibGit2 only transports opaque bytes.
 
 After successful writes, sync updates database rows so reads converge on HEAD.

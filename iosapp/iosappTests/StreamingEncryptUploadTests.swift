@@ -160,9 +160,9 @@ struct StreamingEncryptUploadTests {
         #expect(hashes.plaintextSize == Int64(plaintext.count))
     }
 
-    // Confirms uploadFileEncrypting streams exactly the same ciphertext bytes as encryptChunkedBinary would produce.
-    @Test("uploadFileEncrypting streams deterministic ciphertext bytes")
-    func uploadFileEncryptingStreamsExpectedCiphertext() async throws {
+    // Confirms uploadEncrypted streams exactly the same ciphertext bytes as encryptChunkedBinary would produce.
+    @Test("uploadEncrypted streams deterministic ciphertext bytes")
+    func uploadEncryptedStreamsExpectedCiphertext() async throws {
         StreamingUploadURLProtocol.reset()
 
         let plaintext = makeFixtureData(size: 2_200_000)
@@ -185,11 +185,12 @@ struct StreamingEncryptUploadTests {
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [StreamingUploadURLProtocol.self] + (sessionConfiguration.protocolClasses ?? [])
         let lfsClient = GitLFS(serverURL: "https://stream-lfs.local/lfs", sessionConfiguration: sessionConfiguration)
-        let pointer = try await lfsClient.uploadFileEncrypting(
-            at: fileURL,
+        let pointer = try await EncryptedLFS.uploadEncrypted(
+            fileURL: fileURL,
             dek: dek,
             oid: hashes.encryptedOID,
-            size: hashes.encryptedSize
+            size: hashes.encryptedSize,
+            lfsClient: lfsClient
         )
 
         #expect(pointer.oid == hashes.encryptedOID)

@@ -1,5 +1,6 @@
 import Foundation
 import LibGit2
+import GitDB
 
 /// Coordinates two disk LRU caches — "top" (fast first-screen
 /// renders) and "main" (general browsing) — and routes all image
@@ -100,7 +101,11 @@ actor ImageDiskCacheManager {
         if let d = await mainCache.data(forKey: key) { return d }
 
         let d = try await scheduler.run(priority: priority, key: key) {
-            try await repository.loadLFSData(from: lfsPath, lfsClient: lfsClient)
+            try await EncryptedLFS.loadEncryptedLFSData(
+                from: lfsPath,
+                repository: repository,
+                lfsClient: lfsClient
+            )
         }
         await mainCache.store(d, forKey: key)
         return d
@@ -127,8 +132,10 @@ actor ImageDiskCacheManager {
             data = cached
         } else {
             data = try await scheduler.run(priority: priority, key: key) {
-                try await repository.loadLFSData(
-                    from: lfsPath, lfsClient: lfsClient
+                try await EncryptedLFS.loadEncryptedLFSData(
+                    from: lfsPath,
+                    repository: repository,
+                    lfsClient: lfsClient
                 )
             }
         }
@@ -152,7 +159,11 @@ actor ImageDiskCacheManager {
         if await mainCache.data(forKey: key) != nil { return }
 
         let data = try await scheduler.run(priority: priority, key: key) {
-            try await repository.loadLFSData(from: lfsPath, lfsClient: lfsClient)
+            try await EncryptedLFS.loadEncryptedLFSData(
+                from: lfsPath,
+                repository: repository,
+                lfsClient: lfsClient
+            )
         }
         await mainCache.store(data, forKey: key)
     }

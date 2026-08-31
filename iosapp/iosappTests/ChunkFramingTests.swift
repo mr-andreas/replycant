@@ -119,7 +119,7 @@ struct ChunkFramingTests {
 
     // Chunk size leaves the pointer wire format entirely.
     @Test func lfsPointerOmitsChunkSize() {
-        let pointer = LFSPointer(
+        let pointer = EncryptedLFSPointer(
             oid: String(repeating: "a", count: 64),
             size: 10,
             kekEpoch: 2,

@@ -19,6 +19,12 @@ struct GitCommitServiceTests {
         return "\(first)/\(second)/\(rest)"
     }
 
+    // Builds a commit-ready encrypted pointer so tests exercise GitDB's
+    // pointer type without depending on LibGit2 encryption fields.
+    private func encryptedPointer(oid: String, size: Int64) -> EncryptedLFSPointer {
+        EncryptedLFSPointer(oid: oid, size: size, kekEpoch: 1, wrappedDEK: "dGVzdA==")
+    }
+
     // Converts workdir absolute paths used in legacy tests into repository-relative HEAD paths.
     private func treePath(fromAbsolutePath absolutePath: String, workdir: String) -> String {
         let prefix = workdir.hasSuffix("/") ? workdir : "\(workdir)/"
@@ -189,7 +195,7 @@ struct GitCommitServiceTests {
             burstIdentifier: nil
         )
         
-        let pointer = lfs.createPointer(oid: "abc123def456789012345678901234567890123456789012345678901234", size: 50000)
+        let pointer = encryptedPointer(oid: "abc123def456789012345678901234567890123456789012345678901234", size: 50000)
         
         try await service.createCommit(
             message: "Add LFS pointer",
@@ -258,8 +264,8 @@ struct GitCommitServiceTests {
             burstIdentifier: nil
         )
         
-        let pointer1 = lfs.createPointer(oid: "1111111111111111111111111111111111111111111111111111111111111111", size: 10000)
-        let pointer2 = lfs.createPointer(oid: "2222222222222222222222222222222222222222222222222222222222222222", size: 20000)
+        let pointer1 = encryptedPointer(oid: "1111111111111111111111111111111111111111111111111111111111111111", size: 10000)
+        let pointer2 = encryptedPointer(oid: "2222222222222222222222222222222222222222222222222222222222222222", size: 20000)
         
         try await service.createCommit(
             message: "Add multiple LFS pointers",
@@ -317,7 +323,7 @@ struct GitCommitServiceTests {
             burstIdentifier: nil
         )
         
-        let pointer = lfs.createPointer(oid: "9999999999999999999999999999999999999999999999999999999999999999", size: 15000)
+        let pointer = encryptedPointer(oid: "9999999999999999999999999999999999999999999999999999999999999999", size: 15000)
         
         try await service.createCommit(
             message: "Add manifest and LFS pointer together",
@@ -438,7 +444,7 @@ struct GitCommitServiceTests {
             burstIdentifier: nil
         )
         
-        let pointer = lfs.createPointer(oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size: 2000)
+        let pointer = encryptedPointer(oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size: 2000)
         
         try await service.createCommit(
             message: "Test LFS path",
@@ -462,7 +468,7 @@ struct GitCommitServiceTests {
         let lfs = GitLFS(serverURL: "http://test.com")
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "my-device-space", lfsClient: lfs)
         
-        let pointer = lfs.createPointer(oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", size: 1500)
+        let pointer = encryptedPointer(oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", size: 1500)
         
         try await service.createCommit(
             message: "Test LFS path",
@@ -628,7 +634,12 @@ struct GitCommitServiceTests {
         )
         
         let testOid = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-        let pointer = lfs.createPointer(oid: testOid, size: 123456)
+        let pointer = EncryptedLFSPointer(
+            oid: testOid,
+            size: 123456,
+            kekEpoch: 2,
+            wrappedDEK: "d3JhcHBlZA=="
+        )
         
         try await service.createCommit(
             message: "Test LFS format",
@@ -643,10 +654,12 @@ struct GitCommitServiceTests {
         let content = try readRepoFile(repo, workdir: workdir, absolutePath: pointerPath)
         let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
         
-        #expect(lines.count == 3)
+        #expect(lines.count == 5)
         #expect(lines[0] == "version https://git-lfs.github.com/spec/v1")
         #expect(lines[1] == "oid sha256:\(testOid)")
         #expect(lines[2] == "size 123456")
+        #expect(lines[3] == "x-replycant-kek-epoch 2")
+        #expect(lines[4] == "x-replycant-wrapped-dek d3JhcHBlZA==")
     }
     
     @Test func testCommitMessagePreserved() async throws {
@@ -1028,7 +1041,7 @@ struct GitCommitServiceTests {
             burstIdentifier: nil
         )
         
-        let pointer = lfs.createPointer(oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size: 1000)
+        let pointer = encryptedPointer(oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size: 1000)
         
         await #expect(throws: InvalidManifestNameError.self) {
             try await service.createCommit(message: "Test LFS validation", items: [.lfs(forManifest: manifest, pointer: pointer)])

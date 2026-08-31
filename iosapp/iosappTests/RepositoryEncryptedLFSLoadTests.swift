@@ -4,7 +4,7 @@ import CryptoKit
 import LibGit2
 @testable import iosapp
 
-// Stubs Git LFS HTTP batch/download responses so Repository.loadLFSData can run without a real server.
+// Stubs Git LFS HTTP batch/download responses so EncryptedLFS.loadEncryptedLFSData can run without a real server.
 final class MockLFSURLProtocol: URLProtocol {
     static var dataByOID: [String: Data] = [:]
 
@@ -119,7 +119,7 @@ final class MockLFSURLProtocol: URLProtocol {
     }
 }
 
-// Verifies encrypted LFS pointer metadata in fixtures can be decrypted through Repository.loadLFSData.
+// Verifies encrypted LFS pointer metadata in fixtures can be decrypted through EncryptedLFS.loadEncryptedLFSData.
 @Suite("Repository Encrypted LFS Load Tests", .serialized, .sharedAppState)
 struct RepositoryEncryptedLFSLoadTests {
     // Creates isolated test repository paths so encryption fixtures do not affect other tests.
@@ -133,7 +133,7 @@ struct RepositoryEncryptedLFSLoadTests {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    // Ensures encrypted pointers with x-replycant metadata decrypt correctly via loadLFSData.
+    // Ensures encrypted pointers with x-replycant metadata decrypt correctly via loadEncryptedLFSData.
     @Test func testLoadLFSDataDecryptsEncryptedPointer() async throws {
         defer {
             MockLFSURLProtocol.dataByOID = [:]
@@ -159,7 +159,7 @@ struct RepositoryEncryptedLFSLoadTests {
         let encryptedOID = sha256Hex(encrypted)
         MockLFSURLProtocol.dataByOID[encryptedOID] = encrypted
 
-        let pointer = LFSPointer(
+        let pointer = EncryptedLFSPointer(
             oid: encryptedOID,
             size: Int64(encrypted.count),
             kekEpoch: 1,
@@ -174,7 +174,11 @@ struct RepositoryEncryptedLFSLoadTests {
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLFSURLProtocol.self] + (sessionConfiguration.protocolClasses ?? [])
         let lfsClient = GitLFS(serverURL: "https://test-lfs.local/lfs", sessionConfiguration: sessionConfiguration)
-        let loaded = try await repository.loadLFSData(from: pointerPath, lfsClient: lfsClient)
+        let loaded = try await EncryptedLFS.loadEncryptedLFSData(
+            from: pointerPath,
+            repository: repository,
+            lfsClient: lfsClient
+        )
         #expect(loaded == plaintext)
     }
 }
