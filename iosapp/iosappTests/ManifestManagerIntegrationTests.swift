@@ -195,6 +195,12 @@ struct ManifestManagerIntegrationTests {
             .path
         try Git.initialize()
         let repository = try Repository.create(at: repoPath, bare: false)
+        // Production writes gitdb/version in the bootstrap commit, so a
+        // fixture repo without it is refused by every write path.
+        try repository.createCommit(
+            message: "seed database version",
+            files: [("gitdb/version", "1\n")]
+        )
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manifest-manager-db-\(UUID().uuidString).sqlite")
         let registry = makeRegistry()

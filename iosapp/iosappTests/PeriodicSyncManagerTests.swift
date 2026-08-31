@@ -5,7 +5,7 @@ import LibGit2
 
 // Verifies periodic sync lifecycle and lock behavior for safe background git scheduling.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .sharedAppState)
 struct PeriodicSyncManagerTests {
     // Coordinates lock-acquired timing so mutation-lock tests avoid scheduler races.
     private actor MutationLockAcquireSignal {
@@ -39,7 +39,7 @@ struct PeriodicSyncManagerTests {
     }
 
     // Polls task state so settings-driven reconfiguration checks do not flake on fixed sleeps.
-    private func waitUntil(timeoutNanoseconds: UInt64 = 2_000_000_000, condition: @escaping @Sendable () -> Bool) async -> Bool {
+    private func waitUntil(timeoutNanoseconds: UInt64 = 2_000_000_000, condition: @escaping @MainActor () -> Bool) async -> Bool {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
         while DispatchTime.now().uptimeNanoseconds < deadline {
             if condition() {

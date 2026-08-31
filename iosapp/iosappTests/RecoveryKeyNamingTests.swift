@@ -96,6 +96,7 @@ struct RecoveryKeyNamingTests {
         try repository.createCommit(
             message: "seed recovery key",
             files: [
+                (path: "gitdb/version", content: "1\n"),
                 (path: pubPath, content: "ssh"),
                 (path: agePath, content: "age"),
             ]

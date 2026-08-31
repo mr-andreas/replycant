@@ -6,6 +6,7 @@ import GitDB
 // Verifies version refusals become a durable incompatibility the UI
 // can show instead of a one-off sync error string.
 @MainActor
+@Suite(.sharedAppState)
 struct DatabaseCompatibilityManagerTests {
     @Test func reportMapsNewerMarkerToUpdateGuidance() {
         let manager = DatabaseCompatibilityManager.shared
