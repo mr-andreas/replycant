@@ -1,9 +1,9 @@
 import Foundation
 
 // Encodes and decodes Bech32 strings so age public keys can be exchanged in a compact interoperable format.
-enum Bech32 {
+public enum Bech32 {
     // Signals Bech32 parse and encoding failures that must stop key exchange to avoid corrupt identities.
-    enum Error: Swift.Error {
+    public enum Error: Swift.Error {
         case invalidLength
         case mixedCase
         case missingSeparator
@@ -17,7 +17,7 @@ enum Bech32 {
     private static let separator: Character = "1"
 
     // Produces a checksummed Bech32 string for binary key material that will be embedded in QR/device metadata.
-    static func encode(hrp: String, data: Data) throws -> String {
+    public static func encode(hrp: String, data: Data) throws -> String {
         let lowerHRP = hrp.lowercased()
         let fiveBit = try convertBits(Array(data), from: 8, to: 5, pad: true)
         let checksum = createChecksum(hrp: lowerHRP, data: fiveBit)
@@ -32,7 +32,7 @@ enum Bech32 {
     }
 
     // Parses a Bech32 string and validates checksum to ensure exchanged age keys have not been truncated or tampered.
-    static func decode(_ value: String) throws -> (hrp: String, data: Data) {
+    public static func decode(_ value: String) throws -> (hrp: String, data: Data) {
         guard value.count >= 8 else {
             throw Error.invalidLength
         }

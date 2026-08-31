@@ -5,26 +5,28 @@ import CryptoKit
 // Manages ECDSA P-256 client identity for mTLS authentication with gitd server.
 // Uses P-256 because iOS Security framework only supports RSA/ECDSA for SecIdentity,
 // not Ed25519, which is required for URLSession client certificate authentication.
-final class ClientIdentityManager {
+public final class ClientIdentityManager {
     
     // Singleton instance for app-wide identity management.
-    static let shared = ClientIdentityManager()
+    public static let shared = ClientIdentityManager()
     
     private let privateKeyTag = "com.replycant.iosapp.p256.private"
     private let certificateLabel = "com.replycant.iosapp.p256.certificate"
     private let agePrivateKeyTag = "com.replycant.iosapp.age.private"
+    private let recoveryPrivateKeyTag = "com.replycant.iosapp.recovery.p256.private"
+    private let recoveryCertificateLabel = "com.replycant.iosapp.recovery.p256.certificate"
     
     private init() {}
     
     // MARK: - Public Interface
     
     // Checks if a client identity already exists in the Keychain.
-    func hasIdentity() -> Bool {
+    public func hasIdentity() -> Bool {
         return loadSecKey() != nil && loadSecCertificate() != nil
     }
     
     // Ensures both mTLS identity and age encryption identity exist while preserving immutable P-256 behavior.
-    func generateIdentityIfNeeded(commonName: String) throws {
+    public func generateIdentityIfNeeded(commonName: String) throws {
         // Check if mTLS identity already exists.
         if !hasIdentity() {
             log("Generating new P-256 identity for '\(commonName)' (first time setup)", context: "ClientIdentity")
@@ -45,7 +47,7 @@ final class ClientIdentityManager {
             )
 
             // Store certificate in Keychain, linked to the private key.
-            try storeCertificate(certificateDER, privateKey: privateKey)
+            try storeCertificate(certificateDER, privateKey: privateKey, certificateLabel: certificateLabel)
             log("Successfully generated and stored P-256 identity", context: "ClientIdentity")
         } else {
             log("P-256 identity already exists, skipping generation", context: "ClientIdentity")
@@ -60,9 +62,21 @@ final class ClientIdentityManager {
         }
     }
 
+    // Lets launch skip key generation only when bundled simulator
+    // credentials are actually present to import.
+    public func hasBundledSimulatorCredentials() -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return loadBundledCredential(named: "device", ext: "crt") != nil
+            && loadBundledCredential(named: "device", ext: "key") != nil
+            && loadBundledCredential(named: "identity", ext: "json") != nil
+        #else
+        return false
+        #endif
+    }
+
     // Imports an optional local simulator identity when present so debug builds can skip QR onboarding.
     // Credentials are never shipped in-repo; developers place them under SimulatorCredentials/ locally.
-    func importBundledSimulatorIdentityIfNeeded() throws {
+    public func importBundledSimulatorIdentityIfNeeded() throws {
         #if DEBUG && targetEnvironment(simulator)
         guard let certificatePEM = loadBundledCredential(named: "device", ext: "crt"),
               let privateKeyPEM = loadBundledCredential(named: "device", ext: "key"),
@@ -80,10 +94,25 @@ final class ClientIdentityManager {
         log("Loaded bundled simulator identity from PEM resources", context: "ClientIdentity")
         #endif
     }
+
+    // Clears mTLS and age identity material so integration tests can force deterministic first-run onboarding.
+    public func resetIdentityForTesting() throws {
+        #if DEBUG
+        try deleteIdentityForSimulatorOverride()
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: agePrivateKeyTag
+        ]
+        let deleteStatus = SecItemDelete(deleteQuery as CFDictionary)
+        if deleteStatus != errSecSuccess && deleteStatus != errSecItemNotFound {
+            throw IdentityError.keychainError(deleteStatus)
+        }
+        #endif
+    }
     
     // Returns the SSH-format public key for committing to pubkeys/ directory.
     // Format: "ecdsa-sha2-nistp256 AAAA... comment"
-    func sshPublicKey(comment: String = "") throws -> String {
+    public func sshPublicKey(comment: String = "") throws -> String {
         guard let privateKey = loadSecKey(),
               let publicKey = SecKeyCopyPublicKey(privateKey) else {
             throw IdentityError.noIdentity
@@ -93,7 +122,7 @@ final class ClientIdentityManager {
     }
 
     // Returns the Bech32 age public key so onboarding and linking can exchange encryption recipients.
-    func agePublicKey() throws -> String {
+    public func agePublicKey() throws -> String {
         guard let privateKey = loadAgePrivateKey() else {
             throw IdentityError.noAgeIdentity
         }
@@ -101,7 +130,7 @@ final class ClientIdentityManager {
     }
 
     // Loads the Curve25519 age private key used to decrypt KEK epoch files locally.
-    func agePrivateKey() throws -> Curve25519.KeyAgreement.PrivateKey {
+    public func agePrivateKey() throws -> Curve25519.KeyAgreement.PrivateKey {
         guard let privateKey = loadAgePrivateKey() else {
             throw IdentityError.noAgeIdentity
         }
@@ -109,7 +138,36 @@ final class ClientIdentityManager {
     }
     
     // Loads the SecIdentity for use in URLSession authentication challenges.
-    func loadSecIdentity() -> SecIdentity? {
+    public func loadSecIdentity() -> SecIdentity? {
+        loadSecIdentity(certificateLabel: certificateLabel, privateKeyTag: privateKeyTag)
+    }
+
+    // Builds a throwaway identity used only during recovery so the device identity remains immutable.
+    public func makeTemporaryIdentity(privateKeyPEM: String, commonName: String) throws -> SecIdentity {
+        try deleteTemporaryIdentity()
+        let importedPrivateKey = try importPrivateKeyIfNeeded(fromPEM: privateKeyPEM, keyTag: recoveryPrivateKeyTag)
+        guard let importedPublicKey = SecKeyCopyPublicKey(importedPrivateKey) else {
+            throw IdentityError.certificateCreationFailed
+        }
+        let certificateDER = try createSelfSignedCertificate(
+            privateKey: importedPrivateKey,
+            publicKey: importedPublicKey,
+            commonName: commonName
+        )
+        try storeCertificate(certificateDER, privateKey: importedPrivateKey, certificateLabel: recoveryCertificateLabel)
+        guard let identity = loadSecIdentity(certificateLabel: recoveryCertificateLabel, privateKeyTag: recoveryPrivateKeyTag) else {
+            throw IdentityError.noIdentity
+        }
+        return identity
+    }
+
+    // Removes temporary recovery identity artifacts so follow-up network operations use the device identity only.
+    public func deleteTemporaryIdentity() throws {
+        try deleteIdentity(keyTag: recoveryPrivateKeyTag, certificateLabel: recoveryCertificateLabel)
+    }
+
+    // Loads a Keychain identity by explicit labels so primary and temporary identities can coexist.
+    private func loadSecIdentity(certificateLabel: String, privateKeyTag: String) -> SecIdentity? {
         // Query for identity by finding certificate with matching private key
         let query: [String: Any] = [
             kSecClass as String: kSecClassIdentity,
@@ -121,7 +179,7 @@ final class ClientIdentityManager {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         
         if status == errSecSuccess, let identity = item {
-            log("Loaded SecIdentity from Keychain", context: "ClientIdentity")
+            logDebug("Loaded SecIdentity from Keychain", context: "ClientIdentity")
             return (identity as! SecIdentity)
         }
         
@@ -136,7 +194,7 @@ final class ClientIdentityManager {
         let keyStatus = SecItemCopyMatching(keyQuery as CFDictionary, &keyItem)
         
         if keyStatus == errSecSuccess, let identity = keyItem {
-            log("Loaded SecIdentity via key tag", context: "ClientIdentity")
+            logDebug("Loaded SecIdentity via key tag", context: "ClientIdentity")
             return (identity as! SecIdentity)
         }
 
@@ -145,7 +203,7 @@ final class ClientIdentityManager {
     }
     
     // Returns the DER-encoded certificate data.
-    func loadCertificate() throws -> Data {
+    public func loadCertificate() throws -> Data {
         guard let cert = loadSecCertificate() else {
             throw IdentityError.noIdentity
         }
@@ -205,10 +263,11 @@ final class ClientIdentityManager {
         }
     }
     
-    private func loadSecKey() -> SecKey? {
+    private func loadSecKey(tag: String? = nil) -> SecKey? {
+        let resolvedTag = tag ?? privateKeyTag
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: privateKeyTag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: resolvedTag.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true
         ]
@@ -242,9 +301,9 @@ final class ClientIdentityManager {
 
     // Imports PEM credentials into Keychain so simulator startup can authenticate without key generation.
     private func importIdentity(certificatePEM: String, privateKeyPEM: String) throws {
-        let importedPrivateKey = try importPrivateKeyIfNeeded(fromPEM: privateKeyPEM)
+        let importedPrivateKey = try importPrivateKeyIfNeeded(fromPEM: privateKeyPEM, keyTag: privateKeyTag)
         let certificateDER = try decodeCertificateDER(fromPEM: certificatePEM)
-        try storeCertificate(certificateDER, privateKey: importedPrivateKey)
+        try storeCertificate(certificateDER, privateKey: importedPrivateKey, certificateLabel: certificateLabel)
     }
 
     // Converts a bundled PEM certificate into DER needed by Security.framework APIs.
@@ -260,8 +319,8 @@ final class ClientIdentityManager {
     }
 
     // Imports the bundled EC private key only when no key exists, preserving idempotent startup behavior.
-    private func importPrivateKeyIfNeeded(fromPEM pem: String) throws -> SecKey {
-        if let existingKey = loadSecKey() {
+    private func importPrivateKeyIfNeeded(fromPEM pem: String, keyTag: String) throws -> SecKey {
+        if let existingKey = loadSecKey(tag: keyTag) {
             return existingKey
         }
 
@@ -302,7 +361,7 @@ final class ClientIdentityManager {
 
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: privateKeyTag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: keyTag.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecValueRef as String: secKey,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -313,7 +372,7 @@ final class ClientIdentityManager {
             throw IdentityError.keychainError(addStatus)
         }
 
-        guard let storedKey = loadSecKey() else {
+        guard let storedKey = loadSecKey(tag: keyTag) else {
             throw IdentityError.noIdentity
         }
         return storedKey
@@ -424,9 +483,14 @@ final class ClientIdentityManager {
 
     // Clears existing identity artifacts so simulator bootstrap can replace stale credentials that cause 401 responses.
     private func deleteIdentityForSimulatorOverride() throws {
+        try deleteIdentity(keyTag: privateKeyTag, certificateLabel: certificateLabel)
+    }
+
+    // Removes one identity pair selected by key tag and certificate label.
+    private func deleteIdentity(keyTag: String, certificateLabel: String) throws {
         let keyQuery: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: privateKeyTag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: keyTag.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom
         ]
         let keyDeleteStatus = SecItemDelete(keyQuery as CFDictionary)
@@ -483,7 +547,7 @@ final class ClientIdentityManager {
     
     // MARK: - Certificate Storage
     
-    private func storeCertificate(_ certificateDER: Data, privateKey: SecKey) throws {
+    private func storeCertificate(_ certificateDER: Data, privateKey: SecKey, certificateLabel: String) throws {
         guard let certificate = SecCertificateCreateWithData(nil, certificateDER as CFData) else {
             logError("Failed to create SecCertificate from DER", context: "ClientIdentity")
             throw IdentityError.certificateCreationFailed
@@ -506,10 +570,11 @@ final class ClientIdentityManager {
         log("Stored certificate in Keychain", context: "ClientIdentity")
     }
     
-    private func loadSecCertificate() -> SecCertificate? {
+    private func loadSecCertificate(label: String? = nil) -> SecCertificate? {
+        let resolvedLabel = label ?? certificateLabel
         let query: [String: Any] = [
             kSecClass as String: kSecClassCertificate,
-            kSecAttrLabel as String: certificateLabel,
+            kSecAttrLabel as String: resolvedLabel,
             kSecReturnRef as String: true
         ]
         
@@ -687,13 +752,13 @@ final class ClientIdentityManager {
 }
 
 // Errors that can occur during identity operations.
-enum IdentityError: Error, LocalizedError {
+public enum IdentityError: Error, LocalizedError {
     case noIdentity
     case noAgeIdentity
     case keychainError(OSStatus)
     case certificateCreationFailed
     
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .noIdentity:
             return "No client identity found"

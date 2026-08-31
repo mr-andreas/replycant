@@ -3,13 +3,13 @@ import CryptoKit
 import LibGit2
 
 // Manages KEK epoch files so devices can rotate and redistribute encryption access without re-encrypting all objects.
-final class KEKEpochManager {
+public final class KEKEpochManager {
     private let repository: Repository
     private let ageIdentityLoader: () throws -> Curve25519.KeyAgreement.PrivateKey
     private var kekCache: [Int: Data] = [:]
 
     // Allows recovery flows to decrypt epochs with an injected key without mutating the app's primary keychain identity.
-    init(
+    public init(
         repository: Repository,
         ageIdentityLoader: @escaping () throws -> Curve25519.KeyAgreement.PrivateKey = {
             try ClientIdentityManager.shared.agePrivateKey()
@@ -20,7 +20,7 @@ final class KEKEpochManager {
     }
 
     // Returns the active epoch number so callers can tag newly encrypted manifests and pointers correctly.
-    func currentEpoch() throws -> Int? {
+    public func currentEpoch() throws -> Int? {
         guard repository.fileExists(at: "encryption/current") else {
             return nil
         }
@@ -29,7 +29,7 @@ final class KEKEpochManager {
     }
 
     // Loads and caches the KEK for a specific epoch to avoid repeated age decryption during sync loops.
-    func loadKEK(epoch: Int) throws -> Data {
+    public func loadKEK(epoch: Int) throws -> Data {
         if let cached = kekCache[epoch] {
             return cached
         }
@@ -43,7 +43,7 @@ final class KEKEpochManager {
     }
 
     // Resolves the active KEK and epoch in one call so encryption sites can use consistent metadata.
-    func loadCurrentKEK() throws -> (epoch: Int, kek: Data) {
+    public func loadCurrentKEK() throws -> (epoch: Int, kek: Data) {
         guard let epoch = try currentEpoch() else {
             throw IdentityError.noAgeIdentity
         }
@@ -51,7 +51,7 @@ final class KEKEpochManager {
     }
 
     // Builds first-epoch repository files so bootstrap can atomically commit pubkeys and encryption state together.
-    func bootstrapFilesForFirstEpoch(recipientAgePubkeys: [String]) throws -> [(path: String, content: String)] {
+    public func bootstrapFilesForFirstEpoch(recipientAgePubkeys: [String]) throws -> [(path: String, content: String)] {
         let recipients = try parseRecipients(agePubkeys: recipientAgePubkeys)
         let kek = EncryptionUtils.randomKey(length: 32)
         let encryptedEpoch = try AgeCrypto.encrypt(plaintext: kek, recipients: recipients)
@@ -67,7 +67,7 @@ final class KEKEpochManager {
     }
 
     // Re-wraps all existing epochs for a new recipient set so newly linked devices can decrypt historical KEKs.
-    func rewrappedEpochFilesIncludingRecipients(_ recipientAgePubkeys: [String]) throws -> [(path: String, content: String)] {
+    public func rewrappedEpochFilesIncludingRecipients(_ recipientAgePubkeys: [String]) throws -> [(path: String, content: String)] {
         let recipients = try parseRecipients(agePubkeys: recipientAgePubkeys)
         let epochPaths = try repository.listFiles(in: "encryption/epochs").filter { $0.hasSuffix(".age") }.sorted()
         var files: [(path: String, content: String)] = []

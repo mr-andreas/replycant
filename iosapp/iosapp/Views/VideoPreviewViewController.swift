@@ -2,6 +2,7 @@ import UIKit
 import SwiftUI
 import AVKit
 import Combine
+import GitDB
 
 /// Displays one video in full screen within the UIPageViewController.
 /// Hosts the AVPlayer via SwiftUI VideoPlayer for playback controls while

@@ -71,9 +71,9 @@ struct ManifestManagerIntegrationTests {
 
     // Bootstraps a real age-wrapped KEK epoch so syncToHead decrypt uses production identity.
     private func bootstrapEncryption(in repository: Repository) throws -> (kek: Data, epoch: Int, files: [(String, String)]) {
-        try GitDB.ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "iosapp-tests")
-        let agePublicKey = try GitDB.ClientIdentityManager.shared.agePublicKey()
-        let manager = GitDB.KEKEpochManager(repository: repository)
+        try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "iosapp-tests")
+        let agePublicKey = try ClientIdentityManager.shared.agePublicKey()
+        let manager = KEKEpochManager(repository: repository)
         let files = try manager.bootstrapFilesForFirstEpoch(recipientAgePubkeys: [agePublicKey])
         let kek = try manager.loadKEK(epoch: 1)
         return (kek, 1, files)
@@ -81,7 +81,7 @@ struct ManifestManagerIntegrationTests {
 
     // Encrypts fixture YAML so syncToHead rejects plaintext and decrypts envelopes.
     private func encryptManifest(_ yaml: String, kek: Data, epoch: Int) throws -> String {
-        let encrypted = try GitDB.EncryptionUtils.encryptAESGCM(plaintext: Data(yaml.utf8), key: kek)
+        let encrypted = try EncryptionUtils.encryptAESGCM(plaintext: Data(yaml.utf8), key: kek)
         return """
         REPLYCANT-ENC-V1
         kek-epoch: \(epoch)

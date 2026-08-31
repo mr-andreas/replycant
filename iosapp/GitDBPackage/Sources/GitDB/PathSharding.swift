@@ -1,7 +1,7 @@
 import Foundation
 
 // Shards manifest and binary filenames into prefix directories to keep git tree fanout bounded.
-func shardName(_ name: String) -> String {
+public func shardName(_ name: String) -> String {
     if name.count < 5 {
         return name
     }

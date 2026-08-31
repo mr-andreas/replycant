@@ -3,9 +3,9 @@ import CryptoKit
 
 // Centralizes AES-256-GCM operations so manifest encryption and binary chunk
 // encryption stay consistent across flows, including position-authenticated LFS framing.
-enum EncryptionUtils {
+public enum EncryptionUtils {
     // Captures encryption/decryption errors that must abort sync to prevent silent data corruption.
-    enum Error: Swift.Error {
+    public enum Error: Swift.Error {
         case invalidKeyLength
         case invalidCiphertext
         case invalidChunkSize
@@ -13,14 +13,14 @@ enum EncryptionUtils {
     }
 
     // Repo-wide plaintext chunk size shared with Go/webapp/decryptd (64 KiB).
-    static let chunkSize = 65_536
+    public static let chunkSize = 65_536
     // Per-chunk wire overhead is the GCM tag only; nonces are derived and not stored.
-    static let chunkOverhead = 16
+    public static let chunkOverhead = 16
     private static let chunkAADPrefix = Data("replycant-lfs-chunk-v1".utf8)
     private static let dekWrapAADPrefix = Data("replycant-dek-wrap-v1".utf8)
 
     // Encrypts payloads with random nonces to protect manifest and wrapped-key confidentiality at rest.
-    static func encryptAESGCM(plaintext: Data, key: Data, authenticatedData: Data? = nil) throws -> Data {
+    public static func encryptAESGCM(plaintext: Data, key: Data, authenticatedData: Data? = nil) throws -> Data {
         let symmetric = try symmetricKey(from: key)
         let nonce = AES.GCM.Nonce()
         let sealed = try AES.GCM.seal(plaintext, using: symmetric, nonce: nonce, authenticating: authenticatedData ?? Data())
@@ -31,7 +31,7 @@ enum EncryptionUtils {
     }
 
     // Decrypts AES-GCM payloads encoded in combined form so encrypted repository entries can be restored to plaintext.
-    static func decryptAESGCM(ciphertext: Data, key: Data, authenticatedData: Data? = nil) throws -> Data {
+    public static func decryptAESGCM(ciphertext: Data, key: Data, authenticatedData: Data? = nil) throws -> Data {
         let symmetric = try symmetricKey(from: key)
         let box = try AES.GCM.SealedBox(combined: ciphertext)
         return try AES.GCM.open(box, using: symmetric, authenticating: authenticatedData ?? Data())
@@ -39,18 +39,18 @@ enum EncryptionUtils {
 
     // Wraps a per-object DEK using the current KEK, binding the seal to kek-epoch so
     // pointer metadata cannot be moved across epochs without detection.
-    static func wrapDEK(_ dek: Data, withKEK kek: Data, kekEpoch: Int) throws -> Data {
+    public static func wrapDEK(_ dek: Data, withKEK kek: Data, kekEpoch: Int) throws -> Data {
         try encryptAESGCM(plaintext: dek, key: kek, authenticatedData: dekWrapAAD(kekEpoch: kekEpoch))
     }
 
     // Unwraps a per-object DEK from pointer metadata so the client can decrypt LFS binary chunks.
-    static func unwrapDEK(_ wrappedDEK: Data, withKEK kek: Data, kekEpoch: Int) throws -> Data {
+    public static func unwrapDEK(_ wrappedDEK: Data, withKEK kek: Data, kekEpoch: Int) throws -> Data {
         try decryptAESGCM(ciphertext: wrappedDEK, key: kek, authenticatedData: dekWrapAAD(kekEpoch: kekEpoch))
     }
 
     // Encrypts each plaintext chunk with index-derived nonce and AAD so reorder and
     // trailing truncation fail authentication, while preserving random-access reads.
-    static func encryptChunkedBinary(plaintext: Data, dek: Data) throws -> Data {
+    public static func encryptChunkedBinary(plaintext: Data, dek: Data) throws -> Data {
         if plaintext.isEmpty {
             return Data()
         }
@@ -75,7 +75,7 @@ enum EncryptionUtils {
 
     // Streams one file through plaintext and encrypted hashers so upload dedup and
     // LFS OID metadata are derived without full-buffer allocations.
-    static func computeStreamingHashes(
+    public static func computeStreamingHashes(
         fileURL: URL,
         dek: Data
     ) throws -> (plaintextSHA256: String, encryptedOID: String, encryptedSize: Int64, plaintextSize: Int64) {
@@ -125,7 +125,7 @@ enum EncryptionUtils {
 
     // Decrypts chunked binary payloads produced by encryptChunkedBinary using
     // index-derived nonces and AAD so reorder/truncation fail authentication.
-    static func decryptChunkedBinary(ciphertext: Data, dek: Data) throws -> Data {
+    public static func decryptChunkedBinary(ciphertext: Data, dek: Data) throws -> Data {
         if ciphertext.isEmpty {
             return Data()
         }
@@ -164,7 +164,7 @@ enum EncryptionUtils {
     }
 
     // Builds deterministic per-chunk nonces to guarantee uniqueness for each chunk under a per-object DEK.
-    static func nonceForChunk(index: Int) throws -> AES.GCM.Nonce {
+    public static func nonceForChunk(index: Int) throws -> AES.GCM.Nonce {
         var bytes = Data(repeating: 0, count: 12)
         let value = UInt64(index).bigEndian
         withUnsafeBytes(of: value) { rawBuffer in
@@ -174,7 +174,7 @@ enum EncryptionUtils {
     }
 
     // Binds each seal to its index and last-chunk status so reorder and trailing truncation fail authentication.
-    static func chunkAAD(index: Int, isLast: Bool) throws -> Data {
+    public static func chunkAAD(index: Int, isLast: Bool) throws -> Data {
         guard index >= 0 else {
             throw Error.invalidChunkSize
         }
@@ -189,7 +189,7 @@ enum EncryptionUtils {
     }
 
     // Binds a wrapped DEK to its kek-epoch so pointer metadata cannot move across epochs.
-    static func dekWrapAAD(kekEpoch: Int) throws -> Data {
+    public static func dekWrapAAD(kekEpoch: Int) throws -> Data {
         guard kekEpoch >= 1 else {
             throw Error.invalidKekEpoch
         }
@@ -203,7 +203,7 @@ enum EncryptionUtils {
     }
 
     // Generates random symmetric keys for KEKs/DEKs to enforce independent per-epoch and per-object encryption domains.
-    static func randomKey(length: Int = 32) -> Data {
+    public static func randomKey(length: Int = 32) -> Data {
         var data = Data(count: length)
         _ = data.withUnsafeMutableBytes { buffer in
             SecRandomCopyBytes(kSecRandomDefault, length, buffer.baseAddress!)

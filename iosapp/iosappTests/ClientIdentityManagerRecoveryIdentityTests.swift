@@ -1,12 +1,19 @@
 import CryptoKit
 import Foundation
 import Testing
+@testable import GitDB
 @testable import iosapp
 
 // Verifies recovery identity import uses separate keychain tags from the device identity.
 @MainActor
 @Suite(.sharedAppState)
 struct ClientIdentityManagerRecoveryIdentityTests {
+    // Guards that the app re-exports GitDB's identity singleton so Keychain
+    // operations cannot fork across two independent manager instances.
+    @Test func appAndGitDBShareOneClientIdentityManager() {
+        #expect(iosapp.ClientIdentityManager.shared === GitDB.ClientIdentityManager.shared)
+    }
+
     // Ensures temporary recovery identity lifecycle never replaces the persistent device identity.
     @Test func temporaryIdentityDoesNotOverrideDeviceIdentity() throws {
         #if DEBUG

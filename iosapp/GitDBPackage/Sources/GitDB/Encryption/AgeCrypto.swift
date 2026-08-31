@@ -2,9 +2,9 @@ import Foundation
 import CryptoKit
 
 // Implements a compact multi-recipient age-like envelope so KEK epochs can be shared across authorized devices.
-enum AgeCrypto {
+public enum AgeCrypto {
     // Surfaces envelope parsing and cryptographic failures that must fail closed for key confidentiality.
-    enum Error: Swift.Error {
+    public enum Error: Swift.Error {
         case emptyRecipients
         case invalidFormat
         case invalidRecipientLine
@@ -19,7 +19,7 @@ enum AgeCrypto {
     private static let wrapInfo = Data("replycant-age-wrap-info".utf8)
 
     // Encrypts plaintext once and wraps the file key for each recipient to keep KEK distribution cheap during device changes.
-    static func encrypt(plaintext: Data, recipients: [Curve25519.KeyAgreement.PublicKey]) throws -> Data {
+    public static func encrypt(plaintext: Data, recipients: [Curve25519.KeyAgreement.PublicKey]) throws -> Data {
         guard !recipients.isEmpty else {
             throw Error.emptyRecipients
         }
@@ -46,7 +46,7 @@ enum AgeCrypto {
     }
 
     // Decrypts payload by trying each recipient stanza until one unwraps the shared file key for the local identity.
-    static func decrypt(ciphertext: Data, identity: Curve25519.KeyAgreement.PrivateKey) throws -> Data {
+    public static func decrypt(ciphertext: Data, identity: Curve25519.KeyAgreement.PrivateKey) throws -> Data {
         guard let text = String(data: ciphertext, encoding: .utf8) else {
             throw Error.invalidFormat
         }
