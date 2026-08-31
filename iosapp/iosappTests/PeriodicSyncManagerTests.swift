@@ -130,7 +130,9 @@ struct PeriodicSyncManagerTests {
         manager.stop()
     }
 
-    // Ensures repository-level mutation lock blocks overlapping pull/push ticks and can be reacquired.
+    // Ensures repository-level mutation lock blocks overlapping writers.
+    // GitDatabase.tryPush/tryPull share this lock so periodic ticks
+    // return false instead of waiting.
     @Test func repositoryMutationLockExcludesConcurrentWriters() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("periodic-lock-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(atPath: root) }

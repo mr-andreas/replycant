@@ -629,8 +629,7 @@ struct OnboardingView: View {
         
         updateProgress(90, message: "Pushing to server...")
         
-        // Push using libgit2's native push (handles pack building and protocol correctly)
-        try repository.push(remoteName: "origin", branchName: "main")
+        try await gitDB.push()
 
         updateProgress(92, message: "Building media index...")
         try await gitDB.syncToHead { phase, loaded, total in

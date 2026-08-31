@@ -24,6 +24,7 @@
 
 ### Fixes
 
+- iosapp: photo uploads now refuse an unsupported `gitdb/version` instead of proceeding
 - iosapp: stop sync from wedging after deleting a recovery key; rebases are now deterministic instead of re-stamping commits with a new timestamp, and the app recovers automatically from duplicated commits
 - iosapp: remove the device name and public-key labels from the connect QR screen
 - iosapp: stop video playback when a video opened by swiping is dismissed

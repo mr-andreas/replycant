@@ -287,8 +287,7 @@ struct DeviceLinkingView: View {
         )
         
         updateProgress("Pushing to server...")
-        let branchName = repo.currentBranch() ?? "main"
-        try repo.push(remoteName: "origin", branchName: branchName)
+        try await gitDB.push()
         
         log("Successfully added and pushed device key", context: "DeviceLinking")
     }

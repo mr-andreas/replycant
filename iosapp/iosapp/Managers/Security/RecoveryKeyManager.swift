@@ -154,10 +154,7 @@ final class RecoveryKeyManager {
             files: files
         )
         Self.postRecoveryKeysDidChange()
-        let branchName = repository.currentBranch() ?? "main"
-        try await repository.withMutationLock {
-            try repository.push(remoteName: "origin", branchName: branchName)
-        }
+        try await gitDB.push()
 
         guard let pinnedHash = ServerConfigurationManager.certificateHash(fromPEM: serverConfiguration.caCertificate) else {
             throw Error.invalidServerConfiguration
@@ -203,10 +200,7 @@ final class RecoveryKeyManager {
             deletions: [record.pubPath, record.agePath]
         )
         Self.postRecoveryKeysDidChange()
-        let branchName = repository.currentBranch() ?? "main"
-        try await repository.withMutationLock {
-            try repository.push(remoteName: "origin", branchName: branchName)
-        }
+        try await gitDB.push()
     }
 
     // Recovers repository access by authenticating with the recovery identity once, then rotating back to device identity.
@@ -300,11 +294,8 @@ final class RecoveryKeyManager {
             files: files
         )
         progress?("Pushing recovered device key...", 75)
-        let branchName = repository.currentBranch() ?? "main"
         do {
-            try await repository.withMutationLock {
-                try repository.push(remoteName: "origin", branchName: branchName)
-            }
+            try await gitDB.push()
         } catch {
             throw Self.mapRecoveryAuthError(error)
         }

@@ -32,27 +32,25 @@ protocol ManifestManager: ManifestLoaderProtocol {
     func cancelActiveLFSUpload()
 }
 
-// Coordinates database-backed reads with git-first writes followed by cache synchronization.
+// Coordinates database-backed reads with GitDB writes so photo
+// uploads share the same version guard and lock as every other commit.
 @MainActor
 final class DefaultManifestManager: ManifestManager {
-    private let repository: Repository
+    private let gitDB: GitDatabase
     private let database: ManifestDatabase
-    private let syncEngine: ManifestSyncEngine
     private let commitService: GitCommitService
 
-    // Shares one manifest cache database and sync engine for all manager consumers tied to one repository.
+    // Shares one GitDB facade and commit service for all manager consumers tied to one repository.
     init(repository: Repository, deviceSpace: String, lfsClient: GitLFS, database: ManifestDatabase, registry: ManifestRegistry) {
-        self.repository = repository
+        self.gitDB = GitDatabase(repository: repository, database: database, registry: registry)
         self.database = database
-        self.syncEngine = ManifestSyncEngine(repository: repository, database: database, registry: registry)
         self.commitService = DefaultGitCommitService(repository: repository, deviceSpace: deviceSpace, lfsClient: lfsClient)
     }
 
     // Enables tests to inject commit behavior while preserving production sync and read logic.
     init(repository: Repository, database: ManifestDatabase, commitService: GitCommitService, registry: ManifestRegistry) {
-        self.repository = repository
+        self.gitDB = GitDatabase(repository: repository, database: database, registry: registry)
         self.database = database
-        self.syncEngine = ManifestSyncEngine(repository: repository, database: database, registry: registry)
         self.commitService = commitService
     }
 
@@ -195,12 +193,10 @@ final class DefaultManifestManager: ManifestManager {
         return result
     }
 
-    // Commits under the shared repository mutation lock so git writes cannot overlap pull/push operations.
+    // Routes commits through GitDB so photo uploads share the version
+    // guard, mutation lock, and SQL sync used by every other write.
     func createCommit(message: String, items: [GitCommitItem]) async throws {
-        try await repository.withMutationLock {
-            try await commitService.createCommit(message: message, items: items)
-            try await syncEngine.syncAfterCommit(items: items)
-        }
+        try await gitDB.commitManifests(message: message, items: items, commitService: commitService)
     }
 
     // Uploads binary payloads to LFS while preserving the existing git commit pipeline.
@@ -254,7 +250,7 @@ final class DefaultManifestManager: ManifestManager {
 
     // Synchronizes the database with git HEAD, reporting hydration progress when available.
     func syncToHead(progressHandler: SyncProgressHandler? = nil) async throws {
-        try await syncEngine.syncToHead(progressHandler: progressHandler)
+        try await gitDB.syncToHead(progressHandler: progressHandler)
     }
 
     // Finds an existing original by sha256 so uploads can perform content-based deduplication.

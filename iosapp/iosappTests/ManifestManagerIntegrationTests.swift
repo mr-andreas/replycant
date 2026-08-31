@@ -469,4 +469,56 @@ struct ManifestManagerIntegrationTests {
         #expect(try await manager.loadTimelinePage(offset: 0, limit: 10).map(\.id) == ["included"])
         #expect(try await manager.loadTimelineMonthCounts().count == 1)
     }
+
+    // Photo uploads must share GitDB's version guard so an
+    // unsupported gitdb/version cannot be written through ManifestManager.
+    @Test func createCommitRefusesUnsupportedDatabaseVersion() async throws {
+        let repoPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manifest-manager-unsupported-\(UUID().uuidString)")
+            .path
+        try Git.initialize()
+        let repository = try Repository.create(at: repoPath, bare: false)
+        try repository.createCommit(
+            message: "unsupported database version",
+            files: [("gitdb/version", "2\n")]
+        )
+        defer { try? FileManager.default.removeItem(atPath: repoPath) }
+
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manifest-manager-unsupported-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let registry = makeRegistry()
+        let database = try ManifestDatabase(databaseURL: dbURL, registry: registry)
+        let commitService = TestGitCommitService(repository: repository, deviceSpace: "test-device")
+        let manager = DefaultManifestManager(
+            repository: repository,
+            database: database,
+            commitService: commitService,
+            registry: registry
+        )
+
+        let manifest = OriginalManifest(
+            id: "blocked",
+            localID: "local-blocked",
+            sha256: "sha-blocked",
+            path: "/tmp/blocked.jpg",
+            filesize: 2048,
+            name: "blocked",
+            deviceSpace: "test-device",
+            mediaType: "photo",
+            width: 100,
+            height: 100,
+            modifiedAt: nil,
+            duration: nil,
+            mimeType: "image/jpeg",
+            location: nil,
+            isFavorite: false,
+            isHidden: false,
+            burstIdentifier: nil
+        )
+
+        await #expect(throws: DatabaseVersionError.unsupported(found: 2, required: 1)) {
+            try await manager.createCommit(message: "should fail", items: [.manifest(manifest)])
+        }
+    }
 }

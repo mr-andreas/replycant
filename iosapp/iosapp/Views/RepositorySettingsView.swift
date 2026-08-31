@@ -378,12 +378,12 @@ struct RepositorySettingsView: View {
                 try ensureMTLSTransportConfigured()
                 
                 let repo = try RepositoryManager.shared.getRepository()
+                let gitDB = try GitDBManager.shared.getGitDB()
                 let branchName = repo.currentBranch() ?? "main"
                 
                 log("Pushing branch: \(branchName)", context: "UI")
                 
-                // libgit2's push handles everything: negotiation, pack creation, error handling
-                try repo.push(remoteName: "origin", branchName: branchName)
+                try await gitDB.push()
                 
                 let endTime = CFAbsoluteTimeGetCurrent()
                 let duration = endTime - startTime

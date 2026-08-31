@@ -141,13 +141,9 @@ final class PeriodicSyncManager {
         let startTime = CFAbsoluteTimeGetCurrent()
         do {
             try ensureMTLSTransportConfigured()
-            let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
-            let pushed = try await repository.tryWithMutationLock {
-                let branchName = repository.currentBranch() ?? "main"
-                try repository.push(remoteName: "origin", branchName: branchName)
-                return true
-            }
-            guard pushed != nil else {
+            let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
+            let pushed = try await gitDB.tryPush()
+            guard pushed else {
                 logDebug("Skipping periodic push because another mutating git operation is running", context: "Sync")
                 return
             }
@@ -172,15 +168,9 @@ final class PeriodicSyncManager {
         let startTime = CFAbsoluteTimeGetCurrent()
         do {
             try ensureMTLSTransportConfigured()
-            let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-            let pulled = try await repository.tryWithMutationLock {
-                let branchName = repository.currentBranch() ?? "main"
-                try repository.pullRebase(remoteName: "origin", branchName: branchName, progressCallback: nil)
-                try await gitDB.syncToHead(progressHandler: nil)
-                return true
-            }
-            guard pulled != nil else {
+            let pulled = try await gitDB.tryPull()
+            guard pulled else {
                 logDebug("Skipping periodic pull because another mutating git operation is running", context: "Sync")
                 return
             }

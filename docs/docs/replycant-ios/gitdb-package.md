@@ -64,6 +64,18 @@ The app owns SQL query shape and pagination logic, while GitDB owns execution an
 
 Timeline and sync UI code subscribe to these events to refresh local state.
 
+## Remote Operations
+
+`GitDatabase` owns push and pull so remote updates share the repository
+mutation lock with local commits:
+
+- `push` / `pull` wait for the lock
+- `tryPush` / `tryPull` return false when another mutation is already running
+- An omitted branch name resolves to `HEAD` or `main`
+
+Photo uploads go through `GitDatabase.commitManifests` so they share the
+same `gitdb/version` guard as every other write.
+
 ## Commit Flow
 
 `GitCommitService` remains responsible for:

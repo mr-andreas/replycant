@@ -61,6 +61,21 @@ public final class GitDatabase: Sendable {
         deviceSpace: String,
         lfsClient: GitLFS
     ) async throws {
+        let commitService = DefaultGitCommitService(
+            repository: repository,
+            deviceSpace: deviceSpace,
+            lfsClient: lfsClient
+        )
+        try await commitManifests(message: message, items: items, commitService: commitService)
+    }
+
+    // Accepts an injected commit service so tests can mock LFS while
+    // still running the version guard, lock, and SQL sync.
+    public func commitManifests(
+        message: String,
+        items: [GitCommitItem],
+        commitService: GitCommitService
+    ) async throws {
         let signpost = GitDBSignposts.begin("GitDBCommitManifests")
         var succeeded = false
         defer {
@@ -76,7 +91,6 @@ public final class GitDatabase: Sendable {
         }
         try await repository.withMutationLock {
             try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
-            let commitService = DefaultGitCommitService(repository: repository, deviceSpace: deviceSpace, lfsClient: lfsClient)
             try await commitService.createCommit(message: message, items: items)
             try await syncEngine.syncAfterCommit(items: items)
         }
@@ -139,12 +153,59 @@ public final class GitDatabase: Sendable {
         succeeded = true
     }
 
+    // Resolves an omitted branch to HEAD or `main` so callers do not
+    // repeat `currentBranch() ?? "main"` at every remote site.
+    func resolvedBranch(_ branchName: String?) -> String {
+        branchName ?? repository.currentBranch() ?? "main"
+    }
+
+    // Pushes the current branch under the mutation lock so remote
+    // updates cannot overlap a local commit.
+    public func push(
+        remoteName: String = "origin",
+        branchName: String? = nil
+    ) async throws {
+        let resolved = resolvedBranch(branchName)
+        let signpost = GitDBSignposts.begin("GitDBPush")
+        var succeeded = false
+        defer {
+            if succeeded {
+                GitDBSignposts.signposter.endInterval(
+                    "GitDBPush",
+                    signpost,
+                    "branch=\(resolved, privacy: .public)"
+                )
+            } else {
+                GitDBSignposts.end("GitDBPush", signpost)
+            }
+        }
+        try await repository.withMutationLock {
+            try repository.push(remoteName: remoteName, branchName: resolved)
+        }
+        succeeded = true
+    }
+
+    // Attempts a push without waiting so background ticks skip when
+    // another mutation already owns the repository.
+    public func tryPush(
+        remoteName: String = "origin",
+        branchName: String? = nil
+    ) async throws -> Bool {
+        let resolved = resolvedBranch(branchName)
+        let pushed = try await repository.tryWithMutationLock {
+            try repository.push(remoteName: remoteName, branchName: resolved)
+            return true
+        }
+        return pushed != nil
+    }
+
     // Pulls remote history and synchronizes SQL state so readers immediately observe new HEAD.
     public func pull(
         remoteName: String = "origin",
-        branchName: String,
+        branchName: String? = nil,
         progressHandler: SyncProgressHandler? = nil
     ) async throws {
+        let resolved = resolvedBranch(branchName)
         let signpost = GitDBSignposts.begin("GitDBPull")
         var succeeded = false
         defer {
@@ -152,17 +213,33 @@ public final class GitDatabase: Sendable {
                 GitDBSignposts.signposter.endInterval(
                     "GitDBPull",
                     signpost,
-                    "branch=\(branchName, privacy: .public)"
+                    "branch=\(resolved, privacy: .public)"
                 )
             } else {
                 GitDBSignposts.end("GitDBPull", signpost)
             }
         }
         try await repository.withMutationLock {
-            try repository.pullRebase(remoteName: remoteName, branchName: branchName, progressCallback: nil)
+            try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: nil)
             try await syncEngine.syncToHead(progressHandler: progressHandler)
         }
         succeeded = true
+    }
+
+    // Attempts a pull without waiting so periodic rebase can skip
+    // when a user-facing write already holds the lock.
+    public func tryPull(
+        remoteName: String = "origin",
+        branchName: String? = nil,
+        progressHandler: SyncProgressHandler? = nil
+    ) async throws -> Bool {
+        let resolved = resolvedBranch(branchName)
+        let pulled = try await repository.tryWithMutationLock {
+            try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: nil)
+            try await syncEngine.syncToHead(progressHandler: progressHandler)
+            return true
+        }
+        return pulled != nil
     }
 
     // Synchronizes SQL state to current HEAD without mutating git history.
