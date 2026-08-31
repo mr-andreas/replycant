@@ -9,6 +9,7 @@ final class DatabaseCompatibilityManager: ObservableObject {
     static let shared = DatabaseCompatibilityManager()
 
     @Published private(set) var incompatibility: DatabaseIncompatibility?
+    @Published private(set) var pendingFormatResetMessage: String?
 
     private init() {}
 
@@ -31,6 +32,28 @@ final class DatabaseCompatibilityManager: ObservableObject {
             return
         }
         report(error)
+    }
+
+    // Surfaces a format-change pull that cannot rebase unpublished
+    // local commits so the shell can offer reset-to-remote.
+    func reportFormatTransitionDivergence(
+        _ error: FormatTransitionPullError = .divergedDuringFormatChange
+    ) {
+        pendingFormatResetMessage = error.localizedDescription
+    }
+
+    // Clears the reset banner after HEAD has been moved to remote.
+    func clearFormatReset() {
+        pendingFormatResetMessage = nil
+    }
+
+    // Lets any catch site promote a format-transition refusal onto
+    // the banner without each caller repeating the type check.
+    func reportIfFormatTransitionError(_ error: Error) {
+        guard let error = error as? FormatTransitionPullError else {
+            return
+        }
+        reportFormatTransitionDivergence(error)
     }
 }
 

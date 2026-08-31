@@ -64,17 +64,22 @@ func TestParseDatabaseVersionRejectsMalformedContent(t *testing.T) {
 	}
 }
 
-// TestRequireSupportedDatabaseVersionPinsExactMatch refuses any repo
-// whose marker is not the version this binary was built against.
-func TestRequireSupportedDatabaseVersionPinsExactMatch(t *testing.T) {
+// TestRequireSupportedDatabaseVersionAcceptsPinnedAndZero refuses any
+// repo whose marker is not in the accepted set of {0, current}.
+func TestRequireSupportedDatabaseVersionAcceptsPinnedAndZero(t *testing.T) {
 	t.Parallel()
 	require.NoError(t, RequireSupportedDatabaseVersion([]byte("1\n")))
 	require.NoError(t, RequireSupportedDatabaseVersion([]byte("1")))
+	require.NoError(t, RequireAcceptedDatabaseVersion(0))
+	require.NoError(t, RequireAcceptedDatabaseVersion(1))
 
 	err := RequireSupportedDatabaseVersion([]byte("2\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "2")
 	assert.Contains(t, err.Error(), "1")
+
+	err = RequireAcceptedDatabaseVersion(2)
+	require.Error(t, err)
 
 	err = RequireSupportedDatabaseVersion([]byte("01"))
 	require.Error(t, err)
@@ -93,7 +98,5 @@ func TestRequireSupportedDatabaseVersionInWorktreeReadsMarker(t *testing.T) {
 	require.Error(t, RequireSupportedDatabaseVersionInWorktree(dir))
 
 	missing := t.TempDir()
-	err := RequireSupportedDatabaseVersionInWorktree(missing)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "gitdb/version")
+	require.NoError(t, RequireSupportedDatabaseVersionInWorktree(missing))
 }

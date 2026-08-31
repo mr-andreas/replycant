@@ -469,6 +469,7 @@ struct RepositorySettingsView: View {
                 
                 await MainActor.run {
                     DatabaseCompatibilityManager.shared.reportIfVersionError(error)
+                    DatabaseCompatibilityManager.shared.reportIfFormatTransitionError(error)
                     errorMessage = error.localizedDescription
                     isPulling = false
                 }

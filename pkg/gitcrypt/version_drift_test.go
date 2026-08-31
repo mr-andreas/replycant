@@ -24,6 +24,13 @@ func TestPinnedConstantsMatchAcrossLanguages(t *testing.T) {
 	require.Equal(t, DatabaseFormatVersion, swiftVersion, "Swift DatabaseVersion.current")
 	require.Equal(t, DatabaseFormatVersion, tsVersion, "TypeScript DATABASE_FORMAT_VERSION")
 
+	swiftSource := mustRead(t, filepath.Join(root, "iosapp", "GitDBPackage", "Sources", "GitDB", "DatabaseVersion.swift"))
+	tsSource := mustRead(t, filepath.Join(root, "webapp", "src", "modules", "gitdb", "databaseVersion.ts"))
+	goSource := mustRead(t, filepath.Join(root, "pkg", "gitcrypt", "version.go"))
+	require.Contains(t, swiftSource, "version == 0 || version == current")
+	require.Contains(t, tsSource, "version === 0 || version === DATABASE_FORMAT_VERSION")
+	require.Contains(t, goSource, "version == 0 || version == DatabaseFormatVersion")
+
 	swiftEnvelope := mustExtractString(t, filepath.Join(root, "iosapp", "GitDBPackage", "Sources", "GitDB", "ManifestSyncEngine.swift"),
 		`"(REPLYCANT-ENC-V1)\\n"`)
 	tsEnvelope := mustExtractString(t, filepath.Join(root, "webapp", "src", "modules", "gitdb", "encryption.ts"),
@@ -42,9 +49,15 @@ func mustExtractInt(t *testing.T, path string, pattern string) int {
 
 func mustExtractString(t *testing.T, path string, pattern string) string {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	require.NoError(t, err, path)
-	match := regexp.MustCompile(pattern).FindSubmatch(raw)
+	raw := mustRead(t, path)
+	match := regexp.MustCompile(pattern).FindSubmatch([]byte(raw))
 	require.NotNil(t, match, "pattern %q not found in %s", pattern, path)
 	return string(match[1])
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err, path)
+	return string(raw)
 }

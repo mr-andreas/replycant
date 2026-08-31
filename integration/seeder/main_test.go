@@ -41,9 +41,10 @@ func TestSeedRepositoryAppendMediaOnly(t *testing.T) {
 	gittest.DisableAutoMaintenance(t, bareRepo)
 
 	err := seedRepository(seederConfig{
-		bareRepo:    bareRepo,
-		outputDir:   outputDir,
-		deviceSpace: "e2e-device",
+		bareRepo:        bareRepo,
+		outputDir:       outputDir,
+		deviceSpace:     "e2e-device",
+		databaseVersion: gitcrypt.DatabaseFormatVersion,
 	})
 	require.NoError(t, err)
 
@@ -91,9 +92,10 @@ func TestSeedRepositoryEncryptedManifest(t *testing.T) {
 	gittest.DisableAutoMaintenance(t, bareRepo)
 
 	err := seedRepository(seederConfig{
-		bareRepo:    bareRepo,
-		outputDir:   outputDir,
-		deviceSpace: "e2e-device",
+		bareRepo:        bareRepo,
+		outputDir:       outputDir,
+		deviceSpace:     "e2e-device",
+		databaseVersion: gitcrypt.DatabaseFormatVersion,
 	})
 	require.NoError(t, err)
 	err = seedRepository(seederConfig{
@@ -168,6 +170,31 @@ func TestSeedRepositoryUnsupportedDatabaseVersionIsRejected(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported gitdb database version 2")
+}
+
+// TestSeedRepositoryOmitsMarkerForVersionZero models an old-alpha
+// library so clients can exercise the absence-means-0 path.
+func TestSeedRepositoryOmitsMarkerForVersionZero(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	bareRepo := filepath.Join(tempDir, "repo.git")
+	outputDir := filepath.Join(tempDir, "identity")
+	runGitForTest(t, "", "init", "--initial-branch=main", "--bare", bareRepo)
+	gittest.DisableAutoMaintenance(t, bareRepo)
+
+	err := seedRepository(seederConfig{
+		bareRepo:        bareRepo,
+		outputDir:       outputDir,
+		deviceSpace:     "e2e-device",
+		databaseVersion: 0,
+	})
+	require.NoError(t, err)
+	tree := runGitForTest(t, "", "--git-dir="+bareRepo, "ls-tree", "-r", "--name-only", "main")
+	require.NotContains(t, tree, "gitdb/version")
+
+	workDir := filepath.Join(tempDir, "work")
+	runGitForTest(t, "", "clone", "file://"+bareRepo, workDir)
+	require.NoError(t, gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir))
 }
 
 // TestValidateConfigRejectsInvalidCommitSplit keeps seeding failures explicit for bad CLI input.

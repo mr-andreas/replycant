@@ -1,4 +1,8 @@
-import { DatabaseVersionError, describeDatabaseVersionFailure } from "./databaseVersion";
+import {
+  DatabaseVersionError,
+  DatabaseVersionUnreadableError,
+  describeDatabaseVersionFailure,
+} from "./databaseVersion";
 
 const SYNC_PERF_PREFIX = "sync:";
 let syncPerfMeasureCounter = 0;
@@ -90,6 +94,9 @@ export const describeSyncFailure = (prefix: string, error: unknown): string => {
     name: error.name,
     stack: error.stack,
   });
+  if (error instanceof DatabaseVersionUnreadableError) {
+    return `Sync failed: ${error.message}. Check proxy/server settings and retry.`;
+  }
   if (error.name === "DatabaseVersionError" || error.message.includes("gitdb/version") || error.message.includes("gitdb database version")) {
     const guidance = error instanceof DatabaseVersionError
       ? describeDatabaseVersionFailure(error)

@@ -45,15 +45,17 @@ func ParseDatabaseVersion(raw []byte) (int, error) {
 	return version, nil
 }
 
-// RequireSupportedDatabaseVersion refuses any marker that is not an
-// exact match for DatabaseFormatVersion so a tampered value can only
-// deny service, never select a weaker code path.
-func RequireSupportedDatabaseVersion(raw []byte) error {
-	version, err := ParseDatabaseVersion(raw)
-	if err != nil {
-		return err
-	}
-	if version != DatabaseFormatVersion {
+// IsAcceptedDatabaseVersion reports whether version is the compiled pin
+// or the pre-marker integer 0. The check is an explicit set, not
+// `<= current`, so a future bump to 2 does not silently keep accepting 1.
+func IsAcceptedDatabaseVersion(version int) bool {
+	return version == 0 || version == DatabaseFormatVersion
+}
+
+// RequireAcceptedDatabaseVersion refuses any integer that is not in the
+// accepted set so a tampered value can only deny service.
+func RequireAcceptedDatabaseVersion(version int) error {
+	if !IsAcceptedDatabaseVersion(version) {
 		return fmt.Errorf(
 			"unsupported gitdb database version %d (this client requires %d)",
 			version,
@@ -63,12 +65,27 @@ func RequireSupportedDatabaseVersion(raw []byte) error {
 	return nil
 }
 
+// RequireSupportedDatabaseVersion parses a present marker and refuses
+// any value outside the accepted set. Absence is handled by the
+// worktree and ref readers, not by this parser.
+func RequireSupportedDatabaseVersion(raw []byte) error {
+	version, err := ParseDatabaseVersion(raw)
+	if err != nil {
+		return err
+	}
+	return RequireAcceptedDatabaseVersion(version)
+}
+
 // RequireSupportedDatabaseVersionInWorktree reads gitdb/version from a
 // checkout so Go tools can refuse before they rewrite encryption state
-// or import media.
+// or import media. A missing file is version 0, the in-code stand-in
+// for old alpha repositories.
 func RequireSupportedDatabaseVersionInWorktree(repoPath string) error {
 	raw, err := os.ReadFile(filepath.Join(repoPath, DatabaseVersionPath))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return RequireAcceptedDatabaseVersion(0)
+		}
 		return fmt.Errorf("read %s: %w", DatabaseVersionPath, err)
 	}
 	return RequireSupportedDatabaseVersion(raw)

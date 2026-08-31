@@ -11,6 +11,7 @@ final class PeriodicSyncManager {
     private var pushSuccessHandler: (@Sendable () -> Void)?
     private var isRunning = false
     private var refusedUnsupportedDatabase = false
+    private var refusedFormatTransition = false
     private var isNetworkOperationInProgress = false
     private var pushTask: Task<Void, Never>?
     private var pullTask: Task<Void, Never>?
@@ -39,7 +40,7 @@ final class PeriodicSyncManager {
     func start() {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard !isRunning, !refusedUnsupportedDatabase else { return }
+        guard !isRunning, !refusedUnsupportedDatabase, !refusedFormatTransition else { return }
         isRunning = true
         registerSettingsObserverLocked()
         reconfigureTasksLocked()
@@ -131,7 +132,7 @@ final class PeriodicSyncManager {
 
     // Pushes local commits to origin and logs operation duration for performance visibility.
     private func performPushTick() async {
-        guard !hasRefusedUnsupportedDatabase() else { return }
+        guard !hasRefusedUnsupportedDatabase(), !hasRefusedFormatTransition() else { return }
         guard beginNetworkOperationIfIdle() else {
             logDebug("Skipping periodic push because another periodic network operation is running", context: "Sync")
             return
@@ -158,7 +159,7 @@ final class PeriodicSyncManager {
 
     // Pulls remote changes and refreshes SQL manifest cache so pubsub updates timeline readers.
     private func performPullTick() async {
-        guard !hasRefusedUnsupportedDatabase() else { return }
+        guard !hasRefusedUnsupportedDatabase(), !hasRefusedFormatTransition() else { return }
         guard beginNetworkOperationIfIdle() else {
             logDebug("Skipping periodic pull because another periodic network operation is running", context: "Sync")
             return
@@ -184,6 +185,10 @@ final class PeriodicSyncManager {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logError("Periodic pull refused unsupported database after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
             refuseUnsupportedDatabase(error)
+        } catch let error as FormatTransitionPullError {
+            let duration = CFAbsoluteTimeGetCurrent() - startTime
+            logError("Periodic pull refused format-transition rebase after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
+            refuseFormatTransition(error)
         } catch {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logError("Periodic pull failed after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
@@ -208,6 +213,34 @@ final class PeriodicSyncManager {
         stateLock.lock()
         defer { stateLock.unlock() }
         return refusedUnsupportedDatabase
+    }
+
+    // Stops retrying a format-change rebase so unpublished local
+    // commits are not replayed until the user discards them.
+    private func refuseFormatTransition(_ error: FormatTransitionPullError) {
+        stateLock.lock()
+        refusedFormatTransition = true
+        stateLock.unlock()
+        Task { @MainActor in
+            DatabaseCompatibilityManager.shared.reportFormatTransitionDivergence(error)
+        }
+        stop()
+    }
+
+    // Lets push/pull ticks share the format-transition flag without
+    // racing the lock held by start/stop.
+    private func hasRefusedFormatTransition() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return refusedFormatTransition
+    }
+
+    // Clears the format-transition refusal after reset-to-remote so
+    // periodic sync can start again.
+    func clearFormatTransitionRefusal() {
+        stateLock.lock()
+        refusedFormatTransition = false
+        stateLock.unlock()
     }
 
     // Ensures mTLS transport is configured before any network git operation executes.
@@ -316,6 +349,12 @@ extension PeriodicSyncManager {
         stateLock.lock()
         refusedUnsupportedDatabase = false
         stateLock.unlock()
+    }
+
+    // Drives the same refusal path as a format-change rebase so tests
+    // can assert loops stop without constructing diverged remotes.
+    func handleFormatTransitionErrorForTesting(_ error: FormatTransitionPullError) {
+        refuseFormatTransition(error)
     }
 }
 #endif

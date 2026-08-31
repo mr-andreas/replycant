@@ -51,14 +51,30 @@ public actor ManifestSyncEngine {
             try await database.clearAll()
             return
         }
-        try DatabaseVersion.requireSupported(in: repository, commitOid: head)
+        let observed = try DatabaseVersion.read(in: repository, commitOid: head)
+        try DatabaseVersion.requireAccepted(observed)
+        let cacheFormat = try await database.readCacheFormatVersion()
+        try DatabaseVersion.requireNoDowngrade(observed: observed, stored: cacheFormat)
+        if cacheFormat != observed {
+            try await performFullHydration(
+                commitOid: head,
+                progressHandler: progressHandler,
+                cacheFormatVersion: observed
+            )
+            return
+        }
+
         let previousSynced = try await database.readSyncedCommitHash()
         guard previousSynced != head else {
             return
         }
 
         guard let previousSynced else {
-            try await performFullHydration(commitOid: head, progressHandler: progressHandler)
+            try await performFullHydration(
+                commitOid: head,
+                progressHandler: progressHandler,
+                cacheFormatVersion: observed
+            )
             return
         }
 
@@ -135,7 +151,8 @@ public actor ManifestSyncEngine {
             added: added,
             updated: updated,
             removed: removed,
-            commitHash: head
+            commitHash: head,
+            cacheFormatVersion: observed
         )
     }
 
@@ -144,7 +161,18 @@ public actor ManifestSyncEngine {
         guard let head = repository.headOID() else {
             return
         }
-        try DatabaseVersion.requireSupported(in: repository, commitOid: head)
+        let observed = try DatabaseVersion.read(in: repository, commitOid: head)
+        try DatabaseVersion.requireAccepted(observed)
+        let cacheFormat = try await database.readCacheFormatVersion()
+        try DatabaseVersion.requireNoDowngrade(observed: observed, stored: cacheFormat)
+        if cacheFormat != observed {
+            try await performFullHydration(
+                commitOid: head,
+                progressHandler: nil,
+                cacheFormatVersion: observed
+            )
+            return
+        }
 
         var added: [any Manifest] = []
         var updated: [any Manifest] = []
@@ -164,12 +192,17 @@ public actor ManifestSyncEngine {
             added: added,
             updated: updated,
             removed: [],
-            commitHash: head
+            commitHash: head,
+            cacheFormatVersion: observed
         )
     }
 
     // Performs first-time hydration by loading all manifests from one commit and replacing cache state atomically.
-    private func performFullHydration(commitOid: String, progressHandler: SyncProgressHandler?) async throws {
+    private func performFullHydration(
+        commitOid: String,
+        progressHandler: SyncProgressHandler?,
+        cacheFormatVersion: Int
+    ) async throws {
         let manifestEntries = try collectAllManifestYamlEntries(atCommit: commitOid)
         var manifests: [any Manifest] = []
         let keksByEpoch = try preloadAllKEKs()
@@ -210,7 +243,11 @@ public actor ManifestSyncEngine {
         }
 
         progressHandler?("Updating database", 0, 1)
-        try await database.replaceAll(manifests: manifests, commitHash: commitOid)
+        try await database.replaceAll(
+            manifests: manifests,
+            commitHash: commitOid,
+            cacheFormatVersion: cacheFormatVersion
+        )
         progressHandler?("Updating database", 1, 1)
     }
 

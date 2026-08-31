@@ -148,6 +148,7 @@ public final class GitDatabase: Sendable {
             if try await database.readSyncedCommitHash() != nil {
                 throw Error.cacheAlreadyHydrated
             }
+            try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
             try repository.createCommit(message: message, files: files, deletions: deletions)
         }
         succeeded = true
@@ -220,6 +221,8 @@ public final class GitDatabase: Sendable {
             }
         }
         try await repository.withMutationLock {
+            try repository.fetch(remoteName: remoteName)
+            try await refuseRebaseAcrossFormatChangeIfNeeded(remoteName: remoteName, branchName: resolved)
             try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: nil)
             try await syncEngine.syncToHead(progressHandler: progressHandler)
         }
@@ -235,11 +238,62 @@ public final class GitDatabase: Sendable {
     ) async throws -> Bool {
         let resolved = resolvedBranch(branchName)
         let pulled = try await repository.tryWithMutationLock {
+            try repository.fetch(remoteName: remoteName)
+            try await refuseRebaseAcrossFormatChangeIfNeeded(remoteName: remoteName, branchName: resolved)
             try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: nil)
             try await syncEngine.syncToHead(progressHandler: progressHandler)
             return true
         }
         return pulled != nil
+    }
+
+    // Discards unpublished local commits and moves HEAD to the fetched
+    // remote tip so a format-change pull can recover without wiping
+    // identity or re-cloning the repository.
+    public func hardResetToRemote(
+        remoteName: String = "origin",
+        branchName: String? = nil,
+        progressHandler: SyncProgressHandler? = nil
+    ) async throws {
+        let resolved = resolvedBranch(branchName)
+        try await repository.withMutationLock {
+            try repository.fetch(remoteName: remoteName)
+            guard let remoteOID = repository.oid(forRef: "refs/remotes/\(remoteName)/\(resolved)") else {
+                throw GitError.repositoryError(
+                    "Failed to find upstream branch: refs/remotes/\(remoteName)/\(resolved)"
+                )
+            }
+            try repository.fastForward(toOID: remoteOID, branchName: resolved)
+            try await syncEngine.syncToHead(progressHandler: progressHandler)
+        }
+    }
+
+    // Refuses a rebase that would replay unpublished local commits
+    // onto a remote whose gitdb/version no longer matches the cache.
+    private func refuseRebaseAcrossFormatChangeIfNeeded(
+        remoteName: String,
+        branchName: String
+    ) async throws {
+        guard let localHead = repository.headOID() else {
+            return
+        }
+        guard let remoteOID = repository.oid(forRef: "refs/remotes/\(remoteName)/\(branchName)") else {
+            return
+        }
+        if localHead == remoteOID {
+            return
+        }
+        if try repository.isDescendant(remoteOID, of: localHead) {
+            return
+        }
+        if try repository.isDescendant(localHead, of: remoteOID) {
+            return
+        }
+        let remoteVersion = try DatabaseVersion.read(in: repository, commitOid: remoteOID)
+        let cacheVersion = try await database.readCacheFormatVersion()
+        if remoteVersion != cacheVersion {
+            throw FormatTransitionPullError.divergedDuringFormatChange
+        }
     }
 
     // Synchronizes SQL state to current HEAD without mutating git history.

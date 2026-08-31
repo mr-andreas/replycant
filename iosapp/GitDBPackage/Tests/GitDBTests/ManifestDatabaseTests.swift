@@ -171,6 +171,40 @@ struct ManifestDatabaseTests {
         }
     }
 
+    // Existing installs have no cache-format row, so a missing value
+    // must read as format 0, the stand-in for pre-marker caches.
+    @Test func readCacheFormatVersionDefaultsToZeroWhenMissing() async throws {
+        let (database, _) = try makeDatabase()
+        #expect(try await database.readCacheFormatVersion() == 0)
+        try await database.writeSyncedCommitHashOnly("c1")
+        #expect(try await database.readCacheFormatVersion() == 0)
+    }
+
+    // replaceAll and applyMutation persist the observed format so a
+    // later bump can force full rehydration.
+    @Test func replaceAllAndApplyMutationPersistCacheFormatVersion() async throws {
+        let (database, _) = try makeDatabase()
+        let manifest = TestOriginalManifest(id: "img-1", guessedTakenAt: Date(), sha256: "sha-1")
+        try await database.replaceAll(
+            manifests: [manifest],
+            commitHash: "commit-a",
+            cacheFormatVersion: 0
+        )
+        #expect(try await database.readCacheFormatVersion() == 0)
+
+        try await database.writeCacheFormatVersionOnly(99)
+        #expect(try await database.readCacheFormatVersion() == 99)
+
+        try await database.applyMutation(
+            added: [],
+            updated: [],
+            removed: [],
+            commitHash: "commit-b",
+            cacheFormatVersion: 1
+        )
+        #expect(try await database.readCacheFormatVersion() == 1)
+    }
+
     // Closing releases the GRDB queue so wipe paths can unlink the
     // sqlite file without leaving a live descriptor on a deleted vnode.
     @Test func closePreventsFurtherReads() async throws {

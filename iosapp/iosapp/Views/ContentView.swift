@@ -7,6 +7,7 @@
 
 import SwiftUI
 import LibGit2
+import GitDB
 import UIKit
 
 // Chooses onboarding vs main app flow based on repository readiness and persisted credentials.
@@ -83,6 +84,23 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                             .background(Color.red)
                             .accessibilityIdentifier("databaseVersionBanner")
+                    } else if let resetMessage = databaseCompatibility.pendingFormatResetMessage {
+                        VStack(spacing: 8) {
+                            Text(resetMessage)
+                                .font(.subheadline)
+                                .multilineTextAlignment(.center)
+                            Button("Discard unpublished changes") {
+                                Task { await resetToRemoteAfterFormatChange() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.white)
+                            .foregroundStyle(.red)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.red)
+                        .accessibilityIdentifier("databaseFormatResetBanner")
                     }
                     TabView(selection: $selectedTab) {
                         TimelineView()
@@ -335,6 +353,23 @@ struct ContentView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    // Discards unpublished local commits after a format-change pull
+    // refused to rebase them, then restarts periodic sync.
+    private func resetToRemoteAfterFormatChange() async {
+        PeriodicSyncManager.shared.stop()
+        do {
+            let gitDB = try GitDBManager.shared.getGitDB()
+            try await gitDB.hardResetToRemote()
+            DatabaseCompatibilityManager.shared.clearFormatReset()
+            PeriodicSyncManager.shared.clearFormatTransitionRefusal()
+            errorMessage = nil
+        } catch {
+            DatabaseCompatibilityManager.shared.reportIfVersionError(error)
+            errorMessage = error.localizedDescription
+        }
+        updatePeriodicSyncLifecycle()
     }
 
     // Isolates onboarding skip decisions so tests can verify simulator installs do not bypass onboarding implicitly.

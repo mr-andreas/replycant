@@ -101,9 +101,6 @@ func seedFixtureManifest() originalManifest {
 
 // seedRepository supports full initialization and append-only media seeding for integration tests.
 func seedRepository(cfg seederConfig) error {
-	if cfg.databaseVersion == 0 {
-		cfg.databaseVersion = gitcrypt.DatabaseFormatVersion
-	}
 	if cfg.addMediaOnly {
 		return appendMediaOnly(cfg)
 	}
@@ -167,8 +164,10 @@ func initializeRepository(cfg seederConfig) error {
 	if err := writeFile(filepath.Join(workDir, "pubkeys", "integration-device.age"), []byte(identity.AgePublicKey+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write age pubkey: %w", err)
 	}
-	if err := writeFile(filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", cfg.databaseVersion)), 0o644); err != nil {
-		return fmt.Errorf("write gitdb version: %w", err)
+	if cfg.databaseVersion > 0 {
+		if err := writeFile(filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", cfg.databaseVersion)), 0o644); err != nil {
+			return fmt.Errorf("write gitdb version: %w", err)
+		}
 	}
 	if err := writeFile(filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("write current epoch: %w", err)
@@ -386,7 +385,7 @@ func validateConfig(cfg seederConfig) error {
 		return fmt.Errorf("--commit-count must be >= 1")
 	}
 	if cfg.databaseVersion < 0 {
-		return fmt.Errorf("--database-version must be >= 1")
+		return fmt.Errorf("--database-version must be >= 0")
 	}
 	if cfg.mediaCount > 0 && cfg.commitCount > cfg.mediaCount {
 		return fmt.Errorf("--commit-count cannot exceed --media-count when media is requested")
@@ -402,7 +401,7 @@ func main() {
 	flag.IntVar(&cfg.mediaCount, "media-count", 0, "Number of media records to seed")
 	flag.IntVar(&cfg.commitCount, "commit-count", 1, "Number of commits to distribute seeded media across")
 	flag.BoolVar(&cfg.addMediaOnly, "add-media-only", false, "Only append media commits to an existing seeded repository")
-	flag.IntVar(&cfg.databaseVersion, "database-version", gitcrypt.DatabaseFormatVersion, "gitdb/version marker written during initialize")
+	flag.IntVar(&cfg.databaseVersion, "database-version", gitcrypt.DatabaseFormatVersion, "gitdb/version marker written during initialize; 0 omits the file")
 	flag.Parse()
 	if err := validateConfig(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())

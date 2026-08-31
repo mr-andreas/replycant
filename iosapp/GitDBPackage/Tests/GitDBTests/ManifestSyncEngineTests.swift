@@ -311,6 +311,118 @@ struct ManifestSyncEngineTests {
         #expect(try await database.readSyncedCommitHash() == repository.headOID())
     }
 
+    // Stored format 0 plus a version-1 marker at HEAD must rebuild
+    // from HEAD, which is the 0-to-1 migration path.
+    @Test func syncToHeadFullyRehydratesWhenCacheFormatDiffers() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c1",
+            manifestFiles: [
+                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+            ]
+        )
+
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        try await database.writeCacheFormatVersionOnly(0)
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c2",
+            manifestFiles: [
+                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-02T10:00:00Z")),
+                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
+            ]
+        )
+
+        let change = try await captureNextChange(from: database, perform: {
+            try await engine.syncToHead(progressHandler: nil)
+        })
+        guard case .fullReplace = change else {
+            Issue.record("expected full rehydration across a cache-format change")
+            return
+        }
+        #expect(try await database.readCacheFormatVersion() == DatabaseVersion.current)
+        #expect(try await database.readSyncedCommitHash() == repository.headOID())
+        let table = try await database.tableName(for: TestOriginalManifest.self)
+        let all = try await database.query(TestOriginalManifest.self, sql: "SELECT data FROM \(table)")
+        #expect(Set(all.map(\.id)) == Set(["a", "c"]))
+    }
+
+    // Matching cache format and marker must keep using incremental
+    // apply so an upgrade of this binary does not rebuild every cache.
+    @Test func syncToHeadStaysIncrementalWhenCacheFormatMatches() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c1",
+            manifestFiles: [
+                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+            ]
+        )
+
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        #expect(try await database.readCacheFormatVersion() == DatabaseVersion.current)
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c2",
+            manifestFiles: [
+                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
+            ]
+        )
+
+        let change = try await captureNextChange(from: database, perform: {
+            try await engine.syncToHead(progressHandler: nil)
+        })
+        guard case .incremental = change else {
+            Issue.record("expected incremental apply when cache format matches")
+            return
+        }
+        #expect(try await database.readCacheFormatVersion() == DatabaseVersion.current)
+    }
+
+    // Local commits after a format change must not incrementally
+    // mutate a cache that was built for the previous layout.
+    @Test func syncAfterCommitFullyRehydratesWhenCacheFormatDiffers() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c1",
+            manifestFiles: [
+                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+            ]
+        )
+
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        try await database.writeCacheFormatVersionOnly(0)
+
+        let added = TestOriginalManifest(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
+        let change = try await captureNextChange(from: database, perform: {
+            try await engine.syncAfterCommit(items: [.manifest(added)])
+        })
+        guard case .fullReplace = change else {
+            Issue.record("expected full rehydration from syncAfterCommit across a format change")
+            return
+        }
+        #expect(try await database.readCacheFormatVersion() == DatabaseVersion.current)
+    }
+
     // Leaves an empty repository usable so first-run bootstrap can write
     // gitdb/version in the initial commit without being rejected first.
     @Test func syncToHeadAllowsEmptyRepositoryWithoutVersionMarker() async throws {
@@ -343,23 +455,60 @@ struct ManifestSyncEngineTests {
         }
     }
 
-    // Refuses a populated repository that predates the marker so old
-    // libraries cannot be silently treated as the current format.
-    @Test func syncToHeadRejectsMissingDatabaseVersion() async throws {
+    // A marker-less old-alpha repository is version 0 and must hydrate
+    // without churning on every later incremental sync.
+    @Test func syncToHeadAcceptsMissingMarkerAsVersionZero() async throws {
         let (repository, database, registry, repoPath, _) = try makeFixture()
         defer {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
         try repository.createCommit(
             message: "missing-version",
-            files: [("notes/readme.txt", "hello")]
+            files: [
+                ("encryption/current", "1\n"),
+                ("encryption/epochs/1.age", "placeholder\n"),
+                ("notes/readme.txt", "hello"),
+            ]
         )
         let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        #expect(try await database.readCacheFormatVersion() == 0)
+        #expect(try await database.readSyncedCommitHash() == repository.headOID())
+
+        try repository.createCommit(
+            message: "notes-only",
+            files: [("notes/readme2.txt", "again")]
+        )
+        try await engine.syncToHead(progressHandler: nil)
+        #expect(try await database.readCacheFormatVersion() == 0)
+        #expect(try await database.readSyncedCommitHash() == repository.headOID())
+    }
+
+    // Stored format 1 plus an absent marker is a downgrade, not an
+    // old library, so a hostile strip cannot look like version 0.
+    @Test func syncToHeadRefusesWhenMarkerRemovedAfterVersionedCache() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+        try repository.createCommit(
+            message: "old-alpha",
+            files: [
+                ("encryption/current", "1\n"),
+                ("encryption/epochs/1.age", "placeholder\n"),
+                ("notes/readme.txt", "hello"),
+            ]
+        )
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        #expect(try await database.readCacheFormatVersion() == 0)
+        try await database.writeCacheFormatVersionOnly(1)
+
         do {
             try await engine.syncToHead(progressHandler: nil)
-            Issue.record("expected missing database version rejection")
+            Issue.record("expected marker-removed refusal")
         } catch let error as DatabaseVersionError {
-            #expect(error == .missing)
+            #expect(error == .markerRemoved(previouslySynced: 1))
         }
     }
 

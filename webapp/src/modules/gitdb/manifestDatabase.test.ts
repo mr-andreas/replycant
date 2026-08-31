@@ -104,6 +104,44 @@ const deleteDb = async () =>
 describe("ManifestDatabase", () => {
   beforeEach(deleteDb);
 
+  it("reads cache format 0 when the metadata row has no format field", async () => {
+    const db = new ManifestDatabase([originalRegistration], TEST_DB);
+    try {
+      await db.initialize();
+      expect(await db.readCacheFormatVersion()).toBe(0);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("persists cache format on replaceCache and incremental apply", async () => {
+    const db = new ManifestDatabase([originalRegistration], TEST_DB);
+    try {
+      await db.initialize();
+      const records = new Map<string, RegisteredManifestRecord[]>();
+      records.set("media.replycant.com/v1alpha1::Original", [
+        makeRecord("Original", "photo-1", { takenAt: "2026-01-01T00:00:00Z" }),
+      ]);
+      await db.replaceCache(records, "commit-1", { cacheFormatVersion: 0 });
+      expect(await db.readCacheFormatVersion()).toBe(0);
+
+      const result = await db.applyIncrementalWithCas({
+        expectedSyncedCommitHash: "commit-1",
+        nextSyncedCommitHash: "commit-2",
+        mutation: {
+          added: [makeRecord("Original", "photo-2", { takenAt: "2026-01-02T00:00:00Z" })],
+          updated: [],
+          removed: [],
+        },
+        cacheFormatVersion: 1,
+      });
+      expect(result.outcome).toBe("applied");
+      expect(await db.readCacheFormatVersion()).toBe(1);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("round-trips records through replaceCache and loadCache", async () => {
     const db = new ManifestDatabase([originalRegistration, thumbnailRegistration], TEST_DB);
     try {
@@ -121,6 +159,7 @@ describe("ManifestDatabase", () => {
 
       const loaded = await db.loadCache();
       expect(loaded.syncedCommitHash).toBe("commit-abc");
+      expect(await db.readCacheFormatVersion()).toBe(0);
       const originals = loaded.recordsByKind.get("media.replycant.com/v1alpha1::Original") ?? [];
       expect(originals).toHaveLength(2);
       const thumbnails = loaded.recordsByKind.get("media.replycant.com/v1alpha1::ThumbnailSet") ?? [];
@@ -781,6 +820,7 @@ describe("ManifestDatabase", () => {
 
       const meta = await db.readSyncedCommitHash();
       expect(meta).toBe("commit-streamed");
+      expect(await db.readCacheFormatVersion()).toBe(0);
     } finally {
       await db.close();
     }

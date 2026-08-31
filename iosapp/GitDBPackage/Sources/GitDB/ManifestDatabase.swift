@@ -46,6 +46,8 @@ public actor ManifestDatabase {
     private enum Constants {
         static let databaseFilename = "replycant-manifest-cache.sqlite"
         static let syncedCommitHashKey = "syncedCommitHash"
+        static let cacheFormatVersionKey = "cacheFormatVersion"
+        static let defaultCacheFormatVersion = 0
     }
 
     private let dbQueue: DatabaseQueue
@@ -174,8 +176,37 @@ public actor ManifestDatabase {
         }
     }
 
+    // Returns the format the cache was last built from so a later
+    // gitdb/version bump can force full rehydration instead of a
+    // garbage incremental diff. Missing rows mean format 0, the
+    // in-code stand-in for caches built before the marker existed.
+    func readCacheFormatVersion() throws -> Int {
+        try dbQueue.read { db in
+            guard let raw = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM sync_metadata WHERE key = ?",
+                arguments: [Constants.cacheFormatVersionKey]
+            ), let version = Int(raw), version >= 0 else {
+                return Constants.defaultCacheFormatVersion
+            }
+            return version
+        }
+    }
+
+    // Lets tests plant a stale cache format so a later sync can prove
+    // it forces full rehydration without bumping the compiled pin.
+    func writeCacheFormatVersionOnly(_ version: Int) throws {
+        try dbQueue.write { db in
+            try writeCacheFormatVersion(version, db: db)
+        }
+    }
+
     // Replaces all registered kind tables in one transaction for initial hydration or recovery.
-    func replaceAll(manifests: [any Manifest], commitHash: String) throws {
+    func replaceAll(
+        manifests: [any Manifest],
+        commitHash: String,
+        cacheFormatVersion: Int = 0
+    ) throws {
         try ensureRegisteredTables()
         let registrations = registry.allRegistrations()
         let manifestsByKind = Dictionary(grouping: manifests, by: \.kindValue)
@@ -185,6 +216,7 @@ public actor ManifestDatabase {
                 try upsertManifests(manifestsByKind[registration.kind] ?? [], registration: registration, db: db)
             }
             try writeSyncedCommitHash(commitHash, db: db)
+            try writeCacheFormatVersion(cacheFormatVersion, db: db)
         }
         changes.send(.fullReplace)
     }
@@ -194,7 +226,8 @@ public actor ManifestDatabase {
         added: [any Manifest],
         updated: [any Manifest],
         removed: [any Manifest],
-        commitHash: String
+        commitHash: String,
+        cacheFormatVersion: Int = 0
     ) throws {
         try ensureRegisteredTables()
         let removedByKind = Dictionary(grouping: removed, by: \.kindValue)
@@ -209,6 +242,7 @@ public actor ManifestDatabase {
                 try upsertManifests(manifestsForKind, registration: registration, db: db)
             }
             try writeSyncedCommitHash(commitHash, db: db)
+            try writeCacheFormatVersion(cacheFormatVersion, db: db)
         }
         changes.send(.incremental(ManifestMutation(added: added, updated: updated, removed: removed)))
     }
@@ -352,13 +386,28 @@ public actor ManifestDatabase {
 
     // Persists the synced commit hash checkpoint in the current transaction.
     private func writeSyncedCommitHash(_ hash: String, db: Database) throws {
+        try writeMetadata(key: Constants.syncedCommitHashKey, value: hash, db: db)
+    }
+
+    // Persists the format the current cache snapshot was built from.
+    private func writeCacheFormatVersion(_ version: Int, db: Database) throws {
+        try writeMetadata(
+            key: Constants.cacheFormatVersionKey,
+            value: String(version),
+            db: db
+        )
+    }
+
+    // Upserts one sync_metadata row so hash and format stay in the
+    // same key-value table without a schema migration.
+    private func writeMetadata(key: String, value: String, db: Database) throws {
         try db.execute(
             sql: """
                 INSERT INTO sync_metadata(key, value)
                 VALUES(?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            arguments: [Constants.syncedCommitHashKey, hash]
+            arguments: [key, value]
         )
     }
 

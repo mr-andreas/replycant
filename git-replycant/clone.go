@@ -350,13 +350,30 @@ func CheckoutTrackingBranch(ctx context.Context, repoDir string, branch string) 
 }
 
 // RequireSupportedDatabaseVersionAtRef reads gitdb/version from a fetched
-// ref so clone can abort before checkout or LFS smudge work.
+// ref so clone can abort before checkout or LFS smudge work. A missing
+// path is version 0, the in-code stand-in for old alpha repositories.
 func RequireSupportedDatabaseVersionAtRef(ctx context.Context, repoDir string, ref string) error {
 	raw, err := RunGitOutput(ctx, repoDir, "show", ref+":"+gitcrypt.DatabaseVersionPath)
 	if err != nil {
+		if isAbsentDatabaseVersionAtRef(err) {
+			return gitcrypt.RequireAcceptedDatabaseVersion(0)
+		}
 		return fmt.Errorf("read %s at %s: %w", gitcrypt.DatabaseVersionPath, ref, err)
 	}
 	return gitcrypt.RequireSupportedDatabaseVersion([]byte(raw))
+}
+
+// Distinguishes a missing gitdb/version path from other git failures
+// so a bad ref still aborts clone instead of looking like version 0.
+func isAbsentDatabaseVersionAtRef(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "exists on disk, but not in") ||
+		strings.Contains(msg, "not a valid object name") ||
+		strings.Contains(msg, "bad object")
 }
 
 // PreExtractEncryptionFiles materializes format and encryption metadata

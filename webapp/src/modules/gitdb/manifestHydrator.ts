@@ -76,10 +76,20 @@ export class ManifestHydrator {
   }
 
   // Rebuilds manifest and pointer cache state for one commit using a streaming pipeline.
-  async streamManifestsToCache(commitHash: string, syncedCommitHash: string): Promise<ManifestHydrationResult> {
+  async streamManifestsToCache(
+    commitHash: string,
+    syncedCommitHash: string,
+    cacheFormatVersion = 0,
+  ): Promise<ManifestHydrationResult> {
     const startedAtMs = nowMs();
     const kindDirs = this.registeredKindDirectories();
     if (kindDirs.length === 0) {
+      await this.manifestDb.replaceCacheStreamed(
+        (async function* () {})(),
+        syncedCommitHash,
+        undefined,
+        cacheFormatVersion,
+      );
       return {
         totalRecords: 0,
         pointers: new Map(),
@@ -90,9 +100,24 @@ export class ManifestHydrator {
     // Discovers manifest and pointer blobs up front so downstream stages can stream by oid.
     syncMark("streamManifests-treeWalk-start");
     const treeWalkStartedAtMs = nowMs();
-    const deviceSpaces = await this.treeDiffer.discoverDeviceSpaces(commitHash);
+    const discovery = await this.treeDiffer.discoverDeviceSpaces(commitHash);
+    if (discovery.status === "unreadable") {
+      const detail = discovery.cause instanceof Error
+        ? discovery.cause.message
+        : "unknown tree-walk error";
+      throw new Error(`could not read manifests tree at ${commitHash}: ${detail}`, {
+        cause: discovery.cause,
+      });
+    }
+    const deviceSpaces = discovery.deviceSpaces;
     if (deviceSpaces.length === 0) {
       this.log("stream-manifests-empty", { commitHash, durationMs: nowMs() - startedAtMs });
+      await this.manifestDb.replaceCacheStreamed(
+        (async function* () {})(),
+        syncedCommitHash,
+        undefined,
+        cacheFormatVersion,
+      );
       return {
         totalRecords: 0,
         pointers: new Map(),
@@ -249,7 +274,12 @@ export class ManifestHydrator {
     };
 
     const replaceCacheStartedAtMs = nowMs();
-    const stageC = this.manifestDb.replaceCacheStreamed(progressIterable, syncedCommitHash);
+    const stageC = this.manifestDb.replaceCacheStreamed(
+      progressIterable,
+      syncedCommitHash,
+      undefined,
+      cacheFormatVersion,
+    );
     await Promise.all([stageA, stageB, stageC]);
 
     const blobReadDecodeParseMs = nowMs() - pipelineStartedAtMs;

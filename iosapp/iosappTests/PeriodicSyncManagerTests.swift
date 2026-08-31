@@ -226,7 +226,7 @@ struct PeriodicSyncManagerTests {
         #expect(manager.isRunningForTesting)
         #expect(manager.hasPullTaskForTesting)
 
-        manager.handleDatabaseVersionErrorForTesting(.missing)
+        manager.handleDatabaseVersionErrorForTesting(.markerRemoved(previouslySynced: 1))
         #expect(manager.isRunningForTesting == false)
         #expect(manager.hasPushTaskForTesting == false)
         #expect(manager.hasPullTaskForTesting == false)
@@ -240,5 +240,38 @@ struct PeriodicSyncManagerTests {
 
         manager.resetDatabaseVersionRefusalForTesting()
         DatabaseCompatibilityManager.shared.clear()
+    }
+
+    @Test func formatTransitionErrorStopsLoopsAndRefusesRestart() async {
+        resetSyncDefaults()
+        DatabaseCompatibilityManager.shared.clearFormatReset()
+        let settings = SyncSettingsManager.shared
+        settings.isPushEnabled = true
+        settings.isPullEnabled = true
+        settings.pushIntervalSeconds = 30
+        settings.pullIntervalSeconds = 30
+
+        let manager = PeriodicSyncManager.shared
+        manager.clearFormatTransitionRefusal()
+        manager.resetDatabaseVersionRefusalForTesting()
+        manager.stop()
+        manager.start()
+        #expect(manager.isRunningForTesting)
+        #expect(manager.hasPullTaskForTesting)
+
+        manager.handleFormatTransitionErrorForTesting(.divergedDuringFormatChange)
+        #expect(manager.isRunningForTesting == false)
+        #expect(manager.hasPushTaskForTesting == false)
+        #expect(manager.hasPullTaskForTesting == false)
+        let reported = await waitUntil {
+            DatabaseCompatibilityManager.shared.pendingFormatResetMessage != nil
+        }
+        #expect(reported)
+
+        manager.start()
+        #expect(manager.isRunningForTesting == false)
+
+        manager.clearFormatTransitionRefusal()
+        DatabaseCompatibilityManager.shared.clearFormatReset()
     }
 }

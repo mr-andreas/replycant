@@ -1,6 +1,10 @@
 import git from "isomorphic-git";
 import type { FsClient } from "./fsClient";
 
+export type DeviceSpaceDiscovery =
+  | { status: "ok"; deviceSpaces: string[] }
+  | { status: "unreadable"; cause: unknown };
+
 export type ManifestTreeEntry = {
   path: string;
   oid: string;
@@ -134,14 +138,47 @@ export class TreeDiffer {
     }
   }
 
+  // Distinguishes a repo with no manifests/ from a failed object
+  // read so hydration does not wipe a populated cache on a
+  // transient tree-walk error.
   async discoverDeviceSpaces(
     commitHash: string,
-  ): Promise<string[]> {
-    const manifestTree = await this.readTreeAtCommitPathOrNull(commitHash, "manifests");
-    if (!manifestTree) return [];
-    return manifestTree.tree
-      .filter((entry) => entry.type === "tree")
-      .map((entry) => entry.path);
+  ): Promise<DeviceSpaceDiscovery> {
+    try {
+      const commit = await git.readCommit({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: commitHash,
+        cache: this.cache,
+      });
+      const root = await git.readTree({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: commit.commit.tree,
+        cache: this.cache,
+      });
+      const manifestsEntry = root.tree.find((entry) => entry.path === "manifests" && entry.type === "tree");
+      if (!manifestsEntry) {
+        return { status: "ok", deviceSpaces: [] };
+      }
+      const manifestTree = await git.readTree({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: manifestsEntry.oid,
+        cache: this.cache,
+      });
+      return {
+        status: "ok",
+        deviceSpaces: manifestTree.tree
+          .filter((entry) => entry.type === "tree")
+          .map((entry) => entry.path),
+      };
+    } catch (error) {
+      return { status: "unreadable", cause: error };
+    }
   }
 
   async collectBlobEntriesFromTree(

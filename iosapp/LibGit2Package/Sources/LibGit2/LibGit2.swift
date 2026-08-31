@@ -2185,18 +2185,47 @@ public final class Repository: @unchecked Sendable {
     
     // Gets the current HEAD commit OID as a string.
     public func headOID() -> String? {
+        oid(forRef: "HEAD")
+    }
+
+    // Resolves a named ref so pull can compare local HEAD with a
+    // fetched remote-tracking tip without repeating OID plumbing.
+    public func oid(forRef ref: String) -> String? {
         guard let repo = repo else {
             return nil
         }
-        
-        var headOid = git_oid()
-        guard git_reference_name_to_id(&headOid, repo, "HEAD") == 0 else {
+
+        var resolved = git_oid()
+        guard git_reference_name_to_id(&resolved, repo, ref) == 0 else {
             return nil
         }
-        
+
         var oidStr = [Int8](repeating: 0, count: 41)
-        git_oid_tostr(&oidStr, 41, &headOid)
+        git_oid_tostr(&oidStr, 41, &resolved)
         return String(cString: oidStr)
+    }
+
+    // Answers whether `oid` is a strict descendant of `ancestor` so
+    // pull can distinguish fast-forward, local-ahead, and divergence.
+    public func isDescendant(_ oidString: String, of ancestorString: String) throws -> Bool {
+        guard let repo = repo else {
+            throw GitError.repositoryError("Repository not initialized")
+        }
+
+        var oid = git_oid()
+        var ancestor = git_oid()
+        guard git_oid_fromstr(&oid, oidString) == 0 else {
+            throw GitError.repositoryError("Invalid OID: \(oidString)")
+        }
+        guard git_oid_fromstr(&ancestor, ancestorString) == 0 else {
+            throw GitError.repositoryError("Invalid OID: \(ancestorString)")
+        }
+
+        let result = git_graph_descendant_of(repo, &oid, &ancestor)
+        if result < 0 {
+            throw GitError.repositoryError("Failed to compute ancestry")
+        }
+        return result == 1
     }
     
     // Performs a fast-forward merge to a target commit OID.

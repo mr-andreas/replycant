@@ -28,7 +28,12 @@ import {
 import { ManifestBlobReader } from "./manifestBlobReader";
 import { ManifestHydrator } from "./manifestHydrator";
 import { CommitTransitionApplier } from "./commitTransitionApplier";
-import { DatabaseVersionError } from "./databaseVersion";
+import {
+  DatabaseVersionError,
+  DatabaseVersionUnreadableError,
+  requireAcceptedDatabaseVersion,
+  requireNoDatabaseVersionDowngrade,
+} from "./databaseVersion";
 
 type SyncCycleStatus = "success" | "noop" | "stale" | "failed";
 type StartupTimingRecorder = (phase: string, durationMs: number) => void;
@@ -490,13 +495,16 @@ export class SyncEngine {
     recordStartupTiming: StartupTimingRecorder,
   ): Promise<SyncCycleStatus> {
     const previousSyncedHash = (await this.manifestDb.readSyncedCommitHash()) ?? this.snapshot.syncedCommitHash;
+    const cacheFormat = await this.manifestDb.readCacheFormatVersion();
     this.log("sync-db-base-commit", {
       reason,
       dbCommitHash: previousSyncedHash,
+      cacheFormat,
     });
     if (previousSyncedHash) {
       const shortCircuitStatus = await this.tryShortCircuitWithUnchangedRemoteHead(
         previousSyncedHash,
+        cacheFormat,
         reason,
         syncStartedAtMs,
       );
@@ -505,21 +513,26 @@ export class SyncEngine {
 
     const pullTimer = syncTimer("syncNow-pull");
     const syncedCommitHash = await this.transport.pullWithRebase(this.snapshot.syncedCommitHash);
-    await this.manifestBlobReader.assertSupportedDatabaseVersion(syncedCommitHash);
+    const observed = await this.manifestBlobReader.readDatabaseVersion(syncedCommitHash);
+    requireAcceptedDatabaseVersion(observed);
+    requireNoDatabaseVersionDowngrade(observed, cacheFormat);
+    const needsFormatRehydration = observed !== cacheFormat;
     const pullDurationMs = pullTimer.stop();
     this.log("sync-pull-complete", {
       reason,
       fromCommitHash: previousSyncedHash,
       toCommitHash: syncedCommitHash,
+      observedFormat: observed,
+      needsFormatRehydration,
       durationMs: pullDurationMs,
     });
     recordStartupTiming("pullMs", pullDurationMs);
     this.activateProgressPhase("scanningRepository", "Scanning repository");
 
-    if (previousSyncedHash && syncedCommitHash === previousSyncedHash) {
+    if (previousSyncedHash && syncedCommitHash === previousSyncedHash && !needsFormatRehydration) {
       return this.handleUnchangedCommitAfterPull(syncedCommitHash, reason, syncStartedAtMs);
     }
-    if (previousSyncedHash && syncedCommitHash !== previousSyncedHash) {
+    if (previousSyncedHash && syncedCommitHash !== previousSyncedHash && !needsFormatRehydration) {
       const incrementalStatus = await this.tryIncrementalSyncTransition(
         previousSyncedHash,
         syncedCommitHash,
@@ -536,6 +549,7 @@ export class SyncEngine {
       syncStartedAtMs,
       pullDurationMs,
       recordStartupTiming,
+      observed,
     );
     return "success";
   }
@@ -543,12 +557,16 @@ export class SyncEngine {
   // Avoids unnecessary fetch/parse work when remote head already matches the commit stored in cache metadata.
   private async tryShortCircuitWithUnchangedRemoteHead(
     previousSyncedHash: string,
+    cacheFormat: number,
     reason: "startup" | "manual" | "poll",
     syncStartedAtMs: number,
   ): Promise<SyncCycleStatus | null> {
     const remoteHead = await this.transport.readRemoteBranchHeadCommitHashOrNull();
     if (!remoteHead || remoteHead !== previousSyncedHash) return null;
-    await this.manifestBlobReader.assertSupportedDatabaseVersion(remoteHead);
+    // A failed object read is not a format verdict. Fall through to
+    // pull so the authoritative check runs against a fetched repo.
+    const observed = await this.manifestBlobReader.readDatabaseVersionOrNull(remoteHead);
+    if (observed === null || observed !== cacheFormat) return null;
     if (await this.manifestDb.hasAnyRecords()) {
       this.updateActivePhaseProgress("checkingForUpdates", "Checking for updates", 1);
       this.log("sync-noop-remote-head-unchanged", {
@@ -638,11 +656,13 @@ export class SyncEngine {
     syncStartedAtMs: number,
     pullDurationMs: number,
     recordStartupTiming: StartupTimingRecorder,
+    observedFormat: number,
   ): Promise<void> {
     const streamTimer = syncTimer("syncNow-streamManifests");
     const { totalRecords, pointers, timings: streamTimings } = await this.manifestHydrator.streamManifestsToCache(
       syncedCommitHash,
       syncedCommitHash,
+      observedFormat,
     );
     streamTimer.stop();
     recordStartupTiming("readManifestsMs", streamTimings.blobReadDecodeParseMs);
@@ -675,10 +695,12 @@ export class SyncEngine {
     this.failureCount += 1;
     const isRebaseConflict = error instanceof PullRebaseConflictError;
     const isDatabaseVersionError = error instanceof DatabaseVersionError;
+    const isMarkerUnreadable = error instanceof DatabaseVersionUnreadableError;
     this.log("sync-failed", {
       reason,
       rebaseConflict: isRebaseConflict,
       unrecoverable: isDatabaseVersionError,
+      markerUnreadable: isMarkerUnreadable,
       error: errorMessage(error),
       durationMs: nowMs() - syncStartedAtMs,
     });
@@ -1042,9 +1064,11 @@ export class SyncEngine {
     targetCommitHash: string,
   ): Promise<void> {
     const hydrationStartedAtMs = nowMs();
+    const observedFormat = await this.manifestBlobReader.readDatabaseVersion(targetCommitHash);
     const { totalRecords, pointers, timings: streamTimings } = await this.manifestHydrator.streamManifestsToCache(
       targetCommitHash,
       targetCommitHash,
+      observedFormat,
     );
     this.finishWithSuccess({
       syncedCommitHash: targetCommitHash,

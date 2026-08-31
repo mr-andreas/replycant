@@ -12,9 +12,10 @@ import type { RegisteredManifestRecord } from "./manifestRegistry";
 import type { AgePrivateKeyProvider } from "./syncTypes";
 import type { FsClient } from "./fsClient";
 import {
-  DATABASE_VERSION_PATH,
   DatabaseVersionError,
-  requireSupportedDatabaseVersion,
+  DatabaseVersionUnreadableError,
+  parseDatabaseVersion,
+  requireAcceptedDatabaseVersion,
 } from "./databaseVersion";
 
 // Serializes decrypted key bytes so pointer rows can persist ready-to-use DEKs.
@@ -89,14 +90,77 @@ export class ManifestBlobReader {
     }
   }
 
-  // Refuses a commit whose gitdb/version is missing or not the pinned
-  // format so sync never decrypts an unrecognized repository layout.
-  async assertSupportedDatabaseVersion(commitHash: string): Promise<void> {
-    const entry = await this.readBlobAtCommitPathOrNull(commitHash, DATABASE_VERSION_PATH);
-    if (!entry) {
-      throw new DatabaseVersionError("missing gitdb/version");
+  // Reads gitdb/version by walking a resolved commit tree so absence
+  // is proven from a readable tree. A failed object read is not
+  // treated as version 0: that would look like a stripped marker.
+  async readDatabaseVersion(commitHash: string): Promise<number> {
+    try {
+      const commit = await git.readCommit({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: commitHash,
+        cache: this.cache,
+      });
+      const root = await git.readTree({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: commit.commit.tree,
+        cache: this.cache,
+      });
+      const gitdbEntry = root.tree.find((entry) => entry.path === "gitdb" && entry.type === "tree");
+      if (!gitdbEntry) {
+        return 0;
+      }
+      const gitdbTree = await git.readTree({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: gitdbEntry.oid,
+        cache: this.cache,
+      });
+      const versionEntry = gitdbTree.tree.find((entry) => entry.path === "version" && entry.type === "blob");
+      if (!versionEntry) {
+        return 0;
+      }
+      const blob = await git.readBlob({
+        fs: this.fs,
+        dir: this.gitdir,
+        gitdir: this.gitdir,
+        oid: versionEntry.oid,
+        cache: this.cache,
+      });
+      return parseDatabaseVersion(blob.blob as Uint8Array);
+    } catch (error) {
+      if (error instanceof DatabaseVersionError) {
+        throw error;
+      }
+      throw new DatabaseVersionUnreadableError(
+        `could not read gitdb/version at ${commitHash}`,
+        { cause: error },
+      );
     }
-    requireSupportedDatabaseVersion(entry.blob);
+  }
+
+  // Returns the observed format when the tree is readable, or null
+  // when the objects cannot be opened yet. Callers that must not
+  // fail use this instead of treating a throw as absence.
+  async readDatabaseVersionOrNull(commitHash: string): Promise<number | null> {
+    try {
+      return await this.readDatabaseVersion(commitHash);
+    } catch (error) {
+      if (error instanceof DatabaseVersionError) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  // Refuses a commit whose gitdb/version is not in the accepted set
+  // so sync never decrypts an unrecognized repository layout.
+  async assertSupportedDatabaseVersion(commitHash: string): Promise<void> {
+    requireAcceptedDatabaseVersion(await this.readDatabaseVersion(commitHash));
   }
 
   // Invalidates cached KEKs when encryption/current changes to prevent stale key reuse.

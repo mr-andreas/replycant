@@ -117,6 +117,7 @@ interface SyncMetaRow {
   stagedCommitHash: string | null;
   syncedCommitHash: string | null;
   lastSyncAt: string | null;
+  cacheFormatVersion?: number;
 }
 
 // Describes the incremental mutation applied between two commits.
@@ -138,6 +139,7 @@ export interface IncrementalApplyOptions {
   nextSyncedCommitHash: string;
   mutation: ManifestDatabaseMutation;
   pointerMutation?: PointerMutation;
+  cacheFormatVersion?: number;
 }
 
 // Describes the result of one CAS mutation attempt.
@@ -149,6 +151,7 @@ export interface IncrementalApplyResult {
 export interface ReplaceCacheOptions {
   crashAfterMarkInProgress?: boolean;
   crashDuringCommit?: boolean;
+  cacheFormatVersion?: number;
 }
 
 // Reconstructs an IDBKeyRange from a serializable representation so queries work across worker RPC.
@@ -333,6 +336,14 @@ export class ManifestDatabase {
     return state.syncedCommitHash;
   }
 
+  // Returns the format the cache was last built from so a later
+  // gitdb/version bump can force full rehydration. Missing rows mean
+  // format 0, the in-code stand-in for caches built before the marker.
+  async readCacheFormatVersion(): Promise<number> {
+    const state = await this.readMetaState();
+    return state.cacheFormatVersion ?? 0;
+  }
+
   // Creates one scoped context so derived hooks can read manifest rows and write computed rows in one transaction.
   private buildDerivedStoreContext(tx: DerivedHookTransaction, derivedStoreName: string): DerivedStoreContext {
     const createManifestSource = (identity: ManifestQueryIdentity, indexName?: string) => {
@@ -466,6 +477,7 @@ export class ManifestDatabase {
       stagedCommitHash: null,
       syncedCommitHash,
       lastSyncAt: new Date().toISOString(),
+      cacheFormatVersion: options.cacheFormatVersion ?? 0,
     } as SyncMetaRow);
 
     await tx.done;
@@ -494,6 +506,7 @@ export class ManifestDatabase {
     records: AsyncIterable<RegisteredManifestRecord>,
     syncedCommitHash: string,
     pointersByPath?: Map<string, LfsPointerFields>,
+    cacheFormatVersion = 0,
   ): Promise<{ totalRecords: number }> {
     const startedAtMs = nowMs();
 
@@ -521,7 +534,7 @@ export class ManifestDatabase {
       await this.writeFullRehydrationPointers(pointersByPath);
     }
 
-    await this.commitFullRehydration(syncedCommitHash);
+    await this.commitFullRehydration(syncedCommitHash, cacheFormatVersion);
 
     logDbDebug("replace-cache-streamed-complete", {
       syncedCommitHash,
@@ -591,7 +604,7 @@ export class ManifestDatabase {
   // manifest snapshot. Derived hook implementations may only await IDB requests
   // (cursor walks, get/put/delete), which keeps this final transaction alive in
   // Firefox; awaiting a non-IDB promise from a derived hook would break the contract.
-  private async commitFullRehydration(syncedCommitHash: string): Promise<void> {
+  private async commitFullRehydration(syncedCommitHash: string, cacheFormatVersion = 0): Promise<void> {
     const db = this.requireDb();
     const stores = this.storeNames();
     const derivedStoreNames = this.derivedStoreNameList();
@@ -607,6 +620,7 @@ export class ManifestDatabase {
       stagedCommitHash: null,
       syncedCommitHash,
       lastSyncAt: new Date().toISOString(),
+      cacheFormatVersion,
     } as SyncMetaRow);
     await tx.done;
   }
@@ -665,6 +679,7 @@ export class ManifestDatabase {
       stagedCommitHash: options.nextSyncedCommitHash,
       syncedCommitHash: currentSyncedHash,
       lastSyncAt: currentMeta?.lastSyncAt ?? null,
+      cacheFormatVersion: currentMeta?.cacheFormatVersion,
     } as SyncMetaRow);
 
     for (const record of options.mutation.removed) {
@@ -704,6 +719,7 @@ export class ManifestDatabase {
       stagedCommitHash: null,
       syncedCommitHash: options.nextSyncedCommitHash,
       lastSyncAt: new Date().toISOString(),
+      cacheFormatVersion: options.cacheFormatVersion ?? currentMeta?.cacheFormatVersion ?? 0,
     } as SyncMetaRow);
 
     await tx.done;

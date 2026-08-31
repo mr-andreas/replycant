@@ -35,10 +35,15 @@ struct DatabaseVersionTests {
         }
     }
 
-    @Test func requireSupportedPinsExactMatch() throws {
+    @Test func requireSupportedAcceptsPinnedVersionAndRejectsOthers() throws {
         try DatabaseVersion.requireSupported("1\n")
+        try DatabaseVersion.requireAccepted(0)
+        try DatabaseVersion.requireAccepted(1)
         #expect(throws: DatabaseVersionError.unsupported(found: 2, required: 1)) {
             try DatabaseVersion.requireSupported("2\n")
+        }
+        #expect(throws: DatabaseVersionError.unsupported(found: 2, required: 1)) {
+            try DatabaseVersion.requireAccepted(2)
         }
     }
 
@@ -64,11 +69,33 @@ struct DatabaseVersionTests {
         )
     }
 
-    @Test func userGuidanceAsksForNewLibraryWhenMarkerIsMissingOrOlder() {
-        let expected = "This library uses an incompatible database format and cannot be opened. Create a new library to continue - resyncing will not help."
-        #expect(DatabaseVersionError.missing.userGuidance == expected)
-        #expect(DatabaseVersionError.malformed.userGuidance == expected)
-        #expect(DatabaseVersionError.unsupported(found: 1, required: 2).userGuidance == expected)
+    @Test func userGuidanceAsksToMigrateWhenMarkerIsOlder() {
+        #expect(
+            DatabaseVersionError.unsupported(found: 1, required: 2).userGuidance
+                == "This library uses database format 1. This app supports format 2. Run the migration tool to continue."
+        )
+    }
+
+    @Test func userGuidanceAsksForNewLibraryWhenMarkerIsMalformed() {
+        #expect(
+            DatabaseVersionError.malformed.userGuidance
+                == "This library uses an incompatible database format and cannot be opened. Create a new library to continue - resyncing will not help."
+        )
+    }
+
+    @Test func requireNoDowngradeRefusesLowerObserved() throws {
+        try DatabaseVersion.requireNoDowngrade(observed: 0, stored: 0)
+        try DatabaseVersion.requireNoDowngrade(observed: 1, stored: 0)
+        #expect(throws: DatabaseVersionError.markerRemoved(previouslySynced: 1)) {
+            try DatabaseVersion.requireNoDowngrade(observed: 0, stored: 1)
+        }
+    }
+
+    @Test func userGuidanceWarnsWhenMarkerWasRemoved() {
+        #expect(
+            DatabaseVersionError.markerRemoved(previouslySynced: 1).userGuidance
+                == "This library's database format marker was removed after this app last synced format 1. This is unsafe to open. Restore the marker to continue."
+        )
     }
 
     @Test func requireSupportedIfHeadExistsSkipsUnbornRepository() throws {
@@ -81,7 +108,7 @@ struct DatabaseVersionTests {
         try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
     }
 
-    @Test func requireSupportedRejectsMissingMarker() throws {
+    @Test func readTreatsAbsentMarkerAsZero() throws {
         let repoPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitdb-version-missing-\(UUID().uuidString)")
             .path
@@ -93,8 +120,7 @@ struct DatabaseVersionTests {
             files: [("notes/readme.txt", "hello")]
         )
         let head = try #require(repository.headOID())
-        #expect(throws: DatabaseVersionError.missing) {
-            try DatabaseVersion.requireSupported(in: repository, commitOid: head)
-        }
+        #expect(try DatabaseVersion.read(in: repository, commitOid: head) == 0)
+        try DatabaseVersion.requireSupported(in: repository, commitOid: head)
     }
 }
