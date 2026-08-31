@@ -17,12 +17,13 @@ import (
 
 // seederConfig holds seeding inputs for one bare repository.
 type seederConfig struct {
-	bareRepo     string
-	outputDir    string
-	deviceSpace  string
-	mediaCount   int
-	commitCount  int
-	addMediaOnly bool
+	bareRepo        string
+	outputDir       string
+	deviceSpace     string
+	mediaCount      int
+	commitCount     int
+	addMediaOnly    bool
+	databaseVersion int
 }
 
 // mustRunGit executes one git command and fails fast with stderr output.
@@ -100,6 +101,9 @@ func seedFixtureManifest() originalManifest {
 
 // seedRepository supports full initialization and append-only media seeding for integration tests.
 func seedRepository(cfg seederConfig) error {
+	if cfg.databaseVersion == 0 {
+		cfg.databaseVersion = gitcrypt.DatabaseFormatVersion
+	}
 	if cfg.addMediaOnly {
 		return appendMediaOnly(cfg)
 	}
@@ -163,6 +167,9 @@ func initializeRepository(cfg seederConfig) error {
 	if err := writeFile(filepath.Join(workDir, "pubkeys", "integration-device.age"), []byte(identity.AgePublicKey+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write age pubkey: %w", err)
 	}
+	if err := writeFile(filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", cfg.databaseVersion)), 0o644); err != nil {
+		return fmt.Errorf("write gitdb version: %w", err)
+	}
 	if err := writeFile(filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("write current epoch: %w", err)
 	}
@@ -200,6 +207,9 @@ func appendMediaOnly(cfg seederConfig) error {
 	defer os.RemoveAll(workDir)
 	mustRunGit("", "clone", "file://"+cfg.bareRepo, workDir)
 	mustRunGit(workDir, "checkout", "main")
+	if err := gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir); err != nil {
+		return err
+	}
 	currentRaw, err := os.ReadFile(filepath.Join(workDir, "encryption", "current"))
 	if err != nil {
 		return fmt.Errorf("read encryption/current: %w", err)
@@ -375,6 +385,9 @@ func validateConfig(cfg seederConfig) error {
 	if cfg.commitCount < 1 {
 		return fmt.Errorf("--commit-count must be >= 1")
 	}
+	if cfg.databaseVersion < 0 {
+		return fmt.Errorf("--database-version must be >= 1")
+	}
 	if cfg.mediaCount > 0 && cfg.commitCount > cfg.mediaCount {
 		return fmt.Errorf("--commit-count cannot exceed --media-count when media is requested")
 	}
@@ -389,6 +402,7 @@ func main() {
 	flag.IntVar(&cfg.mediaCount, "media-count", 0, "Number of media records to seed")
 	flag.IntVar(&cfg.commitCount, "commit-count", 1, "Number of commits to distribute seeded media across")
 	flag.BoolVar(&cfg.addMediaOnly, "add-media-only", false, "Only append media commits to an existing seeded repository")
+	flag.IntVar(&cfg.databaseVersion, "database-version", gitcrypt.DatabaseFormatVersion, "gitdb/version marker written during initialize")
 	flag.Parse()
 	if err := validateConfig(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())

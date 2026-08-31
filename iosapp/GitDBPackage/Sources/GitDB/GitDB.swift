@@ -75,6 +75,7 @@ public final class GitDatabase: Sendable {
             }
         }
         try await repository.withMutationLock {
+            try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
             let commitService = DefaultGitCommitService(repository: repository, deviceSpace: deviceSpace, lfsClient: lfsClient)
             try await commitService.createCommit(message: message, items: items)
             try await syncEngine.syncAfterCommit(items: items)
@@ -102,6 +103,7 @@ public final class GitDatabase: Sendable {
             }
         }
         try await repository.withMutationLock {
+            try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
             try repository.createCommit(message: message, files: files, deletions: deletions)
             try await syncEngine.syncToHead(progressHandler: nil)
         }

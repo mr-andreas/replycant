@@ -79,12 +79,18 @@ The KEK is a random 32-byte AES-256 key used to encrypt manifests and wrap per-o
 ### Repository Structure
 
 ```
+gitdb/
+  version              # plain text: database format version (e.g., "1")
 encryption/
   current              # plain text: active epoch number (e.g., "2")
   epochs/
     1.age              # KEK epoch 1, age-encrypted for all recipients
     2.age              # KEK epoch 2 (after key rotation)
 ```
+
+`gitdb/version` pins the repository layout and crypto handling. Clients refuse
+any other value. See [Database format version](./database-version.md). Manifest
+schemas stay under each resource's `apiVersion`.
 
 ### Key Lifecycle
 

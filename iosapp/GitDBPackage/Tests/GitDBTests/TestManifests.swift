@@ -137,6 +137,7 @@ func encryptTestManifestYAML(_ yaml: String, kek: Data = testManifestKEK, epoch:
 
 // Placeholder epoch file so preloadAllKEKs discovers epoch 1; content is unused when KEK is injected.
 let testEpochPlaceholderFiles: [(String, String)] = [
+    ("gitdb/version", "1\n"),
     ("encryption/current", "1\n"),
     ("encryption/epochs/1.age", "placeholder\n"),
 ]

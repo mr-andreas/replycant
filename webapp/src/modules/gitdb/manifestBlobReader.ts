@@ -11,6 +11,11 @@ import { ManifestRegistry } from "./manifestRegistry";
 import type { RegisteredManifestRecord } from "./manifestRegistry";
 import type { AgePrivateKeyProvider } from "./syncTypes";
 import type { FsClient } from "./fsClient";
+import {
+  DATABASE_VERSION_PATH,
+  DatabaseVersionError,
+  requireSupportedDatabaseVersion,
+} from "./databaseVersion";
 
 // Serializes decrypted key bytes so pointer rows can persist ready-to-use DEKs.
 const bytesToBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
@@ -82,6 +87,16 @@ export class ManifestBlobReader {
     } catch {
       return null;
     }
+  }
+
+  // Refuses a commit whose gitdb/version is missing or not the pinned
+  // format so sync never decrypts an unrecognized repository layout.
+  async assertSupportedDatabaseVersion(commitHash: string): Promise<void> {
+    const entry = await this.readBlobAtCommitPathOrNull(commitHash, DATABASE_VERSION_PATH);
+    if (!entry) {
+      throw new DatabaseVersionError("missing gitdb/version");
+    }
+    requireSupportedDatabaseVersion(entry.blob);
   }
 
   // Invalidates cached KEKs when encryption/current changes to prevent stale key reuse.

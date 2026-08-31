@@ -31,6 +31,7 @@ struct GitDBIntegrationTests {
         try await gitDB.commitFiles(
             message: "seed non-manifest files",
             files: [
+                (path: "gitdb/version", content: "1\n"),
                 (path: "pubkeys/device-a.pub", content: "ssh-ed25519 AAAATEST device-a"),
                 (path: "pubkeys/device-a.age", content: "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"),
             ]
@@ -50,6 +51,7 @@ struct GitDBIntegrationTests {
         try repository.createCommit(
             message: "c1",
             files: [
+                ("gitdb/version", "1\n"),
                 ("pubkeys/a.pub", "ssh-ed25519 AAAATEST a"),
             ]
         )
@@ -83,6 +85,7 @@ struct GitDBIntegrationTests {
         try await gitDB.commitFilesWithoutSync(
             message: "enroll device key",
             files: [
+                (path: "gitdb/version", content: "1\n"),
                 (path: "pubkeys/device-a.pub", content: "ssh-ed25519 AAAATEST device-a"),
             ]
         )
@@ -106,6 +109,7 @@ struct GitDBIntegrationTests {
         try repository.createCommit(
             message: "c1",
             files: [
+                ("gitdb/version", "1\n"),
                 ("pubkeys/a.pub", "ssh-ed25519 AAAATEST a"),
             ]
         )
@@ -124,5 +128,53 @@ struct GitDBIntegrationTests {
         } catch GitDatabase.Error.cacheAlreadyHydrated {
             // Expected: bootstrap commits are refused after first hydration.
         }
+    }
+
+    // Refuses writes into an unsupported repo before createCommit so
+    // device-linking cannot land keys in a format this client cannot
+    // read back.
+    @Test func commitFilesRefusesUnsupportedVersionBeforeMutating() async throws {
+        let (repository, database, registry, repoPath, dbURL) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+            try? FileManager.default.removeItem(at: dbURL)
+        }
+
+        try repository.createCommit(
+            message: "unsupported",
+            files: [("gitdb/version", "2\n")]
+        )
+        let headBefore = try #require(repository.headOID())
+
+        let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
+        do {
+            try await gitDB.commitFiles(
+                message: "should not land",
+                files: [(path: "pubkeys/device-b.pub", content: "ssh-ed25519 AAAATEST device-b")]
+            )
+            Issue.record("commitFiles unexpectedly succeeded on an unsupported database version")
+        } catch let error as DatabaseVersionError {
+            #expect(error == .unsupported(found: 2, required: 1))
+        }
+        #expect(repository.headOID() == headBefore)
+    }
+
+    // First-epoch bootstrap must still be able to create the commit
+    // that introduces gitdb/version when HEAD has never existed.
+    @Test func commitFilesSucceedsWhenHeadIsUnborn() async throws {
+        let (repository, database, registry, repoPath, dbURL) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+            try? FileManager.default.removeItem(at: dbURL)
+        }
+
+        #expect(repository.headOID() == nil)
+        let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
+        try await gitDB.commitFiles(
+            message: "bootstrap",
+            files: [(path: "gitdb/version", content: "1\n")]
+        )
+        #expect(repository.headOID() != nil)
+        #expect(try await database.readSyncedCommitHash() == repository.headOID())
     }
 }

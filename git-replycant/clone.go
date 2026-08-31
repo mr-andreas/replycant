@@ -111,6 +111,13 @@ func RunCloneCommand(options CloneOptions) error {
 	if err := FetchRepository(ctx, repoDir, local, caFilePath, options.Depth); err != nil {
 		return err
 	}
+	defaultBranch, err := ResolveDefaultRemoteBranch(repoDir)
+	if err != nil {
+		return err
+	}
+	if err := RequireSupportedDatabaseVersionAtRef(ctx, repoDir, "origin/"+defaultBranch); err != nil {
+		return err
+	}
 	if err := ConfigureRepository(repoDir, lfsURL, local, caFilePath); err != nil {
 		return err
 	}
@@ -118,14 +125,8 @@ func RunCloneCommand(options CloneOptions) error {
 		fmt.Fprintf(os.Stderr, "Clone complete and filters configured in %s\n", repoDir)
 		return nil
 	}
-	defaultBranch, err := ResolveDefaultRemoteBranch(repoDir)
-	if err != nil {
+	if err := PreExtractEncryptionFiles(ctx, repoDir, defaultBranch); err != nil {
 		return err
-	}
-	if lfsURL != "" {
-		if err := PreExtractEncryptionFiles(ctx, repoDir, defaultBranch); err != nil {
-			return err
-		}
 	}
 	if err := CheckoutTrackingBranch(ctx, repoDir, defaultBranch); err != nil {
 		return err
@@ -348,11 +349,22 @@ func CheckoutTrackingBranch(ctx context.Context, repoDir string, branch string) 
 	return RunGitStreaming(ctx, repoDir, "checkout", "-B", branch, "--track", remoteRef)
 }
 
-// PreExtractEncryptionFiles materializes encryption metadata before LFS smudge runs on earlier-sorted binary paths.
+// RequireSupportedDatabaseVersionAtRef reads gitdb/version from a fetched
+// ref so clone can abort before checkout or LFS smudge work.
+func RequireSupportedDatabaseVersionAtRef(ctx context.Context, repoDir string, ref string) error {
+	raw, err := RunGitOutput(ctx, repoDir, "show", ref+":"+gitcrypt.DatabaseVersionPath)
+	if err != nil {
+		return fmt.Errorf("read %s at %s: %w", gitcrypt.DatabaseVersionPath, ref, err)
+	}
+	return gitcrypt.RequireSupportedDatabaseVersion([]byte(raw))
+}
+
+// PreExtractEncryptionFiles materializes format and encryption metadata
+// before LFS smudge runs on earlier-sorted binary paths.
 func PreExtractEncryptionFiles(ctx context.Context, repoDir string, branch string) error {
 	remoteRef := "origin/" + branch
-	if err := RunGit(ctx, repoDir, "checkout", remoteRef, "--", "encryption/"); err != nil {
-		return fmt.Errorf("failed to pre-extract encryption metadata from %s: %w", remoteRef, err)
+	if err := RunGit(ctx, repoDir, "checkout", remoteRef, "--", "gitdb/", "encryption/"); err != nil {
+		return fmt.Errorf("failed to pre-extract gitdb and encryption metadata from %s: %w", remoteRef, err)
 	}
 	return nil
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { DatabaseVersionError } from "./databaseVersion";
 import { ManifestRegistry } from "./manifestRegistry";
 import { ManifestBlobReader } from "./manifestBlobReader";
 import { encryptManifestYaml, importTestKek } from "./testEncryption";
@@ -35,6 +36,23 @@ const createReader = (): ManifestBlobReader =>
   });
 
 describe("ManifestBlobReader", () => {
+  it("accepts a commit whose gitdb/version matches this client", async () => {
+    const reader = createReader();
+    vi.spyOn(reader, "readBlobAtCommitPathOrNull").mockResolvedValue({
+      blob: new TextEncoder().encode("1\n"),
+      oid: "version-oid",
+    });
+    await expect(reader.assertSupportedDatabaseVersion("commit")).resolves.toBeUndefined();
+  });
+
+  it("rejects a missing or unsupported gitdb/version marker", async () => {
+    const reader = createReader();
+    const missing = vi.spyOn(reader, "readBlobAtCommitPathOrNull").mockResolvedValue(null);
+    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toBeInstanceOf(DatabaseVersionError);
+    missing.mockResolvedValue({ blob: new TextEncoder().encode("2\n"), oid: "version-oid" });
+    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/unsupported gitdb database version 2/);
+  });
+
   it("infers expected kind from canonical manifest path", () => {
     const reader = createReader();
     expect(

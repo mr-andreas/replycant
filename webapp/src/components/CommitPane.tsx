@@ -25,6 +25,7 @@ interface CommitPaneProps {
     loaded?: number;
     total?: number;
   } | null;
+  unrecoverableError?: string | null;
   onSyncNow: () => void;
   onResetToRemote: () => void;
   onResetAndResync: () => void;
@@ -48,6 +49,7 @@ export const CommitPane = memo(({
   lastSyncAt,
   requiresHardResetPermission,
   cloneProgress,
+  unrecoverableError = null,
   onSyncNow,
   onResetToRemote,
   onResetAndResync,
@@ -94,10 +96,14 @@ export const CommitPane = memo(({
           })
         )}
       </div>
-      <p className="commit-pane-section-label">Data Management</p>
-      <button type="button" className="commit-pane-destructive-action" onClick={onResetAndResync}>
-        Reset &amp; Resync
-      </button>
+      {unrecoverableError ? null : (
+        <>
+          <p className="commit-pane-section-label">Data Management</p>
+          <button type="button" className="commit-pane-destructive-action" onClick={onResetAndResync}>
+            Reset &amp; Resync
+          </button>
+        </>
+      )}
     </aside>
   );
 });

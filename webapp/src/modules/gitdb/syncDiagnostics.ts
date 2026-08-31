@@ -1,3 +1,5 @@
+import { DatabaseVersionError, describeDatabaseVersionFailure } from "./databaseVersion";
+
 const SYNC_PERF_PREFIX = "sync:";
 let syncPerfMeasureCounter = 0;
 
@@ -88,6 +90,12 @@ export const describeSyncFailure = (prefix: string, error: unknown): string => {
     name: error.name,
     stack: error.stack,
   });
+  if (error.name === "DatabaseVersionError" || error.message.includes("gitdb/version") || error.message.includes("gitdb database version")) {
+    const guidance = error instanceof DatabaseVersionError
+      ? describeDatabaseVersionFailure(error)
+      : describeDatabaseVersionFailure(new DatabaseVersionError(error.message));
+    return guidance;
+  }
   if (error.message.includes("Cannot read properties of undefined (reading 'size')")) {
     return "Sync failed: Git response payload was invalid. Verify proxy/git server settings and retry.";
   }

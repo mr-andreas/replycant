@@ -60,6 +60,7 @@ final class KEKEpochManager {
         }
         kekCache[1] = kek
         return [
+            (path: "gitdb/version", content: "1\n"),
             (path: "encryption/current", content: "1\n"),
             (path: "encryption/epochs/1.age", content: encryptedText)
         ]

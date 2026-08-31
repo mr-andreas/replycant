@@ -1,5 +1,6 @@
 import Foundation
 import LibGit2
+import GitDB
 
 // Runs periodic push/pull so devices converge automatically without manual sync actions.
 final class PeriodicSyncManager {
@@ -9,6 +10,7 @@ final class PeriodicSyncManager {
     private let operationStateLock = NSLock()
     private var pushSuccessHandler: (@Sendable () -> Void)?
     private var isRunning = false
+    private var refusedUnsupportedDatabase = false
     private var isNetworkOperationInProgress = false
     private var pushTask: Task<Void, Never>?
     private var pullTask: Task<Void, Never>?
@@ -37,7 +39,7 @@ final class PeriodicSyncManager {
     func start() {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard !isRunning else { return }
+        guard !isRunning, !refusedUnsupportedDatabase else { return }
         isRunning = true
         registerSettingsObserverLocked()
         reconfigureTasksLocked()
@@ -129,6 +131,7 @@ final class PeriodicSyncManager {
 
     // Pushes local commits to origin and logs operation duration for performance visibility.
     private func performPushTick() async {
+        guard !hasRefusedUnsupportedDatabase() else { return }
         guard beginNetworkOperationIfIdle() else {
             logDebug("Skipping periodic push because another periodic network operation is running", context: "Sync")
             return
@@ -159,6 +162,7 @@ final class PeriodicSyncManager {
 
     // Pulls remote changes and refreshes SQL manifest cache so pubsub updates timeline readers.
     private func performPullTick() async {
+        guard !hasRefusedUnsupportedDatabase() else { return }
         guard beginNetworkOperationIfIdle() else {
             logDebug("Skipping periodic pull because another periodic network operation is running", context: "Sync")
             return
@@ -183,10 +187,37 @@ final class PeriodicSyncManager {
 
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logDebug("Periodic pull completed in \(String(format: "%.3f", duration)) seconds", context: "Sync")
+            await MainActor.run {
+                DatabaseCompatibilityManager.shared.clear()
+            }
+        } catch let error as DatabaseVersionError {
+            let duration = CFAbsoluteTimeGetCurrent() - startTime
+            logError("Periodic pull refused unsupported database after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
+            refuseUnsupportedDatabase(error)
         } catch {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logError("Periodic pull failed after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
         }
+    }
+
+    // Stops retrying a format mismatch so a permanent refusal is not
+    // mistaken for a flaky network error.
+    private func refuseUnsupportedDatabase(_ error: DatabaseVersionError) {
+        stateLock.lock()
+        refusedUnsupportedDatabase = true
+        stateLock.unlock()
+        Task { @MainActor in
+            DatabaseCompatibilityManager.shared.report(error)
+        }
+        stop()
+    }
+
+    // Lets push/pull ticks share the same refusal flag without racing
+    // the lock held by start/stop.
+    private func hasRefusedUnsupportedDatabase() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return refusedUnsupportedDatabase
     }
 
     // Ensures mTLS transport is configured before any network git operation executes.
@@ -283,5 +314,18 @@ extension PeriodicSyncManager {
 
     // Leaves callbacks untouched to model failed pushes that should not notify subscribers.
     func notifyPushFailureForTesting() {}
+
+    // Drives the same refusal path as a real version mismatch so tests
+    // can assert loops stop without cloning an unsupported repository.
+    func handleDatabaseVersionErrorForTesting(_ error: DatabaseVersionError) {
+        refuseUnsupportedDatabase(error)
+    }
+
+    // Restores the singleton so later tests can start loops again.
+    func resetDatabaseVersionRefusalForTesting() {
+        stateLock.lock()
+        refusedUnsupportedDatabase = false
+        stateLock.unlock()
+    }
 }
 #endif

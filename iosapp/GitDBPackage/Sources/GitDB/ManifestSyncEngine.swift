@@ -51,6 +51,7 @@ public actor ManifestSyncEngine {
             try await database.clearAll()
             return
         }
+        try DatabaseVersion.requireSupported(in: repository, commitOid: head)
         let previousSynced = try await database.readSyncedCommitHash()
         guard previousSynced != head else {
             return
@@ -143,6 +144,7 @@ public actor ManifestSyncEngine {
         guard let head = repository.headOID() else {
             return
         }
+        try DatabaseVersion.requireSupported(in: repository, commitOid: head)
 
         var added: [any Manifest] = []
         var updated: [any Manifest] = []

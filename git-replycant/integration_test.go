@@ -700,6 +700,7 @@ func createTestBareRepo(t *testing.T, recipientAgePub []byte, plaintext []byte) 
 
 	encryptedManifest, err := gitcrypt.EncryptManifestEnvelope(plaintext, kek, 1)
 	require.NoError(t, err)
+	testWriteFile(t, filepath.Join(workDir, "gitdb", "version"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "epochs", "1.age"), envelope, 0o644)
 	testWriteFile(t, filepath.Join(workDir, "manifests", "test-device", "test.yaml"), encryptedManifest, 0o644)
@@ -741,6 +742,7 @@ func createTestBareRepoWithLFS(t *testing.T, recipientAgePub []byte, manifestPla
 	fullPointer, err := gitcrypt.AppendReplycantHeaders([]byte(basePointer), 1, wrappedDEK)
 	require.NoError(t, err)
 
+	testWriteFile(t, filepath.Join(workDir, "gitdb", "version"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "epochs", "1.age"), envelope, 0o644)
 	testWriteFile(t, filepath.Join(workDir, "manifests", "test-device", "test.yaml"), encryptedManifest, 0o644)
@@ -782,6 +784,7 @@ func createTestBareRepoWithLFSMissingEpoch(t *testing.T, manifestPlaintext []byt
 	fullPointer, err := gitcrypt.AppendReplycantHeaders([]byte(basePointer), 1, wrappedDEK)
 	require.NoError(t, err)
 
+	testWriteFile(t, filepath.Join(workDir, "gitdb", "version"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "manifests", "test-device", "test.yaml"), encryptedManifest, 0o644)
 	testWriteFile(t, filepath.Join(workDir, "binary", "test.bin"), fullPointer, 0o644)

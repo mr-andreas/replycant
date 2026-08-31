@@ -71,4 +71,19 @@ describe("CommitPane", () => {
 
     expect(props.onResetAndResync).toHaveBeenCalledTimes(1);
   });
+
+  it("hides reset and resync when the database version is unrecoverable", () => {
+    const props = buildProps();
+    render(<CommitPane {...props} unrecoverableError="Create a new library to continue" />);
+
+    expect(screen.queryByRole("button", { name: "Reset & Resync" })).toBeNull();
+  });
+
+  it("shows a failed heading when a sync error is set", () => {
+    const props = buildProps();
+    render(<CommitPane {...props} error="Sync failed: network" />);
+
+    expect(screen.getByText("Sync failed")).toBeInTheDocument();
+    expect(screen.queryByText("Ready")).toBeNull();
+  });
 });

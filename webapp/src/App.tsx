@@ -114,6 +114,7 @@ export const App = () => {
       lastSyncAt={runtime.snapshot.lastSyncAt}
       requiresHardResetPermission={runtime.snapshot.requiresHardResetPermission}
       cloneProgress={runtime.snapshot.cloneProgress}
+      unrecoverableError={runtime.snapshot.unrecoverableError}
       onSyncNow={runtime.handleSyncNow}
       onResetToRemote={runtime.handleResetToRemote}
       onResetAndResync={handleResetAndResync}

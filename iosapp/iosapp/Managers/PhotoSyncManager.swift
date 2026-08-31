@@ -3,6 +3,7 @@ import LibGit2
 import CryptoKit
 import UIKit
 import Combine
+import GitDB
 
 // Abstracts idle timer control so upload lock-screen behavior is testable.
 protocol IdleTimerControlling {
@@ -21,6 +22,13 @@ enum PhotoSyncError: Error {
     case repositoryNotFound
     case lfsUrlNotConfigured
     case syncInProgress
+}
+
+// Carries the already-computed user guidance so the upload tab can
+// show the same copy as the incompatibility banner.
+private struct UploadRefusedError: Error, LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 enum SyncState: Equatable {
@@ -167,6 +175,12 @@ final class PhotoSyncManager: ObservableObject {
             return
         }
         
+        if let incompatibility = DatabaseCompatibilityManager.shared.incompatibility {
+            logError("Refusing upload because the database format is incompatible", context: "PhotoSync")
+            setSyncState(.failed(UploadRefusedError(message: incompatibility.userMessage)))
+            return
+        }
+
         log("Starting sync process...", context: "PhotoSync")
         syncGeneration += 1
         let generation = syncGeneration
@@ -195,6 +209,7 @@ final class PhotoSyncManager: ObservableObject {
                 await updateState(.completed(total: syncedCount), generation: generation)
             } catch {
                 logError("Sync failed with error: \(error.localizedDescription)", context: "PhotoSync")
+                DatabaseCompatibilityManager.shared.reportIfVersionError(error)
                 await updateState(.failed(error), generation: generation)
             }
         }
@@ -232,6 +247,12 @@ final class PhotoSyncManager: ObservableObject {
         }
 
         let repository = try RepositoryManager.shared.getRepository()
+        do {
+            try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
+        } catch let error as DatabaseVersionError {
+            DatabaseCompatibilityManager.shared.report(error)
+            throw error
+        }
         let kekManager = KEKEpochManager(repository: repository)
         let activeKEK = try kekManager.loadCurrentKEK()
         let manager = try getManifestManager()

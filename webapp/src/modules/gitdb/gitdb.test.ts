@@ -20,6 +20,7 @@ vi.mock("./syncEngine", () => ({
       this.listener({
         syncing: true,
         error: null,
+        unrecoverableError: null,
         syncedCommitHash: null,
         periodicSyncPaused: false,
         periodicSyncUserEnabled: true,
@@ -31,6 +32,7 @@ vi.mock("./syncEngine", () => ({
       this.listener({
         syncing: false,
         error: null,
+        unrecoverableError: null,
         syncedCommitHash: "abc123",
         periodicSyncPaused: false,
         periodicSyncUserEnabled: true,

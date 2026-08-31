@@ -7,6 +7,7 @@ import { SYNC_PROGRESS_DELAY_MS, useDelayedSyncProgress } from "./useDelayedSync
 const buildSnapshot = (overrides: Partial<SyncSnapshot> = {}): SyncSnapshot => ({
   syncing: false,
   error: null,
+  unrecoverableError: null,
   syncedCommitHash: null,
   lastSyncAt: null,
   periodicSyncPaused: false,

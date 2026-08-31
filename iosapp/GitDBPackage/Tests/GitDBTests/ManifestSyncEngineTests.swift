@@ -311,6 +311,58 @@ struct ManifestSyncEngineTests {
         #expect(try await database.readSyncedCommitHash() == repository.headOID())
     }
 
+    // Leaves an empty repository usable so first-run bootstrap can write
+    // gitdb/version in the initial commit without being rejected first.
+    @Test func syncToHeadAllowsEmptyRepositoryWithoutVersionMarker() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        #expect(try await database.readSyncedCommitHash() == nil)
+    }
+
+    // Refuses a populated repository whose marker does not match this client
+    // so an already-running app cannot keep writing after a format bump.
+    @Test func syncToHeadRejectsUnsupportedDatabaseVersion() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+        try repository.createCommit(
+            message: "unsupported-version",
+            files: [("gitdb/version", "2\n")]
+        )
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        do {
+            try await engine.syncToHead(progressHandler: nil)
+            Issue.record("expected unsupported database version rejection")
+        } catch let error as DatabaseVersionError {
+            #expect(error == .unsupported(found: 2, required: 1))
+        }
+    }
+
+    // Refuses a populated repository that predates the marker so old
+    // libraries cannot be silently treated as the current format.
+    @Test func syncToHeadRejectsMissingDatabaseVersion() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+        try repository.createCommit(
+            message: "missing-version",
+            files: [("notes/readme.txt", "hello")]
+        )
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        do {
+            try await engine.syncToHead(progressHandler: nil)
+            Issue.record("expected missing database version rejection")
+        } catch let error as DatabaseVersionError {
+            #expect(error == .missing)
+        }
+    }
+
     // Ensures a hostile server cannot strip the envelope and have clients accept plaintext YAML.
     @Test func syncToHeadRejectsPlaintextManifest() async throws {
         let (repository, database, registry, repoPath, _) = try makeFixture()

@@ -32,7 +32,7 @@ export const StatusBanner = ({
 }: StatusBannerProps) => (
   <section className={`status-banner ${error ? "error" : "ok"}`}>
     <div>
-      <strong>{syncing ? "Syncing..." : "Ready"}</strong>
+      <strong>{syncing ? "Syncing..." : error ? "Sync failed" : "Ready"}</strong>
       {error ? <p>{error}</p> : <p>{lastSyncAt ? `Last sync: ${new Date(lastSyncAt).toLocaleString()}` : "No sync yet"}</p>}
     </div>
     <div className="status-banner-controls">

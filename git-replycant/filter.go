@@ -187,13 +187,27 @@ func NewFilterRuntime() (*FilterRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FilterRuntime{
+	runtime := &FilterRuntime{
 		repoRoot:            repoRoot,
 		identity:            local.Identity,
 		kekCache:            make(map[int][]byte),
 		indexHashCache:      make(map[string][32]byte),
 		indexEncryptedCache: make(map[string][]byte),
-	}, nil
+	}
+	if err := requireFilterDatabaseVersion(runtime); err != nil {
+		return nil, err
+	}
+	return runtime, nil
+}
+
+// requireFilterDatabaseVersion refuses to encrypt or decrypt in a
+// repository whose marker is missing or not the pinned format.
+func requireFilterDatabaseVersion(r *FilterRuntime) error {
+	raw, err := r.ReadRepoFile(gitcrypt.DatabaseVersionPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", gitcrypt.DatabaseVersionPath, err)
+	}
+	return gitcrypt.RequireSupportedDatabaseVersion(raw)
 }
 
 // Smudge decrypts encrypted manifest envelopes and rejects plaintext so a
@@ -442,7 +456,15 @@ func (r *FilterRuntime) ReadRepoFile(relativePath string) ([]byte, error) {
 	if indexErr != nil {
 		return nil, indexErr
 	}
-	return readHeadFileFromGit(r.repoRoot, relativePath)
+	headRaw, headErr := readHeadFileFromGit(r.repoRoot, relativePath)
+	if headErr == nil {
+		return headRaw, nil
+	}
+	remoteRaw, remoteErr := readOriginFileFromGit(r.repoRoot, relativePath)
+	if remoteErr == nil {
+		return remoteRaw, nil
+	}
+	return nil, headErr
 }
 
 // performFilterHandshake negotiates protocol version and capabilities with git.
@@ -560,6 +582,22 @@ func readHeadFileFromGit(repoRoot string, relativePath string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s from HEAD: %w", relativePath, err)
+	}
+	return out, nil
+}
+
+// readOriginFileFromGit covers the first checkout, when local HEAD is still
+// unborn and earlier-sorted paths smudge before gitdb/ is in the index.
+func readOriginFileFromGit(repoRoot string, relativePath string) ([]byte, error) {
+	branch, err := ResolveDefaultRemoteBranch(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	objectPath := "origin/" + branch + ":" + filepath.ToSlash(relativePath)
+	cmd := exec.Command("git", "-C", repoRoot, "cat-file", "-p", objectPath)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s from origin/%s: %w", relativePath, branch, err)
 	}
 	return out, nil
 }

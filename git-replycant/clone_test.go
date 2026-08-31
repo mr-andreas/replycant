@@ -257,6 +257,24 @@ func TestRunGitStreaming(t *testing.T) {
 	assert.Contains(t, string(stderrOutput), "streamed stderr line")
 }
 
+// TestRequireSupportedDatabaseVersionAtRef refuses a fetched ref whose
+// marker is missing or not the version this binary was built against.
+func TestRequireSupportedDatabaseVersionAtRef(t *testing.T) {
+	t.Parallel()
+	repoDir := testInitRepo(t)
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("1\n"), 0o644)
+	testRunGit(t, repoDir, "add", ".")
+	testRunGit(t, repoDir, "commit", "-m", "seed")
+	require.NoError(t, RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD"))
+
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
+	testRunGit(t, repoDir, "add", ".")
+	testRunGit(t, repoDir, "commit", "-m", "bump")
+	err := RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported gitdb database version 2")
+}
+
 // TestInitializeRepository confirms init + origin setup works before network authorization.
 func TestInitializeRepository(t *testing.T) {
 	repoParent := t.TempDir()

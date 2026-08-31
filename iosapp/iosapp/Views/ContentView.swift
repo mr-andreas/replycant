@@ -35,6 +35,7 @@ struct ContentView: View {
     @State private var pendingRecoveryInput: String?
     @State private var showRecoveryFlow = false
     @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
+    @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
     init(previewState: PreviewState? = nil) {
@@ -72,33 +73,45 @@ struct ContentView: View {
             if isResyncing {
                 resyncView
             } else if shouldShowMainTabs {
-                TabView(selection: $selectedTab) {
-                    TimelineView()
-                        .tabItem {
-                            Label("Timeline", systemImage: "clock")
-                        }
-                        .tag(0)
-                        .accessibilityIdentifier("timelineTab")
-                    
-                    PhotoSyncView()
-                        .tabItem {
-                            Label("Upload", systemImage: "photo.on.rectangle.angled")
-                        }
-                        .tag(1)
-                        .accessibilityIdentifier("uploadTab")
-                    
-                    SettingsView(onWipeAndResync: {
-                        Task { await performResync(shouldWipeLocalState: true) }
-                    }, showRecoveryWarning: showRecoveryWarning)
-                        .tabItem {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                        .badge(showRecoveryWarning ? "!" : nil)
-                        .tag(2)
-                        .accessibilityIdentifier("settingsTab")
+                VStack(spacing: 0) {
+                    if let incompatibility = databaseCompatibility.incompatibility {
+                        Text(incompatibility.userMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .padding(12)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.red)
+                            .accessibilityIdentifier("databaseVersionBanner")
+                    }
+                    TabView(selection: $selectedTab) {
+                        TimelineView()
+                            .tabItem {
+                                Label("Timeline", systemImage: "clock")
+                            }
+                            .tag(0)
+                            .accessibilityIdentifier("timelineTab")
+
+                        PhotoSyncView()
+                            .tabItem {
+                                Label("Upload", systemImage: "photo.on.rectangle.angled")
+                            }
+                            .tag(1)
+                            .accessibilityIdentifier("uploadTab")
+
+                        SettingsView(onWipeAndResync: {
+                            Task { await performResync(shouldWipeLocalState: true) }
+                        }, showRecoveryWarning: showRecoveryWarning)
+                            .tabItem {
+                                Label("Settings", systemImage: "gearshape")
+                            }
+                            .badge(showRecoveryWarning ? "!" : nil)
+                            .tag(2)
+                            .accessibilityIdentifier("settingsTab")
+                    }
+                    .toolbarBackground(.ultraThinMaterial, for: .tabBar)
+                    .toolbarBackground(.visible, for: .tabBar)
                 }
-                .toolbarBackground(.ultraThinMaterial, for: .tabBar)
-                .toolbarBackground(.visible, for: .tabBar)
                 .onAppear {
                     emitMainTabsVisibleIfNeeded()
                 }

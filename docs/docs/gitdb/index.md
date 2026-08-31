@@ -41,3 +41,4 @@ Large binary files (photos, videos) are stored using Git Large File Storage (LFS
 - [Authentication](./authentication.md) - mTLS authentication protocol
 - [Server Architecture](./server-architecture.md) - gitd server internals and CA distribution
 - [LFS Push Validation](./lfs-push-validation.md) - Pre-receive enforcement for missing LFS objects
+- [Database Format Version](./database-version.md) - Repo-level layout marker that clients pin and refuse to mismatch

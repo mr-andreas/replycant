@@ -468,6 +468,7 @@ struct RepositorySettingsView: View {
                 logError("Failed to pull after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "UI")
                 
                 await MainActor.run {
+                    DatabaseCompatibilityManager.shared.reportIfVersionError(error)
                     errorMessage = error.localizedDescription
                     isPulling = false
                 }

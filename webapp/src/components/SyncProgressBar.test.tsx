@@ -8,6 +8,7 @@ import { SyncProgressBar } from "./SyncProgressBar";
 const buildSnapshot = (overrides: Partial<SyncSnapshot> = {}): SyncSnapshot => ({
   syncing: false,
   error: null,
+  unrecoverableError: null,
   syncedCommitHash: null,
   lastSyncAt: null,
   periodicSyncPaused: false,

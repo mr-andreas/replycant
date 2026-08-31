@@ -380,13 +380,9 @@ export class GitTransport {
     });
   }
 
-  // Forces branch/HEAD refs to the target commit so cache refresh reflects one
-  // authoritative revision. Validates that the target OID exists locally
-  // before touching any refs so a missing/typo'd commit cannot leave the
-  // branch pointing at a dangling object and force a hard-reset recovery.
-  async forceCheckoutCommit(branchRef: string, targetOid: string): Promise<void> {
-    this.log("checkout-force-start", { branchRef, targetOid });
-    const validateStartedAtMs = nowMs();
+  // Confirms a commit exists locally so rewind can refuse a typo'd hash
+  // before it inspects gitdb/version or moves any refs.
+  async assertCommitExists(targetOid: string): Promise<void> {
     try {
       await git.expandOid({
         fs: this.fs,
@@ -397,9 +393,19 @@ export class GitTransport {
       });
     } catch (error) {
       const detail = errorMessage(error);
-      this.log("checkout-force-validate-failed", { branchRef, targetOid, error: detail });
+      this.log("checkout-force-validate-failed", { targetOid, error: detail });
       throw new Error(`Refusing to checkout missing commit ${targetOid}: ${detail}`);
     }
+  }
+
+  // Forces branch/HEAD refs to the target commit so cache refresh reflects one
+  // authoritative revision. Validates that the target OID exists locally
+  // before touching any refs so a missing/typo'd commit cannot leave the
+  // branch pointing at a dangling object and force a hard-reset recovery.
+  async forceCheckoutCommit(branchRef: string, targetOid: string): Promise<void> {
+    this.log("checkout-force-start", { branchRef, targetOid });
+    const validateStartedAtMs = nowMs();
+    await this.assertCommitExists(targetOid);
     this.log("checkout-force-validate-complete", {
       branchRef,
       targetOid,

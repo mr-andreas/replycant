@@ -6,6 +6,7 @@ const runtimeMock = {
   snapshot: {
     syncing: false,
     error: null,
+    unrecoverableError: null,
     lastSyncAt: null,
     syncedCommitHash: null,
     periodicSyncPaused: false,

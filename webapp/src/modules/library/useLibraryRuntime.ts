@@ -317,6 +317,7 @@ export const useLibraryRuntime = ({
   const [snapshot, setSnapshot] = useState<SyncSnapshot>({
     syncing: false,
     error: null,
+    unrecoverableError: null,
     lastSyncAt: null,
     syncedCommitHash: null,
     periodicSyncPaused: !periodicSyncPrefsRef.current.userEnabled,

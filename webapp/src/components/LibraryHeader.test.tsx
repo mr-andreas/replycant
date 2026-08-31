@@ -8,6 +8,7 @@ import { LibraryHeader } from "./LibraryHeader";
 const buildSnapshot = (overrides: Partial<SyncSnapshot> = {}): SyncSnapshot => ({
   syncing: false,
   error: null,
+  unrecoverableError: null,
   syncedCommitHash: null,
   lastSyncAt: null,
   periodicSyncPaused: false,
@@ -89,5 +90,22 @@ describe("LibraryHeader", () => {
 
     expect(container.querySelector(".top-bar .sync-progress")).toBeTruthy();
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
+  });
+
+  it("renders a persistent database version banner from unrecoverableError", () => {
+    render(
+      <LibraryHeader
+        activeView="timeline"
+        onSelectView={vi.fn()}
+        commitPaneOpen={false}
+        onToggleCommitPane={vi.fn()}
+        syncSnapshot={buildSnapshot({
+          unrecoverableError:
+            "This library uses an incompatible database format and cannot be opened. Create a new library to continue - resyncing will not help.",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Create a new library to continue");
   });
 });

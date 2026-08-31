@@ -171,6 +171,25 @@ func TestMatchesIndexManifestPlaintextStaged(t *testing.T) {
 	assert.False(t, matched)
 }
 
+// TestRequireFilterDatabaseVersion refuses filter work when the repo
+// marker is missing or not the pinned format.
+func TestRequireFilterDatabaseVersion(t *testing.T) {
+	t.Parallel()
+	repoDir := testInitRepo(t)
+	rt := testFilterRuntime(repoDir, []byte("0123456789abcdef0123456789abcdef"), 1)
+	err := requireFilterDatabaseVersion(rt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gitdb/version")
+
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("1\n"), 0o644)
+	require.NoError(t, requireFilterDatabaseVersion(rt))
+
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
+	err = requireFilterDatabaseVersion(rt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported gitdb database version 2")
+}
+
 // TestSmudgeRejectsPlaintextManifest ensures a hostile server cannot strip the
 // envelope and have clients accept attacker-controlled YAML as a valid manifest.
 func TestSmudgeRejectsPlaintextManifest(t *testing.T) {

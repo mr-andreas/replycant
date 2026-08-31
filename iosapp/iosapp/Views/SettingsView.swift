@@ -13,6 +13,7 @@ struct SettingsView: View {
     let onWipeAndResync: () -> Void
     let showRecoveryWarning: Bool
     @State private var isShowingResetConfirmation = false
+    @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
 
     // Allows callers to surface repo-wide recovery readiness in the settings navigation row.
     init(onWipeAndResync: @escaping () -> Void, showRecoveryWarning: Bool = false) {
@@ -62,14 +63,16 @@ struct SettingsView: View {
                     Text("Advanced")
                 }
 
-                Section {
-                    Button(role: .destructive) {
-                        isShowingResetConfirmation = true
-                    } label: {
-                        Label("Reset & Resync", systemImage: "arrow.clockwise.circle")
+                if databaseCompatibility.incompatibility == nil {
+                    Section {
+                        Button(role: .destructive) {
+                            isShowingResetConfirmation = true
+                        } label: {
+                            Label("Reset & Resync", systemImage: "arrow.clockwise.circle")
+                        }
+                    } footer: {
+                        Text("Deletes all local repository state and clones fresh data from server while preserving device keys.")
                     }
-                } footer: {
-                    Text("Deletes all local repository state and clones fresh data from server while preserving device keys.")
                 }
             }
             .navigationTitle("Settings")

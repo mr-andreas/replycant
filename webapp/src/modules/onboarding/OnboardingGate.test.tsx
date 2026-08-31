@@ -8,6 +8,7 @@ import type { OnboardingFlowState } from "./useOnboardingFlow";
 const snapshot: SyncSnapshot = {
   syncing: false,
   error: null,
+  unrecoverableError: null,
   syncedCommitHash: null,
   lastSyncAt: null,
   periodicSyncPaused: false,

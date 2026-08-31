@@ -101,6 +101,9 @@ func provision(cfg provisionerConfig) error {
 	if err := runGit(workDir, "checkout", "main"); err != nil {
 		return err
 	}
+	if err := gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir); err != nil {
+		return err
+	}
 
 	currentRaw, err := os.ReadFile(filepath.Join(workDir, "encryption", "current"))
 	if err != nil {

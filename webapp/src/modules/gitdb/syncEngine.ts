@@ -28,6 +28,7 @@ import {
 import { ManifestBlobReader } from "./manifestBlobReader";
 import { ManifestHydrator } from "./manifestHydrator";
 import { CommitTransitionApplier } from "./commitTransitionApplier";
+import { DatabaseVersionError } from "./databaseVersion";
 
 type SyncCycleStatus = "success" | "noop" | "stale" | "failed";
 type StartupTimingRecorder = (phase: string, durationMs: number) => void;
@@ -126,6 +127,7 @@ export class SyncEngine {
     this.snapshot = {
       syncing: false,
       error: null,
+      unrecoverableError: null,
       lastSyncAt: null,
       syncedCommitHash: null,
       periodicSyncPaused: false,
@@ -423,6 +425,7 @@ export class SyncEngine {
 
   // Allows users to force refresh while still preventing overlapping repository operations.
   async syncNow(reason: "startup" | "manual" | "poll"): Promise<void> {
+    if (this.snapshot.unrecoverableError) return;
     if (await this.shouldSkipSync(reason)) return;
     this.beginSyncCycle(reason);
     const syncStartedAtMs = nowMs();
@@ -469,7 +472,7 @@ export class SyncEngine {
     this.snapshot = {
       ...this.snapshot,
       syncing: true,
-      error: null,
+      error: this.snapshot.unrecoverableError ? this.snapshot.error : null,
       requiresHardResetPermission: false,
     };
     this.listener(this.snapshot);
@@ -502,6 +505,7 @@ export class SyncEngine {
 
     const pullTimer = syncTimer("syncNow-pull");
     const syncedCommitHash = await this.transport.pullWithRebase(this.snapshot.syncedCommitHash);
+    await this.manifestBlobReader.assertSupportedDatabaseVersion(syncedCommitHash);
     const pullDurationMs = pullTimer.stop();
     this.log("sync-pull-complete", {
       reason,
@@ -544,6 +548,7 @@ export class SyncEngine {
   ): Promise<SyncCycleStatus | null> {
     const remoteHead = await this.transport.readRemoteBranchHeadCommitHashOrNull();
     if (!remoteHead || remoteHead !== previousSyncedHash) return null;
+    await this.manifestBlobReader.assertSupportedDatabaseVersion(remoteHead);
     if (await this.manifestDb.hasAnyRecords()) {
       this.updateActivePhaseProgress("checkingForUpdates", "Checking for updates", 1);
       this.log("sync-noop-remote-head-unchanged", {
@@ -669,18 +674,21 @@ export class SyncEngine {
   ): void {
     this.failureCount += 1;
     const isRebaseConflict = error instanceof PullRebaseConflictError;
+    const isDatabaseVersionError = error instanceof DatabaseVersionError;
     this.log("sync-failed", {
       reason,
       rebaseConflict: isRebaseConflict,
+      unrecoverable: isDatabaseVersionError,
       error: errorMessage(error),
       durationMs: nowMs() - syncStartedAtMs,
     });
-    this.setErrorSnapshot(
-      isRebaseConflict
-        ? "Sync conflict detected while rebasing local state. Approve reset to remote to recover."
-        : describeSyncFailure(this.logPrefix, error),
-      { requiresHardResetPermission: isRebaseConflict },
-    );
+    const message = isRebaseConflict
+      ? "Sync conflict detected while rebasing local state. Approve reset to remote to recover."
+      : describeSyncFailure(this.logPrefix, error);
+    this.setErrorSnapshot(message, {
+      requiresHardResetPermission: isRebaseConflict,
+      unrecoverableError: isDatabaseVersionError ? message : this.snapshot.unrecoverableError,
+    });
   }
 
   // Finalizes one sync attempt with startup diagnostics, queued rewind draining, and poll rescheduling.
@@ -719,6 +727,7 @@ export class SyncEngine {
       ...this.snapshot,
       syncing: false,
       error: null,
+      unrecoverableError: null,
       lastSyncAt: new Date().toISOString(),
       syncedCommitHash: opts.syncedCommitHash,
       periodicSyncPaused: this.periodicSyncPaused(),
@@ -909,6 +918,15 @@ export class SyncEngine {
   }): Promise<void> {
     const { targetCommitHash, logPrefix, startedAtMs } = opts;
     const checkoutStartedAtMs = nowMs();
+    await this.transport.assertCommitExists(targetCommitHash);
+    try {
+      await this.manifestBlobReader.assertSupportedDatabaseVersion(targetCommitHash);
+    } catch (error) {
+      if (error instanceof DatabaseVersionError) {
+        throw new Error("cannot rewind past a database format change");
+      }
+      throw error;
+    }
     await this.transport.forceCheckoutCommit(this.transport.localBranchRef, targetCommitHash);
     const previousSyncedHash = (await this.manifestDb.readSyncedCommitHash()) ?? this.snapshot.syncedCommitHash;
     const checkoutDurationMs = nowMs() - checkoutStartedAtMs;
@@ -968,6 +986,12 @@ export class SyncEngine {
       throw new Error("No tracked remote head available locally. Try syncing first.");
     }
     if (this.isSyncing) return;
+    const previousSyncedHash = (await this.manifestDb.readSyncedCommitHash()) ?? this.snapshot.syncedCommitHash;
+    if (trackedHead === previousSyncedHash) {
+      this.isRewindPaused = false;
+      this.finishWithSuccess({ syncedCommitHash: trackedHead });
+      return;
+    }
     this.isRewindPaused = false;
     this.isSyncing = true;
     this.snapshot = {
@@ -1049,7 +1073,7 @@ export class SyncEngine {
     if (this.timer !== null) {
       clearTimeout(this.timer);
     }
-    if (this.periodicSyncPaused()) {
+    if (this.periodicSyncPaused() || this.snapshot.unrecoverableError) {
       this.timer = null;
       return;
     }

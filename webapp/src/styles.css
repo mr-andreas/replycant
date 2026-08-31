@@ -217,6 +217,16 @@ progress {
   transition: width 300ms ease;
 }
 
+.database-version-banner {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  background: #c23b4a;
+  color: #fff;
+  text-align: center;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
 .sync-progress-fill.indeterminate {
   width: 35%;
   animation: rehydrationSlide 1.4s ease-in-out infinite;

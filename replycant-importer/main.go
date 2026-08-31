@@ -587,6 +587,9 @@ func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) 
 	if err != nil {
 		return fmt.Errorf("load repository identity: %w", err)
 	}
+	if err := gitcrypt.RequireSupportedDatabaseVersionInWorktree(repoPath); err != nil {
+		return err
+	}
 	epochRaw, err := os.ReadFile(filepath.Join(repoPath, "encryption", "current"))
 	if err != nil {
 		return fmt.Errorf("read encryption/current: %w", err)

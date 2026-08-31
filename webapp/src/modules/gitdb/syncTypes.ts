@@ -29,6 +29,7 @@ export type ManifestChangeListener = (change: ManifestDatabaseChange) => void;
 export interface SyncSnapshot {
   syncing: boolean;
   error: string | null;
+  unrecoverableError: string | null;
   syncedCommitHash: string | null;
   lastSyncAt: string | null;
   periodicSyncPaused: boolean;

@@ -132,6 +132,44 @@ func TestSeedRepositoryEncryptedManifest(t *testing.T) {
 	require.Contains(t, string(plaintext), "name: img-000000")
 }
 
+// TestSeedRepositoryUnsupportedDatabaseVersionIsRejected keeps clients
+// from operating on a seeded repo whose marker does not match this binary.
+func TestSeedRepositoryUnsupportedDatabaseVersionIsRejected(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	bareRepo := filepath.Join(tempDir, "repo.git")
+	outputDir := filepath.Join(tempDir, "identity")
+	runGitForTest(t, "", "init", "--initial-branch=main", "--bare", bareRepo)
+	gittest.DisableAutoMaintenance(t, bareRepo)
+
+	err := seedRepository(seederConfig{
+		bareRepo:        bareRepo,
+		outputDir:       outputDir,
+		deviceSpace:     "e2e-device",
+		databaseVersion: 2,
+	})
+	require.NoError(t, err)
+	version := runGitForTest(t, "", "--git-dir="+bareRepo, "show", "main:gitdb/version")
+	require.Equal(t, "2", version)
+
+	workDir := filepath.Join(tempDir, "work")
+	runGitForTest(t, "", "clone", "file://"+bareRepo, workDir)
+	err = gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported gitdb database version 2")
+
+	err = seedRepository(seederConfig{
+		bareRepo:     bareRepo,
+		outputDir:    outputDir,
+		deviceSpace:  "e2e-device",
+		addMediaOnly: true,
+		mediaCount:   1,
+		commitCount:  1,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported gitdb database version 2")
+}
+
 // TestValidateConfigRejectsInvalidCommitSplit keeps seeding failures explicit for bad CLI input.
 func TestValidateConfigRejectsInvalidCommitSplit(t *testing.T) {
 	t.Parallel()

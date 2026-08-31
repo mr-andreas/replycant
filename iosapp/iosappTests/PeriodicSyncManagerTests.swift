@@ -205,4 +205,38 @@ struct PeriodicSyncManagerTests {
 
         manager.onPushSuccess = nil
     }
+
+    // A version mismatch is permanent, so the loops must stop and
+    // stay stopped even if start() is called again from tab lifecycle.
+    @Test func databaseVersionErrorStopsLoopsAndRefusesRestart() async {
+        resetSyncDefaults()
+        DatabaseCompatibilityManager.shared.clear()
+        let settings = SyncSettingsManager.shared
+        settings.isPushEnabled = true
+        settings.isPullEnabled = true
+        settings.pushIntervalSeconds = 30
+        settings.pullIntervalSeconds = 30
+
+        let manager = PeriodicSyncManager.shared
+        manager.resetDatabaseVersionRefusalForTesting()
+        manager.stop()
+        manager.start()
+        #expect(manager.isRunningForTesting)
+        #expect(manager.hasPullTaskForTesting)
+
+        manager.handleDatabaseVersionErrorForTesting(.missing)
+        #expect(manager.isRunningForTesting == false)
+        #expect(manager.hasPushTaskForTesting == false)
+        #expect(manager.hasPullTaskForTesting == false)
+        let reported = await waitUntil {
+            DatabaseCompatibilityManager.shared.incompatibility != nil
+        }
+        #expect(reported)
+
+        manager.start()
+        #expect(manager.isRunningForTesting == false)
+
+        manager.resetDatabaseVersionRefusalForTesting()
+        DatabaseCompatibilityManager.shared.clear()
+    }
 }
