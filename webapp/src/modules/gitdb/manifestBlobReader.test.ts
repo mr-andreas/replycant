@@ -41,41 +41,31 @@ describe("ManifestBlobReader", () => {
     vi.restoreAllMocks();
   });
 
-  // Walks a commit the way production does so tests can prove absence
-  // versus a failed object read instead of swallowing every error as 0.
-  const mockVersionWalk = (opts: {
-    rootEntries?: Array<{ path: string; oid: string; type: "blob" | "tree"; mode: string }>;
-    gitdbEntries?: Array<{ path: string; oid: string; type: "blob" | "tree"; mode: string }>;
+  // Serves commit/tree/blob the way production reads gitdb/version:
+  // filepath first, then root paths only to prove absence.
+  const mockVersionRead = (opts: {
+    rootEntries?: Array<{ path: string; oid?: string; type?: "blob" | "tree"; mode?: string }>;
     versionText?: string;
-    failAt?: "commit" | "rootTree" | "gitdbTree" | "blob";
+    failAt?: "commit" | "blob";
+    blobError?: Error;
   } = {}) => {
     vi.spyOn(git, "readCommit").mockImplementation(async () => {
       if (opts.failAt === "commit") throw new Error("commit missing");
       return { oid: "commit", commit: { tree: "root-oid" }, payload: "" } as never;
     });
     vi.spyOn(git, "readTree").mockImplementation(async ({ oid }: { oid: string }) => {
-      if (oid === "root-oid") {
-        if (opts.failAt === "rootTree") throw new Error("root tree missing");
-        return {
-          oid: "root-oid",
-          tree: opts.rootEntries ?? [
-            { path: "gitdb", oid: "gitdb-oid", type: "tree", mode: "040000" },
-          ],
-        };
-      }
-      if (oid === "gitdb-oid") {
-        if (opts.failAt === "gitdbTree") throw new Error("gitdb tree missing");
-        return {
-          oid: "gitdb-oid",
-          tree: opts.gitdbEntries ?? [
-            { path: "version", oid: "version-oid", type: "blob", mode: "100644" },
-          ],
-        };
-      }
-      throw new Error(`unknown tree ${oid}`);
+      if (oid !== "root-oid") throw new Error(`unknown tree ${oid}`);
+      return {
+        oid: "root-oid",
+        tree: opts.rootEntries ?? [
+          { path: "gitdb", oid: "gitdb-oid", type: "tree", mode: "040000" },
+        ],
+      } as never;
     });
     vi.spyOn(git, "readBlob").mockImplementation(async () => {
-      if (opts.failAt === "blob") throw new Error("blob missing");
+      if (opts.failAt === "blob") {
+        throw opts.blobError ?? Object.assign(new Error("Could not find gitdb/version"), { code: "NotFoundError", name: "NotFoundError" });
+      }
       return {
         blob: new TextEncoder().encode(opts.versionText ?? "1\n"),
         oid: "version-oid",
@@ -85,29 +75,56 @@ describe("ManifestBlobReader", () => {
 
   it("accepts a commit whose gitdb/version matches this client", async () => {
     const reader = createReader();
-    mockVersionWalk();
+    mockVersionRead();
     await expect(reader.assertSupportedDatabaseVersion("commit")).resolves.toBeUndefined();
+  });
+
+  it("reads gitdb/version by filepath even when the gitdb entry has no type", async () => {
+    const reader = createReader();
+    mockVersionRead({
+      rootEntries: [{ path: "gitdb", oid: "gitdb-oid" }],
+    });
+    await expect(reader.readDatabaseVersion("commit")).resolves.toBe(1);
   });
 
   it("treats a missing gitdb/version marker as version 0 when the tree is readable", async () => {
     const reader = createReader();
-    mockVersionWalk({ rootEntries: [] });
+    mockVersionRead({
+      rootEntries: [{ path: "manifests", oid: "manifests-oid", type: "tree", mode: "040000" }],
+      failAt: "blob",
+    });
     await expect(reader.readDatabaseVersion("commit")).resolves.toBe(0);
+    await expect(reader.inspectDatabaseVersion("commit")).resolves.toEqual({
+      version: 0,
+      rootPaths: ["manifests"],
+    });
     await expect(reader.assertSupportedDatabaseVersion("commit")).resolves.toBeUndefined();
   });
 
-  it("throws DatabaseVersionUnreadableError when the tree cannot be read", async () => {
+  it("throws DatabaseVersionUnreadableError when the commit cannot be read", async () => {
     const reader = createReader();
-    mockVersionWalk({ failAt: "rootTree" });
+    mockVersionRead({ failAt: "commit" });
     await expect(reader.readDatabaseVersion("commit")).rejects.toBeInstanceOf(
       DatabaseVersionUnreadableError,
     );
     await expect(reader.readDatabaseVersionOrNull("commit")).resolves.toBeNull();
   });
 
+  it("throws DatabaseVersionUnreadableError when gitdb exists but the version blob cannot be read", async () => {
+    const reader = createReader();
+    mockVersionRead({
+      rootEntries: [{ path: "gitdb", oid: "gitdb-oid" }],
+      failAt: "blob",
+      blobError: new Error("pack index missing"),
+    });
+    await expect(reader.readDatabaseVersion("commit")).rejects.toBeInstanceOf(
+      DatabaseVersionUnreadableError,
+    );
+  });
+
   it("rejects an unsupported gitdb/version marker", async () => {
     const reader = createReader();
-    mockVersionWalk({ versionText: "2\n" });
+    mockVersionRead({ versionText: "2\n" });
     await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/unsupported gitdb database version 2/);
   });
 

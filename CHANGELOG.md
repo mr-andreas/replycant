@@ -36,4 +36,4 @@
 - replycant-importer: ctrl+c now stops in-flight work immediately, flushes pending commits, and a second ctrl+c cancels the flush
 - server: revoking a device or recovery key now blocks it immediately instead of leaving it usable for up to five minutes
 - webapp: fix timeline tiles staying blank after switching commits until you scroll
-- webapp: stop reporting a false database format tampering error on startup when the marker could not be read
+- webapp: stop reporting a false database format tampering error when gitdb/version could not be read or the local cache still stored a compiled format pin

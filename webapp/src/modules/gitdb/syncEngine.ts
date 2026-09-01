@@ -513,10 +513,32 @@ export class SyncEngine {
 
     const pullTimer = syncTimer("syncNow-pull");
     const syncedCommitHash = await this.transport.pullWithRebase(this.snapshot.syncedCommitHash);
-    const observed = await this.manifestBlobReader.readDatabaseVersion(syncedCommitHash);
+    const inspection = await this.manifestBlobReader.inspectDatabaseVersion(syncedCommitHash);
+    const observed = inspection.version;
+    // An earlier build stored the compiled pin as cache format even
+    // for markerless libraries. If the commit we already synced also
+    // observes 0, that stored 1 is not a real format checkpoint.
+    let effectiveCacheFormat = cacheFormat;
+    if (cacheFormat > 0 && previousSyncedHash) {
+      const previousInspection = await this.manifestBlobReader.inspectDatabaseVersion(previousSyncedHash);
+      if (previousInspection.version === 0) {
+        this.log("sync-stale-pin-cache-format", {
+          storedCacheFormat: cacheFormat,
+          previousSyncedHash,
+        });
+        effectiveCacheFormat = 0;
+      }
+    }
+    this.log("sync-observed-format", {
+      pulledHash: syncedCommitHash,
+      observed,
+      cacheFormat: effectiveCacheFormat,
+      storedCacheFormat: cacheFormat,
+      rootPaths: observed === 0 ? inspection.rootPaths : undefined,
+    });
     requireAcceptedDatabaseVersion(observed);
-    requireNoDatabaseVersionDowngrade(observed, cacheFormat);
-    const needsFormatRehydration = observed !== cacheFormat;
+    requireNoDatabaseVersionDowngrade(observed, effectiveCacheFormat);
+    const needsFormatRehydration = observed !== effectiveCacheFormat;
     const pullDurationMs = pullTimer.stop();
     this.log("sync-pull-complete", {
       reason,

@@ -144,6 +144,12 @@ const withVersionTrees = (
   };
 };
 
+const notFoundVersionError = (): Error =>
+  Object.assign(new Error("Could not find file or directory 'gitdb/version'"), {
+    name: "NotFoundError",
+    code: "NotFoundError",
+  });
+
 describe("sync backoff", () => {
   it("grows exponentially and caps", () => {
     expect(computeBackoffMs(0, 3_600_000)).toBe(3_600_000);
@@ -161,6 +167,7 @@ describe("sync backoff", () => {
 
 describe("SyncEngine", () => {
   beforeEach(async () => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     // Injects a fixed KEK so encrypted test fixtures decrypt without age envelopes.
     vi.spyOn(ManifestBlobReader.prototype, "loadKekEpoch").mockResolvedValue(await importTestKek());
@@ -289,6 +296,10 @@ describe("SyncEngine", () => {
       }
       throw new Error("missing manifests tree");
     });
+    gitMock.readBlob = vi.fn().mockImplementation(async ({ filepath }: { filepath?: string }) => {
+      if (filepath === "gitdb/version") throw notFoundVersionError();
+      return { blob: new TextEncoder().encode(""), oid: "blob-oid" };
+    });
     await engine.syncNow("manual");
     expect(snapshots.at(-1)?.unrecoverableError).toBeNull();
     expect(snapshots.at(-1)?.syncedCommitHash).toBe("abc123");
@@ -365,6 +376,10 @@ describe("SyncEngine", () => {
       }
       throw new Error("missing manifests tree");
     });
+    gitMock.readBlob = vi.fn().mockImplementation(async ({ filepath }: { filepath?: string }) => {
+      if (filepath === "gitdb/version") throw notFoundVersionError();
+      return { blob: new TextEncoder().encode(""), oid: "blob-oid" };
+    });
     await engine.syncNow("manual");
     expect(dbMock.applyIncrementalWithCas).toHaveBeenCalledWith(
       expect.objectContaining({ expectedSyncedCommitHash: "old123", nextSyncedCommitHash: "abc123" }),
@@ -378,15 +393,32 @@ describe("SyncEngine", () => {
     dbMock.readSyncedCommitHash.mockResolvedValue("old123");
     dbMock.readCacheFormatVersion.mockResolvedValue(1);
     dbMock.hasAnyRecords.mockResolvedValue(true);
-    gitMock.readTree = vi.fn().mockImplementation(async ({ oid, filepath }: { oid: string; filepath?: string }) => {
-      if (!filepath && oid === "root-tree-oid") {
-        return { oid: "root-tree-oid", tree: [] };
-      }
-      throw new Error("missing manifests tree");
+    vi.spyOn(ManifestBlobReader.prototype, "inspectDatabaseVersion").mockImplementation(async (hash) => {
+      if (hash === "old123") return { version: 1, rootPaths: ["gitdb"] };
+      return { version: 0, rootPaths: ["manifests"] };
     });
     await engine.syncNow("manual");
     expect(dbMock.applyIncrementalWithCas).not.toHaveBeenCalled();
     expect(snapshots.at(-1)?.unrecoverableError).toMatch(/marker was removed after this app last synced format 1/);
+  });
+
+  it("rehydrates when a pin-written cache format 1 sees a real version-1 marker", async () => {
+    const snapshots: SyncSnapshot[] = [];
+    const manifestChanges: ManifestDatabaseChange[] = [];
+    const engine = createEngine(snapshots, manifestChanges);
+    dbMock.readSyncedCommitHash.mockResolvedValue("old123");
+    dbMock.readCacheFormatVersion.mockResolvedValue(1);
+    dbMock.hasAnyRecords.mockResolvedValue(true);
+    vi.spyOn(ManifestBlobReader.prototype, "inspectDatabaseVersion").mockImplementation(async (hash) => {
+      if (hash === "old123") return { version: 0, rootPaths: ["manifests"] };
+      return { version: 1, rootPaths: ["gitdb"] };
+    });
+    await engine.syncNow("manual");
+    expect(snapshots.at(-1)?.unrecoverableError).toBeNull();
+    expect(snapshots.at(-1)?.syncedCommitHash).toBe("abc123");
+    expect(dbMock.applyIncrementalWithCas).not.toHaveBeenCalled();
+    expect(manifestChanges.some((change) => change.type === "fullReplace")).toBe(true);
+    engine.stop();
   });
 
   it("does not latch when the pre-pull marker read fails and later pull succeeds", async () => {

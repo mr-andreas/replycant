@@ -12,11 +12,22 @@ import type { RegisteredManifestRecord } from "./manifestRegistry";
 import type { AgePrivateKeyProvider } from "./syncTypes";
 import type { FsClient } from "./fsClient";
 import {
+  DATABASE_VERSION_PATH,
   DatabaseVersionError,
   DatabaseVersionUnreadableError,
   parseDatabaseVersion,
   requireAcceptedDatabaseVersion,
 } from "./databaseVersion";
+
+// Distinguishes isomorphic-git "path is not in this tree" from a
+// failed object read so absence can be proven instead of guessed.
+const isNotFoundError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
+  const code = (error as Error & { code?: string }).code;
+  if (code === "NotFoundError" || error.name === "NotFoundError") return true;
+  const message = error.message.toLowerCase();
+  return message.includes("does not exist") || message.includes("filepath");
+};
 
 // Serializes decrypted key bytes so pointer rows can persist ready-to-use DEKs.
 const bytesToBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
@@ -90,57 +101,71 @@ export class ManifestBlobReader {
     }
   }
 
-  // Reads gitdb/version by walking a resolved commit tree so absence
-  // is proven from a readable tree. A failed object read is not
-  // treated as version 0: that would look like a stripped marker.
-  async readDatabaseVersion(commitHash: string): Promise<number> {
+  // Reads gitdb/version by filepath after proving the commit exists
+  // so sync can compare the observed format against the local cache.
+  // Absence is version 0 only when the root tree is readable and has
+  // no `gitdb` path. A failed object read is not version 0.
+  async inspectDatabaseVersion(commitHash: string): Promise<{ version: number; rootPaths: string[] }> {
+    let commit;
     try {
-      const commit = await git.readCommit({
+      commit = await git.readCommit({
         fs: this.fs,
         dir: this.gitdir,
         gitdir: this.gitdir,
         oid: commitHash,
         cache: this.cache,
       });
-      const root = await git.readTree({
-        fs: this.fs,
-        dir: this.gitdir,
-        gitdir: this.gitdir,
-        oid: commit.commit.tree,
-        cache: this.cache,
-      });
-      const gitdbEntry = root.tree.find((entry) => entry.path === "gitdb" && entry.type === "tree");
-      if (!gitdbEntry) {
-        return 0;
-      }
-      const gitdbTree = await git.readTree({
-        fs: this.fs,
-        dir: this.gitdir,
-        gitdir: this.gitdir,
-        oid: gitdbEntry.oid,
-        cache: this.cache,
-      });
-      const versionEntry = gitdbTree.tree.find((entry) => entry.path === "version" && entry.type === "blob");
-      if (!versionEntry) {
-        return 0;
-      }
+    } catch (error) {
+      throw new DatabaseVersionUnreadableError(
+        `could not read gitdb/version at ${commitHash}`,
+        { cause: error },
+      );
+    }
+    try {
       const blob = await git.readBlob({
         fs: this.fs,
         dir: this.gitdir,
         gitdir: this.gitdir,
-        oid: versionEntry.oid,
+        oid: commitHash,
+        filepath: DATABASE_VERSION_PATH,
         cache: this.cache,
       });
-      return parseDatabaseVersion(blob.blob as Uint8Array);
+      return {
+        version: parseDatabaseVersion(blob.blob as Uint8Array),
+        rootPaths: [],
+      };
     } catch (error) {
       if (error instanceof DatabaseVersionError) {
         throw error;
+      }
+      let rootPaths: string[];
+      try {
+        const root = await git.readTree({
+          fs: this.fs,
+          dir: this.gitdir,
+          gitdir: this.gitdir,
+          oid: commit.commit.tree,
+          cache: this.cache,
+        });
+        rootPaths = root.tree.map((entry) => entry.path);
+      } catch (treeError) {
+        throw new DatabaseVersionUnreadableError(
+          `could not read gitdb/version at ${commitHash}`,
+          { cause: treeError },
+        );
+      }
+      if (isNotFoundError(error) && !rootPaths.includes("gitdb")) {
+        return { version: 0, rootPaths };
       }
       throw new DatabaseVersionUnreadableError(
         `could not read gitdb/version at ${commitHash}`,
         { cause: error },
       );
     }
+  }
+
+  async readDatabaseVersion(commitHash: string): Promise<number> {
+    return (await this.inspectDatabaseVersion(commitHash)).version;
   }
 
   // Returns the observed format when the tree is readable, or null
