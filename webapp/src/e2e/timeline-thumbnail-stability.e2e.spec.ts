@@ -130,15 +130,19 @@ test.describe("Timeline thumbnail stability", () => {
       { timeout: 10_000, message: "initial viewport should have loaded thumbnails" },
     ).toBeGreaterThan(8);
 
-    await timeline.evaluate(async (node) => {
-      for (let step = 0; step < 6; step += 1) {
-        node.scrollTop = Math.max(0, node.scrollTop - 90);
-        node.dispatchEvent(new Event("scroll", { bubbles: true }));
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      }
+    // Jump past the initial 25-after preload page so later unique OIDs
+    // are fetched. Small down-steps stay inside that already-fetched
+    // window and leave Firefox at ~37 URLs on the 6.75cm grid.
+    await timeline.evaluate((node) => {
+      const row = node.querySelector(".image-row");
+      if (!(row instanceof HTMLElement)) throw new Error("timeline row not rendered");
+      const tileHeight = row.getBoundingClientRect().height;
+      const rowHeight = tileHeight + 2;
+      node.scrollTop = rowHeight * 12;
+      node.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
 
-    // Floors track 6.75cm tiles (fewer columns than the old 4.5cm grid).
+    // Unique LFS URLs must exceed the initial viewport plus one preload page.
     await expect.poll(
       async () => requestedUrls.size,
       { timeout: 10_000, message: "timeline preload should request enough unique thumbnails to churn the cache" },
