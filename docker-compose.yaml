@@ -1,6 +1,8 @@
 services:
   # Write the advertised hostname, preferring REPLYCANT_HOSTNAME over
   # the host's <hostname>.local so TLS SANs and gitd stay in sync.
+  # Docker VMs report names like docker-desktop; refuse those so Mac
+  # users set REPLYCANT_HOSTNAME to the computer's Bonjour name.
   hostname-detect:
     image: alpine:3.23
     environment:
@@ -11,7 +13,22 @@ services:
     command:
       - -ec
       - |
-        printf 'REPLYCANT_HOSTNAME=%s\n' "$${REPLYCANT_HOSTNAME:-$$(hostname).local}" \
+        if [ -z "$${REPLYCANT_HOSTNAME}" ]; then
+          detected=$$(hostname)
+          short=$${detected%%.*}
+          case "$${short}" in
+            docker-desktop|colima|lima|rancher-desktop)
+              echo "hostname-detect: '$${short}' is a Docker VM hostname, not this computer." >&2
+              echo "Set REPLYCANT_HOSTNAME to this machine's .local name, then retry:" >&2
+              echo >&2
+              echo '  echo REPLYCANT_HOSTNAME=$$(hostname) >> .env' >&2
+              echo "  docker compose up" >&2
+              exit 1
+              ;;
+          esac
+          REPLYCANT_HOSTNAME="$${detected}.local"
+        fi
+        printf 'REPLYCANT_HOSTNAME=%s\n' "$${REPLYCANT_HOSTNAME}" \
           > /data/hostname/hostname.env
     network_mode: host
 

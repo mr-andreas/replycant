@@ -45,6 +45,15 @@ that name, and `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT` when those
 defaults are already in use. Already-linked devices need re-onboarding
 after a hostname or port change.
 
+> **Note:** On Mac and Windows, Docker runs in a VM, so hostname
+> auto-detection does not work. Set the name this computer uses on the
+> LAN before starting the stack:
+>
+> ```bash
+> echo REPLYCANT_HOSTNAME=$(hostname) >> .env
+> docker compose up
+> ```
+
 **2. Install the iOS client**
 
 [iOS app on the App Store](https://apps.apple.com/se/app/replycant/id6760653798)

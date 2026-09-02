@@ -34,6 +34,7 @@
 - iosapp: zoomed fullscreen photos no longer reset or shrink when new photos sync in
 - replycant-importer: failed or interrupted commits no longer leave staged-but-deleted files that permanently block push/rebase
 - replycant-importer: ctrl+c now stops in-flight work immediately, flushes pending commits, and a second ctrl+c cancels the flush
+- server: refuse to auto-detect Docker VM hostnames such as docker-desktop; set REPLYCANT_HOSTNAME on Docker Desktop
 - server: revoking a device or recovery key now blocks it immediately instead of leaving it usable for up to five minutes
 - webapp: fix timeline tiles staying blank after switching commits until you scroll
 - webapp: stop reporting a false database format tampering error when gitdb/version could not be read or the local cache still stored a compiled format pin
