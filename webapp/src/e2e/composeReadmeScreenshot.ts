@@ -66,8 +66,8 @@ const optimizePng = (path: string): void => {
 };
 
 // Places the framed iPhone over the Electron window for a single README hero image.
-// Layout matches the product mockup: desktop as the base, iOS overlapping the
-// bottom-right and slightly overhanging the canvas edge.
+// Desktop is the base; the phone overlaps the bottom-right and hangs past
+// both edges by the same amount.
 const composeReadmeScreenshot = (): void => {
   if (!existsSync(DESKTOP_PATH)) {
     throw new Error(`missing desktop screenshot: ${DESKTOP_PATH}`);
@@ -110,9 +110,11 @@ const composeReadmeScreenshot = (): void => {
     ]);
 
     const ios = imageSize(iosShadowPath);
-    // Flush desktop to the top-left; hang the phone past the bottom-right edge.
+    // Flush desktop to the top-left; hang the phone equally past the
+    // right and bottom edges of the Electron window.
     const iosX = desktop.width - Math.round(ios.width * 0.78);
-    const iosY = desktop.height - Math.round(ios.height * 0.72);
+    const overhang = iosX + ios.width - desktop.width;
+    const iosY = desktop.height - ios.height + overhang;
     const canvasWidth = Math.max(desktop.width, iosX + ios.width);
     const canvasHeight = Math.max(desktop.height, iosY + ios.height);
 
