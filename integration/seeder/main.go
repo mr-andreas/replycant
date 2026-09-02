@@ -26,17 +26,34 @@ type seederConfig struct {
 	databaseVersion int
 }
 
-// mustRunGit executes one git command and fails fast with stderr output.
-func mustRunGit(dir string, args ...string) {
+// runGit executes one git command and returns stderr output on failure so
+// tests can fail the case instead of aborting the process.
+func runGit(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "git %v failed: %s\n", args, string(out))
-		os.Exit(1)
+		return fmt.Errorf("git %v failed: %s", args, strings.TrimSpace(string(out)))
 	}
+	return nil
+}
+
+// disableAutoMaintenance stops background git gc from deleting object
+// directories while the seeder is still adding files.
+func disableAutoMaintenance(dir string) error {
+	configs := [][2]string{
+		{"receive.autogc", "false"},
+		{"gc.auto", "0"},
+		{"maintenance.auto", "false"},
+	}
+	for _, pair := range configs {
+		if err := runGit(dir, "config", pair[0], pair[1]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeFile ensures directories exist before writing fixture files.
@@ -157,7 +174,12 @@ func initializeRepository(cfg seederConfig) error {
 	}
 	defer os.RemoveAll(workDir)
 
-	mustRunGit("", "init", "--initial-branch=main", workDir)
+	if err := runGit("", "init", "--initial-branch=main", workDir); err != nil {
+		return err
+	}
+	if err := disableAutoMaintenance(workDir); err != nil {
+		return fmt.Errorf("disable worktree auto maintenance: %w", err)
+	}
 	if err := writeFile(filepath.Join(workDir, "pubkeys", "integration-device.pub"), []byte(identity.PublicKeySSH+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write pubkey: %w", err)
 	}
@@ -178,13 +200,21 @@ func initializeRepository(cfg seederConfig) error {
 	if err := writeFile(filepath.Join(workDir, "manifests", "test", "test.yaml"), manifestEncrypted, 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
-	mustRunGit(workDir, "add", ".")
-	mustRunGit(workDir, "-c", "user.name=integration", "-c", "user.email=integration@replycant.local", "commit", "-m", "seed integration repo")
-	mustRunGit(workDir, "remote", "add", "origin", "file://"+cfg.bareRepo)
+	if err := runGit(workDir, "add", "."); err != nil {
+		return err
+	}
+	if err := runGit(workDir, "-c", "user.name=integration", "-c", "user.email=integration@replycant.local", "commit", "-m", "seed integration repo"); err != nil {
+		return err
+	}
+	if err := runGit(workDir, "remote", "add", "origin", "file://"+cfg.bareRepo); err != nil {
+		return err
+	}
 	if err := appendMediaCommits(workDir, kek, 1, cfg); err != nil {
 		return err
 	}
-	mustRunGit(workDir, "push", "-u", "origin", "main")
+	if err := runGit(workDir, "push", "-u", "origin", "main"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -204,8 +234,15 @@ func appendMediaOnly(cfg seederConfig) error {
 		return fmt.Errorf("create temp workdir: %w", err)
 	}
 	defer os.RemoveAll(workDir)
-	mustRunGit("", "clone", "file://"+cfg.bareRepo, workDir)
-	mustRunGit(workDir, "checkout", "main")
+	if err := runGit("", "clone", "file://"+cfg.bareRepo, workDir); err != nil {
+		return err
+	}
+	if err := disableAutoMaintenance(workDir); err != nil {
+		return fmt.Errorf("disable worktree auto maintenance: %w", err)
+	}
+	if err := runGit(workDir, "checkout", "main"); err != nil {
+		return err
+	}
 	if err := gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir); err != nil {
 		return err
 	}
@@ -229,8 +266,12 @@ func appendMediaOnly(cfg seederConfig) error {
 	if err := appendMediaCommits(workDir, kek, epoch, cfg); err != nil {
 		return err
 	}
-	mustRunGit(workDir, "pull", "--rebase", "origin", "main")
-	mustRunGit(workDir, "push", "origin", "main")
+	if err := runGit(workDir, "pull", "--rebase", "origin", "main"); err != nil {
+		return err
+	}
+	if err := runGit(workDir, "push", "origin", "main"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -246,8 +287,10 @@ func appendMediaCommits(workDir string, kek []byte, epoch int, cfg seederConfig)
 				return err
 			}
 		}
-		mustRunGit(workDir, "add", ".")
-		mustRunGit(
+		if err := runGit(workDir, "add", "."); err != nil {
+			return err
+		}
+		if err := runGit(
 			workDir,
 			"-c",
 			"user.name=integration",
@@ -256,7 +299,9 @@ func appendMediaCommits(workDir string, kek []byte, epoch int, cfg seederConfig)
 			"commit",
 			"-m",
 			fmt.Sprintf("seed media batch %d/%d", commitIdx+1, cfg.commitCount),
-		)
+		); err != nil {
+			return err
+		}
 	}
 	return nil
 }

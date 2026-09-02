@@ -90,102 +90,13 @@ struct ManifestManagerIntegrationTests {
         """
     }
 
-    // Writes manifest YAML to git commits for integration tests without requiring full encryption bootstrap.
-    private final class TestGitCommitService: GitCommitService {
-        private let repository: Repository
-        private let deviceSpace: String
-
-        // Shards fixture ids so commit paths mirror production manifest layout.
-        private func shardName(_ name: String) -> String {
-            if name.count < 5 {
-                return name
-            }
-            let first = String(name.prefix(2))
-            let second = String(name.dropFirst(2).prefix(2))
-            let rest = String(name.dropFirst(4))
-            return "\(first)/\(second)/\(rest)"
-        }
-
-        // Stores repository dependencies needed to persist manifest fixtures as git commits.
-        init(repository: Repository, deviceSpace: String) {
-            self.repository = repository
-            self.deviceSpace = deviceSpace
-        }
-
-        // Persists provided manifest items to git so manager syncAfterCommit can update the database.
-        func createCommit(message: String, items: [GitCommitItem]) async throws {
-            var files: [(path: String, content: String)] = []
-            for item in items {
-                guard case .manifest(let manifest) = item else { continue }
-                if let original = manifest as? OriginalManifest {
-                    let takenAt = original.spec.takenAt.map { ISO8601DateFormatter().string(from: $0) }
-                    let takenLine = takenAt.map { "  takenAt: \($0)\n" } ?? ""
-                    let guessedTakenAt = original.spec.guessedTakenAt.map { ISO8601DateFormatter().string(from: $0) }
-                    let guessedLine = guessedTakenAt.map { "  guessedTakenAt: \($0)\n" } ?? ""
-                    let yaml = """
-                    apiVersion: media.replycant.com/v1alpha1
-                    kind: Original
-                    metadata:
-                      name: \(original.metadata.name)
-                      deviceSpace: \(original.metadata.deviceSpace)
-                    spec:
-                      id: \(original.id)
-                      sha256: \(original.spec.sha256)
-                      path: \(original.spec.path)
-                      filesize: \(original.spec.filesize)
-                      mediaType: \(original.spec.mediaType)
-                      width: \(original.spec.width)
-                      height: \(original.spec.height)
-                      isFavorite: \(original.spec.isFavorite ? "true" : "false")
-                      isHidden: \(original.spec.isHidden ? "true" : "false")
-                      createdAt: 2024-01-01T00:00:00Z
-                    \(takenLine)\(guessedLine)status: {}
-                    """
-                    files.append(("manifests/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(original.id)).yaml", yaml))
-                }
-            }
-            try repository.createCommit(message: message, files: files)
-        }
-
-        // Satisfies protocol requirements for tests that only exercise commit + readback behavior.
-        @available(iOS 13.0, macOS 10.15, *)
-        func addLFSData(_ data: Data, for manifest: any Manifest, progressHandler: ((Int64, Int64) -> Void)?) async throws -> LFSPointer {
-            progressHandler?(Int64(data.count), Int64(data.count))
-            return LFSPointer(oid: "test-oid", size: Int64(data.count))
-        }
-
-        // Satisfies streaming encrypted upload API so integration tests can compile without exercising LFS transport internals.
-        @available(iOS 13.0, macOS 10.15, *)
-        func addLFSFileEncrypting(
-            at fileURL: URL,
-            dek: Data,
-            oid: String,
-            size: Int64,
-            for manifest: any Manifest,
-            progressHandler: ((Int64, Int64) -> Void)?
-        ) async throws -> LFSPointer {
-            _ = fileURL
-            _ = dek
-            _ = manifest
-            progressHandler?(size, size)
-            return LFSPointer(oid: oid, size: size)
-        }
-
-        // Satisfies entry-based upload API introduced for ThumbnailSet multi-pointer commits.
-        @available(iOS 13.0, macOS 10.15, *)
-        func addLFSData(
-            _ data: Data,
-            apiVersion: String,
-            kind: String,
-            name: String,
-            progressHandler: ((Int64, Int64) -> Void)?
-        ) async throws -> LFSPointer {
-            progressHandler?(Int64(data.count), Int64(data.count))
-            return LFSPointer(oid: "test-oid", size: Int64(data.count))
-        }
-
-        // Satisfies protocol cancellation path so integration tests can compile without exercising network cancellation.
-        func cancelActiveLFSUpload() {}
+    // Uses production encryption so syncAfterCommit can decrypt fixture commits.
+    private func makeCommitService(repository: Repository) -> DefaultGitCommitService {
+        DefaultGitCommitService(
+            repository: repository,
+            deviceSpace: "test-device",
+            lfsClient: GitLFS(serverURL: "http://test.invalid")
+        )
     }
 
     // Creates a disposable repository/database pair for end-to-end manager behavior tests.
@@ -195,11 +106,12 @@ struct ManifestManagerIntegrationTests {
             .path
         try Git.initialize()
         let repository = try Repository.create(at: repoPath, bare: false)
-        // Production writes gitdb/version in the bootstrap commit, so a
-        // fixture repo without it is refused by every write path.
+        // Production writes gitdb/version and the first KEK epoch together,
+        // so a fixture without either is refused by write or hydrate paths.
+        let bootstrap = try bootstrapEncryption(in: repository)
         try repository.createCommit(
             message: "seed database version",
-            files: [("gitdb/version", "1\n")]
+            files: bootstrap.files
         )
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manifest-manager-db-\(UUID().uuidString).sqlite")
@@ -215,7 +127,7 @@ struct ManifestManagerIntegrationTests {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
 
-        let commitService = TestGitCommitService(repository: repository, deviceSpace: "test-device")
+        let commitService = makeCommitService(repository: repository)
         let manager = DefaultManifestManager(repository: repository, database: database, commitService: commitService, registry: registry)
 
         let manifest = OriginalManifest(
@@ -259,20 +171,20 @@ struct ManifestManagerIntegrationTests {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
 
-        let bootstrap = try bootstrapEncryption(in: repository)
+        let activeKEK = try KEKEpochManager(repository: repository).loadCurrentKEK()
         let encryptedSeed = try encryptManifest(
             originalManifestYAML(id: "img-1", takenAt: "2024-01-01T10:00:00Z", guessedTakenAt: "2024-01-01T10:00:00Z"),
-            kek: bootstrap.kek,
-            epoch: bootstrap.epoch
+            kek: activeKEK.kek,
+            epoch: activeKEK.epoch
         )
         try repository.createCommit(
             message: "seed",
-            files: bootstrap.files + [
+            files: [
                 ("manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("img-1")).yaml", encryptedSeed)
             ]
         )
 
-        let commitService = TestGitCommitService(repository: repository, deviceSpace: "test-device")
+        let commitService = makeCommitService(repository: repository)
         let manager = DefaultManifestManager(repository: repository, database: database, commitService: commitService, registry: registry)
 
         let beforeSync: [OriginalManifest] = try await manager.loadAllManifests(deviceSpace: "test-device")
@@ -296,7 +208,7 @@ struct ManifestManagerIntegrationTests {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
 
-        let commitService = TestGitCommitService(repository: repository, deviceSpace: "test-device")
+        let commitService = makeCommitService(repository: repository)
         let manager = DefaultManifestManager(repository: repository, database: database, commitService: commitService, registry: registry)
 
         let janA = OriginalManifest(
@@ -410,7 +322,7 @@ struct ManifestManagerIntegrationTests {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
 
-        let commitService = TestGitCommitService(repository: repository, deviceSpace: "test-device")
+        let commitService = makeCommitService(repository: repository)
         let manager = DefaultManifestManager(repository: repository, database: database, commitService: commitService, registry: registry)
 
         let included = OriginalManifest(
@@ -489,7 +401,7 @@ struct ManifestManagerIntegrationTests {
         defer { try? FileManager.default.removeItem(at: dbURL) }
         let registry = makeRegistry()
         let database = try ManifestDatabase(databaseURL: dbURL, registry: registry)
-        let commitService = TestGitCommitService(repository: repository, deviceSpace: "test-device")
+        let commitService = makeCommitService(repository: repository)
         let manager = DefaultManifestManager(
             repository: repository,
             database: database,

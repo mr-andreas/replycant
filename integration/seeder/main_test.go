@@ -197,6 +197,17 @@ func TestSeedRepositoryOmitsMarkerForVersionZero(t *testing.T) {
 	require.NoError(t, gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir))
 }
 
+// TestDisableAutoMaintenanceOnSeederWorktree keeps background git gc from
+// deleting object dirs while the seeder is still adding files.
+func TestDisableAutoMaintenanceOnSeederWorktree(t *testing.T) {
+	t.Parallel()
+	workDir := t.TempDir()
+	runGitForTest(t, "", "init", "--initial-branch=main", workDir)
+	require.NoError(t, disableAutoMaintenance(workDir))
+	require.Equal(t, "0", runGitForTest(t, workDir, "config", "--get", "gc.auto"))
+	require.Equal(t, "false", runGitForTest(t, workDir, "config", "--get", "maintenance.auto"))
+}
+
 // TestValidateConfigRejectsInvalidCommitSplit keeps seeding failures explicit for bad CLI input.
 func TestValidateConfigRejectsInvalidCommitSplit(t *testing.T) {
 	t.Parallel()
