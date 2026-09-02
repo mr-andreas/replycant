@@ -19,12 +19,38 @@ When a change is significant, update `CHANGELOG.md` in the same commit.
 
 ## Entry format
 
-- Use `- <component>: <lowercase user-facing summary>`.
+Group entries under `####` headings. Each bullet is
+`- <lowercase user-facing summary>` with no component prefix.
+
 - Components: `iosapp`, `webapp`, `server`, `caserver`, `gitdb`,
-  `git-replycant`.
-- For cross-cutting entries, omit the component prefix.
-- Within each category, keep entries sorted by component so related changes
-  stay adjacent. Put cross-cutting entries first.
+  `git-replycant`, `replycant-importer`.
+- Heading map: `iosapp` → `iOS app`; `webapp` → `Desktop app`;
+  `server` / `caserver` → `Server`; `git-replycant` and
+  `replycant-importer` keep their slugs.
+- Group by the product the user notices, not the implementing
+  component. `gitdb` is shared: use `Server` only for hosted-stack
+  changes; otherwise put it under the client or as a cross-cutting
+  bullet.
+- Emit a heading only when it has at least one entry.
+- Cross-cutting bullets go first, with no heading.
+- Then headings in this order: `iOS app`, `Desktop app`, `Server`,
+  `git-replycant`, `replycant-importer`.
+
+```markdown
+### Fixes
+
+- add regenerable product screenshots in the README
+
+#### iOS app
+
+- photo uploads now refuse an unsupported `gitdb/version`
+
+#### replycant-importer
+
+- failed commits no longer leave staged-but-deleted files
+```
+
+Do not write `- iosapp: ...` or any other `component:` prefix.
 
 ## One entry per feature
 
