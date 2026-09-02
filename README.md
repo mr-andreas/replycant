@@ -47,7 +47,7 @@ after a hostname or port change.
 
 **2. Install the iOS client**
 
-[iOS app on the App Store](https://apps.apple.com/) *(coming soon)*
+[iOS app on the App Store](https://apps.apple.com/se/app/replycant/id6760653798)
 
 **3. Link a device**
 
