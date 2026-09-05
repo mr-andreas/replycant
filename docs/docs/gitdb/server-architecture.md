@@ -4,23 +4,28 @@ gitd is a Go-based Git server that provides authenticated access to repositories
 
 ## Overview
 
-gitd runs three HTTP servers. Git and CA ports default to 8443 and 8080;
-compose publishes them from `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT`,
-and gitd listens on the same values via `--addr` and `--ca-addr` so QR
-and `/config.json` advertise the host-facing Git port.
+gitd runs three HTTP servers. Git and CA ports default to 8443 and 8080, set
+via `--addr` and `--ca-addr`, and the QR and `/config.json` payloads advertise
+the Git port.
 
 | Server | Default port | Protocol | Purpose |
 |--------|--------------|----------|---------|
-| Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP, native `/lfs`, media proxies |
+| Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP, native `/lfs`, `/pair`, media proxies |
 | CA Server | 8080 | HTTP | Certificate distribution for device onboarding |
 | Internal LFS | 8085 | HTTP | Read-only LFS for compose-network services |
 
-Only the Git and CA ports are published to the host. Media backends sit on the
-internal Docker network:
+**gitd publishes no host ports.** The Git listener is bound to an embedded
+`tsnet` node, so gitd is reachable only from inside the deployment's tailnet, at
+`gitd.replycant.internal`. `hsproxy` is the only service with a published port,
+and it binds to loopback unless the deployment is in manual-exposure mode. See
+[Connectivity](./connectivity.md) for the whole topology.
+
+Media backends sit on the internal Docker network:
 
 | Route | Implementation | Purpose |
 |-------|----------------|---------|
 | `/lfs` | in-process LFS store (`--lfs-dir`) | Git LFS object storage |
+| `/pair` | headscale API + discovery client | Mints a tailnet credential and seals a pairing record for a device being onboarded |
 | `/decryptd` | reverse proxy to decryptd (`:8084`) | On-the-fly decryption of LFS objects |
 | `/transcoded` | reverse proxy to transcoded (`:8082`) | HLS transcoding for video playback |
 
@@ -85,10 +90,11 @@ The Git server handles all Git Smart HTTP operations with mTLS authentication.
 2. Server extracts P-256 public key from certificate
 3. Server validates key against authorized keys in `pubkeys/` directory
 4. If authorized and the path is under `/lfs`, the native LFS handler serves batch/upload/download from the file-backed store
-5. If authorized and the path matches `/decryptd/*` or `/transcoded/*`, the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
-6. Otherwise, request is proxied to `git-http-backend` via CGI
-7. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist on disk
-8. If validation succeeds, refs are updated; otherwise the push is rejected atomically
+5. If authorized and the path is `/pair`, gitd mints a headscale pre-auth key, seals a pairing record, and publishes it to the discovery API
+6. If authorized and the path matches `/decryptd/*` or `/transcoded/*`, the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
+7. Otherwise, request is proxied to `git-http-backend` via CGI
+8. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist on disk
+9. If validation succeeds, refs are updated; otherwise the push is rejected atomically
 
 ### CGI Environment
 
@@ -193,7 +199,15 @@ gitd \
   --transcoded-url http://transcoded:8082 \
   --addr :8443 \
   --ca-addr :8080 \
-  --cache-ttl 5m
+  --cache-ttl 5m \
+  --tsnet-dir /data/tsnet \
+  --tsnet-control-url http://headscale:8080 \
+  --tsnet-auth-key-file /data/tailnet/gitd.authkey \
+  --tailnet-domain replycant.internal \
+  --headscale-api-url http://headscale:8080 \
+  --headscale-api-key-file /data/tailnet/headscale.apikey \
+  --headscale-client-url https://abc123.tunnel.replycant.com \
+  --discovery-url https://discovery.replycant.com
 ```
 
 | Flag | Required | Default | Description |
@@ -210,6 +224,38 @@ gitd \
 | `--addr` | No | `:8443` | Git server listen address |
 | `--ca-addr` | No | `:8080` | CA distribution listen address |
 | `--cache-ttl` | No | `5m` | Key cache TTL |
+
+### Tailnet flags
+
+Setting `--tsnet-dir` moves the Git listener onto the tailnet instead of a host
+port. Left unset, gitd keeps listening on a host port, which is what LAN-only
+setups and the integration harness use.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--tsnet-dir` | No | - | Tailnet node state directory; set to serve the Git listener on the tailnet |
+| `--tsnet-control-url` | With `--tsnet-dir` | - | headscale control URL as seen from the compose network |
+| `--tsnet-hostname` | No | `gitd` | Name to register on the tailnet |
+| `--tsnet-auth-key-file` | With `--tsnet-dir` | - | File holding the pre-auth key, kept out of logs and the process list |
+| `--tailnet-domain` | With `--tsnet-dir` | - | MagicDNS base domain, used to advertise the tailnet Git URL |
+
+### Pairing flags
+
+These three are all-or-nothing. A partial configuration would start cleanly and
+then fail at the moment a user tries to pair a device. Leave all three unset to
+run without tailnet pairing; `/pair` is then not offered.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--headscale-api-url` | Together | - | headscale API base URL used to mint per-device pre-auth keys |
+| `--headscale-api-key-file` | Together | - | File holding the headscale API key |
+| `--headscale-client-url` | Together | - | headscale URL advertised to pairing devices: the tunnel hostname, or your own DNS name in manual mode |
+| `--headscale-user` | No | `replycant` | headscale user that paired devices register under |
+| `--discovery-url` | No | - | Discovery API base URL, with the slot prepended as a subdomain. Unset selects manual-exposure delivery |
+
+`--discovery-url` is deliberately outside the all-or-nothing group: its presence
+is what chooses between publishing the sealed record to the hosted API and
+handing it back for the authorizing device to display as a QR code.
 
 ## Webapp Proxy mTLS Bridging
 

@@ -166,7 +166,98 @@ Displayed by new device during linking:
 | `age_pubkey` | Bech32-encoded age X25519 public key for encryption |
 | `name` | Human-readable device name |
 | `uuid` | Unique device identifier (prevents name collisions) |
-| `ca_hash` | SHA256 of CA certificate DER bytes (hex, 64 chars). Present only in webapp QR codes. |
+| `ca_hash` | SHA256 of CA certificate DER bytes (hex, 64 chars). Present only when the new device already knows the CA. |
+| `pairing_secret` | Base64url secret authenticating the discovery record. Present only in tailnet pairing, where the device does not know the CA yet. |
+
+`ca_hash` and `pairing_secret` are mutually exclusive, and which one appears
+says which flow is running. `ca_hash` means the new device already discovered the
+server and is asking the existing device to confirm they agree on the CA.
+`pairing_secret` means the new device cannot reach the server at all and needs
+the existing device to send it everything.
+
+## Tailnet Pairing
+
+A device that is not on the server's network cannot discover anything: gitd
+publishes no port, and joining the tailnet requires credentials it does not
+have. Tailnet pairing solves that by having an already-paired device fetch the
+credentials and publish them where the new device can collect them. See
+[Connectivity](./connectivity.md) for the transport this sets up.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    participant New as New device
+    participant Disc as Discovery API
+    participant Old as Paired device
+    participant GitServer as gitd
+    participant HS as headscale
+
+    New->>New: Generate identity and a fresh pairing secret
+    New->>New: Derive slot and wrap key from the secret
+    New->>Old: Show QR {pubkey, age_pubkey, name, uuid, pairing_secret}
+    Old->>Old: Commit pubkey to pubkeys/
+    Old->>GitServer: Push new public key
+    Old->>GitServer: POST /pair {pairing_secret, age_pubkey}
+    GitServer->>HS: Mint a single-use pre-auth key
+    GitServer->>GitServer: Seal the record to the age key, wrap under the secret
+    GitServer->>Disc: PUT sealed record at the slot
+    GitServer-->>Old: Sealed record (opaque to the caller)
+    New->>Disc: GET the slot until a record appears
+    Disc-->>New: Sealed record, then deletes it
+    New->>New: Unwrap, decrypt, check the CA against the hostname label
+    New->>HS: Join the tailnet with the pre-auth key
+    New->>GitServer: Clone over the tailnet
+```
+
+### Step-by-step
+
+1. **New device mints a pairing secret.** 32 random bytes, generated per
+   attempt, held in memory and never persisted. Two values are derived from it
+   with domain separation: the discovery slot that addresses the record, and the
+   wrap key that authenticates it.
+2. **New device shows its QR**, with `pairing_secret` in place of `ca_hash`.
+3. **Paired device commits and pushes** the new public key, exactly as in normal
+   device linking.
+4. **Paired device calls `POST /pair`** on gitd with the secret and age key from
+   the QR. Only a device already in `pubkeys/` can reach this endpoint, because
+   it is behind the same mTLS gate as everything else — which matters, since the
+   endpoint mints a tailnet credential.
+5. **gitd mints a pre-auth key** over headscale's API, builds the record, seals
+   it, and publishes it at the slot. The request is held open until the record
+   is stored, so a downstream failure surfaces as an error rather than as an
+   unexplained timeout on the other device.
+6. **New device polls its slot** until the record appears. The API deletes it on
+   read, and it expires after 10 minutes regardless.
+7. **New device opens the record**, then checks that the CA inside it hashes to
+   the label in the headscale hostname. That is what stops the record from
+   naming a CA the deployment does not own.
+8. **New device joins the tailnet** with the pre-auth key and clones gitd at its
+   MagicDNS name.
+
+### Why the secret is needed
+
+The new device holds no trust anchor: it does not know the CA, so nothing in the
+record can be checked against a signature it already trusts. Meanwhile the slot
+travels in the clear as a DNS hostname, and device public keys are published in
+`pubkeys/`.
+
+Encrypting the record to the device's age key alone therefore gives
+confidentiality but no writer authentication — anyone could plant a record
+naming their own CA and headscale, and the device would enroll into their
+tailnet. The AEAD wrap under the pairing secret is what makes that impossible,
+because the secret only ever appeared on a screen in front of the user.
+
+Both layers bind the slot as associated data, so a valid record cannot be
+relocated to a different slot.
+
+### Manual-exposure deployments
+
+When the operator publishes headscale themselves, gitd has no discovery API to
+publish to. It still mints the credential and seals the record, and returns it
+to the authorizing device, which renders it as a second QR code for the new
+device to scan. The record and its protections are identical; only the delivery
+channel changes.
 
 ## Webapp-First Onboarding
 
@@ -252,5 +343,6 @@ An authorized device connects on its first attempt after the pubkey push lands o
 ## Related Documentation
 
 - [Authentication](./authentication.md) - mTLS protocol and certificate details
+- [Connectivity](./connectivity.md) - the tailnet transport pairing sets up
 - [Server Architecture](./server-architecture.md) - Server-side bootstrap mode implementation
 - [Device Identity](../replycant-ios/device-identity.md) - Immutable identity lifecycle

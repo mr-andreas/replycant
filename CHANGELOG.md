@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- all client-to-server traffic now runs over a private tailnet, so every device must be re-onboarded. The server publishes no ports for git, LFS, or media any more, and there is no LAN URL to enter; new devices join by showing a pairing QR to an already-paired device. Existing devices cannot be migrated: wipe app state and pair again. Bring the stack up with `COMPOSE_PROFILES=tunnel` for hosted discovery, or set `REPLYCANT_HEADSCALE_URL` and `REPLYCANT_HSPROXY_BIND=0.0.0.0` to expose the control plane through your own router instead
+
+### Features
+
+- reach your library from anywhere without forwarding a router port or running dynamic dns. devices join a private network with the server, media travels directly between them where possible, and the hosted services that make the introduction cannot read any of it
+
+
 ## 0.2.1 - 2026-09-07
 
 ### Fixes
