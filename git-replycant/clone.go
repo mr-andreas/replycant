@@ -88,7 +88,7 @@ func RunCloneCommand(options CloneOptions) error {
 		return err
 	}
 
-	qrPayload, err := gitcrypt.BuildPublicKeyQrPayload(local.Identity, caHash)
+	qrPayload, err := gitcrypt.BuildPublicKeyQrPayload(local.Identity, caHash, "")
 	if err != nil {
 		return err
 	}

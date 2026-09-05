@@ -140,7 +140,7 @@ func TestBuildPublicKeyQrPayload(t *testing.T) {
 		DeviceName:   "name",
 		DeviceUUID:   "uuid",
 	}
-	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "caf00d")
+	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "caf00d", "")
 	require.NoError(t, err)
 
 	var payload map[string]string
@@ -220,4 +220,68 @@ func TestIdentityIsPerRepo(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, idA.Identity.DeviceUUID, idB.Identity.DeviceUUID)
 	assert.NotEqual(t, idA.ConfigDirectory, idB.ConfigDirectory)
+}
+
+// The tailnet onboarding path has no CA to hash yet, so the QR must be able to
+// carry a pairing secret instead. Without this a device that cannot reach the
+// server has no way to ask to be onboarded.
+func TestBuildPublicKeyQrPayloadCarriesPairingSecret(t *testing.T) {
+	t.Parallel()
+	identity := gitcrypt.Identity{
+		PublicKeySSH: "ssh",
+		AgePublicKey: "age",
+		DeviceName:   "name",
+		DeviceUUID:   "uuid",
+	}
+	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "", "cGFpcmluZy1zZWNyZXQ")
+	require.NoError(t, err)
+
+	var payload map[string]string
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	assert.Equal(t, "cGFpcmluZy1zZWNyZXQ", payload["pairing_secret"])
+	// Absent rather than empty, so a scanner can tell the device is asking for
+	// the tailnet path rather than presenting an unknown trust root.
+	_, present := payload["ca_hash"]
+	assert.False(t, present, "ca_hash must be omitted when the CA is unknown")
+}
+
+// A LAN device opting into the tailnet knows both, and dropping either would
+// silently pick the wrong onboarding path.
+func TestBuildPublicKeyQrPayloadCarriesBothWhenKnown(t *testing.T) {
+	t.Parallel()
+	identity := gitcrypt.Identity{
+		PublicKeySSH: "ssh",
+		AgePublicKey: "age",
+		DeviceName:   "name",
+		DeviceUUID:   "uuid",
+	}
+	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "caf00d", "cGFpcmluZy1zZWNyZXQ")
+	require.NoError(t, err)
+
+	var payload map[string]string
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	assert.Equal(t, "caf00d", payload["ca_hash"])
+	assert.Equal(t, "cGFpcmluZy1zZWNyZXQ", payload["pairing_secret"])
+}
+
+// Whitespace-only values come from templating and shell interpolation. Treated
+// as present they would produce a QR advertising an onboarding path the device
+// cannot actually complete.
+func TestBuildPublicKeyQrPayloadIgnoresBlankValues(t *testing.T) {
+	t.Parallel()
+	identity := gitcrypt.Identity{
+		PublicKeySSH: "ssh",
+		AgePublicKey: "age",
+		DeviceName:   "name",
+		DeviceUUID:   "uuid",
+	}
+	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "   ", "\t")
+	require.NoError(t, err)
+
+	var payload map[string]string
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	for _, field := range []string{"ca_hash", "pairing_secret"} {
+		_, present := payload[field]
+		assert.False(t, present, "%s must be omitted when blank", field)
+	}
 }

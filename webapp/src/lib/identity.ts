@@ -402,16 +402,30 @@ export const buildMtlsHeaders = (
 });
 
 // Serializes iOS-compatible linking payload so scanner validation can parse public key identity metadata.
+//
+// caHash and pairingSecret correspond to the two ways a device can be
+// onboarded, and each is omitted when absent:
+//
+// - caHash is present when this device could already reach the server and
+//   fetch its CA, which is the LAN path. It ties the request to one trust root.
+// - pairingSecret is present when this device cannot reach the server at all,
+//   which is the tailnet path. The device has no trust anchor yet, so it
+//   generates a secret and waits for a record sealed under it.
+//
+// They are omitted rather than sent empty so a scanner can tell which
+// onboarding path the device is asking for.
 export const buildPublicKeyQrPayload = (
   identity: Pick<DecryptedIdentity, "publicKeySsh" | "deviceName" | "deviceUUID" | "agePublicKey">,
-  caHash: string,
+  caHash?: string,
+  pairingSecret?: string,
 ): string =>
   JSON.stringify({
     pubkey: identity.publicKeySsh,
     age_pubkey: identity.agePublicKey,
     name: identity.deviceName,
     uuid: identity.deviceUUID,
-    ca_hash: caHash,
+    ...(caHash?.trim() ? { ca_hash: caHash.trim() } : {}),
+    ...(pairingSecret?.trim() ? { pairing_secret: pairingSecret.trim() } : {}),
   });
 
 // Hashes canonical certificate bytes so iOS and webapp can compare CA identity deterministically.

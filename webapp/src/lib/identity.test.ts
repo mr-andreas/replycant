@@ -178,6 +178,41 @@ describe("identity lifecycle", () => {
     expect(payload.ca_hash).toBe("abc123");
   });
 
+  it("carries a pairing secret when the CA is not known yet", async () => {
+    const record = await createIdentity({
+      keySource: { wrap: "password", password: "secret" },
+      deviceName: "my-device",
+      deviceUUID: "uuid-1",
+    });
+    const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
+
+    const payload = JSON.parse(
+      buildPublicKeyQrPayload(unlocked, undefined, "cGFpcmluZy1zZWNyZXQ"),
+    ) as Record<string, string>;
+
+    expect(payload.pairing_secret).toBe("cGFpcmluZy1zZWNyZXQ");
+    // Omitted rather than empty, so a scanner routes this to the tailnet
+    // onboarding path instead of enforcing a trust root we never saw.
+    expect("ca_hash" in payload).toBe(false);
+  });
+
+  it("omits blank onboarding fields so the scanner can tell the paths apart", async () => {
+    const record = await createIdentity({
+      keySource: { wrap: "password", password: "secret" },
+      deviceName: "my-device",
+      deviceUUID: "uuid-1",
+    });
+    const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
+
+    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, "   ", "")) as Record<
+      string,
+      string
+    >;
+
+    expect("ca_hash" in payload).toBe(false);
+    expect("pairing_secret" in payload).toBe(false);
+  });
+
   it("hashes canonical certificate bytes independent of PEM formatting", async () => {
     const compactPem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----";
     const spacedPem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\r\n-----END CERTIFICATE-----\n";

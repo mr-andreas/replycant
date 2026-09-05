@@ -43,6 +43,54 @@ struct QRScanValidationTests {
         #expect(payload.caHash == "abc123")
     }
 
+    // A device that cannot reach the server has no CA to hash, so it asks to be
+    // onboarded over the tailnet by carrying a pairing secret instead. Losing
+    // this field would leave the scanning device unable to tell gitd which slot
+    // to seal a pairing record for.
+    @Test func devicePublicKeyExtractsPairingSecret() {
+        let code = #"{"pubkey":"ssh-ed25519 AAAA test","age_pubkey":"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","name":"laptop","uuid":"abcd","pairing_secret":"cGFpcmluZy1zZWNyZXQ"}"#
+        let decision = QRScanValidation.validate(code: code, mode: .devicePublicKey)
+
+        guard case .acceptDevicePublicKey(let payload) = decision else {
+            Issue.record("Expected device payload acceptance")
+            return
+        }
+
+        #expect(payload.pairingSecret == "cGFpcmluZy1zZWNyZXQ")
+        // Absent rather than empty, so the scanning device routes to the
+        // tailnet path instead of enforcing a trust root the sender never saw.
+        #expect(payload.caHash == nil)
+    }
+
+    // The LAN path must keep working unchanged, so a payload with no pairing
+    // secret must not start looking like a tailnet request.
+    @Test func devicePublicKeyWithoutPairingSecretHasNone() {
+        let code = #"{"pubkey":"ssh-ed25519 AAAA test","age_pubkey":"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","name":"webapp","uuid":"abcd","ca_hash":"abc123"}"#
+        let decision = QRScanValidation.validate(code: code, mode: .devicePublicKey)
+
+        guard case .acceptDevicePublicKey(let payload) = decision else {
+            Issue.record("Expected device payload acceptance")
+            return
+        }
+
+        #expect(payload.pairingSecret == nil)
+    }
+
+    // Blank values come from templating mistakes. Treated as present they would
+    // send the scanning device down an onboarding path the sender cannot finish.
+    @Test func blankOnboardingFieldsAreTreatedAsAbsent() {
+        let code = #"{"pubkey":"ssh-ed25519 AAAA test","age_pubkey":"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","name":"webapp","uuid":"abcd","ca_hash":"  ","pairing_secret":""}"#
+        let decision = QRScanValidation.validate(code: code, mode: .devicePublicKey)
+
+        guard case .acceptDevicePublicKey(let payload) = decision else {
+            Issue.record("Expected device payload acceptance")
+            return
+        }
+
+        #expect(payload.caHash == nil)
+        #expect(payload.pairingSecret == nil)
+    }
+
     // Verifies invalid JSON is rejected quickly so scanner can continue without committing.
     @Test func invalidJSONIsRejected() {
         let decision = QRScanValidation.validate(code: "not-json", mode: .devicePublicKey)

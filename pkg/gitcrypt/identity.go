@@ -131,13 +131,33 @@ func LoadLocalIdentity(repoRoot string) (LocalIdentity, error) {
 }
 
 // BuildPublicKeyQrPayload keeps cross-device onboarding tied to the discovered server CA trust root.
-func BuildPublicKeyQrPayload(identity Identity, caHash string) (string, error) {
+//
+// caHash and pairingSecret correspond to the two ways a device can be onboarded
+// and each is omitted when empty:
+//
+//   - caHash is present when the device could already reach the server and
+//     fetch its CA, which is the LAN path. It ties this authorization request
+//     to one specific trust root.
+//   - pairingSecret is present when the device cannot reach the server at all,
+//     which is the tailnet path. The device has no trust anchor yet, so instead
+//     it generates a secret and waits for a record sealed under it. See
+//     pkg/pairing for why that is safe.
+//
+// Both may be present when a device on the LAN opts into the tailnet path.
+func BuildPublicKeyQrPayload(identity Identity, caHash string, pairingSecret string) (string, error) {
 	payload := map[string]string{
 		"pubkey":     identity.PublicKeySSH,
 		"age_pubkey": identity.AgePublicKey,
 		"name":       identity.DeviceName,
 		"uuid":       identity.DeviceUUID,
-		"ca_hash":    caHash,
+	}
+	// Omitted rather than sent empty so a scanner can tell which onboarding
+	// path the device is asking for.
+	if trimmed := strings.TrimSpace(caHash); trimmed != "" {
+		payload["ca_hash"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(pairingSecret); trimmed != "" {
+		payload["pairing_secret"] = trimmed
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

@@ -10,12 +10,20 @@ enum QRScanValidation {
     }
 
     // Carries validated device-link fields to avoid reparsing JSON downstream.
+    //
+    // caHash and pairingSecret are both optional because they represent the two
+    // onboarding paths a scanned device can be asking for. A device that could
+    // reach the server over the LAN sends caHash, tying its request to one
+    // trust root. A device that cannot reach the server at all has no trust
+    // anchor yet and sends pairingSecret instead, so this device can ask gitd
+    // to seal a pairing record under it.
     struct DevicePublicKeyPayload: Equatable {
         let pubkey: String
         let agePubkey: String
         let name: String
         let uuid: String
         let caHash: String?
+        let pairingSecret: String?
         let rawJSON: String
     }
 
@@ -64,7 +72,8 @@ enum QRScanValidation {
                     agePubkey: agePubkey,
                     name: name,
                     uuid: uuid,
-                    caHash: json["ca_hash"],
+                    caHash: nonBlank(json["ca_hash"]),
+                    pairingSecret: nonBlank(json["pairing_secret"]),
                     rawJSON: code
                 )
             )
@@ -76,6 +85,17 @@ enum QRScanValidation {
         case .any:
             return .acceptRaw
         }
+    }
+
+    // Treats a blank field as absent so the two onboarding paths stay
+    // distinguishable. A producer that emits an empty string would otherwise
+    // look like it is offering a path it cannot complete.
+    private static func nonBlank(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     // Recognizes pairing config JSON so connect-or-recovery classification

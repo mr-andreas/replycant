@@ -33,6 +33,11 @@ type ServerConfig struct {
 	LfsDir        string
 	DecryptdURL   string
 	TranscodedURL string
+
+	// Optional. When unset, /pair is not offered, which is the correct
+	// behaviour for manual-exposure deployments that put the headscale URL and
+	// CA in the pairing QR directly and run no discovery service.
+	PairingPublisher PairingPublisher
 }
 
 // Implements http.Handler for Git Smart HTTP protocol with mTLS authentication.
@@ -45,6 +50,9 @@ type Server struct {
 	lfsDir         string
 	lfsHandler     *lfs.Handler
 	serviceProxies []*serviceProxy
+
+	// Nil on deployments without cloud discovery; see ServerConfig.
+	pairingPublisher PairingPublisher
 
 	bootstrapMu sync.Mutex // Prevents race condition during initial repository bootstrap
 }
@@ -81,6 +89,8 @@ func NewServer(a Authenticator, cfg ServerConfig) (*Server, error) {
 		lfsDir:         store.Root(),
 		lfsHandler:     lfs.NewHandler(store, lfsPathPrefix),
 		serviceProxies: proxies,
+
+		pairingPublisher: cfg.PairingPublisher,
 	}
 
 	if err := server.installPreReceiveHook(); err != nil {
@@ -196,6 +206,13 @@ func (s *Server) handleAuthenticatedRequest(w http.ResponseWriter, r *http.Reque
 	}
 
 	log.Printf("Authenticated user: %s, path: %s", username, r.URL.Path)
+
+	// Ahead of the git backend and the service proxies because pairing is
+	// gitd's own endpoint rather than something it fronts.
+	if r.URL.Path == pairingPath {
+		s.handlePairing(w, r)
+		return
+	}
 
 	if r.URL.Path == lfsPathPrefix || strings.HasPrefix(r.URL.Path, lfsPathPrefix+"/") {
 		s.lfsHandler.ServeHTTP(w, r)
