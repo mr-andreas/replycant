@@ -15,6 +15,7 @@ import {
   isGitSmartHttpContentType,
   resolveRequestMtlsMaterial,
 } from "./proxy";
+import { SocksProxyAgent } from "socks-proxy-agent";
 
 const forwarderConfig = {
   getUpstreamCa: () => "test-ca",
@@ -108,6 +109,116 @@ describe("createMtlsAgentPool", () => {
       const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
       const second = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialB });
       expect(second).not.toBe(first);
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  // gitd publishes no host port any more, so an agent that dials directly
+  // cannot reach it at all. Every upstream connection has to go through the
+  // sidecar's SOCKS5 proxy.
+  it("dials through the tailnet proxy when one is available", () => {
+    const pool = createMtlsAgentPool({
+      getTailnetProxy: () => ({
+        socksAddr: "127.0.0.1:41234",
+        socksUsername: "tsnet",
+        socksPassword: "deadbeef",
+      }),
+    });
+    try {
+      const agent = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
+      expect(agent).toBeInstanceOf(SocksProxyAgent);
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  // The mTLS identity and CA pinning from ADR-0011/0013 must survive the move
+  // onto the tailnet. The proxy carries ciphertext it cannot read, so the TLS
+  // parameters have to be identical to the direct case.
+  it("keeps the mTLS identity and CA pinning when proxied", () => {
+    const pool = createMtlsAgentPool({
+      getTailnetProxy: () => ({
+        socksAddr: "127.0.0.1:41234",
+        socksUsername: "tsnet",
+        socksPassword: "deadbeef",
+      }),
+    });
+    try {
+      const agent = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA }) as unknown as {
+        options: { ca?: string; cert?: string; key?: string; rejectUnauthorized?: boolean };
+      };
+      expect(agent.options.ca).toBe("ca-a");
+      expect(agent.options.cert).toBe(materialA.certPem);
+      expect(agent.options.key).toBe(materialA.keyPem);
+      expect(agent.options.rejectUnauthorized).toBe(true);
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  // LAN-only deployments and the dev server have no sidecar, so the pool must
+  // still produce a plain agent rather than failing or waiting for a proxy.
+  it("dials directly when no tailnet proxy is available", () => {
+    const pool = createMtlsAgentPool({ getTailnetProxy: () => undefined });
+    try {
+      const agent = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
+      expect(agent).toBeInstanceOf(Agent);
+      expect(agent).not.toBeInstanceOf(SocksProxyAgent);
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  // An agent holds sockets already dialled through one specific proxy. After a
+  // sidecar restart the old proxy is gone, so reusing the agent would hand out
+  // sockets to a port nothing is listening on.
+  it("does not reuse an agent across a sidecar restart", () => {
+    let proxy = {
+      socksAddr: "127.0.0.1:41234",
+      socksUsername: "tsnet",
+      socksPassword: "first-run",
+    };
+    const pool = createMtlsAgentPool({ getTailnetProxy: () => proxy });
+    try {
+      const before = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
+      proxy = { socksAddr: "127.0.0.1:41999", socksUsername: "tsnet", socksPassword: "second-run" };
+      const after = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
+      expect(after).not.toBe(before);
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  // The sidecar comes up after the server does, so the proxy is read on each
+  // acquire. Capturing it once would leave the app permanently dialling direct.
+  it("picks up a tailnet proxy that appears after startup", () => {
+    let proxy: { socksAddr: string; socksUsername: string; socksPassword: string } | undefined;
+    const pool = createMtlsAgentPool({ getTailnetProxy: () => proxy });
+    try {
+      expect(pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA })).toBeInstanceOf(Agent);
+      proxy = { socksAddr: "127.0.0.1:41234", socksUsername: "tsnet", socksPassword: "later" };
+      expect(pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA })).toBeInstanceOf(
+        SocksProxyAgent,
+      );
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  // Reuse still has to work while the proxy is stable, or every request would
+  // rebuild a SOCKS connection and a TLS handshake.
+  it("reuses the proxied agent while the proxy is unchanged", () => {
+    const proxy = {
+      socksAddr: "127.0.0.1:41234",
+      socksUsername: "tsnet",
+      socksPassword: "stable",
+    };
+    const pool = createMtlsAgentPool({ getTailnetProxy: () => proxy });
+    try {
+      const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
+      const second = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
+      expect(second).toBe(first);
     } finally {
       pool.destroy();
     }

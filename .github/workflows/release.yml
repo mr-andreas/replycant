@@ -281,6 +281,13 @@ jobs:
           cache: npm
           cache-dependency-path: webapp/package-lock.json
 
+      # The desktop app now ships a Go tsnet sidecar, cross-built for whichever
+      # platform this runner packages for.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - name: Install dependencies
         run: npm ci
 

@@ -58,6 +58,16 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
               ? <span className="button-spinner" />
               : "Continue"}
           </button>
+          {flow.tailnetAvailable ? (
+            <button
+              type="button"
+              className="setup-secondary-action"
+              disabled={flow.isDiscovering}
+              onClick={flow.handleBeginTailnetPairing}
+            >
+              My server is not on this network
+            </button>
+          ) : null}
         </form>
       </div>
     );
@@ -162,6 +172,45 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
           <div className="qr-code-container" style={{ textAlign: "center" }}>
             <QRCodeSVG value={qrPayload} size={256} />
           </div>
+          {flow.setupError ? <p className="setup-error">{flow.setupError}</p> : null}
+          <button type="button" className="setup-secondary-action" onClick={flow.handleStartOver}>
+            Start over
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (flow.setupMode === "tailnetPairing") {
+    // The QR carries the pairing secret instead of a CA fingerprint: this
+    // device has never reached the server, so it has no CA to fingerprint yet.
+    // Scanning it is what tells the authorizing device where to publish the
+    // record this screen is waiting for.
+    const qrPayload = flow.identityRecord && flow.pairingSecret
+      ? buildPublicKeyQrPayload({
+          publicKeySsh: flow.identityRecord.publicKeySsh,
+          agePublicKey: flow.identityRecord.agePublicKey,
+          deviceName: flow.identityRecord.deviceName,
+          deviceUUID: flow.identityRecord.deviceUUID,
+        }, undefined, flow.pairingSecret.encoded)
+      : null;
+
+    return (
+      <div className="setup-shell">
+        <div className="setup-titlebar"><WindowControls /></div>
+        <div className="setup-card">
+          <h1>Authorize this device</h1>
+          <p>
+            Scan this QR code from a device that is already set up, by going to
+            settings and selecting "Link a new device". This device will connect
+            as soon as your server approves it.
+          </p>
+          {qrPayload ? (
+            <div className="qr-code-container" style={{ textAlign: "center" }}>
+              <QRCodeSVG value={qrPayload} size={256} />
+            </div>
+          ) : null}
+          <p className="rehydration-phase">Waiting for approval...</p>
           {flow.setupError ? <p className="setup-error">{flow.setupError}</p> : null}
           <button type="button" className="setup-secondary-action" onClick={flow.handleStartOver}>
             Start over

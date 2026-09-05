@@ -5,6 +5,7 @@ import { pipeline } from "node:stream/promises";
 import { Buffer } from "node:buffer";
 import { URL } from "node:url";
 import { Request, Response } from "express";
+import { SocksProxyAgent } from "socks-proxy-agent";
 
 // Browser-owned mTLS credentials used to authenticate against gitd on the
 // browser's behalf, since browsers cannot perform mTLS themselves.
@@ -18,6 +19,10 @@ export interface ForwarderRuntimeConfig {
   getUpstreamCa: () => string | undefined;
   getSessionMtlsMaterial: (req: Request) => MtlsMaterial | undefined;
   agentPool?: MtlsAgentPool;
+
+  // Only used when no agentPool is supplied. The desktop app owns a shared
+  // pool and wires the tailnet there instead.
+  getTailnetProxy?: () => TailnetProxy | undefined;
 }
 
 export const CLIENT_KEY_HEADER = "x-replycant-client-key";
@@ -50,23 +55,59 @@ export interface MtlsAgentPool {
   destroy: () => void;
 }
 
+// Points the agent pool at the tailnet SOCKS5 proxy published by the tsnet
+// sidecar.
+//
+// gitd no longer listens on a host port, so the only route to it is through the
+// tailnet. Node cannot join a tailnet itself, so the sidecar joins on its
+// behalf and exposes this proxy; every upstream connection has to be dialled
+// through it or it will not resolve at all.
+export interface TailnetProxy {
+  socksAddr: string;
+  socksUsername: string;
+  socksPassword: string;
+}
+
 interface CreateMtlsAgentPoolOptions {
   maxEntries?: number;
+
+  // Read on each acquire rather than captured once, because the sidecar comes
+  // up after the server does and can be restarted underneath it. Returning
+  // undefined means "no tailnet", which is the LAN and dev-server case.
+  getTailnetProxy?: () => TailnetProxy | undefined;
 }
 
 // Generates a stable cache key without retaining additional plaintext PEM copies in map keys.
-const buildMtlsAgentKey = ({ upstreamCa, mtlsMaterial }: MtlsAgentIdentity): string =>
+//
+// The tailnet proxy is part of the key because an agent holds sockets already
+// dialled through one specific proxy. Reusing an agent across a sidecar restart
+// would hand out sockets to a proxy that no longer exists.
+const buildMtlsAgentKey = (
+  { upstreamCa, mtlsMaterial }: MtlsAgentIdentity,
+  tailnetProxy: TailnetProxy | undefined,
+): string =>
   createHash("sha256")
     .update(upstreamCa)
     .update("\n")
     .update(mtlsMaterial?.keyPem ?? "")
     .update("\n")
     .update(mtlsMaterial?.certPem ?? "")
+    .update("\n")
+    .update(tailnetProxy ? `${tailnetProxy.socksAddr}\n${tailnetProxy.socksPassword}` : "")
     .digest("hex");
+
+// Builds the SOCKS5 URL the agent dials through.
+//
+// Credentials are per-sidecar-run and loopback-only, but they are still
+// credentials: tsnet requires them, and without them the proxy refuses the
+// connection.
+const buildSocksUrl = ({ socksAddr, socksUsername, socksPassword }: TailnetProxy): string =>
+  `socks5://${encodeURIComponent(socksUsername)}:${encodeURIComponent(socksPassword)}@${socksAddr}`;
 
 // Maintains a small LRU of upstream TLS agents so the proxy can reuse sockets safely.
 export const createMtlsAgentPool = ({
   maxEntries = DEFAULT_AGENT_POOL_MAX_ENTRIES,
+  getTailnetProxy,
 }: CreateMtlsAgentPoolOptions = {}): MtlsAgentPool => {
   const entries = new Map<string, Agent>();
 
@@ -87,14 +128,19 @@ export const createMtlsAgentPool = ({
 
   return {
     acquire: (identity) => {
-      const key = buildMtlsAgentKey(identity);
+      const tailnetProxy = getTailnetProxy?.();
+      const key = buildMtlsAgentKey(identity, tailnetProxy);
       const existing = entries.get(key);
       if (existing) {
         entries.delete(key);
         entries.set(key, existing);
         return existing;
       }
-      const created = new Agent({
+
+      // Identical TLS parameters in both branches. Only the transport under
+      // them differs, so the mTLS identity and CA pinning that ADR-0011 and
+      // ADR-0013 rely on are unchanged by going through the tailnet.
+      const tlsOptions = {
         ca: identity.upstreamCa,
         key: identity.mtlsMaterial?.keyPem,
         cert: identity.mtlsMaterial?.certPem,
@@ -103,7 +149,16 @@ export const createMtlsAgentPool = ({
         keepAliveMsecs: DEFAULT_AGENT_KEEP_ALIVE_MS,
         maxSockets: DEFAULT_AGENT_MAX_SOCKETS,
         maxFreeSockets: DEFAULT_AGENT_MAX_FREE_SOCKETS,
-      });
+      };
+
+      // SocksProxyAgent performs TLS on top of the SOCKS5 tunnel, so the
+      // server certificate is still verified against the deployment CA and the
+      // client certificate is still presented end to end. The proxy carries
+      // ciphertext it cannot read.
+      const created = tailnetProxy
+        ? (new SocksProxyAgent(buildSocksUrl(tailnetProxy), tlsOptions) as unknown as Agent)
+        : new Agent(tlsOptions);
+
       entries.set(key, created);
       evictLeastRecentlyUsed();
       return created;
@@ -217,7 +272,7 @@ export interface Forwarder {
 
 // Enforces mTLS for git calls while sharing one path for all upstream forwarding.
 export const createForwarder = (config: ForwarderRuntimeConfig) => {
-  const pool = config.agentPool ?? createMtlsAgentPool();
+  const pool = config.agentPool ?? createMtlsAgentPool({ getTailnetProxy: config.getTailnetProxy });
   const ownedPool = config.agentPool ? null : pool;
 
   // Streams request/response bodies to preserve large media and git payload semantics.

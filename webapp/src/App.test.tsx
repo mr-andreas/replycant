@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, type TailnetJoinRequest } from "./App";
 
 const runtimeMock = {
   snapshot: {
@@ -114,6 +114,9 @@ declare global {
       identityKeyAvailable?: () => Promise<boolean>;
       identityKey?: () => Promise<string>;
       clearIdentityKey?: () => Promise<void>;
+      joinTailnet?: (request: TailnetJoinRequest) => Promise<void>;
+      leaveTailnet?: () => Promise<void>;
+      tailnetStatus?: () => Promise<{ running: boolean }>;
     };
   }
 }

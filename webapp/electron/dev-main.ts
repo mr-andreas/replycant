@@ -3,10 +3,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join, resolve } from "node:path";
 import { URL } from "node:url";
 import { registerIdentityKeyIpc } from "./registerIdentityKeyIpc";
+import { registerTailnetIpc } from "./registerTailnetIpc";
+import { createTailnetSupervisor, resolveSidecarPath, TailnetSupervisor } from "./tailnetSupervisor";
 
 const APP_NAME = "Replycant";
 
 let mainWindow: BrowserWindow | null = null;
+let tailnet: TailnetSupervisor | null = null;
 
 // Builds the renderer URL for local development where Vite hosts UI and proxies API routes.
 const resolveDevUrl = (): string => {
@@ -81,6 +84,13 @@ const createMainWindow = async (): Promise<void> => {
 const handleShutdownSignal = (): void => {
   app.quit();
 };
+
+app.on("before-quit", async () => {
+  if (tailnet) {
+    await tailnet.stop();
+    tailnet = null;
+  }
+});
 process.on("SIGINT", handleShutdownSignal);
 process.on("SIGTERM", handleShutdownSignal);
 
@@ -106,6 +116,20 @@ app.whenReady().then(async () => {
   const storeDir = join(app.getPath("userData"), "replycant");
   mkdirSync(storeDir, { recursive: true });
   registerIdentityKeyIpc(ipcMain, { safeStorage, storeDir });
+
+  // Registered here too so the dev shell answers the same channels as the
+  // packaged app; onboarding would otherwise fail on a missing handler.
+  const tailnetStateDir = join(storeDir, "tsnet");
+  mkdirSync(tailnetStateDir, { recursive: true });
+  tailnet = createTailnetSupervisor({
+    binaryPath: resolveSidecarPath({
+      resourcesPath: process.resourcesPath,
+      projectRoot: app.getAppPath(),
+      packaged: app.isPackaged,
+    }),
+    logf: (message) => console.log(message),
+  });
+  registerTailnetIpc(ipcMain, { supervisor: tailnet, stateDir: tailnetStateDir });
   const lastPagePath = join(storeDir, "lastPage.json");
   ipcMain.on("lastPage:read", (event) => {
     try {

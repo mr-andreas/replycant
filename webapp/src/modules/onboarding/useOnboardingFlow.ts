@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SETUP_CONFIG_STORAGE_KEY } from "../../lib/config";
+import { pollForPairingRecord } from "../../lib/discovery";
+import { createPairingSecret, openPairingRecord, PairingSecret, verifyCALabel } from "../../lib/pairing";
 import { ensureProxySession } from "../../lib/proxySession";
+import {
+  clearTailnetConfigRecord,
+  gitdTailnetUrl,
+  joinTailnet,
+  loadTailnetConfigRecord,
+  saveTailnetConfigRecord,
+  tailnetSupported,
+  toTailnetConfigRecord,
+} from "../../lib/tailnet";
 import {
   buildMtlsHeaders,
   clearIdentityRecord,
@@ -16,7 +27,23 @@ import {
 } from "../gitdb";
 
 // Defines setup phases so onboarding can keep identity creation and unlock behavior deterministic.
-export type SetupMode = "checking" | "serverUrl" | "create" | "unlock" | "qr" | "rehydrating" | "ready";
+export type SetupMode =
+  | "checking"
+  | "serverUrl"
+  | "create"
+  | "unlock"
+  | "qr"
+  | "tailnetPairing"
+  | "rehydrating"
+  | "ready";
+
+// How this device expects to reach the deployment.
+//
+// The two paths diverge at the very first screen because they need opposite
+// things: the LAN path asks for a server URL and fetches the CA from it, while
+// the tailnet path has no reachable server at all and must instead publish a
+// pairing secret and wait to be handed the CA.
+export type ConnectionMode = "lan" | "tailnet";
 
 // Captures browser-owned setup fields that must survive proxy restarts and page reloads.
 interface SetupConfigRecord {
@@ -99,12 +126,22 @@ export interface OnboardingFlowState {
   setupConfig: SetupConfigRecord | null;
   caHash: string | null;
   isDiscovering: boolean;
+
+  // Whether this build can join a tailnet at all. The browser build cannot, so
+  // it must not offer the choice.
+  tailnetAvailable: boolean;
+
+  // The pairing secret for the attempt in progress. Present only while the
+  // tailnet QR is on screen, because a secret must never outlive its attempt.
+  pairingSecret: PairingSecret | null;
+
   setSetupMode: (mode: SetupMode) => void;
   setSetupError: (message: string | null) => void;
   setPasswordInput: (value: string) => void;
   setDeviceNameInput: (value: string) => void;
   setServerUrlInput: (value: string) => void;
   handleDiscoverServer: () => Promise<void>;
+  handleBeginTailnetPairing: () => void;
   handleCreateIdentity: () => Promise<void>;
   handleUnlockIdentity: () => Promise<void>;
   handleStartOver: () => void;
@@ -125,7 +162,34 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
   const [setupConfig, setSetupConfig] = useState<SetupConfigRecord | null>(null);
   const [caHash, setCaHash] = useState<string | null>(null);
   const [isDiscovering, setIsDiscovering] = useState(false);
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("lan");
+  const [pairingSecret, setPairingSecret] = useState<PairingSecret | null>(null);
+
+  // Abandons an in-flight discovery poll when the user starts over or the
+  // component unmounts, so a discarded attempt stops consuming slot reads.
+  const pairingAbort = useRef<AbortController | null>(null);
   const mtlsHeaders = useMemo(() => (identity ? buildMtlsHeaders(identity) : null), [identity]);
+
+  // Rejoins the tailnet before any request is allowed to depend on it.
+  //
+  // The tailnet node only exists while the desktop sidecar runs, so every cold
+  // start has to rejoin. No credential is needed: the node's key material
+  // persists in the sidecar's state directory, and the device presents the same
+  // identity certificate it uses for gitd.
+  //
+  // Called on the way into rehydration rather than from an effect, because the
+  // first git fetch would otherwise race the tailnet coming up and fail in a
+  // way that looks like the server being down.
+  const ensureTailnetJoined = useCallback(
+    async (unlocked: DecryptedIdentity, ca: string | undefined): Promise<void> => {
+      const record = loadTailnetConfigRecord();
+      if (!record || !tailnetSupported() || !ca) {
+        return;
+      }
+      await joinTailnet({ record, caPem: ca, identity: unlocked });
+    },
+    [],
+  );
 
   // Restores identity state once proxy setup is configured so users always land in the correct onboarding step.
   const resolveIdentitySetup = useCallback(async () => {
@@ -142,6 +206,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     try {
       const deviceKey = await loadDesktopDeviceKey();
       const unlocked = await unlockIdentity(stored, { wrap: "device", deviceKey });
+      await ensureTailnetJoined(unlocked, loadSetupConfigRecord()?.ca);
       setIdentity(unlocked);
       setSetupMode("rehydrating");
     } catch (error) {
@@ -152,7 +217,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
       );
       setSetupMode("create");
     }
-  }, []);
+  }, [ensureTailnetJoined]);
 
   // Pushes browser-owned setup config into proxy memory so git/lfs routes are usable after restarts.
   const configureProxy = useCallback(async (config: SetupConfigRecord): Promise<void> => {
@@ -280,6 +345,17 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     }
   }, [configureProxy, serverUrlInput]);
 
+  // Starts the tailnet path from the first screen.
+  //
+  // There is no server to contact yet, so this only records the choice and
+  // moves on to identity creation. The pairing secret is minted later, once
+  // there is an age key to seal a record to, because the QR has to carry both.
+  const handleBeginTailnetPairing = useCallback(() => {
+    setSetupError(null);
+    setConnectionMode("tailnet");
+    setSetupMode("create");
+  }, []);
+
   // Creates browser-held credentials always encrypted at rest before persistence.
   const handleCreateIdentity = useCallback(async () => {
     try {
@@ -310,13 +386,21 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
       setIdentityRecord(created);
       const unlocked = await unlockIdentity(created, keySource);
       setIdentity(unlocked);
-      setSetupMode("qr");
+      if (connectionMode === "tailnet") {
+        // Minted here rather than at the first screen so the secret's lifetime
+        // matches the QR that carries it: one secret per attempt, discarded
+        // when the attempt ends.
+        setPairingSecret(await createPairingSecret());
+        setSetupMode("tailnetPairing");
+      } else {
+        setSetupMode("qr");
+      }
       setPasswordInput("");
       setDeviceNameInput(created.deviceName);
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : "Failed to create identity.");
     }
-  }, [deviceNameInput, passwordInput, passwordRequired]);
+  }, [connectionMode, deviceNameInput, passwordInput, passwordRequired]);
 
   // Decrypts password-wrapped credentials so setup can continue without recreating identity.
   const handleUnlockIdentity = useCallback(async () => {
@@ -330,20 +414,106 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
         wrap: "password",
         password: passwordInput,
       });
+      await ensureTailnetJoined(unlocked, loadSetupConfigRecord()?.ca);
       setIdentity(unlocked);
       setSetupMode("rehydrating");
       setPasswordInput("");
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : "Incorrect password.");
     }
-  }, [identityRecord, passwordInput]);
+  }, [ensureTailnetJoined, identityRecord, passwordInput]);
+
+  // Waits for the deployment to authorize this device, then joins its tailnet.
+  //
+  // Everything the device needs arrives in one sealed record: the CA to trust,
+  // where headscale is, a single-use tailnet credential, and the MagicDNS name
+  // gitd answers on. Until that record appears the device has no way to reach
+  // anything, which is why this is a poll rather than a request.
+  //
+  // The CA is checked against the fingerprint in the headscale hostname before
+  // it is installed. That check is independent of the record's encryption, so a
+  // deployment that opened correctly but names the wrong CA is still refused.
+  useEffect(() => {
+    if (setupMode !== "tailnetPairing" || !identity || !pairingSecret) {
+      return;
+    }
+
+    const controller = new AbortController();
+    pairingAbort.current = controller;
+
+    void (async () => {
+      try {
+        const sealed = await pollForPairingRecord({
+          slot: pairingSecret.slot,
+          signal: controller.signal,
+        });
+        const payload = await openPairingRecord(
+          pairingSecret.encoded,
+          identity.agePrivateKeyBase64,
+          sealed,
+        );
+        await verifyCALabel(payload);
+
+        const tailnetRecord = toTailnetConfigRecord(payload);
+        await joinTailnet({
+          record: tailnetRecord,
+          caPem: payload.caPem,
+          identity,
+          preauthKey: payload.preauthKey,
+        });
+
+        const config: SetupConfigRecord = {
+          serverUrl: gitdTailnetUrl(tailnetRecord),
+          ca: payload.caPem,
+          url: gitdTailnetUrl(tailnetRecord),
+        };
+        await configureProxy(config);
+
+        // Persisted only after the tailnet is actually up and the proxy has
+        // accepted the config, so a failed attempt leaves nothing behind for
+        // the next start to trust.
+        saveTailnetConfigRecord(tailnetRecord);
+        saveSetupConfigRecord(config);
+
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSetupConfig(config);
+        setServerUrlInput(config.serverUrl);
+        setPairingSecret(null);
+        setSetupMode("rehydrating");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        // The secret is kept so the QR stays on screen and the user can retry
+        // the same attempt rather than having the operator rescan.
+        setSetupError(
+          error instanceof Error ? error.message : "Failed to pair this device over the tailnet.",
+        );
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      pairingAbort.current = null;
+    };
+  }, [configureProxy, identity, pairingSecret, setupMode]);
 
   // Provides an explicit escape hatch when users need to restart setup against a different server.
   const handleStartOver = useCallback(() => {
+    pairingAbort.current?.abort();
     clearSetupConfigRecord();
+    clearTailnetConfigRecord();
     clearIdentityRecord();
     void window.replycantDesktop?.clearIdentityKey?.().catch(() => {
       // Clearing is best-effort; local identity record removal is the durable reset.
+    });
+    // Leaving the tailnet matters beyond tidiness: the node was authorized
+    // against the identity being discarded here, so it must not keep running
+    // with a credential the user has just walked away from.
+    void window.replycantDesktop?.leaveTailnet?.().catch(() => {
+      // Best-effort; the node also goes down when the app quits.
     });
     setSetupMode("serverUrl");
     setSetupError(null);
@@ -353,6 +523,8 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     setIdentity(null);
     setPasswordInput("");
     setServerUrlInput("");
+    setConnectionMode("lan");
+    setPairingSecret(null);
   }, []);
 
   // Lets users retry failed rehydration explicitly so bootstrap failures are recoverable.
@@ -375,12 +547,15 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     setupConfig,
     caHash,
     isDiscovering,
+    tailnetAvailable: tailnetSupported(),
+    pairingSecret,
     setSetupMode,
     setSetupError,
     setPasswordInput,
     setDeviceNameInput,
     setServerUrlInput,
     handleDiscoverServer,
+    handleBeginTailnetPairing,
     handleCreateIdentity,
     handleUnlockIdentity,
     handleStartOver,

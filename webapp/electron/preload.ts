@@ -16,4 +16,10 @@ contextBridge.exposeInMainWorld("replycantDesktop", {
   identityKeyAvailable: () => ipcRenderer.invoke("identityKey:available") as Promise<boolean>,
   identityKey: () => ipcRenderer.invoke("identityKey:get") as Promise<string>,
   clearIdentityKey: () => ipcRenderer.invoke("identityKey:clear") as Promise<void>,
+  // Onboarding hands over the pairing record's credentials; the tailnet node
+  // itself lives in the main process so the renderer never sees the proxy.
+  joinTailnet: (request: unknown) => ipcRenderer.invoke("tailnet:join", request) as Promise<void>,
+  leaveTailnet: () => ipcRenderer.invoke("tailnet:leave") as Promise<void>,
+  tailnetStatus: () =>
+    ipcRenderer.invoke("tailnet:status") as Promise<{ running: boolean }>,
 });

@@ -9,7 +9,8 @@
     "typecheck": "tsc -b",
     "build": "tsc -b && vite build",
     "build:desktop:runtime": "tsup electron/main.ts electron/dev-main.ts --format esm --platform node --target node20 --clean --out-dir dist-electron --external electron && tsup electron/preload.ts --format cjs --platform node --target node20 --out-dir dist-electron --external electron",
-    "desktop:build": "npm run build && npm run build:desktop:runtime",
+    "build:sidecar": "node scripts/buildSidecar.mjs",
+    "desktop:build": "npm run build && npm run build:desktop:runtime && npm run build:sidecar",
     "desktop:pack": "npm run desktop:build && electron-builder --dir",
     "desktop:dist": "npm run desktop:build && electron-builder --publish never",
     "desktop:dist:linux": "npm run desktop:build && electron-builder --linux --publish never",
@@ -68,7 +69,8 @@
     "libheif-js": "^1.19.8",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "socks-proxy-agent": "^10.1.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
@@ -147,6 +149,16 @@
       "uninstallerIcon": "build/icons/icon.ico",
       "artifactName": "replycant-desktop-setup-v${version}-${arch}.${ext}"
     },
-    "artifactName": "replycant-desktop-v${version}-${arch}.${ext}"
+    "artifactName": "replycant-desktop-v${version}-${arch}.${ext}",
+    "extraResources": [
+      {
+        "from": "sidecar/build",
+        "to": ".",
+        "filter": [
+          "replycant-tsnet",
+          "replycant-tsnet.exe"
+        ]
+      }
+    ]
   }
 }

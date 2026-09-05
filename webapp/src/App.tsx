@@ -7,6 +7,19 @@ import { OnboardingGate } from "./modules/onboarding/OnboardingGate";
 import { useOnboardingFlow } from "./modules/onboarding/useOnboardingFlow";
 import { LibraryView, TimelineView } from "./modules/timeline/TimelineView";
 
+// Credentials the desktop shell needs to join the deployment's tailnet. Mirrors
+// the main-process contract in electron/registerTailnetIpc.ts; the state
+// directory is deliberately absent because the main process owns it.
+export interface TailnetJoinRequest {
+  headscaleAddr: string;
+  headscaleServerName?: string;
+  caPem: string;
+  clientCertPem: string;
+  clientKeyPem: string;
+  preauthKey?: string;
+  hostname: string;
+}
+
 declare global {
   // Types the DevTools helper object so manual debugging commands stay discoverable and safe.
   interface Window {
@@ -24,6 +37,9 @@ declare global {
       identityKeyAvailable?: () => Promise<boolean>;
       identityKey?: () => Promise<string>;
       clearIdentityKey?: () => Promise<void>;
+      joinTailnet?: (request: TailnetJoinRequest) => Promise<void>;
+      leaveTailnet?: () => Promise<void>;
+      tailnetStatus?: () => Promise<{ running: boolean }>;
     };
   }
 }

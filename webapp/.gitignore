@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-electron/
 release/
+sidecar/build/
 *.tsbuildinfo
 
 # Local runtime cert/key material for dev mTLS.

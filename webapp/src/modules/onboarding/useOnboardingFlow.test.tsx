@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useOnboardingFlow } from "./useOnboardingFlow";
 import { SETUP_CONFIG_STORAGE_KEY } from "../../lib/config";
+import { TAILNET_CONFIG_STORAGE_KEY } from "../../lib/tailnet";
+import pairingFixture from "../../lib/pairing.fixture.json";
 
 const gitdbMocks = vi.hoisted(() => ({
   mockLoadIdentityRecord: vi.fn(),
@@ -14,6 +16,25 @@ const gitdbMocks = vi.hoisted(() => ({
   mockBuildMtlsHeaders: vi.fn(),
   mockComputeCaHash: vi.fn(),
 }));
+
+// The pairing record in the fixture was produced by the Go writer, so the
+// tailnet tests below exercise the real decryption path. Only the two
+// non-deterministic inputs are stubbed: the freshly minted secret, which has to
+// be the one the fixture was sealed under, and the discovery poll, which would
+// otherwise reach the network.
+const pairingMocks = vi.hoisted(() => ({
+  mockPollForPairingRecord: vi.fn(),
+  mockCreatePairingSecret: vi.fn(),
+}));
+
+vi.mock("../../lib/discovery", () => ({
+  pollForPairingRecord: pairingMocks.mockPollForPairingRecord,
+}));
+
+vi.mock("../../lib/pairing", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/pairing")>("../../lib/pairing");
+  return { ...actual, createPairingSecret: pairingMocks.mockCreatePairingSecret };
+});
 
 vi.mock("../gitdb", () => ({
   loadIdentityRecord: gitdbMocks.mockLoadIdentityRecord,
@@ -54,9 +75,17 @@ const OnboardingHarness = () => {
       <button type="button" onClick={flow.handleStartOver}>
         start-over
       </button>
+      <div data-testid="tailnet-available">{flow.tailnetAvailable ? "true" : "false"}</div>
+      <div data-testid="pairing-secret">{flow.pairingSecret?.encoded ?? ""}</div>
+      <button type="button" onClick={flow.handleBeginTailnetPairing}>
+        begin-tailnet
+      </button>
     </div>
   );
 };
+
+const decodeBase64 = (encoded: string): Uint8Array =>
+  Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
 
 // Provides a valid persisted setup record so onboarding can skip server-url prompt in identity tests.
 const saveSetupConfig = () => {
@@ -92,6 +121,18 @@ const installDesktopBridge = (options?: {
   return { clearIdentityKey };
 };
 
+// Adds the tailnet half of the desktop bridge, which only the packaged shell
+// exposes, so the tailnet path can be driven in jsdom.
+const installTailnetBridge = () => {
+  if (!window.replycantDesktop) {
+    installDesktopBridge();
+  }
+  const joinTailnet = vi.fn().mockResolvedValue(undefined);
+  const leaveTailnet = vi.fn().mockResolvedValue(undefined);
+  window.replycantDesktop = { ...window.replycantDesktop!, joinTailnet, leaveTailnet };
+  return { joinTailnet, leaveTailnet };
+};
+
 describe("useOnboardingFlow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -108,6 +149,13 @@ describe("useOnboardingFlow", () => {
     gitdbMocks.mockBuildMtlsHeaders.mockReturnValue(null);
     gitdbMocks.mockComputeCaHash.mockResolvedValue("ca-hash");
     gitdbMocks.mockSanitizeDeviceName.mockImplementation((value: string) => value.trim());
+    pairingMocks.mockCreatePairingSecret.mockResolvedValue({
+      encoded: pairingFixture.secret,
+      slot: pairingFixture.slot,
+    });
+    pairingMocks.mockPollForPairingRecord.mockResolvedValue(
+      decodeBase64(pairingFixture.sealedBase64),
+    );
   });
 
   afterEach(() => {
@@ -402,5 +450,194 @@ describe("useOnboardingFlow", () => {
     expect(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY)).toBeNull();
     expect(gitdbMocks.mockClearIdentityRecord).toHaveBeenCalledTimes(1);
     expect(clearIdentityKey).toHaveBeenCalledTimes(1);
+  });
+
+  // Drives onboarding from the first screen to a waiting pairing QR. The
+  // desktop bridge must already be installed, since the tailnet path is only
+  // offered there.
+  const startTailnetPairing = async () => {
+    gitdbMocks.mockLoadIdentityRecord.mockReturnValue(null);
+    gitdbMocks.mockCreateIdentity.mockResolvedValue({
+      deviceName: "Test Device",
+      publicKeySsh: "ssh",
+      agePublicKey: pairingFixture.agePublicKeyBase64,
+      deviceUUID: "uuid",
+      wrap: "device",
+    });
+    gitdbMocks.mockUnlockIdentity.mockResolvedValue({
+      privateKeyPem: "key",
+      certificatePem: "cert",
+      deviceName: "Test Device",
+      agePrivateKeyBase64: pairingFixture.agePrivateKeyBase64,
+    });
+
+    render(<OnboardingHarness />);
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("serverUrl"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "begin-tailnet" }));
+    });
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("create"));
+    fireEvent.click(screen.getByRole("button", { name: "set-device" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "create" }));
+    });
+  };
+
+  // The tailnet path only exists in the desktop shell, because joining needs a
+  // native sidecar the browser build cannot host. Offering it in a browser
+  // would lead the user into a dead end.
+  it("does not offer the tailnet path without the desktop bridge", async () => {
+    gitdbMocks.mockLoadIdentityRecord.mockReturnValue(null);
+    render(<OnboardingHarness />);
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("serverUrl"));
+    expect(screen.getByTestId("tailnet-available")).toHaveTextContent("false");
+  });
+
+  it("offers the tailnet path in the desktop shell", async () => {
+    installTailnetBridge();
+    gitdbMocks.mockLoadIdentityRecord.mockReturnValue(null);
+    render(<OnboardingHarness />);
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("serverUrl"));
+    expect(screen.getByTestId("tailnet-available")).toHaveTextContent("true");
+  });
+
+  // The secret has to be minted only once there is an age key to seal a record
+  // to, since the QR must carry both together for the record to be openable.
+  it("mints a pairing secret when identity creation finishes", async () => {
+    installTailnetBridge();
+    await startTailnetPairing();
+
+    expect(screen.getByTestId("pairing-secret")).toHaveTextContent(pairingFixture.secret);
+    expect(pairingMocks.mockCreatePairingSecret).toHaveBeenCalledTimes(1);
+  });
+
+  // The whole point of the path: a record sealed by gitd is opened here, the
+  // tailnet is joined with the credential inside it, and the proxy is pointed
+  // at gitd's MagicDNS name. This exercises the real decryption code against a
+  // record the Go writer produced.
+  it("joins the tailnet with the credentials from the pairing record", async () => {
+    const { joinTailnet } = installTailnetBridge();
+    await startTailnetPairing();
+
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("rehydrating"));
+
+    expect(pairingMocks.mockPollForPairingRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ slot: pairingFixture.slot }),
+    );
+    expect(joinTailnet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headscaleAddr: `${pairingFixture.caLabel}.tunnel.replycant.com:443`,
+        caPem: pairingFixture.payload.ca_pem,
+        preauthKey: pairingFixture.payload.preauth_key,
+      }),
+    );
+  });
+
+  // The proxy has to be told where gitd is before rehydration starts, or the
+  // first fetch goes nowhere.
+  it("points the proxy at gitd's MagicDNS name", async () => {
+    installTailnetBridge();
+    await startTailnetPairing();
+
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("rehydrating"));
+
+    const stored = JSON.parse(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY) ?? "{}") as {
+      url?: string;
+      ca?: string;
+    };
+    expect(stored.url).toBe("https://gitd.replycant.internal");
+    expect(stored.ca).toBe(pairingFixture.payload.ca_pem);
+  });
+
+  // A cold start has to rejoin, because the node only exists while the sidecar
+  // runs. It must use no pre-auth key: that credential was single-use.
+  it("rejoins the tailnet on a later start without a pre-auth key", async () => {
+    const { joinTailnet } = installTailnetBridge();
+    saveSetupConfig();
+    localStorage.setItem(
+      TAILNET_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        headscaleAddr: "abc.tunnel.replycant.com:443",
+        headscaleServerName: "abc.tunnel.replycant.com",
+        gitdTailnetName: "gitd",
+        baseDomain: "replycant.internal",
+      }),
+    );
+    gitdbMocks.mockLoadIdentityRecord.mockReturnValue({ wrap: "device", publicKeySsh: "ssh" });
+    gitdbMocks.mockUnlockIdentity.mockResolvedValue({
+      privateKeyPem: "key",
+      certificatePem: "cert",
+      deviceName: "Test Device",
+      agePrivateKeyBase64: pairingFixture.agePrivateKeyBase64,
+    });
+
+    render(<OnboardingHarness />);
+
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("rehydrating"));
+    expect(joinTailnet).toHaveBeenCalledTimes(1);
+    expect(joinTailnet.mock.calls[0][0]).not.toHaveProperty("preauthKey");
+  });
+
+  // Nothing is persisted before the tailnet is actually up, so a failure leaves
+  // the next start with no configuration it would wrongly trust.
+  it("persists nothing when joining the tailnet fails", async () => {
+    const { joinTailnet } = installTailnetBridge();
+    joinTailnet.mockRejectedValue(new Error("sidecar failed to start"));
+
+    await startTailnetPairing();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("error")).toHaveTextContent("sidecar failed to start"),
+    );
+    expect(screen.getByTestId("mode")).toHaveTextContent("tailnetPairing");
+    expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY)).toBeNull();
+  });
+
+  // A record that opens but names a CA the headscale hostname does not commit
+  // to must not be installed as a trust root, even though it decrypted cleanly.
+  it("refuses a pairing record whose CA does not match its hostname", async () => {
+    const { joinTailnet } = installTailnetBridge();
+    pairingMocks.mockPollForPairingRecord.mockResolvedValue(
+      decodeBase64(pairingFixture.mismatchedCaSealedBase64),
+    );
+
+    await startTailnetPairing();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("error")).toHaveTextContent(/does not match the fingerprint/),
+    );
+    expect(joinTailnet).not.toHaveBeenCalled();
+  });
+
+  // A record planted by someone who guessed the slot cannot open, and the
+  // failure has to name the cause rather than looking like a stalled pairing.
+  it("reports a record that does not open under this attempt's secret", async () => {
+    const { joinTailnet } = installTailnetBridge();
+    pairingMocks.mockPollForPairingRecord.mockResolvedValue(
+      decodeBase64(pairingFixture.otherSecretSealedBase64),
+    );
+
+    await startTailnetPairing();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("error")).toHaveTextContent(/did not open under this pairing secret/),
+    );
+    expect(joinTailnet).not.toHaveBeenCalled();
+  });
+
+  // Starting over discards the identity the tailnet node was authorized
+  // against, so the node must not keep running with it.
+  it("leaves the tailnet when the user starts over", async () => {
+    const { leaveTailnet } = installTailnetBridge();
+    await startTailnetPairing();
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("rehydrating"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "start-over" }));
+    });
+
+    expect(leaveTailnet).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).toBeNull();
   });
 });
