@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import LibGit2
 import Security
 
 // Stores and manages server configuration obtained from QR code scanning.
@@ -64,15 +65,26 @@ final class ServerConfigurationManager {
     func discoverAndConfigure(
         discoveryURLString: String,
         expectedCAHash: String,
-        session: URLSession = .shared
+        session: URLSession? = nil
     ) async throws -> Configuration {
         guard let configURL = Self.discoveryConfigURL(from: discoveryURLString) else {
             throw ConfigurationError.invalidDiscoveryURL
         }
 
+        let discoverySession: URLSession
+        if let session {
+            discoverySession = session
+        } else {
+            do {
+                discoverySession = try await Self.tailnetRoutedSession()
+            } catch {
+                throw ConfigurationError.discoveryFetchFailed
+            }
+        }
+
         let responseData: Data
         do {
-            let (data, response) = try await session.data(from: configURL)
+            let (data, response) = try await discoverySession.data(from: configURL)
             guard let httpResponse = response as? HTTPURLResponse,
                   200..<300 ~= httpResponse.statusCode else {
                 throw ConfigurationError.discoveryFetchFailed
@@ -95,6 +107,16 @@ final class ServerConfigurationManager {
 
         try configure(url: discoveredURL, caCertificate: discoveredCA)
         return Configuration(url: discoveredURL, caCertificate: discoveredCA)
+    }
+
+    // Recovery re-targets a server the device may only be able to reach over
+    // the tailnet, so discovery has to be proxied like every other call to it.
+    // `.shared` cannot be used because its configuration is process-wide and
+    // immutable.
+    private static func tailnetRoutedSession() async throws -> URLSession {
+        let configuration = try await TailnetSessionRouter.shared
+            .configuration(basedOn: .ephemeral)
+        return URLSession(configuration: configuration)
     }
     
     // Stores the server URL and CA certificate, from which LFS URL is always derived.

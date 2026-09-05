@@ -130,6 +130,17 @@ public final class GitLFS: NSObject {
         // ImageDiskCacheManager and cache writes raced session teardown.
         let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
         configuration.urlCache = nil
+        // gitd is only reachable over the tailnet once a deployment uses one,
+        // so this has to happen before the session is built. Synchronous
+        // because init cannot await, and the node is already running.
+        //
+        // A failure is logged rather than thrown: this initialiser is not
+        // throwing, and every request the session goes on to make will fail on
+        // an unresolvable name anyway. The log is what makes that legible.
+        if TailnetSessionRouter.shared.isActive,
+           !TailnetSessionRouter.shared.applySynchronously(to: configuration) {
+            logError("Tailnet proxy could not be installed for LFS", context: "GitLFS")
+        }
         self.session = URLSession(
             configuration: configuration,
             delegate: self.authDelegate,

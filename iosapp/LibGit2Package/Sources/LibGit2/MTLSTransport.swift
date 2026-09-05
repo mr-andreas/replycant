@@ -630,6 +630,14 @@ private func startHTTPRequest(context: StreamContext) -> Int32 {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
+        // Blocking rather than awaited because libgit2 drives this through a
+        // synchronous C callback with nowhere to suspend. The work is a
+        // loopback query against an already-running node, not a round trip.
+        if TailnetSessionRouter.shared.isActive,
+           !TailnetSessionRouter.shared.applySynchronously(to: config) {
+            logError("Tailnet proxy could not be installed; refusing to dial directly", context: "MTLSTransport")
+            return -1
+        }
         context.subtransportContext.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         context.subtransportContext.sessionDelegate = delegate
         logDebug("Created shared URLSession for subtransport", context: "MTLSTransport")

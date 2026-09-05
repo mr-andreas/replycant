@@ -4,7 +4,9 @@ import PackageDescription
 let package = Package(
     name: "GitDB",
     platforms: [
-        .iOS(.v15),
+        // Follows LibGit2Package's floor, which the vendored TailscaleKit
+        // framework raised to 18.1. The app ships against 18.5 regardless.
+        .iOS("18.0"),
         .macOS(.v10_15)
     ],
     products: [

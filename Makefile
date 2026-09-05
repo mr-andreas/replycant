@@ -37,12 +37,48 @@ HOMEBREW_RUBY_BIN := $(shell test -x /opt/homebrew/opt/ruby/bin/ruby && echo /op
 # Prefer the iosapp Gemfile so frameit includes iPhone 17 / recent device frames.
 FASTLANE := cd iosapp && $(FASTLANE_LOCALE) env PATH="$(HOMEBREW_RUBY_BIN):$$PATH" bundle exec fastlane
 
-ios-unit-test:
+# TailscaleKit has no tags, releases, or SwiftPM distribution, and building it
+# needs a Go toolchain plus the iOS SDK. So it is built from a pinned commit
+# rather than committed: the xcframework is 70 MB, and this repository is
+# public with permanent history.
+#
+# Bump TAILSCALEKIT_REV deliberately. It is the only thing describing which
+# Tailscale client every device runs.
+TAILSCALEKIT_REV := 59d4bb82744915815178e0f0776d60026a397ee7
+TAILSCALEKIT_REPO := https://github.com/tailscale/libtailscale.git
+TAILSCALEKIT_SRC := iosapp/build/libtailscale
+TAILSCALEKIT_FRAMEWORK := iosapp/TailscaleKit.xcframework
+
+# Builds the framework only when it is missing or built from a different
+# commit, because a full build is several minutes of Go compilation.
+$(TAILSCALEKIT_FRAMEWORK)/Info.plist:
+	@set -euo pipefail; \
+	  mkdir -p iosapp/build; \
+	  if [ ! -d $(TAILSCALEKIT_SRC)/.git ]; then \
+	    git clone $(TAILSCALEKIT_REPO) $(TAILSCALEKIT_SRC); \
+	  fi; \
+	  cd $(TAILSCALEKIT_SRC); \
+	  git fetch --all --tags; \
+	  git checkout --detach $(TAILSCALEKIT_REV); \
+	  cd swift && make ios-fat; \
+	  cd "$(CURDIR)"; \
+	  rm -rf $(TAILSCALEKIT_FRAMEWORK); \
+	  cp -R $(TAILSCALEKIT_SRC)/swift/build/Build/Products/Release-iphonefat/TailscaleKit.xcframework \
+	    $(TAILSCALEKIT_FRAMEWORK)
+
+ios-tailscalekit: $(TAILSCALEKIT_FRAMEWORK)/Info.plist ## Build the vendored TailscaleKit xcframework
+.PHONY: ios-tailscalekit
+
+ios-tailscalekit-clean:
+	rm -rf $(TAILSCALEKIT_FRAMEWORK) $(TAILSCALEKIT_SRC)
+.PHONY: ios-tailscalekit-clean
+
+ios-unit-test: ios-tailscalekit
 	xcodebuild test -project $(IOS_PROJECT) -scheme $(IOS_SCHEME) \
 	  -destination '$(IOS_TEST_DESTINATION)' \
 	  -derivedDataPath iosapp/build/test-derived-data
 
-ios-ui-test:
+ios-ui-test: ios-tailscalekit
 	xcodebuild test -project $(IOS_PROJECT) -scheme iosappScreenshots \
 	  -destination '$(IOS_TEST_DESTINATION)' \
 	  -derivedDataPath iosapp/build/uitest-derived-data \
@@ -51,7 +87,7 @@ ios-ui-test:
 ios-test: ios-unit-test ios-ui-test
 .PHONY: ios-test ios-unit-test ios-ui-test
 
-ios-integration-test:
+ios-integration-test: ios-tailscalekit
 	@set -euo pipefail; \
 	  trap 'bash integration/container.sh stop' EXIT; \
 	  bash integration/container.sh start >/dev/null; \
@@ -78,7 +114,7 @@ ios-export-options:
 	@/usr/libexec/PlistBuddy -c "Add :teamID string $(DEVELOPMENT_TEAM)" $(IOS_EXPORT_OPTIONS)
 .PHONY: ios-export-options
 
-ios-release:
+ios-release: ios-tailscalekit
 	@: "$${ASC_KEY_ID:?Set ASC_KEY_ID}" "$${ASC_ISSUER_ID:?Set ASC_ISSUER_ID}" "$${ASC_KEY_PATH:?Set ASC_KEY_PATH}" "$${DEVELOPMENT_TEAM:?Set DEVELOPMENT_TEAM or add it to $(IOS_SIGNING_LOCAL)}"
 	rm -rf $(IOS_BUILD_DIR)
 	# Export-compliance exemption: shipped crypto stays on Apple stacks
