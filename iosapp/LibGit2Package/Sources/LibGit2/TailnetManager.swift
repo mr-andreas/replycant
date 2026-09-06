@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Security
 import TailscaleKit
 
@@ -153,9 +154,54 @@ public actor TailnetManager: TailnetNodeProviding {
             throw error
         }
 
+        await installTailnetControlRoute(on: shim, request: request)
+
         isJoined = true
         logger?("tailnet: joined as \(request.hostName) via \(request.headscaleHost)")
     }
+
+    /// Points the shim at gitd's in-tailnet control relay.
+    ///
+    /// Only possible after the node is up, because the route runs through the
+    /// node's own SOCKS5 proxy. From here on the device reaches the control
+    /// plane over WireGuard, which is what turns the hosted relay from
+    /// something every session depends on into a bootstrap step.
+    ///
+    /// Failures are logged rather than thrown: the relay path still works, so
+    /// a deployment without the in-tailnet relay keeps its previous behaviour
+    /// instead of failing to join.
+    private func installTailnetControlRoute(
+        on shim: HeadscaleControlShim,
+        request: TailnetJoinRequest
+    ) async {
+        guard let node else { return }
+        do {
+            let loopback = try await node.loopback()
+            guard let ip = loopback.ip, let port = loopback.port,
+                  let proxyPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
+                logger?("tailnet: node exposed no usable SOCKS proxy; control traffic stays on the relay")
+                return
+            }
+            try shim.setTailnetRoute(HeadscaleControlShim.TailnetRoute(
+                host: "\(request.gitdTailnetName).\(request.baseDomain)",
+                port: Self.gitdControlPort,
+                socksProxy: .hostPort(host: NWEndpoint.Host(ip), port: proxyPort),
+                // tsnet's SOCKS5 listener always authenticates as this user,
+                // with the loopback credential as the password.
+                socksUsername: "tsnet",
+                socksPassword: loopback.proxyCredential
+            ))
+        } catch {
+            logger?("tailnet: in-tailnet control path unavailable, staying on the relay: \(error)")
+        }
+    }
+
+    /// The port gitd relays control-plane traffic on inside the tailnet.
+    ///
+    /// Pinned here rather than delivered in the pairing record because it is a
+    /// property of the gitd build, not of the deployment, and a device only
+    /// ever talks to a gitd from the same release.
+    static let gitdControlPort: UInt16 = 8444
 
     public func apply(to configuration: URLSessionConfiguration) async throws {
         guard let node else {

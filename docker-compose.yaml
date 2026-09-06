@@ -164,12 +164,17 @@ services:
         # hsproxy terminates TLS for headscale, so its certificate has to match
         # the hostname devices dial - the tunnel subdomain, or the operator's
         # own name in manual mode.
-        if cert_covers hsproxy.crt "$${HEADSCALE_HOST}" "$${REPLYCANT_HOSTNAME}"; then
+        #
+        # The tailnet name is a SAN too, because a device that is already a
+        # tailnet member reaches hsproxy through gitd's in-tailnet control
+        # relay instead of through the tunnel. Both paths end at this same
+        # certificate, so one missing SAN would pin every device to the relay.
+        if cert_covers hsproxy.crt "$${HEADSCALE_HOST}" "$${REPLYCANT_HOSTNAME}" "$${GITD_TAILNET_NAME}"; then
           echo "hsproxy certificate already covers $${HEADSCALE_HOST}"
         else
           echo "Issuing hsproxy certificate for $${HEADSCALE_HOST}"
           issue_cert hsproxy "$${HEADSCALE_HOST}" \
-            "DNS:$${HEADSCALE_HOST},DNS:$${REPLYCANT_HOSTNAME}"
+            "DNS:$${HEADSCALE_HOST},DNS:$${REPLYCANT_HOSTNAME},DNS:$${GITD_TAILNET_NAME}"
         fi
 
   # Render the headscale config from the names server-key derived. Kept as its
@@ -242,7 +247,13 @@ services:
           format: text
 
         policy:
-          mode: database
+          # File mode rather than database mode because the policy is a fixed
+          # property of the deployment, not something an operator edits. With
+          # no policy loaded at all headscale allows every node to reach every
+          # other node, which would let one compromised device reach the rest
+          # of the household.
+          mode: file
+          path: /etc/headscale/policy.json
 
         dns:
           magic_dns: true
@@ -255,6 +266,37 @@ services:
           search_domains: []
         HSEOF
         echo "Wrote headscale config for $${REPLYCANT_HEADSCALE_URL}"
+
+        # The tailnet exists so devices can reach this household's server, not
+        # so they can reach each other. Naming only tag:server as a destination
+        # leaves everything else to headscale's default deny, so a stolen or
+        # compromised phone cannot enumerate or attack the other devices.
+        #
+        # Ports are pinned to what gitd actually serves on the tailnet: the
+        # mTLS Git listener, and the relay that carries control-plane traffic
+        # once a device is on the tailnet. Nothing here grants the server
+        # access to devices, because it never needs to initiate.
+        #
+        # Users carry a trailing @ because headscale's policy v2 requires it.
+        # Plain JSON rather than huJSON with comments so the policy stays
+        # machine-checkable; the reasoning lives here instead.
+        cat > /data/config/policy.json << POLEOF
+        {
+          "tagOwners": {
+            "tag:server": ["replycant@"],
+            "tag:device": ["replycant@"]
+          },
+          "acls": [
+            {
+              "action": "accept",
+              "proto": "tcp",
+              "src": ["tag:device"],
+              "dst": ["tag:server:8443", "tag:server:8444"]
+            }
+          ]
+        }
+        POLEOF
+        echo "Wrote headscale policy denying device-to-device traffic"
 
   # The tailnet control plane. Never publishes a host port: devices reach it
   # through hsproxy, which authenticates them against the repository's pubkeys.
@@ -325,9 +367,14 @@ services:
 
         # gitd re-authenticates from its own tsnet state after the first join,
         # so the key is only minted when it has not been minted before.
+        #
+        # The tag is applied here because a tagged node loses its user
+        # association in headscale and there is no way for the node to claim
+        # the tag later. tag:server is what the policy grants devices access
+        # to, so a key minted without it produces a node no device can reach.
         if [ ! -s /data/tailnet/gitd.authkey ]; then
           echo "Creating gitd pre-auth key for user $$USER_ID"
-          headscale preauthkeys create --user "$$USER_ID" --expiration 24h --output json \
+          headscale preauthkeys create --user "$$USER_ID" --expiration 24h --tags tag:server --output json \
             | grep -o '"key": *"[^"]*"' \
             | sed -e 's/.*: *"//' -e 's/"$$//' \
             > /data/tailnet/gitd.authkey

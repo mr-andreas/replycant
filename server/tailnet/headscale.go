@@ -37,6 +37,14 @@ const requestTimeout = 15 * time.Second
 // bounded so a misconfigured upstream returning HTML cannot flood the logs.
 const maxErrorBodyBytes = 512
 
+// The tag every paired device carries.
+//
+// The tailnet policy in docker-compose.yaml grants tag:device access to the
+// server and says nothing about devices as destinations, which is what makes
+// device-to-device traffic fail closed. Changing this name means changing the
+// policy in the same commit, or every device joins with a tag no rule mentions.
+const DeviceTag = "tag:device"
+
 // Where headscale is and who to mint keys for.
 type Config struct {
 	// Reached over the compose network, so plain http is expected here. The
@@ -121,6 +129,11 @@ func (c *Client) MintPreauthKey(ctx context.Context, validFor time.Duration) (st
 		"reusable":   false,
 		"ephemeral":  false,
 		"expiration": time.Now().Add(validFor).UTC().Format(time.RFC3339),
+		// The tailnet policy is expressed in tags, and a node can only be
+		// tagged by the credential it registers with. Without this the device
+		// joins untagged, the policy grants it nothing, and the failure
+		// surfaces much later as an unreachable server.
+		"aclTags": []string{DeviceTag},
 	}
 
 	var response struct {

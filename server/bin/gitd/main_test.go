@@ -113,6 +113,74 @@ func TestTsnetConfigFromFlags(t *testing.T) {
 	}
 }
 
+// Once a device is on the tailnet it should reach the control plane over the
+// tailnet rather than back out through the hosted relay, so this listener is
+// on by default whenever tsnet is. Making it opt-in would leave every
+// deployment permanently dependent on the relay.
+func TestTailnetControlRelayIsOnByDefaultWithTsnet(t *testing.T) {
+	cli := parseCLI(t,
+		"--tsnet-dir", "/state",
+		"--tsnet-control-url", "http://headscale:8080",
+		"--tsnet-hostname", "gitd",
+		"--tailnet-domain", "replycant.internal",
+	)
+
+	if cli.TailnetControlAddr == "" {
+		t.Fatal("the tailnet control relay must have a default listen address")
+	}
+	if cli.TailnetControlUpstream == "" {
+		t.Fatal("the tailnet control relay must have a default hsproxy upstream")
+	}
+	if !cli.tailnetControlRelayEnabled() {
+		t.Fatal("the relay must be enabled when tsnet is")
+	}
+}
+
+// Without tsnet there is no tailnet to serve it on, so the relay must stay off
+// regardless of its own flags. LAN-only deployments and integration tests
+// depend on gitd binding nothing extra.
+func TestTailnetControlRelayNeedsTsnet(t *testing.T) {
+	cli := parseCLI(t)
+	if cli.tailnetControlRelayEnabled() {
+		t.Fatal("the relay must be off when tsnet is disabled")
+	}
+}
+
+// An operator who does not want the second path must be able to turn it off,
+// which is what leaves manual-exposure deployments free to keep the relay as
+// the only way in.
+func TestEmptyTailnetControlAddrDisablesTheRelay(t *testing.T) {
+	cli := parseCLI(t,
+		"--tsnet-dir", "/state",
+		"--tsnet-control-url", "http://headscale:8080",
+		"--tsnet-hostname", "gitd",
+		"--tailnet-domain", "replycant.internal",
+		"--tailnet-control-addr", "",
+	)
+
+	if cli.tailnetControlRelayEnabled() {
+		t.Fatal("an empty --tailnet-control-addr must disable the relay")
+	}
+}
+
+// The relay carries a TLS session terminated by hsproxy, so an upstream that
+// is not hsproxy would hand devices a certificate they refuse. Catching the
+// missing value at startup beats discovering it when a device reconnects.
+func TestValidateRejectsARelayWithNoUpstream(t *testing.T) {
+	cli := CLI{
+		Hostname:           "host",
+		TsnetDir:           "/state",
+		TsnetControlURL:    "http://headscale:8080",
+		TsnetHostname:      "gitd",
+		TailnetDomain:      "replycant.internal",
+		TailnetControlAddr: ":8444",
+	}
+
+	if err := cli.Validate(); err == nil {
+		t.Fatal("expected validation to reject a relay with no upstream")
+	}
+}
+
 // An incomplete tsnet configuration must be rejected. If it were accepted,
 // gitd would come up with no listener any device can reach.
 //

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearTailnetConfigRecord,
+  gitdControlAddr,
   gitdTailnetUrl,
   joinTailnet,
   loadTailnetConfigRecord,
@@ -75,6 +76,27 @@ describe("gitdTailnetUrl", () => {
     expect(gitdTailnetUrl({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toBe(
       "https://gitd.replycant.internal",
     );
+  });
+});
+
+describe("gitdControlAddr", () => {
+  // The in-tailnet control path is what lets a paired device stop depending on
+  // the hosted relay, so the sidecar has to be told where it is.
+  it("targets gitd's control relay by MagicDNS name", () => {
+    expect(gitdControlAddr({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toEqual({
+      addr: "gitd.replycant.internal:8444",
+      serverName: "gitd.replycant.internal",
+    });
+  });
+
+  // hsproxy presents one certificate covering both the tunnel hostname and the
+  // tailnet name, so the name verified on this path is the tailnet one.
+  it("verifies the tailnet name rather than the tunnel hostname", () => {
+    const { serverName } = gitdControlAddr({
+      gitdTailnetName: "gitd",
+      baseDomain: "replycant.internal",
+    });
+    expect(serverName).not.toContain("tunnel");
   });
 });
 
@@ -164,6 +186,8 @@ describe("joinTailnet", () => {
     expect(joinTailnetBridge).toHaveBeenCalledWith({
       headscaleAddr: "abc123.tunnel.replycant.com:443",
       headscaleServerName: "abc123.tunnel.replycant.com",
+      gitdControlAddr: "gitd.replycant.internal:8444",
+      gitdControlServerName: "gitd.replycant.internal",
       caPem: payload.caPem,
       clientCertPem: identity.certificatePem,
       clientKeyPem: identity.privateKeyPem,

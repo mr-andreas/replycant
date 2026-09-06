@@ -29,6 +29,51 @@ public final class HeadscaleControlShim {
         case invalidUpstream(String)
     }
 
+    /// Which way a control connection reached the deployment.
+    ///
+    /// Worth distinguishing because the two have different consequences for
+    /// the user: `relay` means they still depend on replycant's hosted service
+    /// to stay connected, `tailnet` means they no longer do.
+    public enum Route: String, Sendable {
+        case tailnet
+        case relay
+    }
+
+    /// The in-tailnet path to the control plane, installed once the node is up.
+    ///
+    /// It cannot be a constructor argument because it does not exist yet when
+    /// the shim is built: the node needs the shim's control URL in order to
+    /// come up at all, so the first control session necessarily predates any
+    /// tailnet route.
+    public struct TailnetRoute: Sendable {
+        /// gitd's MagicDNS name, which is both the dial target and the name
+        /// hsproxy's certificate carries on this path.
+        public let host: String
+        public let port: UInt16
+
+        /// The node's SOCKS5 loopback proxy. Everything on this path has to go
+        /// through it: a tailnet address is only routable through the node's
+        /// userspace WireGuard stack, and a MagicDNS name is only resolvable
+        /// by the node's own resolver.
+        public let socksProxy: NWEndpoint
+        public let socksUsername: String
+        public let socksPassword: String
+
+        public init(
+            host: String,
+            port: UInt16,
+            socksProxy: NWEndpoint,
+            socksUsername: String,
+            socksPassword: String
+        ) {
+            self.host = host
+            self.port = port
+            self.socksProxy = socksProxy
+            self.socksUsername = socksUsername
+            self.socksPassword = socksPassword
+        }
+    }
+
     private let upstreamHost: String
     private let upstreamPort: UInt16
     private let pinnedCA: SecCertificate
@@ -37,7 +82,9 @@ public final class HeadscaleControlShim {
     private let logger: ((String) -> Void)?
 
     private var listener: NWListener?
-    private var connections: [ObjectIdentifier: (local: NWConnection, upstream: NWConnection)] = [:]
+    private var connections: [ObjectIdentifier: (local: NWConnection, upstream: NWConnection?)] = [:]
+    private var tailnetRoute: TailnetRoute?
+    private var lastRouteUsed: Route?
     private let lock = NSLock()
 
     /// - Parameters:
@@ -141,8 +188,32 @@ public final class HeadscaleControlShim {
 
         for (_, pair) in open {
             pair.local.cancel()
-            pair.upstream.cancel()
+            pair.upstream?.cancel()
         }
+    }
+
+    /// Installs the in-tailnet path to the control plane.
+    ///
+    /// Safe to call while serving, and expected to be: the caller installs it
+    /// as soon as the node is up, which is always after the shim has already
+    /// carried at least one control session through the relay.
+    public func setTailnetRoute(_ route: TailnetRoute) throws {
+        guard !route.host.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw ShimError.invalidUpstream("tailnet route host is empty")
+        }
+        lock.lock()
+        tailnetRoute = route
+        lock.unlock()
+    }
+
+    /// Which path the most recent connection took, or nil before the first one.
+    ///
+    /// Surfaced so the app can tell the user whether they still depend on the
+    /// hosted relay to stay connected.
+    public var lastRoute: Route? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRouteUsed
     }
 
     // Bridges one accepted loopback connection to a fresh mTLS connection.
@@ -152,54 +223,147 @@ public final class HeadscaleControlShim {
     // reusing a connection is not possible and pooling would only add a way
     // for two sessions to interfere.
     private func accept(_ local: NWConnection) {
-        let upstream = NWConnection(
-            host: NWEndpoint.Host(upstreamHost),
-            port: NWEndpoint.Port(rawValue: upstreamPort) ?? .https,
-            using: mtlsParameters()
-        )
-
         let key = ObjectIdentifier(local)
         lock.lock()
-        connections[key] = (local, upstream)
+        connections[key] = (local, nil)
+        let route = tailnetRoute
         lock.unlock()
 
-        let teardown = { [weak self] in
-            guard let self else { return }
-            self.lock.lock()
-            let pair = self.connections.removeValue(forKey: key)
-            self.lock.unlock()
-            pair?.local.cancel()
-            pair?.upstream.cancel()
+        local.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                self?.teardown(key)
+            default:
+                break
+            }
+        }
+        local.start(queue: queue)
+
+        // The tailnet is preferred but never assumed: it depends on the node
+        // being up and the server being online, and a device that cannot use
+        // it must still be able to reach the control plane rather than being
+        // stranded.
+        var attempts: [Attempt] = []
+        if let route {
+            attempts.append(Attempt(
+                route: .tailnet,
+                host: route.host,
+                port: route.port,
+                parameters: mtlsParameters(serverName: route.host, tailnet: route),
+                // Short, because a node that is down makes this hang rather
+                // than fail, and the cost is paid on every control connection.
+                timeout: 2
+            ))
+        }
+        attempts.append(Attempt(
+            route: .relay,
+            host: upstreamHost,
+            port: upstreamPort,
+            parameters: mtlsParameters(serverName: upstreamHost, tailnet: nil),
+            timeout: nil
+        ))
+
+        connect(local: local, key: key, attempts: attempts)
+    }
+
+    // One way to reach the control plane, tried in order.
+    private struct Attempt {
+        let route: Route
+        let host: String
+        let port: UInt16
+        let parameters: NWParameters
+
+        // nil means wait as long as the network stack does. Only the tailnet
+        // attempt is time-boxed, because only it has a fallback.
+        let timeout: TimeInterval?
+    }
+
+    // Tries each way to reach the control plane until one connects.
+    private func connect(local: NWConnection, key: ObjectIdentifier, attempts: [Attempt]) {
+        guard let attempt = attempts.first else {
+            // Every path failed. Closing the local side turns this into a
+            // prompt error for the Tailscale client, which retries with
+            // backoff, rather than a stall.
+            teardown(key)
+            return
+        }
+
+        let upstream = NWConnection(
+            host: NWEndpoint.Host(attempt.host),
+            port: NWEndpoint.Port(rawValue: attempt.port) ?? .https,
+            using: attempt.parameters
+        )
+
+        lock.lock()
+        // Only replace the upstream if this connection is still live; a
+        // teardown between attempts must not resurrect it.
+        let stillOpen = connections[key] != nil
+        if stillOpen {
+            connections[key] = (local, upstream)
+        }
+        lock.unlock()
+        guard stillOpen else {
+            upstream.cancel()
+            return
+        }
+
+        // Both flags are only touched on the shim's serial queue, which every
+        // state callback and the timer below run on.
+        var settled = false
+        var advanced = false
+        let advance: (String) -> Void = { [weak self] reason in
+            guard let self, !settled, !advanced else { return }
+            advanced = true
+            self.logger?("headscale shim: \(attempt.route.rawValue) route to "
+                + "\(attempt.host):\(attempt.port) unavailable: \(reason)")
+            upstream.cancel()
+            self.connect(local: local, key: key, attempts: Array(attempts.dropFirst()))
         }
 
         upstream.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
             switch state {
             case .ready:
-                self?.pump(from: local, to: upstream, teardown: teardown)
-                self?.pump(from: upstream, to: local, teardown: teardown)
+                settled = true
+                self.lock.lock()
+                self.lastRouteUsed = attempt.route
+                self.lock.unlock()
+                self.pump(from: local, to: upstream, teardown: { self.teardown(key) })
+                self.pump(from: upstream, to: local, teardown: { self.teardown(key) })
             case .failed(let error):
-                // Almost always the CA check rejecting the far side, which is
-                // the case worth being able to find in a log.
-                self?.logger?("headscale shim: upstream failed: \(error)")
-                teardown()
+                if settled {
+                    // Almost always the CA check rejecting the far side, which
+                    // is the case worth being able to find in a log.
+                    self.logger?("headscale shim: upstream failed: \(error)")
+                    self.teardown(key)
+                } else {
+                    advance(String(describing: error))
+                }
             case .cancelled:
-                teardown()
+                if !advanced {
+                    self.teardown(key)
+                }
             default:
                 break
             }
         }
 
-        local.stateUpdateHandler = { state in
-            switch state {
-            case .failed, .cancelled:
-                teardown()
-            default:
-                break
+        if let timeout = attempt.timeout {
+            queue.asyncAfter(deadline: .now() + timeout) {
+                advance("timed out after \(timeout)s")
             }
         }
 
-        local.start(queue: queue)
         upstream.start(queue: queue)
+    }
+
+    // Closes both halves of one relayed connection and forgets it.
+    private func teardown(_ key: ObjectIdentifier) {
+        lock.lock()
+        let pair = connections.removeValue(forKey: key)
+        lock.unlock()
+        pair?.local.cancel()
+        pair?.upstream?.cancel()
     }
 
     // Copies bytes one direction until either side closes.
@@ -229,13 +393,17 @@ public final class HeadscaleControlShim {
     }
 
     // Builds the upstream TLS options: pin the deployment CA, present the
-    // device identity, and verify the hostname the certificate was issued for.
-    private func mtlsParameters() -> NWParameters {
+    // device identity, and name the host the certificate was issued for.
+    //
+    // Both paths end at the same hsproxy and use the same anchor and identity;
+    // only the name differs, because hsproxy's certificate carries the tunnel
+    // hostname and the tailnet name as separate SANs.
+    private func mtlsParameters(serverName: String, tailnet: TailnetRoute?) -> NWParameters {
         let tlsOptions = NWProtocolTLS.Options()
         let security = tlsOptions.securityProtocolOptions
 
         sec_protocol_options_set_min_tls_protocol_version(security, .TLSv12)
-        sec_protocol_options_set_tls_server_name(security, upstreamHost)
+        sec_protocol_options_set_tls_server_name(security, serverName)
 
         if let identity = sec_identity_create(clientIdentity) {
             sec_protocol_options_set_local_identity(security, identity)
@@ -251,7 +419,20 @@ public final class HeadscaleControlShim {
             queue
         )
 
-        return NWParameters(tls: tlsOptions)
+        let parameters = NWParameters(tls: tlsOptions)
+        if let tailnet {
+            // The node's SOCKS5 proxy is the only way into the tailnet from
+            // the host stack, and it is attached through a private privacy
+            // context so it applies to this connection alone rather than to
+            // everything else the app does.
+            var proxy = ProxyConfiguration(socksv5Proxy: tailnet.socksProxy)
+            proxy.applyCredential(username: tailnet.socksUsername, password: tailnet.socksPassword)
+
+            let context = NWParameters.PrivacyContext(description: "replycant-tailnet-control")
+            context.proxyConfigurations = [proxy]
+            parameters.setPrivacyContext(context)
+        }
+        return parameters
     }
 
     /// Decides whether a presented chain belongs to this deployment.

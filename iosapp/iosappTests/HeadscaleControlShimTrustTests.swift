@@ -18,8 +18,10 @@ import LibGit2
 // X.509 encoder, and neither belongs in a test whose subject is the trust
 // decision.
 struct HeadscaleControlShimTrustTests {
-    // Self-signed CA standing in for a deployment's own CA.
-    private static let deploymentCADER = "MIIBijCCATCgAwIBAgIUFORBe7GP9t20GQI2nMOQ4eJ0cccwCgYIKoZIzj0EAwIwIjEgMB4GA1UEAwwXcmVwbHljYW50IGRlcGxveW1lbnQgY2EwIBcNMjYwOTA1MjE1OTMzWhgPMjEyNjA4MTIyMTU5MzNaMCIxIDAeBgNVBAMMF3JlcGx5Y2FudCBkZXBsb3ltZW50IGNhMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/+Ayj16LwpM50vLLBDg92tok5UlqII/AhrTe5EapqyZupe8w8C/zvbIekaV/S2ySEm+QNXfpYvT0IUlZ9DrKFaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFPxeQ8W19P0qsJmALwmx37YkhvfMMAoGCCqGSM49BAMCA0gAMEUCIBPgvyIy3bxzjqNgZSUEAh/XfwVQGPhYgGbOL7Cf5dGPAiEArTNvePFFy+53HcZffL4NKgVgPkhhEi8vy1JzmLB27OQ="
+    // Self-signed CA standing in for a deployment's own CA. Shared with the
+    // route tests, which need a plausible pinned anchor but never reach a
+    // handshake that uses it.
+    static let deploymentCADER = "MIIBijCCATCgAwIBAgIUFORBe7GP9t20GQI2nMOQ4eJ0cccwCgYIKoZIzj0EAwIwIjEgMB4GA1UEAwwXcmVwbHljYW50IGRlcGxveW1lbnQgY2EwIBcNMjYwOTA1MjE1OTMzWhgPMjEyNjA4MTIyMTU5MzNaMCIxIDAeBgNVBAMMF3JlcGx5Y2FudCBkZXBsb3ltZW50IGNhMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/+Ayj16LwpM50vLLBDg92tok5UlqII/AhrTe5EapqyZupe8w8C/zvbIekaV/S2ySEm+QNXfpYvT0IUlZ9DrKFaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFPxeQ8W19P0qsJmALwmx37YkhvfMMAoGCCqGSM49BAMCA0gAMEUCIBPgvyIy3bxzjqNgZSUEAh/XfwVQGPhYgGbOL7Cf5dGPAiEArTNvePFFy+53HcZffL4NKgVgPkhhEi8vy1JzmLB27OQ="
 
     // A different CA, standing in for the tunnel operator's publicly trusted
     // issuer.

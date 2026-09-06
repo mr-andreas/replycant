@@ -175,6 +175,28 @@ func TestMintedKeysAreNotEphemeral(t *testing.T) {
 	}
 }
 
+// Every device joins tagged, because the tailnet policy is written in terms of
+// tags: tag:device is what grants access to the server, and its absence is
+// what keeps devices from reaching each other. The tag has to be attached to
+// the credential, since a node cannot claim a tag for itself after the fact.
+func TestMintedKeysTagTheDevice(t *testing.T) {
+	fake := newFakeHeadscale(t)
+	client := newTestClient(t, fake)
+
+	if _, err := client.MintPreauthKey(context.Background(), time.Hour); err != nil {
+		t.Fatalf("minting must succeed: %v", err)
+	}
+
+	_, _, _, body := fake.snapshot()
+	tags, ok := body["aclTags"].([]any)
+	if !ok {
+		t.Fatalf("minted keys must carry aclTags, got %v", body["aclTags"])
+	}
+	if len(tags) != 1 || tags[0] != "tag:device" {
+		t.Errorf("minted keys must carry exactly tag:device, got %v", tags)
+	}
+}
+
 // headscale addresses users by numeric id, not name, so the client has to
 // resolve the configured name first. Getting this wrong would mint keys for
 // whichever user happened to be first in the list.

@@ -19,6 +19,11 @@ import (
 // API. This test is what proves the shapes are still right, and that the API
 // key headscale-init writes is actually accepted.
 //
+// It also guards the tailnet policy without asserting anything about it:
+// headscale rejects a key requesting an ACL tag that no tagOwners entry
+// claims, so a policy that failed to load or that dropped tag:device shows up
+// here as a failed mint.
+//
 // Skipped unless a headscale is pointed at, so `make test` stays fast.
 func TestMintsAgainstRealHeadscale(t *testing.T) {
 	baseURL := strings.TrimSpace(os.Getenv("REPLYCANT_TEST_HEADSCALE_API_URL"))

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -52,6 +53,15 @@ type input struct {
 	// Name verified against the control plane's certificate and sent as SNI,
 	// which is what the reverse tunnel routes on.
 	HeadscaleServerName string `json:"headscale_server_name"`
+
+	// Where gitd relays control-plane traffic inside the tailnet, and the name
+	// its certificate carries there. Installed on the shim once the node is up
+	// so later control sessions stop crossing the hosted relay.
+	//
+	// Optional. Empty leaves the relay as the only path, which is what a
+	// deployment that turned the in-tailnet relay off wants.
+	GitdControlAddr       string `json:"gitd_control_addr"`
+	GitdControlServerName string `json:"gitd_control_server_name"`
 
 	// The deployment's CA. The only root the control-plane connection trusts.
 	CAPEM string `json:"ca_pem"`
@@ -88,6 +98,10 @@ type ready struct {
 // tsnet's SOCKS5 listener always authenticates as this user, with the
 // credential returned by Loopback as the password.
 const socksUsername = "tsnet"
+
+// Matches tsnet.Server.Dial. Named so the route derivation can be tested
+// without standing up a real WireGuard node.
+type dialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
 func main() {
 	// Logs go to stderr so stdout carries only the readiness line. Electron
@@ -142,6 +156,21 @@ func run() error {
 	}
 	defer node.Close()
 
+	// Only now, because the node had to reach the control plane through the
+	// relay before it could route anything at all. From here on the shim
+	// prefers the in-tailnet path, so the relay is a bootstrap dependency
+	// rather than something every session holds open.
+	//
+	// A failure here is logged rather than fatal: the relay path still works,
+	// so a malformed address degrades to the previous behaviour.
+	if route, ok := tailnetControlRoute(config, node.Dial); !ok {
+		log.Printf("no in-tailnet control address configured; control traffic stays on the relay")
+	} else if err := controlPlane.SetTailnetRoute(route); err != nil {
+		log.Printf("in-tailnet control path unavailable, staying on the relay: %v", err)
+	} else {
+		log.Printf("control traffic will prefer %s over %s", route.Addr, config.HeadscaleAddr)
+	}
+
 	socksAddr, socksPassword, _, err := node.Loopback()
 	if err != nil {
 		return fmt.Errorf("expose the tailnet SOCKS5 proxy: %w", err)
@@ -162,6 +191,30 @@ func run() error {
 	<-ctx.Done()
 	log.Printf("shutting down")
 	return nil
+}
+
+// Derives the shim's in-tailnet route, reporting false when the deployment has
+// not configured one.
+//
+// dial is tsnet's own dialer, because a tailnet name resolves only through the
+// node's MagicDNS resolver and the address is only routable through its
+// userspace WireGuard stack.
+func tailnetControlRoute(config input, dial dialFunc) (shim.TailnetRoute, bool) {
+	addr := strings.TrimSpace(config.GitdControlAddr)
+	if addr == "" {
+		return shim.TailnetRoute{}, false
+	}
+
+	serverName := strings.TrimSpace(config.GitdControlServerName)
+	if serverName == "" {
+		// The address is a MagicDNS name, so its host is also the name
+		// hsproxy's certificate carries on this path.
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			serverName = host
+		}
+	}
+
+	return shim.TailnetRoute{Addr: addr, ServerName: serverName, Dial: dial}, true
 }
 
 // Brings the tailnet node up, blocking until it has joined so a failure is

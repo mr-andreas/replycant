@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/mr-andreas/replycant/server/gitd/lfs"
 	"github.com/mr-andreas/replycant/server/pairing"
 	"github.com/mr-andreas/replycant/server/tailnet"
+	"github.com/mr-andreas/replycant/server/tcprelay"
 	"github.com/mr-andreas/replycant/server/tsnetserve"
 )
 
@@ -66,6 +68,18 @@ type CLI struct {
 	// and /config.json advertise a name tailnet peers can actually resolve.
 	TailnetDomain string `help:"Headscale MagicDNS base domain, used to advertise the tailnet Git URL (e.g. replycant.internal)"`
 
+	// A second way into the control plane, reachable only from inside the
+	// tailnet. Devices bootstrap through the hosted relay because they have no
+	// tailnet yet, but once they are members they should not keep depending on
+	// a hosted service to stay connected. Splicing to hsproxy rather than to
+	// headscale keeps the device's TLS session terminating at the same
+	// authenticating front door on both paths.
+	//
+	// Empty --tailnet-control-addr turns it off, which is what an operator who
+	// wants the relay to be the only way in would do.
+	TailnetControlAddr     string `default:":8444" help:"Tailnet listen address for control-plane traffic; empty disables the tailnet control path"`
+	TailnetControlUpstream string `default:"hsproxy:8443" help:"hsproxy address that tailnet control-plane traffic is spliced to"`
+
 	// Cloud discovery. All three are needed together: without them gitd runs
 	// in manual-exposure mode, where the pairing QR carries the headscale URL
 	// and CA directly and no record is ever published.
@@ -93,7 +107,19 @@ func (c *CLI) Validate() error {
 		return fmt.Errorf("--tailnet-domain is required when --tsnet-dir is set, " +
 			"otherwise clients are handed a hostname they cannot resolve")
 	}
+	if c.tailnetControlRelayEnabled() && strings.TrimSpace(c.TailnetControlUpstream) == "" {
+		return fmt.Errorf("--tailnet-control-upstream is required when " +
+			"--tailnet-control-addr is set, otherwise the listener accepts " +
+			"control connections and has nowhere to send them")
+	}
 	return c.validateDiscovery()
+}
+
+// Whether to serve the control plane on the tailnet as well as through the
+// hosted relay. Requires tsnet, because without a node there is no tailnet to
+// bind the listener to.
+func (c *CLI) tailnetControlRelayEnabled() bool {
+	return c.tsnetConfig().Enabled() && strings.TrimSpace(c.TailnetControlAddr) != ""
 }
 
 // Tailnet pairing needs every part of its headscale configuration or none of
@@ -307,6 +333,30 @@ func main() {
 			log.Fatalf("gitd server failed: %v", err)
 		}
 	}()
+
+	// The in-tailnet path to the control plane. A device that is already a
+	// member reaches hsproxy through here instead of through the hosted relay,
+	// which is what keeps the relay a bootstrap dependency rather than a
+	// permanent one. Failing to bind is not fatal: devices can still reach the
+	// control plane the way they did during pairing.
+	if cli.tailnetControlRelayEnabled() {
+		controlListener, err := tsnetNode.Listen("tcp", cli.TailnetControlAddr)
+		if err != nil {
+			log.Printf("Tailnet control path unavailable on %s; devices will keep "+
+				"using the relay: %v", cli.TailnetControlAddr, err)
+		} else {
+			go func() {
+				log.Printf("Relaying tailnet control traffic from %s to %s",
+					cli.TailnetControlAddr, cli.TailnetControlUpstream)
+				err := tcprelay.Serve(controlListener, tcprelay.Config{
+					UpstreamAddr: cli.TailnetControlUpstream,
+				})
+				if err != nil && !errors.Is(err, net.ErrClosed) {
+					log.Printf("tailnet control relay stopped: %v", err)
+				}
+			}()
+		}
+	}
 
 	var lfsInternalServer *http.Server
 	if cli.LfsInternalAddr != "" {
