@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { startTailnetSidecar, TailnetSidecarConfig } from "./tailnetSidecar";
+import { startTailnetSidecar, TailnetSidecarConfig, TailnetStatus } from "./tailnetSidecar";
 
 const config: TailnetSidecarConfig = {
   headscaleAddr: "abc.tunnel.replycant.com:443",
@@ -35,11 +35,28 @@ class FakeSidecarProcess extends EventEmitter {
   public announceReady(overrides: Record<string, unknown> = {}) {
     this.stdout.write(
       `${JSON.stringify({
+        type: "ready",
         socks_addr: "127.0.0.1:41234",
         socks_username: "tsnet",
         socks_password: "deadbeef",
         tailnet_ips: ["100.64.0.2"],
         control_url: "http://127.0.0.1:41233",
+        ...overrides,
+      })}\n`,
+    );
+  }
+
+  // Emits one of the status events the sidecar streams after readiness.
+  public emitStatus(overrides: Record<string, unknown> = {}) {
+    this.stdout.write(
+      `${JSON.stringify({
+        type: "status",
+        backend_state: "Running",
+        tailnet_ips: ["100.64.0.2"],
+        derp_home: "fra",
+        control_route: "tailnet",
+        peers: 2,
+        peers_online: 1,
         ...overrides,
       })}\n`,
     );
@@ -264,6 +281,90 @@ describe("startTailnetSidecar", () => {
     await sidecar.stop();
 
     expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
+  // The panel exists to tell "not on the tailnet" apart from "on the tailnet
+  // but the server is down", so status has to keep flowing after readiness
+  // rather than being read once and discarded.
+  it("forwards status events for as long as the sidecar runs", async () => {
+    const child = new FakeSidecarProcess();
+    const seen: TailnetStatus[] = [];
+    const starting = startTailnetSidecar({
+      binaryPath: "/opt/replycant/replycant-tsnet",
+      config,
+      onStatus: (status) => seen.push(status),
+      spawnFn: makeSpawn(child),
+    });
+    child.announceReady();
+    const sidecar = await starting;
+
+    child.emitStatus();
+    child.emitStatus({ backend_state: "Stopped", control_route: "relay", peers_online: 0 });
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+
+    expect(seen[0]).toEqual({
+      backendState: "Running",
+      tailnetIps: ["100.64.0.2"],
+      derpHome: "fra",
+      controlRoute: "tailnet",
+      peers: 2,
+      peersOnline: 1,
+      health: [],
+      lastError: undefined,
+    });
+    expect(seen[1]?.backendState).toBe("Stopped");
+    expect(seen[1]?.controlRoute).toBe("relay");
+
+    await sidecar.stop();
+  });
+
+  // A node that is Running but unhealthy is exactly the case the panel is for,
+  // so tailscale's own warnings have to reach the renderer.
+  it("forwards health warnings and the last error", async () => {
+    const child = new FakeSidecarProcess();
+    const seen: TailnetStatus[] = [];
+    const starting = startTailnetSidecar({
+      binaryPath: "/opt/replycant/replycant-tsnet",
+      config,
+      onStatus: (status) => seen.push(status),
+      spawnFn: makeSpawn(child),
+    });
+    child.announceReady();
+    const sidecar = await starting;
+
+    child.emitStatus({
+      health: ["DERP region fra is unreachable"],
+      last_error: "node is not answering",
+    });
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+
+    expect(seen[0]?.health).toEqual(["DERP region fra is unreachable"]);
+    expect(seen[0]?.lastError).toBe("node is not answering");
+
+    await sidecar.stop();
+  });
+
+  // A malformed line must not be mistaken for a status update, or the panel
+  // would render empty fields as though the tailnet had lost its addresses.
+  it("ignores stdout lines it cannot understand", async () => {
+    const child = new FakeSidecarProcess();
+    const seen: TailnetStatus[] = [];
+    const logged: string[] = [];
+    const starting = startTailnetSidecar({
+      binaryPath: "/opt/replycant/replycant-tsnet",
+      config,
+      onStatus: (status) => seen.push(status),
+      logf: (message) => logged.push(message),
+      spawnFn: makeSpawn(child),
+    });
+    child.announceReady();
+    const sidecar = await starting;
+
+    child.stdout.write("not json\n");
+    await vi.waitFor(() => expect(logged.some((line) => line.includes("not json"))).toBe(true));
+
+    expect(seen).toHaveLength(0);
+    await sidecar.stop();
   });
 
   // A pre-auth key is single-use, so a rejoining device has none. Requiring it

@@ -220,6 +220,22 @@ struct ContentView: View {
 
         errorMessage = nil
 
+        // Before anything that touches the server. A userspace tailnet node
+        // only runs while the app does, so a paired device is off the tailnet
+        // at every launch and gitd publishes no other way in. Sessions built
+        // before the node is up are not retroactively proxied, so resyncing
+        // first would fail on a hostname the device cannot resolve.
+        //
+        // A failure is surfaced but not fatal: LAN deployments have nothing to
+        // join, and a device that cannot reach its control plane should say so
+        // rather than present as a broken repository.
+        do {
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+        } catch {
+            logError("Failed to rejoin the tailnet: \(error.localizedDescription)", context: "Tailnet")
+            errorMessage = error.localizedDescription
+        }
+
         let gitInitStartTime = CFAbsoluteTimeGetCurrent()
         let gitInitSignpost = AppSignposts.begin("GitInitialize")
         do {

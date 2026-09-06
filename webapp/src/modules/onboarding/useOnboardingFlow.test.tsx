@@ -545,7 +545,7 @@ describe("useOnboardingFlow", () => {
       url?: string;
       ca?: string;
     };
-    expect(stored.url).toBe("https://gitd.replycant.internal");
+    expect(stored.url).toBe("https://gitd.replycant.internal:8443");
     expect(stored.ca).toBe(pairingFixture.payload.ca_pem);
   });
 

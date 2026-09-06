@@ -209,7 +209,11 @@ final class RecoveryKeyManager {
         password: String,
         discoveryURLOverride: String? = nil,
         repositoryPath: String = (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path as NSString).appendingPathComponent("replycant-git-db"),
-        session: URLSession = .shared,
+        // nil lets discovery pick a tailnet-routed session. A recovered device
+        // is usually recovering onto a deployment it can only reach over the
+        // tailnet, and `.shared` cannot be proxied because its configuration is
+        // process-wide and immutable. Tests inject their own.
+        session: URLSession? = nil,
         progress: ((String, Double) -> Void)? = nil
     ) async throws -> RecoveryResult {
         let repositoryExists = Repository.exists(at: repositoryPath)
@@ -227,6 +231,13 @@ final class RecoveryKeyManager {
         let discoveryURL = discoveryURLOverride ?? plaintext.discoveryURL
         progress?("Requesting local network access...", 10)
         try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(endpointURLs: [discoveryURL])
+
+        // A device recovering onto a tailnet deployment can only reach the
+        // discovery endpoint over the tailnet, so membership has to be restored
+        // before the first request. Nothing to do for LAN deployments, and
+        // nothing to do on a fresh device with no stored configuration - those
+        // reach the tailnet through pairing instead.
+        try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
 
         progress?("Resolving server discovery...", 15)
         let discovered = try await ServerConfigurationManager.shared.discoverAndConfigure(

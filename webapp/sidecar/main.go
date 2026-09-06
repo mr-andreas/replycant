@@ -86,8 +86,10 @@ type input struct {
 // What Electron needs in order to route traffic through the tailnet.
 //
 // Written as one JSON line on stdout once the node is up, so the parent can
-// treat the sidecar as ready rather than polling or sleeping.
+// treat the sidecar as ready rather than polling or sleeping. Typed like every
+// other stdout line, because status events follow it on the same stream.
 type ready struct {
+	Type          string   `json:"type"`
 	SocksAddr     string   `json:"socks_addr"`
 	SocksUsername string   `json:"socks_username"`
 	SocksPassword string   `json:"socks_password"`
@@ -184,6 +186,20 @@ func run() error {
 		ControlURL:    controlPlane.ControlURL(),
 	}); err != nil {
 		return err
+	}
+
+	// Started only after readiness, so the parent reads the readiness line
+	// first and is never handed a status event before it knows the sidecar is
+	// up. Failing to obtain the client is not fatal: the tailnet works, the
+	// desktop app just cannot show its state.
+	if client, err := node.LocalClient(); err != nil {
+		log.Printf("tailnet status is unavailable; the app will show no connection detail: %v", err)
+	} else {
+		go publishStatus(ctx, os.Stdout, statusPoller{
+			Interval: statusInterval,
+			Status:   client.Status,
+			Route:    controlPlane.LastRoute,
+		})
 	}
 
 	// The node and the shim only exist while this process does, so it stays
@@ -289,14 +305,8 @@ func readInput(reader io.Reader) (input, error) {
 
 // Emits the readiness line the parent process waits for.
 func announce(writer io.Writer, message ready) error {
-	encoded, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("encode readiness message: %w", err)
-	}
-	if _, err := fmt.Fprintf(writer, "%s\n", encoded); err != nil {
-		return fmt.Errorf("write readiness message: %w", err)
-	}
-	return nil
+	message.Type = readyEventType
+	return emit(writer, message)
 }
 
 // Reports the addresses the node was assigned, for the desktop app's logs.

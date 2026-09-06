@@ -27,6 +27,7 @@ public struct TailnetJoinRequest: Sendable {
     /// Name this device appears under in the tailnet.
     public let hostName: String
 
+
     public init(
         headscaleHost: String,
         headscalePort: UInt16 = 443,
@@ -42,14 +43,6 @@ public struct TailnetJoinRequest: Sendable {
         self.preauthKey = preauthKey
         self.hostName = hostName
     }
-
-    /// The URL gitd is reachable at once the device is on the tailnet.
-    ///
-    /// MagicDNS resolves this inside the tailnet and gitd's certificate carries
-    /// the matching SAN, so the existing mTLS transport works unchanged.
-    public var gitdURL: String {
-        "mtls+https://\(gitdTailnetName).\(baseDomain)"
-    }
 }
 
 /// The bits of a running tailnet node the rest of the app needs.
@@ -64,6 +57,9 @@ public protocol TailnetNodeProviding: AnyObject, Sendable {
     func addresses() async throws -> (ip4: String?, ip6: String?)
 
     func shutDown() async
+
+    /// How this device is currently connected, for the settings screen.
+    func status() async throws -> TailnetStatusReport
 }
 
 /// Owns the device's membership in one deployment's tailnet.
@@ -215,6 +211,23 @@ public actor TailnetManager: TailnetNodeProviding {
             throw TailnetError.notJoined
         }
         return try await node.addrs()
+    }
+
+    /// What to show the user about this device's connection.
+    ///
+    /// Reads the node's own view rather than tracking state here, because the
+    /// node's connectivity changes underneath the app - a peer going offline, a
+    /// DERP region changing - with nothing to notify us. The control route
+    /// comes from the shim, which is the only thing that knows which path the
+    /// last control session took.
+    public func status() async throws -> TailnetStatusReport {
+        guard let node else {
+            throw TailnetError.notJoined
+        }
+        return try TailnetStatusReport.decode(
+            try await node.statusJSON(),
+            controlRoute: shim?.lastRoute
+        )
     }
 
     /// Takes the node and the shim down.

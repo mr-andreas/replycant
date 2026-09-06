@@ -220,7 +220,11 @@ struct DeviceLinkingView: View {
         currentStep = .processing
         isProcessing = true
         progressMessage = "Granting access..."
-        let shouldShowConfigAfterSuccess = payload.caHash == nil
+        // A device that sent a pairing secret is waiting on a sealed record,
+        // not on a QR: it cannot reach the server to use a config QR in the
+        // first place. Showing one would leave it staring at a code it has no
+        // use for while its poll times out.
+        let shouldShowConfigAfterSuccess = payload.caHash == nil && payload.pairingSecret == nil
         
         Task {
             do {
@@ -232,6 +236,17 @@ struct DeviceLinkingView: View {
                 }
                 
                 try await addDeviceKeyToRepository(pubkey: payload.pubkey, agePubkey: payload.agePubkey, name: payload.name, uuid: payload.uuid)
+
+                // After the key is committed and pushed, because the record
+                // carries a tailnet credential the new device will use
+                // immediately: authorizing it to reach a server that does not
+                // yet know its key would only fail the first clone.
+                if let secret = payload.pairingSecret {
+                    try await authorizeTailnetPairing(
+                        pairingSecret: secret,
+                        agePublicKey: payload.agePubkey
+                    )
+                }
                 
                 await MainActor.run {
                     isProcessing = false
@@ -290,6 +305,28 @@ struct DeviceLinkingView: View {
         try await gitDB.push()
         
         log("Successfully added and pushed device key", context: "DeviceLinking")
+    }
+
+    // Asks the server to seal and publish a pairing record for the scanned
+    // device.
+    //
+    // The new device generated the secret, showed it in its QR, and is now
+    // polling the slot it derives from it. Only the server can answer, because
+    // only it can mint a tailnet credential, so this device's role is to relay
+    // the request over its own authenticated connection.
+    private func authorizeTailnetPairing(pairingSecret: String, agePublicKey: String) async throws {
+        updateProgress("Authorizing on your library's network...")
+
+        guard let serverURL = ServerConfigurationManager.shared.loadURL() else {
+            throw PairingAuthorization.AuthorizationError.invalidServerURL
+        }
+        try await PairingAuthorization.publish(
+            pairingSecret: pairingSecret,
+            agePublicKey: agePublicKey,
+            serverURL: serverURL,
+            session: try await PairingAuthorization.session()
+        )
+        log("Published pairing record for the scanned device", context: "DeviceLinking")
     }
 
     // Loads repository age public keys so epoch re-wrap includes every currently authorized device.

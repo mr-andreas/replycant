@@ -51,12 +51,21 @@ export const toHeadscaleAddr = (headscaleUrl: string): { addr: string; serverNam
   return { addr: `${parsed.hostname}:${port}`, serverName: parsed.hostname };
 };
 
+// The port gitd serves Git and LFS on inside the tailnet.
+//
+// Pinned for the same reason as the control port below, and it must stay in
+// step with the ports the headscale policy in docker-compose.yaml opens: a
+// device that dials anything else is denied by the tailnet itself, not by gitd.
+export const GITD_TAILNET_PORT = 8443;
+
 // The URL gitd is reachable at once the device is on the tailnet.
 //
 // MagicDNS resolves this inside the tailnet, and gitd's certificate carries the
-// matching SAN, so the existing mTLS transport works unchanged.
+// matching SAN, so the existing mTLS transport works unchanged. The port is
+// explicit because gitd's tailnet listener is not on 443, and an implied 443
+// would leave every request timing out against a port nothing is bound to.
 export const gitdTailnetUrl = (record: Pick<TailnetConfigRecord, "gitdTailnetName" | "baseDomain">): string =>
-  `https://${record.gitdTailnetName}.${record.baseDomain}`;
+  `https://${record.gitdTailnetName}.${record.baseDomain}:${GITD_TAILNET_PORT}`;
 
 // The port gitd relays control-plane traffic on inside the tailnet.
 //

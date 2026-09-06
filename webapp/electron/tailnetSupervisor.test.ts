@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTailnetSupervisor, resolveSidecarPath } from "./tailnetSupervisor";
-import { TailnetSidecar, TailnetSidecarConfig } from "../server/tailnetSidecar";
+import { TailnetSidecar, TailnetSidecarConfig, TailnetStatus } from "../server/tailnetSidecar";
+
+const runningStatus: TailnetStatus = {
+  backendState: "Running",
+  tailnetIps: ["100.64.0.2"],
+  derpHome: "fra",
+  controlRoute: "tailnet",
+  peers: 2,
+  peersOnline: 1,
+  health: [],
+};
 
 const config: TailnetSidecarConfig = {
   headscaleAddr: "abc.tunnel.replycant.com:443",
@@ -213,6 +223,89 @@ describe("createTailnetSupervisor", () => {
 
     expect(supervisor.getProxy()).toBeUndefined();
     expect(logged.some((line) => line.includes("failed to stop"))).toBe(true);
+  });
+
+  // The renderer can open the status panel at any time, long after the last
+  // status event arrived, so the latest reading has to be held rather than
+  // only forwarded as it happens.
+  it("caches the latest status for the renderer to read", async () => {
+    let publish: ((status: TailnetStatus) => void) | undefined;
+    const supervisor = createTailnetSupervisor({
+      binaryPath: "/opt/replycant-tsnet",
+      startFn: async (options) => {
+        publish = options.onStatus;
+        return makeSidecar("127.0.0.1:41234");
+      },
+    });
+
+    await supervisor.start(config);
+    expect(supervisor.getStatus()).toBeUndefined();
+
+    publish?.(runningStatus);
+    expect(supervisor.getStatus()).toEqual(runningStatus);
+
+    publish?.({ ...runningStatus, backendState: "Stopped" });
+    expect(supervisor.getStatus()?.backendState).toBe("Stopped");
+  });
+
+  // Status arrives every few seconds and the panel must reflect it without the
+  // user reopening it, so the supervisor pushes as well as caches.
+  it("notifies subscribers as status arrives", async () => {
+    let publish: ((status: TailnetStatus) => void) | undefined;
+    const supervisor = createTailnetSupervisor({
+      binaryPath: "/opt/replycant-tsnet",
+      startFn: async (options) => {
+        publish = options.onStatus;
+        return makeSidecar("127.0.0.1:41234");
+      },
+    });
+    const seen: TailnetStatus[] = [];
+    supervisor.onStatus((status) => seen.push(status));
+
+    await supervisor.start(config);
+    publish?.(runningStatus);
+
+    expect(seen).toEqual([runningStatus]);
+  });
+
+  // A stopped tailnet has no status, and reporting the last one would claim a
+  // connection that no longer exists.
+  it("forgets the status when the tailnet stops", async () => {
+    let publish: ((status: TailnetStatus) => void) | undefined;
+    const supervisor = createTailnetSupervisor({
+      binaryPath: "/opt/replycant-tsnet",
+      startFn: async (options) => {
+        publish = options.onStatus;
+        return makeSidecar("127.0.0.1:41234");
+      },
+    });
+
+    await supervisor.start(config);
+    publish?.(runningStatus);
+    await supervisor.stop();
+
+    expect(supervisor.getStatus()).toBeUndefined();
+  });
+
+  // Status from a node that has been replaced would describe a tailnet the app
+  // is no longer on, which is worse than no status at all.
+  it("ignores status from a replaced node", async () => {
+    const publishers: Array<((status: TailnetStatus) => void) | undefined> = [];
+    const sidecars = [makeSidecar("127.0.0.1:41111"), makeSidecar("127.0.0.1:42222")];
+    const supervisor = createTailnetSupervisor({
+      binaryPath: "/opt/replycant-tsnet",
+      startFn: async (options) => {
+        publishers.push(options.onStatus);
+        return sidecars.shift()!;
+      },
+    });
+
+    await supervisor.start(config);
+    await supervisor.start({ ...config, hostname: "desktop-2" });
+
+    publishers[0]?.({ ...runningStatus, derpHome: "stale" });
+
+    expect(supervisor.getStatus()).toBeUndefined();
   });
 
   // The supervisor passes the binary path through, so a packaging mistake shows

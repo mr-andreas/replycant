@@ -95,7 +95,20 @@ services:
         # holding any shared secret. Truncated to 32 hex chars because a DNS
         # label cannot exceed 63 octets. Must stay in sync with
         # gitcrypt.CADNSLabel.
-        CA_LABEL=$$(openssl x509 -in ca.crt -outform DER | sha256sum | cut -c1-32)
+        CA_DIGEST=$$(openssl x509 -in ca.crt -outform DER | sha256sum | cut -d' ' -f1)
+        CA_LABEL=$$(echo "$${CA_DIGEST}" | cut -c1-32)
+
+        # Registrations live in one relay process's memory, so the relay fleet
+        # is sharded by hostname rather than by shared state. The slot comes
+        # from the digest byte just past the 32 hex chars the label consumes,
+        # modulo a permanently fixed 64: growing the fleet repoints DNS for
+        # some slots and never moves a deployment, so no hsproxy certificate
+        # needs reissuing and no stored headscale_url goes stale.
+        #
+        # Must stay in sync with gitcrypt.CATunnelSlotFromDER; the cross-repo
+        # fixture test in pkg/gitcrypt pins the two together.
+        CA_SHARD_BYTE=$$(echo "$${CA_DIGEST}" | cut -c33-34)
+        CA_SHARD=$$(printf 's%02d' $$(( 0x$${CA_SHARD_BYTE} % 64 )))
 
         # Devices reach gitd by its MagicDNS name once everything is on the
         # tailnet; the .local name is kept as a SAN so LAN-only deployments and
@@ -108,8 +121,17 @@ services:
           HEADSCALE_HOST=$$(echo "$${REPLYCANT_HEADSCALE_URL}" | sed -e 's#^[a-z]*://##' -e 's#[:/].*$$##')
           HEADSCALE_URL="$${REPLYCANT_HEADSCALE_URL}"
         else
-          HEADSCALE_HOST="$${CA_LABEL}.$${REPLYCANT_TUNNEL_DOMAIN}"
+          HEADSCALE_HOST="$${CA_LABEL}.$${CA_SHARD}.$${REPLYCANT_TUNNEL_DOMAIN}"
           HEADSCALE_URL="https://$${HEADSCALE_HOST}"
+        fi
+
+        # Where the tunnel agent registers. Derived rather than configured so
+        # an operator never has to know which shard their CA landed in; the
+        # env var stays an override for self-hosted relays.
+        if [ -n "$${REPLYCANT_TUNNEL_RELAY_ADDR}" ]; then
+          TUNNEL_RELAY_ADDR="$${REPLYCANT_TUNNEL_RELAY_ADDR}"
+        else
+          TUNNEL_RELAY_ADDR="$${CA_SHARD}.$${REPLYCANT_TUNNEL_DOMAIN}:8444"
         fi
 
         # Written to a shared volume because every tailnet-aware service needs
@@ -117,8 +139,10 @@ services:
         # service would let them drift.
         cat > /data/tailnet/tailnet.env << ENVEOF
         REPLYCANT_CA_LABEL=$${CA_LABEL}
+        REPLYCANT_CA_SHARD=$${CA_SHARD}
         REPLYCANT_HEADSCALE_HOST=$${HEADSCALE_HOST}
         REPLYCANT_HEADSCALE_URL=$${HEADSCALE_URL}
+        REPLYCANT_TUNNEL_RELAY_ADDR=$${TUNNEL_RELAY_ADDR}
         REPLYCANT_TAILNET_DOMAIN=$${REPLYCANT_TAILNET_DOMAIN}
         REPLYCANT_GITD_TAILNET_NAME=$${GITD_TAILNET_NAME}
         ENVEOF
@@ -462,16 +486,25 @@ services:
       hsproxy:
         condition: service_started
     volumes:
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.crt:/data/hsproxy.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.key:/data/hsproxy.key:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
-    entrypoint: /usr/local/bin/tunnel-agent
+    # The relay address comes from the shared tailnet.env rather than a
+    # compose-level default, because it names the shard the CA hashes to and
+    # only server-key knows that. Deriving it here again would be a second
+    # place to get the modulus wrong.
+    entrypoint: /bin/sh
     command:
-      - --relay-addr=${REPLYCANT_TUNNEL_RELAY_ADDR:-tunnel.replycant.com:8444}
-      - --upstream-addr=hsproxy:8443
-      - --cert=/data/hsproxy.crt
-      - --key=/data/hsproxy.key
-      - --ca=/data/ca.crt
+      - -xec
+      - |
+        . /data/tailnet/tailnet.env
+        exec /usr/local/bin/tunnel-agent \
+          --relay-addr="$$REPLYCANT_TUNNEL_RELAY_ADDR" \
+          --upstream-addr=hsproxy:8443 \
+          --cert=/data/hsproxy.crt \
+          --key=/data/hsproxy.key \
+          --ca=/data/ca.crt
     restart: unless-stopped
 
   gitd:

@@ -31,6 +31,15 @@ private final class FakeNode: TailnetNodeProviding, @unchecked Sendable {
         ("100.64.0.7", nil)
     }
 
+    // The router never reads status; it is here because the settings screen
+    // shares the node protocol.
+    func status() async throws -> TailnetStatusReport {
+        try TailnetStatusReport.decode(
+            Data(#"{"BackendState":"Running","TailscaleIPs":["100.64.0.7"]}"#.utf8),
+            controlRoute: .tailnet
+        )
+    }
+
     func shutDown() async {
         shutDownCount += 1
     }

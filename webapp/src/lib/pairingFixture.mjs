@@ -1,9 +1,14 @@
 // Regenerates pairing.fixture.json from the Go writer.
 //
-// The pairing record format is defined by pkg/pairing in the Go tree, and the
-// TypeScript reader has to match it byte for byte. Hand-written fixtures would
-// only prove the reader agrees with itself, so this produces one with the real
-// writer. Run `node src/lib/pairingFixture.mjs` after changing either side.
+// The pairing record format is defined by pkg/pairing in the Go tree, and both
+// the TypeScript and Swift readers have to match it byte for byte. Hand-written
+// fixtures would only prove a reader agrees with itself, so this produces one
+// with the real writer. Run `node src/lib/pairingFixture.mjs` after changing
+// any of the three.
+//
+// The iOS test bundle gets its own copy because a simulator cannot read repo
+// paths at runtime. Both copies come from this one run, so they cannot drift
+// as long as the readers are tested against a freshly generated fixture.
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -148,3 +153,8 @@ if (result.status !== 0) {
 
 writeFileSync(join(here, "pairing.fixture.json"), `${result.stdout}\n`);
 console.log("wrote src/lib/pairing.fixture.json");
+
+const iosFixture = join(repoRoot, "iosapp", "iosappTests", "Fixtures", "pairing.fixture.json");
+spawnSync("mkdir", ["-p", dirname(iosFixture)]);
+writeFileSync(iosFixture, `${result.stdout}\n`);
+console.log("wrote iosapp/iosappTests/Fixtures/pairing.fixture.json");

@@ -29,6 +29,16 @@ struct OnboardingView: View {
     @State private var recoveryInput: String?
     @State private var connectScanIntent: ConnectScanIntent
 
+    // The secret this device published in its QR, and the task waiting for a
+    // record sealed under it.
+    //
+    // One secret per attempt: it is what an eavesdropper who photographed the
+    // QR would have, so it must not outlive the screen that showed it. The task
+    // is held so leaving the screen stops the poll rather than leaving it
+    // reading a slot nobody will write to.
+    @State private var pairingSecret: PairingRecord.Secret?
+    @State private var pairingWait: Task<Void, Never>?
+
     // Initializes the onboarding router so first-launch users see product context before setup actions.
     init(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete
@@ -393,6 +403,7 @@ struct OnboardingView: View {
 
     // Starts create-library onboarding at server setup guidance so users can bootstrap immediately.
     private func startCreateLibrary() {
+        stopWaitingForTailnetAuthorization()
         isConnectToExistingFlow = false
         currentStep = .serverSetupGuide
     }
@@ -438,6 +449,7 @@ struct OnboardingView: View {
         case .serverConfig:
             handleConfigScanned(scanned)
         case .recoveryBundle:
+            stopWaitingForTailnetAuthorization()
             recoveryInput = scanned
             currentStep = .recover
         case nil:
@@ -463,12 +475,17 @@ struct OnboardingView: View {
     // Opens the paste path so recovery still works when the backup is
     // text rather than a QR code.
     private func startRecoveryPaste() {
+        stopWaitingForTailnetAuthorization()
         recoveryInput = nil
         currentStep = .recover
     }
 
     // Handles the config QR scanned from Device A during "Connect to Existing" flow.
     private func handleConfigScanned(_ jsonString: String) {
+        // The LAN path won the race, so the tailnet wait can no longer produce
+        // anything useful and would otherwise reconfigure the app underneath
+        // this flow if a record showed up late.
+        stopWaitingForTailnetAuthorization()
         currentStep = .processing
         isProcessing = true
         progress = 0
@@ -528,20 +545,26 @@ struct OnboardingView: View {
                 
                 // Build QR code JSON.
                 let agePublicKey = try ClientIdentityManager.shared.agePublicKey()
-                let json: [String: String] = [
-                    "pubkey": publicKey,
-                    "age_pubkey": agePublicKey,
-                    "name": name,
-                    "uuid": uuid
-                ]
-                
-                guard let jsonData = try? JSONSerialization.data(withJSONObject: json),
-                      let jsonString = String(data: jsonData, encoding: .utf8) else {
-                    throw OnboardingError.repositoryError("Failed to create QR code")
-                }
-                
+
+                // A fresh secret every time the QR is generated, so a photo of
+                // an abandoned attempt's code cannot be used against this one.
+                let secret = PairingRecord.createSecret()
+                let jsonString = try TailnetPairing.deviceQRPayload(
+                    publicKeySSH: publicKey,
+                    agePublicKey: agePublicKey,
+                    deviceName: name,
+                    deviceUUID: uuid,
+                    pairingSecret: secret.encoded
+                )
+
                 await MainActor.run {
                     devicePublicKeyQR = jsonString
+                    pairingSecret = secret
+                    // A tailnet deployment answers by publishing a record, and
+                    // a LAN one by showing a config QR to scan. Both paths are
+                    // live from here, because this device cannot tell which
+                    // kind of deployment scanned it.
+                    startWaitingForTailnetAuthorization(secret: secret)
                 }
                 
                 log("Generated device key QR for \(name) (\(uuid))", context: "Onboarding")
@@ -555,6 +578,118 @@ struct OnboardingView: View {
         }
     }
     
+    // MARK: - Tailnet Pairing
+
+    // Waits for the deployment to authorize this device, then adopts what it
+    // sent.
+    //
+    // On a tailnet deployment this is the only way in: the device has no CA to
+    // trust, no tailnet credential, and no route to gitd, so it cannot ask for
+    // anything and instead waits to be handed a sealed record. A LAN
+    // deployment never publishes one, which is why this runs alongside the
+    // config scan rather than replacing it - whichever answer arrives first is
+    // the one that completes setup.
+    //
+    // A failure is left silent unless it happened after the record arrived. A
+    // timeout here is the expected outcome on the LAN path, and surfacing it
+    // would put an error on screen for users who paired successfully.
+    private func startWaitingForTailnetAuthorization(secret: PairingRecord.Secret) {
+        pairingWait?.cancel()
+        pairingWait = Task {
+            do {
+                let ageIdentity = try ClientIdentityManager.shared.agePrivateKey()
+                let payload = try await TailnetPairing.awaitAuthorization(
+                    secretEncoded: secret.encoded,
+                    slot: secret.slot,
+                    ageIdentity: ageIdentity
+                )
+                if Task.isCancelled { return }
+
+                await MainActor.run {
+                    currentStep = .processing
+                    isProcessing = true
+                    progress = 0
+                }
+                try await performTailnetConnect(payload: payload)
+
+                await MainActor.run {
+                    isProcessing = false
+                    progressMessage = "Setup complete!"
+                    progress = 100
+                }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run { onComplete() }
+            } catch is CancellationError {
+                // Expected: the user moved on, or a config scan won the race.
+            } catch let error as DiscoveryClient.DiscoveryError where error == .timedOut {
+                log("No tailnet pairing record arrived; the LAN path is still available",
+                    context: "Onboarding")
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    errorMessage = error.localizedDescription
+                    currentStep = .error
+                }
+            }
+        }
+    }
+
+    // Stops the wait once it can no longer complete, so an abandoned attempt
+    // does not keep polling a slot in the background.
+    private func stopWaitingForTailnetAuthorization() {
+        pairingWait?.cancel()
+        pairingWait = nil
+        pairingSecret = nil
+    }
+
+    // Joins the tailnet from an authorized record and clones over it.
+    //
+    // Mirrors performConnectToExisting, minus the local-network permission
+    // prompt: a tailnet node dials through its own userspace stack, so the
+    // device never touches the local network and iOS never asks.
+    private func performTailnetConnect(payload: PairingRecord.Payload) async throws {
+        log("=== PERFORMING TAILNET CONNECT (JOIN + CLONE) ===", context: "Onboarding")
+
+        updateProgress(10, message: "Joining your library's network...")
+        let serverURL = try await TailnetPairing.adopt(payload: payload)
+
+        updateProgress(30, message: "Configuring secure transport...")
+        guard let identity = ClientIdentityManager.shared.loadSecIdentity() else {
+            throw OnboardingError.repositoryError(
+                "No identity found. The key should have been generated at first boot.")
+        }
+        guard let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
+            throw OnboardingError.repositoryError("Failed to load CA certificate")
+        }
+        try MTLSTransport.shared.configure(clientIdentity: identity, pinnedCA: pinnedCA)
+
+        updateProgress(40, message: "Cloning repository...")
+        let repoPath = RepositoryManager.shared.repositoryPath()
+        log("Cloning from \(serverURL) to \(repoPath)", context: "Onboarding")
+        try await RepositoryBootstrap.clone(
+            serverURL: serverURL,
+            repositoryPath: repoPath
+        ) { message, phaseProgress in
+            Task { @MainActor in
+                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 40...80)
+                self.progressMessage = message
+            }
+        }
+
+        updateProgress(80, message: "Building media index...")
+        try await RepositoryBootstrap.hydrateIndex(
+            resetDatabase: false
+        ) { message, phaseProgress in
+            Task { @MainActor in
+                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 80...99)
+                self.progressMessage = message
+            }
+        }
+
+        updateProgress(100, message: "Setup complete!")
+        log("Tailnet connect completed successfully", context: "Onboarding")
+    }
+
     // MARK: - Bootstrap Setup
     
     // Performs bootstrap setup and commits both identity keys and initial KEK epoch metadata in one atomic push.

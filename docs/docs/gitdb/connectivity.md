@@ -35,17 +35,22 @@ flowchart TB
         GITD --> HS
     end
 
-    Shim -->|"end-to-end TLS"| Tun
+    Shim -->|"first control session"| Tun
     Tun -->|"reverse tunnel"| Agent
+    Shim -.->|"later control sessions"| GITD
+    GITD -->|"TCP splice"| HSP
     App -->|"GET sealed record"| Disc
     GITD -->|"PUT sealed record"| Disc
-    App -.->|"tailnet: direct or DERP"| GITD
+    App -.->|"tailnet: Git, LFS, media"| GITD
 ```
 
 Two paths matter and they are deliberately separate:
 
-- **Control path.** Joining the tailnet requires talking to headscale. That is
-  the only traffic that goes through the hosted relay.
+- **Control path.** Joining the tailnet requires talking to headscale. The
+  first control session of each app launch goes through the hosted relay,
+  because a device cannot route to peers until its node is up. After that the
+  device's loopback shim prefers gitd's in-tailnet control relay (a raw TCP
+  splice to hsproxy) and falls back to the hosted relay if that path fails.
 - **Data path.** Git, LFS, decryptd, and transcoded all travel inside the
   tailnet, peer to peer. They never touch the relay.
 
@@ -56,7 +61,7 @@ Two paths matter and they are deliberately separate:
 | headscale | home host, no published port | Tailnet control plane |
 | hsproxy | home host, the only externally reachable service | Terminates TLS for headscale and authorizes the device |
 | tunnel-agent | home host | Holds an outbound connection to the relay so no router port is needed |
-| Reverse TCP relay | hosted | Accepts device connections on the public wildcard hostname and splices them to the agent |
+| Reverse TCP relay | hosted, one process per shard | Accepts device connections on the public wildcard hostname and splices them to the agent |
 | Discovery API | hosted | Holds one short-lived sealed record per slot |
 | tsnet in gitd | home host | Puts gitd on the tailnet instead of on a host port |
 | tsnet / TailscaleKit in clients | device | Puts the app on the tailnet |
@@ -74,6 +79,21 @@ a `.pub` file therefore revokes tailnet access and Git access at once.
 `hsproxy` splices raw bytes rather than proxying HTTP. Tailscale's control
 protocol upgrades a `POST` into a long-lived bidirectional stream, which no
 HTTP-aware proxy layer survives.
+
+Once a device is on the tailnet, later control sessions go to gitd's second
+tsnet listener (`:8444`), which splices to this same `hsproxy`. The
+certificate therefore carries both the tunnel hostname and
+`gitd.replycant.internal`, so either path verifies.
+
+### Who can talk to whom
+
+The tailnet exists so devices can reach this household's server, not so they
+can reach each other. headscale loads a file-mode policy that grants
+`tag:device` access to `tag:server` on the Git and control ports only. There
+is no device-to-device rule and no server-to-device rule, so a compromised
+phone cannot enumerate or attack the rest of the household. gitd's own node
+is tagged `tag:server` at mint time; every paired device is tagged
+`tag:device`.
 
 ### The loopback shim
 
@@ -122,9 +142,18 @@ like "we can read your traffic".
 | Discovery API | An opaque blob and the slot it was published under | The blob contents. The inner layer is encrypted to the device's age key and the outer layer is an AEAD under a key derived from the QR secret, neither of which the API ever receives |
 | Tailscale DERP | WireGuard ciphertext, peer public keys, traffic volume | Packet contents |
 
-The relay's SNI hostname is `{ca-label}.tunnel.replycant.com`, where the label
-is a truncated hash of the deployment CA. It identifies a deployment but carries
-no user identity.
+The relay's SNI hostname is `{ca-label}.s{NN}.tunnel.replycant.com`. The first
+label is a truncated hash of the deployment CA and identifies the deployment
+without carrying a user identity. The second label is a shard slot taken from
+the next byte of the same digest, modulo a permanently fixed 64. Registrations
+live in one relay process's memory, so the fleet is sharded by hostname rather
+than by shared state. Growing the fleet repoints DNS for some slots and never
+changes a deployment's hostname, so no certificate needs reissuing and no
+stored `headscale_url` goes stale.
+
+Every reader of the CA fingerprint — the relay's SNI check, and both clients'
+pairing-record verification — takes only the leftmost label, so the shard
+component changes none of them.
 
 ### DERP
 
@@ -146,7 +175,7 @@ itself, and neither survives a reverse TCP relay.
 
 ```json
 {
-  "headscale_url": "https://<ca-label>.tunnel.replycant.com",
+  "headscale_url": "https://<ca-label>.s<NN>.tunnel.replycant.com",
   "ca_pem": "-----BEGIN CERTIFICATE-----\n...",
   "preauth_key": "...",
   "gitd_tailnet_name": "gitd.replycant.internal",

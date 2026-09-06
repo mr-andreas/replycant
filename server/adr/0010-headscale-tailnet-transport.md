@@ -43,9 +43,21 @@ colocated with gitd and reached through an authenticating front door.
   `--tsnet-hostname`, `--tsnet-auth-key-file`, and serve the mTLS listener on
   `tsnet.Listen`. Remove gitd's `ports:` block entirely.
 - `server-key` derives the deployment's public hostname from the CA:
-  `{sha256(ca.der)[:32]}.tunnel.replycant.com`. It issues an `hsproxy`
-  certificate for that name and adds `DNS:gitd.replycant.internal` to
-  `server.crt` so mTLS still validates over MagicDNS.
+  `{sha256(ca.der)[:32]}.s{NN}.tunnel.replycant.com`. The shard slot is a
+  byte of the same digest just past the label, modulo a permanently fixed
+  64. Growing the relay fleet therefore repoints DNS for some slots and
+  never moves a deployment, so no hsproxy certificate is reissued and no
+  stored `headscale_url` goes stale. The certificate is issued for that
+  hostname and also carries `DNS:gitd.replycant.internal`, because after
+  the first control session a device reaches hsproxy through gitd's
+  in-tailnet TCP splice rather than through the hosted relay.
+- gitd listens a second time on its existing tsnet node (`:8444`) and
+  raw-splices accepted connections to hsproxy. Device shims prefer that
+  MagicDNS address once the node is `Running`, and fall back to the
+  relay hostname when it is not. A device cannot route to peers before
+  it is up, so the first control session of every app launch still
+  crosses the relay; what changes is that the relay stops holding a
+  stream for the whole session.
 - gitd mints a per-pairing pre-auth key over headscale's HTTP API and returns it
   inside a record sealed twice: encrypted to the pairing device's age key, then
   wrapped in an AEAD under a key derived from a secret that only ever appears in

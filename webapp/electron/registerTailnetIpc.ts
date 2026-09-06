@@ -1,5 +1,5 @@
 import type { IpcMain } from "electron";
-import { TailnetSidecarConfig } from "../server/tailnetSidecar";
+import { TailnetSidecarConfig, TailnetStatus } from "../server/tailnetSidecar";
 import { TailnetSupervisor } from "./tailnetSupervisor";
 
 // Shape the renderer sends over IPC. Deliberately not the sidecar config type:
@@ -64,18 +64,37 @@ export const parseJoinRequest = (raw: unknown): TailnetSidecarConfig => {
   };
 };
 
+// What the renderer learns about the tailnet.
+//
+// `running` alone was not enough to explain a failure: a node can be running
+// and still unable to reach the server. The rest of the fields are what let the
+// app say which of those it is, and are absent while the tailnet is down.
 export interface TailnetIpcStatus {
   running: boolean;
+  status?: TailnetStatus;
 }
+
+// Channel the main process pushes status on.
+//
+// A push as well as a query because status changes every few seconds and a
+// panel the user is looking at must follow it without being reopened.
+export const TAILNET_STATUS_EVENT = "tailnet:statusChanged";
 
 // Registers the tailnet IPC once so the production and dev Electron shells stay
 // in sync, mirroring registerIdentityKeyIpc.
 //
 // The renderer drives this because the credentials come from the pairing record
 // it holds, and pairing can happen long after the window has opened.
+//
+// `broadcast` is injected rather than reaching for BrowserWindow here, because
+// which windows exist is the shell's concern and a test has no windows at all.
 export const registerTailnetIpc = (
   ipcMain: IpcMain,
-  deps: { supervisor: TailnetSupervisor; stateDir: string },
+  deps: {
+    supervisor: TailnetSupervisor;
+    stateDir: string;
+    broadcast?: (channel: string, payload: TailnetIpcStatus) => void;
+  },
 ): void => {
   ipcMain.handle("tailnet:join", async (_event, raw: unknown) => {
     const config = parseJoinRequest(raw);
@@ -84,10 +103,22 @@ export const registerTailnetIpc = (
 
   ipcMain.handle("tailnet:leave", async () => {
     await deps.supervisor.stop();
+    // Pushed on the way down too, or the panel keeps showing the connection
+    // the user just left.
+    deps.broadcast?.(TAILNET_STATUS_EVENT, { running: false });
   });
 
   ipcMain.handle(
     "tailnet:status",
-    (): TailnetIpcStatus => ({ running: deps.supervisor.isRunning() }),
+    (): TailnetIpcStatus => ({
+      running: deps.supervisor.isRunning(),
+      status: deps.supervisor.getStatus(),
+    }),
   );
+
+  if (deps.broadcast) {
+    deps.supervisor.onStatus((status) => {
+      deps.broadcast?.(TAILNET_STATUS_EVENT, { running: true, status });
+    });
+  }
 };

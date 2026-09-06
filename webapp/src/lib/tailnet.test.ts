@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearTailnetConfigRecord,
   gitdControlAddr,
+  GITD_TAILNET_PORT,
   gitdTailnetUrl,
   joinTailnet,
   loadTailnetConfigRecord,
@@ -74,7 +75,16 @@ describe("gitdTailnetUrl", () => {
   // unchanged over the tailnet.
   it("builds the MagicDNS URL for gitd", () => {
     expect(gitdTailnetUrl({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toBe(
-      "https://gitd.replycant.internal",
+      "https://gitd.replycant.internal:8443",
+    );
+  });
+
+  // gitd's tailnet listener is not on 443, and the headscale policy only opens
+  // the ports gitd actually serves, so an implied port would be denied by the
+  // tailnet before it ever reached gitd.
+  it("names the port gitd serves on rather than implying 443", () => {
+    expect(gitdTailnetUrl({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toContain(
+      `:${GITD_TAILNET_PORT}`,
     );
   });
 });

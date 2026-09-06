@@ -28,9 +28,44 @@ export interface TailnetSidecarConfig {
   hostname: string;
 }
 
+// What the app knows about the tailnet at a point in time.
+//
+// This exists because a failed request used to be ambiguous: the device could
+// be off the tailnet, on it but unable to route, or on it with the server down,
+// and all three looked identical. Every field is here to make that
+// distinction visible.
+export interface TailnetStatus {
+  // One of tailscale's backend states, or "Unknown" when the node did not
+  // answer. Only "Running" means traffic can flow.
+  backendState: string;
+
+  tailnetIps: string[];
+
+  // The DERP region carrying this node's traffic.
+  derpHome: string;
+
+  // Which path the last control session took, "tailnet" or "relay". A device
+  // permanently on the relay is a deployment problem with no other symptom.
+  controlRoute: string;
+
+  peers: number;
+  peersOnline: number;
+
+  // tailscale's own warnings: a node can be Running and still unable to carry
+  // traffic.
+  health: string[];
+
+  lastError?: string;
+}
+
 export interface StartTailnetSidecarOptions {
   binaryPath: string;
   config: TailnetSidecarConfig;
+
+  // Called for every status event the sidecar emits, which is roughly every
+  // five seconds for the life of the process. Optional so callers that only
+  // need the proxy are unaffected.
+  onStatus?: (status: TailnetStatus) => void;
 
   // Bounds how long to wait for the readiness line. The join crosses the
   // hosted relay, so it is generous, but bounded: without a limit a control
@@ -68,10 +103,24 @@ interface ReadyMessage {
   control_url?: string;
 }
 
-// Validates the readiness line, because a sidecar that announced itself without
-// usable SOCKS5 details would leave every upstream request failing later with
-// no indication of why.
-const parseReadyMessage = (line: string): ReadyMessage | null => {
+// The periodic status line the sidecar writes for the life of the process.
+interface StatusMessage {
+  backend_state?: string;
+  tailnet_ips?: string[];
+  derp_home?: string;
+  control_route?: string;
+  peers?: number;
+  peers_online?: number;
+  health?: string[];
+  last_error?: string;
+}
+
+// One line of the sidecar's stdout stream.
+//
+// stdout is a stream of typed events rather than a single readiness line,
+// because the tailnet's health changes over the process's life and the app has
+// to be able to report it.
+const parseEvent = (line: string): { type?: unknown } | null => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -81,7 +130,14 @@ const parseReadyMessage = (line: string): ReadyMessage | null => {
   if (typeof parsed !== "object" || parsed === null) {
     return null;
   }
-  const candidate = parsed as Partial<ReadyMessage>;
+  return parsed as { type?: unknown };
+};
+
+// Validates the readiness line, because a sidecar that announced itself without
+// usable SOCKS5 details would leave every upstream request failing later with
+// no indication of why.
+const parseReadyMessage = (event: { type?: unknown }): ReadyMessage | null => {
+  const candidate = event as Partial<ReadyMessage>;
   if (
     typeof candidate.socks_addr !== "string" ||
     candidate.socks_addr.length === 0 ||
@@ -91,6 +147,25 @@ const parseReadyMessage = (line: string): ReadyMessage | null => {
     return null;
   }
   return candidate as ReadyMessage;
+};
+
+// Normalises a status line into the shape the renderer consumes.
+//
+// Defaults rather than rejection for missing fields: a status event is only
+// ever advisory, and dropping one because a field was absent would freeze the
+// panel on a stale reading that claims everything is fine.
+const toTailnetStatus = (event: { type?: unknown }): TailnetStatus => {
+  const message = event as StatusMessage;
+  return {
+    backendState: typeof message.backend_state === "string" ? message.backend_state : "Unknown",
+    tailnetIps: Array.isArray(message.tailnet_ips) ? message.tailnet_ips : [],
+    derpHome: typeof message.derp_home === "string" ? message.derp_home : "",
+    controlRoute: typeof message.control_route === "string" ? message.control_route : "",
+    peers: typeof message.peers === "number" ? message.peers : 0,
+    peersOnline: typeof message.peers_online === "number" ? message.peers_online : 0,
+    health: Array.isArray(message.health) ? message.health : [],
+    lastError: typeof message.last_error === "string" ? message.last_error : undefined,
+  };
 };
 
 // Translates the config into the wire shape the Go sidecar expects. Kept
@@ -122,6 +197,7 @@ const toSidecarInput = (config: TailnetSidecarConfig): Record<string, string> =>
 export const startTailnetSidecar = async ({
   binaryPath,
   config,
+  onStatus,
   readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
   logf = () => {},
   spawnFn = spawn,
@@ -130,10 +206,16 @@ export const startTailnetSidecar = async ({
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  // Assigned once the stdout reader exists. Held so stopping the sidecar also
+  // stops the status stream, rather than leaving a reader attached to a pipe
+  // that is about to close.
+  let stopReading: (() => void) | undefined;
+
   const stop = async (): Promise<void> => {
     if (child.exitCode !== null || child.signalCode !== null) {
       return;
     }
+    stopReading?.();
     const exited = new Promise<void>((resolveExit) => {
       child.once("exit", () => resolveExit());
     });
@@ -165,9 +247,14 @@ export const startTailnetSidecar = async ({
     throw new Error("Tailnet sidecar was spawned without a stdout pipe.");
   }
 
-  const ready = await new Promise<ReadyMessage>((resolveReady, rejectReady) => {
-    const lines = createInterface({ input: child.stdout! });
+  // One reader for the whole stream, kept open past readiness: status events
+  // arrive on the same stdout for the life of the process, so closing it after
+  // the readiness line would leave the app with no way to see the tailnet's
+  // state change.
+  const lines = createInterface({ input: child.stdout });
+  stopReading = () => lines.close();
 
+  const ready = await new Promise<ReadyMessage>((resolveReady, rejectReady) => {
     const timer = setTimeout(() => {
       cleanup();
       rejectReady(
@@ -180,7 +267,6 @@ export const startTailnetSidecar = async ({
 
     const cleanup = () => {
       clearTimeout(timer);
-      lines.close();
       child.off("exit", onExit);
       child.off("error", onError);
     };
@@ -206,7 +292,14 @@ export const startTailnetSidecar = async ({
       if (trimmed.length === 0) {
         return;
       }
-      const message = parseReadyMessage(trimmed);
+      const event = parseEvent(trimmed);
+      if (event?.type === "status") {
+        // Status can arrive before readiness if the node comes up while the
+        // readiness line is still being written; it is not readiness.
+        onStatus?.(toTailnetStatus(event));
+        return;
+      }
+      const message = event ? parseReadyMessage(event) : null;
       if (!message) {
         // Not fatal: forward it so an unexpected stdout line is visible
         // rather than silently discarded.
@@ -217,8 +310,24 @@ export const startTailnetSidecar = async ({
       resolveReady(message);
     });
   }).catch(async (error: unknown) => {
+    lines.close();
     await stop();
     throw error;
+  });
+
+  // Readiness is settled, so from here every line is a status update.
+  lines.removeAllListeners("line");
+  lines.on("line", (line) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+    const event = parseEvent(trimmed);
+    if (event?.type === "status") {
+      onStatus?.(toTailnetStatus(event));
+      return;
+    }
+    logf(`tsnet-sidecar: unexpected stdout: ${trimmed}`);
   });
 
   return {

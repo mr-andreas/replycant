@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { SyncCommitSummary } from "../modules/gitdb";
 import { StatusBanner } from "./StatusBanner";
+import { TailnetStatusPanel } from "./TailnetStatusPanel";
 
 // Combines commit rewind controls with sync health status in an inline
 // sidebar so both stay visible alongside the main content area.
@@ -72,6 +73,11 @@ export const CommitPane = memo(({
         onChangeSyncInterval={onChangeSyncInterval}
       />
       <p className="commit-pane-count">{timelineItemCount.toLocaleString()} media in timeline</p>
+      {/* Next to sync health because that is where a user looks when a sync
+          fails, and "am I even on the library's network" is the first thing
+          they need answered. Renders nothing on LAN deployments. */}
+      <TailnetStatusPanel />
+      
       <div className="commit-list" aria-label="Recent commits">
         {commits.length === 0 ? (
           <p>No local commits yet</p>

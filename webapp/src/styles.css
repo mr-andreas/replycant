@@ -594,6 +594,43 @@ progress {
   font-variant-numeric: tabular-nums;
 }
 
+.tailnet-status {
+  margin: 0 0 0.8rem;
+  font-size: 0.78rem;
+}
+
+.tailnet-status-state {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.tailnet-status-state.connected {
+  color: var(--brand-green, #3fb950);
+}
+
+.tailnet-status-detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.6rem;
+  margin: 0;
+  color: var(--text-faint);
+}
+
+.tailnet-status-detail dt {
+  font-weight: 500;
+}
+
+.tailnet-status-detail dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.tailnet-status-warning {
+  margin: 0.4rem 0 0;
+  color: var(--warning, #d29922);
+}
+
 .status-banner {
   margin: 1rem 1.2rem;
   padding: 0.8rem 1rem;

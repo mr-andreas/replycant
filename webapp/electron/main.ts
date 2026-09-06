@@ -131,7 +131,18 @@ app.whenReady().then(async () => {
     }),
     logf: (message) => console.log(message),
   });
-  registerTailnetIpc(ipcMain, { supervisor: tailnet, stateDir: tailnetStateDir });
+  registerTailnetIpc(ipcMain, {
+    supervisor: tailnet,
+    stateDir: tailnetStateDir,
+    // Every window, not just the focused one: the connection panel is part of
+    // the app chrome and a background window showing a stale tailnet state
+    // would be worse than showing none.
+    broadcast: (channel, payload) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(channel, payload);
+      }
+    },
+  });
   const lastPagePath = join(storeDir, "lastPage.json");
   ipcMain.on("lastPage:read", (event) => {
     try {

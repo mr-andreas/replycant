@@ -289,8 +289,11 @@ LEj+/WUkDhfmrCRf4r0cNwQ/2M0wXWJmZSp+2FwsKscCIQDKQ2nEAj+8DkOn2h0o
 	label, err := gitcrypt.CADNSLabel(caPEM)
 	require.NoError(t, err)
 
+	host, err := gitcrypt.CATunnelHost(caPEM, "tunnel.replycant.com")
+	require.NoError(t, err)
+
 	payload := Payload{
-		HeadscaleURL:    "https://" + label + ".tunnel.replycant.com",
+		HeadscaleURL:    "https://" + host,
 		CAPEM:           caPEM,
 		PreauthKey:      "hskey-auth-a-b",
 		GitdTailnetName: "gitd.replycant.internal",
@@ -301,6 +304,15 @@ LEj+/WUkDhfmrCRf4r0cNwQ/2M0wXWJmZSp+2FwsKscCIQDKQ2nEAj+8DkOn2h0o
 	mismatched := payload
 	mismatched.HeadscaleURL = "https://0000000000000000000000000000dead.tunnel.replycant.com"
 	require.Error(t, mismatched.VerifyCALabel())
+
+	// The shard component is what lets the relay fleet grow, and it only works
+	// because every reader of the fingerprint takes the leftmost label. A check
+	// that looked at the whole hostname would reject every real record.
+	require.Regexp(t, `^`+label+`\.s\d\d\.`, host, "the shard sits right of the CA label")
+	unsharded := payload
+	unsharded.HeadscaleURL = "https://" + label + ".tunnel.replycant.com"
+	require.NoError(t, unsharded.VerifyCALabel(),
+		"the check must depend on the leftmost label only")
 }
 
 // Manual mode publishes headscale under the operator's own DNS name, which

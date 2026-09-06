@@ -42,6 +42,11 @@ struct SettingsView: View {
                 } header: {
                     Text("Device Management")
                 }
+
+                // Above Advanced because "can this device reach the library at
+                // all" is what a user checks first when a sync fails, and it
+                // should not be buried behind a submenu.
+                TailnetConnectionSection()
                 
                 Section {
                     NavigationLink(destination: RepositorySettingsView()) {

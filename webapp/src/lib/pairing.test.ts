@@ -162,6 +162,19 @@ describe("verifyCALabel", () => {
     await expect(verifyCALabel(payload)).resolves.toBeUndefined();
   });
 
+  // Real hostnames carry a shard label between the fingerprint and the tunnel
+  // domain, which is what lets the relay fleet grow without renaming any
+  // deployment. It only works because the check reads the leftmost label, so a
+  // sharded hostname has to verify exactly like an unsharded one.
+  it("accepts a hostname with a shard label after the fingerprint", async () => {
+    const payload = await openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, sealed);
+    const host = new URL(payload.headscaleUrl).hostname;
+    const [label, ...rest] = host.split(".");
+    await expect(
+      verifyCALabel({ ...payload, headscaleUrl: `https://${label}.s52.${rest.join(".")}` }),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects a headscale URL that is not a URL", async () => {
     await expect(
       verifyCALabel({

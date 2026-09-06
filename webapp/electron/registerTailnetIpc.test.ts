@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseJoinRequest, registerTailnetIpc } from "./registerTailnetIpc";
+import { parseJoinRequest, registerTailnetIpc, TAILNET_STATUS_EVENT } from "./registerTailnetIpc";
 import { TailnetSupervisor } from "./tailnetSupervisor";
+import { TailnetStatus } from "../server/tailnetSidecar";
+
+const runningStatus: TailnetStatus = {
+  backendState: "Running",
+  tailnetIps: ["100.64.0.2"],
+  derpHome: "fra",
+  controlRoute: "tailnet",
+  peers: 2,
+  peersOnline: 1,
+  health: [],
+};
 
 const validRequest = {
   headscaleAddr: "abc.tunnel.replycant.com:443",
@@ -31,6 +42,7 @@ const fakeIpcMain = () => {
 const fakeSupervisor = (): TailnetSupervisor & {
   start: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;
+  publish: (status: TailnetStatus) => void;
 } => {
   let running = false;
   const start = vi.fn(async () => {
@@ -40,12 +52,23 @@ const fakeSupervisor = (): TailnetSupervisor & {
   const stop = vi.fn(async () => {
     running = false;
   });
+  const listeners = new Set<(status: TailnetStatus) => void>();
   return {
     start,
     stop,
     getProxy: () =>
       running ? { socksAddr: "127.0.0.1:41234", socksUsername: "tsnet", socksPassword: "s" } : undefined,
     isRunning: () => running,
+    getStatus: () => (running ? runningStatus : undefined),
+    onStatus: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    publish: (status: TailnetStatus) => {
+      for (const listener of listeners) {
+        listener(status);
+      }
+    },
   };
 };
 
@@ -156,9 +179,61 @@ describe("registerTailnetIpc", () => {
     const { ipcMain, invoke } = fakeIpcMain();
     registerTailnetIpc(ipcMain, { supervisor: fakeSupervisor(), stateDir: "/data/tsnet" });
 
-    expect(await invoke("tailnet:status")).toEqual({ running: false });
+    expect(await invoke("tailnet:status")).toEqual({ running: false, status: undefined });
     await invoke("tailnet:join", validRequest);
-    expect(await invoke("tailnet:status")).toEqual({ running: true });
+    expect(await invoke("tailnet:status")).toEqual({ running: true, status: runningStatus });
+  });
+
+  // "running" alone cannot explain a failure: a node can be up and still
+  // unable to reach the server. The panel needs the detail, not just the flag.
+  it("reports the connection detail alongside the flag", async () => {
+    const { ipcMain, invoke } = fakeIpcMain();
+    registerTailnetIpc(ipcMain, { supervisor: fakeSupervisor(), stateDir: "/data/tsnet" });
+
+    await invoke("tailnet:join", validRequest);
+    const reported = (await invoke("tailnet:status")) as { status?: TailnetStatus };
+
+    expect(reported.status?.controlRoute).toBe("tailnet");
+    expect(reported.status?.derpHome).toBe("fra");
+  });
+
+  // Status changes every few seconds, so a panel the user is looking at has to
+  // follow it rather than showing whatever was true when it opened.
+  it("pushes status to the renderer as it arrives", async () => {
+    const { ipcMain, invoke } = fakeIpcMain();
+    const supervisor = fakeSupervisor();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    registerTailnetIpc(ipcMain, {
+      supervisor,
+      stateDir: "/data/tsnet",
+      broadcast: (channel, payload) => sent.push({ channel, payload }),
+    });
+
+    await invoke("tailnet:join", validRequest);
+    supervisor.publish(runningStatus);
+
+    expect(sent).toEqual([
+      { channel: TAILNET_STATUS_EVENT, payload: { running: true, status: runningStatus } },
+    ]);
+  });
+
+  // Otherwise the panel keeps showing the connection the user just left.
+  it("pushes a stopped status on leave", async () => {
+    const { ipcMain, invoke } = fakeIpcMain();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    registerTailnetIpc(ipcMain, {
+      supervisor: fakeSupervisor(),
+      stateDir: "/data/tsnet",
+      broadcast: (channel, payload) => sent.push({ channel, payload }),
+    });
+
+    await invoke("tailnet:join", validRequest);
+    await invoke("tailnet:leave");
+
+    expect(sent.at(-1)).toEqual({
+      channel: TAILNET_STATUS_EVENT,
+      payload: { running: false },
+    });
   });
 
   // A rejected join must surface to the renderer so onboarding can show the

@@ -4,6 +4,7 @@ import {
   StartTailnetSidecarOptions,
   TailnetSidecar,
   TailnetSidecarConfig,
+  TailnetStatus,
 } from "../server/tailnetSidecar";
 import { TailnetProxy } from "../server/proxy";
 
@@ -49,6 +50,15 @@ export interface TailnetSupervisor {
   stop: () => Promise<void>;
 
   isRunning: () => boolean;
+
+  // The most recent status the sidecar reported, or undefined when the tailnet
+  // is down or has not reported yet. Cached because the renderer can open the
+  // status panel at any time, long after the last event arrived.
+  getStatus: () => TailnetStatus | undefined;
+
+  // Pushes each new status so the panel updates without the user reopening it.
+  // Returns an unsubscribe function.
+  onStatus: (listener: (status: TailnetStatus) => void) => () => void;
 }
 
 export interface CreateTailnetSupervisorOptions {
@@ -75,6 +85,16 @@ export const createTailnetSupervisor = ({
   startFn = startTailnetSidecar,
 }: CreateTailnetSupervisorOptions): TailnetSupervisor => {
   let current: TailnetSidecar | null = null;
+  let status: TailnetStatus | undefined;
+  const listeners = new Set<(status: TailnetStatus) => void>();
+
+  // Identifies which node a status event came from.
+  //
+  // A replaced node's sidecar can still be draining its stdout, and its status
+  // describes a tailnet the app is no longer on. Reporting that is worse than
+  // reporting nothing, so events from anything but the current generation are
+  // dropped.
+  let generation = 0;
 
   // Serialises start and stop. Without this, two overlapping starts would each
   // spawn a sidecar and one would be leaked, holding the tailnet node and the
@@ -92,6 +112,10 @@ export const createTailnetSupervisor = ({
     }
     const sidecar = current;
     current = null;
+    // A stopped tailnet has no status, and keeping the last one would claim a
+    // connection that no longer exists.
+    status = undefined;
+    generation += 1;
     try {
       await sidecar.stop();
     } catch (error) {
@@ -106,11 +130,32 @@ export const createTailnetSupervisor = ({
 
     isRunning: () => current !== null,
 
+    getStatus: () => status,
+
+    onStatus: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+
     start: (config) =>
       serialise(async () => {
         await stopCurrent();
 
-        const sidecar = await startFn({ binaryPath, config, logf });
+        const started = generation;
+        const sidecar = await startFn({
+          binaryPath,
+          config,
+          logf,
+          onStatus: (next) => {
+            if (started !== generation) {
+              return;
+            }
+            status = next;
+            for (const listener of listeners) {
+              listener(next);
+            }
+          },
+        });
         current = sidecar;
         logf(
           `tailnet: joined as ${config.hostname} with addresses ${sidecar.tailnetIps.join(", ") || "none"}`,
