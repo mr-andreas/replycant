@@ -360,6 +360,10 @@ class TestSupport {
                 content: thumbnailSetManifest
             ))
         }
+
+        if useScreenshotFixtures {
+            filesToCommit.append(contentsOf: screenshotRecoveryKeyFiles())
+        }
         
         // Commit all files (this commits the LFS pointers)
         try repo.createCommit(
@@ -443,6 +447,17 @@ class TestSupport {
     // Switches fixture strategy so screenshot runs use sanitized demo photos while regular UI tests keep deterministic synthetic media.
     static func shouldUseScreenshotFixtures(arguments: [String]) -> Bool {
         arguments.contains("--screenshots")
+    }
+
+    // Seeds a recovery-key pair so marketing screenshots show a healthy
+    // Settings tab instead of the missing-key warning badge.
+    static func screenshotRecoveryKeyFiles() -> [(path: String, content: String)] {
+        let uuid = "00000000-0000-4000-8000-000000000001"
+        let label = "home"
+        return [
+            (path: "pubkeys/\(label)-\(uuid).recovery.pub", content: "ssh"),
+            (path: "pubkeys/\(label)-\(uuid).recovery.age", content: "age"),
+        ]
     }
 
     // Clears local repository/config leftovers so the privacy screenshot relaunch cannot reopen the seeded library.

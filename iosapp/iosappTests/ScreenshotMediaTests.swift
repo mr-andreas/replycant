@@ -1,5 +1,7 @@
 import Foundation
 import ImageIO
+import GitDB
+import LibGit2
 import Testing
 @testable import iosapp
 
@@ -135,5 +137,24 @@ struct ScreenshotMediaTests {
 
         let flattenedURLs = try TestSupport.screenshotMediaURLs(in: flattenedRoot)
         #expect(flattenedURLs.map(\.lastPathComponent) == ["demo-02.jpg"])
+    }
+
+    // Locks the screenshot recovery-key filenames so marketing captures hide
+    // the Settings missing-key badge without special-casing product UI.
+    @Test
+    func screenshotRecoveryKeyFilesClearSettingsWarning() throws {
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("screenshot-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        try Git.initialize()
+
+        let repo = try Repository.create(at: root, bare: false)
+        try repo.createCommit(
+            message: "seed screenshot recovery key",
+            files: TestSupport.screenshotRecoveryKeyFiles()
+        )
+
+        #expect(try RecoveryKeyManager().hasRecoveryKey(repository: repo))
     }
 }
