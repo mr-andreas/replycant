@@ -90,18 +90,22 @@ enum TailnetPairing {
     /// Returns the gitd URL so the caller can clone from it without rederiving
     /// the name.
     @discardableResult
-    static func adopt(payload: PairingRecord.Payload) async throws -> String {
-        let configuration = try TailnetConfigurationManager.from(payload: payload)
-
+    static func adopt(
+        payload: PairingRecord.Payload,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         // Stored before joining, because the tailnet control plane is
         // authenticated with mTLS against this same CA: the node cannot come up
         // without it being installed first.
         try ServerConfigurationManager.shared.configure(
-            url: configuration.gitdURL,
+            url: TailnetConfiguration.gitdURL,
             caCertificate: payload.caPEM
         )
 
-        try await TailnetBootstrap.shared.joinAndPersist(payload: payload)
-        return configuration.gitdURL
+        try await TailnetBootstrap.shared.joinAndPersist(
+            payload: payload,
+            onProgress: onProgress
+        )
+        return TailnetConfiguration.gitdURL
     }
 }

@@ -117,6 +117,11 @@ only if the SHA-256 of the presented chain root matches the hostname label being
 claimed. Possession of the CA key is the whole credential; there is no shared
 secret to distribute.
 
+The registration listener presents a self-signed certificate that is not
+issued for any shard hostname. Agents pin that certificate rather than
+checking `sNN.tunnel.replycant.com` against the public PKI; the pin is what
+stops a random TLS endpoint from collecting registrations.
+
 Device traffic arrives on a separate listener. The relay peeks the TLS
 ClientHello, reads the SNI, rejects anything that is not a handshake or whose
 SNI has no live registration, and then copies bytes into a multiplexed stream to
@@ -177,11 +182,12 @@ itself, and neither survives a reverse TCP relay.
 {
   "headscale_url": "https://<ca-label>.s<NN>.tunnel.replycant.com",
   "ca_pem": "-----BEGIN CERTIFICATE-----\n...",
-  "preauth_key": "...",
-  "gitd_tailnet_name": "gitd.replycant.internal",
-  "base_domain": "replycant.internal"
+  "preauth_key": "..."
 }
 ```
+
+gitd's address is not in the record. Every client already uses
+`https://gitd.replycant.internal:8443`.
 
 `preauth_key` is minted by gitd per pairing attempt over headscale's API.
 headscale generates pre-auth key material server-side and stores only a hash of
@@ -212,8 +218,9 @@ outbound connections to the relay are blocked.
 
 To enable it, set `REPLYCANT_HEADSCALE_URL` to your own DNS name, bind
 `hsproxy` publicly with `REPLYCANT_HSPROXY_BIND=0.0.0.0`, forward that port on
-your router, and drop `COMPOSE_PROFILES=tunnel` so `tunnel-agent` does not
-start. Clear `REPLYCANT_DISCOVERY_URL` to keep gitd from publishing records.
+your router, and start the stack with `--scale tunnel-agent=0` so the hosted
+relay is not used. Clear `REPLYCANT_DISCOVERY_URL` to keep gitd from publishing
+records.
 
 The certificate `hsproxy` presents follows `REPLYCANT_HEADSCALE_URL`
 automatically, and pairing hands the record back to the authorizing device to

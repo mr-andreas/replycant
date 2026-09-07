@@ -136,20 +136,22 @@ func (s Secret) derive(info []byte, length int) []byte {
 	return out
 }
 
-// What a pairing device needs in order to join the tailnet and then reach gitd.
+// What a pairing device needs in order to join the tailnet.
+//
+// gitd's address is not here: every client already knows it
+// (pkg/tailnetaddr). Putting a name in the record would let a QR and a
+// certificate SAN drift, and the first device has no pairing record at all.
 type Payload struct {
-	HeadscaleURL    string `json:"headscale_url"`
-	CAPEM           string `json:"ca_pem"`
-	PreauthKey      string `json:"preauth_key"`
-	GitdTailnetName string `json:"gitd_tailnet_name"`
-	BaseDomain      string `json:"base_domain"`
+	HeadscaleURL string `json:"headscale_url"`
+	CAPEM        string `json:"ca_pem"`
+	PreauthKey   string `json:"preauth_key"`
 }
 
 // Rejects a payload that would leave the device unable to finish joining. It is
 // far cheaper to catch this at the writer than to debug a client that sits at
 // "waiting for authorization" forever.
 func (p Payload) validate() error {
-	missing := make([]string, 0, 5)
+	missing := make([]string, 0, 3)
 	if strings.TrimSpace(p.HeadscaleURL) == "" {
 		missing = append(missing, "headscale_url")
 	}
@@ -158,12 +160,6 @@ func (p Payload) validate() error {
 	}
 	if strings.TrimSpace(p.PreauthKey) == "" {
 		missing = append(missing, "preauth_key")
-	}
-	if strings.TrimSpace(p.GitdTailnetName) == "" {
-		missing = append(missing, "gitd_tailnet_name")
-	}
-	if strings.TrimSpace(p.BaseDomain) == "" {
-		missing = append(missing, "base_domain")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("pairing payload is missing %s", strings.Join(missing, ", "))

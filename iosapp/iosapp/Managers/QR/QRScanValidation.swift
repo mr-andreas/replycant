@@ -34,6 +34,16 @@ enum QRScanValidation {
         case recoveryBundle
     }
 
+    /// The two shapes the CA page can emit.
+    ///
+    /// LAN-only gitd still advertises `{ca, url}`. A tailnet deployment has
+    /// no reachable gitd URL yet, so the first-device QR is a live join
+    /// credential instead. Clients already know gitd's address.
+    enum ServerConfigPayload: Equatable {
+        case lan(ca: String, url: String)
+        case tailnet(ca: String, headscaleURL: String, preauthKey: String)
+    }
+
     // Classifies a connect-flow scan so recovery QRs can reuse the same
     // camera step as a server-config pairing QR.
     static func connectPayloadKind(code: String) -> ConnectPayloadKind? {
@@ -50,12 +60,8 @@ enum QRScanValidation {
     static func validate(code: String, mode: QRCodeScannerView.ValidationMode) -> Decision {
         switch mode {
         case .serverConfig:
-            guard let data = code.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-                return .reject("Invalid QR code. Expected valid JSON.")
-            }
-            guard json["ca"] != nil, json["url"] != nil else {
-                return .reject("Invalid QR code. Expected server configuration with ca and url.")
+            guard parseServerConfig(code) != nil else {
+                return .reject("Invalid QR code. Expected server configuration.")
             }
             return .acceptRaw
         case .devicePublicKey:
@@ -101,10 +107,24 @@ enum QRScanValidation {
     // Recognizes pairing config JSON so connect-or-recovery classification
     // can prefer the existing-device path over a recovery envelope.
     private static func isServerConfig(_ code: String) -> Bool {
+        parseServerConfig(code) != nil
+    }
+
+    /// Accepts either LAN `{ca, url}` or a first-device tailnet join
+    /// `{ca, headscale_url, preauth_key}`.
+    static func parseServerConfig(_ code: String) -> ServerConfigPayload? {
         guard let data = code.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return false
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let ca = nonBlank(json["ca"]) else {
+            return nil
         }
-        return json["ca"] != nil && json["url"] != nil
+        if let url = nonBlank(json["url"]) {
+            return .lan(ca: ca, url: url)
+        }
+        if let headscaleURL = nonBlank(json["headscale_url"]),
+           let preauthKey = nonBlank(json["preauth_key"]) {
+            return .tailnet(ca: ca, headscaleURL: headscaleURL, preauthKey: preauthKey)
+        }
+        return nil
     }
 }

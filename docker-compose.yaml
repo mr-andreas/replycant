@@ -469,12 +469,10 @@ services:
   # Holds the outbound connection that publishes headscale through the hosted
   # relay, so the user never has to forward a router port.
   #
-  # Gated behind the `tunnel` profile so manual-exposure deployments can leave
-  # it out entirely: with REPLYCANT_HEADSCALE_URL set the operator publishes
-  # hsproxy themselves and this service has nothing to do. `.env.example` sets
-  # COMPOSE_PROFILES=tunnel so cloud discovery is what a fresh install gets.
+  # Starts by default: a first device has no other way to reach the control
+  # plane. Manual-exposure deployments that publish hsproxy themselves can
+  # omit it with `docker compose up --scale tunnel-agent=0`.
   tunnel-agent:
-    profiles: ["tunnel"]
     image: ${REPLYCANT_GITD_IMAGE:-gitd:local}
     build:
       context: .
@@ -490,6 +488,13 @@ services:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.crt:/data/hsproxy.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.key:/data/hsproxy.key:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
+      - ./server/tunnelagent/hosted-relay.crt:/data/relay-ca.crt:ro
+    # Home routers often cache NXDOMAIN for names they looked up before the
+    # shard records existed. Docker uses that resolver, so the agent would
+    # never reach a relay that public DNS already knows.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     # The relay address comes from the shared tailnet.env rather than a
     # compose-level default, because it names the shard the CA hashes to and
     # only server-key knows that. Deriving it here again would be a second
@@ -504,7 +509,8 @@ services:
           --upstream-addr=hsproxy:8443 \
           --cert=/data/hsproxy.crt \
           --key=/data/hsproxy.key \
-          --ca=/data/ca.crt
+          --ca=/data/ca.crt \
+          --relay-ca=/data/relay-ca.crt
     restart: unless-stopped
 
   gitd:
@@ -522,8 +528,13 @@ services:
       context: .
       dockerfile: Dockerfile
       target: gitd
-    # No ports are published. gitd is reachable only over the tailnet, which is
-    # what removes the need to forward anything on the user's router.
+    # The Git listener stays unpublished: it is bound to the tailnet, which is
+    # what removes the need to forward anything on the user's router. The CA
+    # page is the exception. A first device has no tailnet yet, so the only
+    # way to show it a join QR is a host port, and loopback keeps that page
+    # off the LAN.
+    ports:
+      - "127.0.0.1:${REPLYCANT_CA_PORT:-8080}:8080"
     environment:
       REPLYCANT_GIT_PORT: ${REPLYCANT_GIT_PORT:-8443}
       REPLYCANT_CA_PORT: ${REPLYCANT_CA_PORT:-8080}

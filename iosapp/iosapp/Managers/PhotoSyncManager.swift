@@ -184,7 +184,7 @@ final class PhotoSyncManager: ObservableObject {
         log("Starting sync process...", context: "PhotoSync")
         syncGeneration += 1
         let generation = syncGeneration
-        setSyncState(.syncing(current: 0, total: 0, currentFile: "Preparing...", uploadSpeed: "", fileSize: ""))
+        setSyncState(.syncing(current: 0, total: 0, currentFile: "Asking for photo access...", uploadSpeed: "", fileSize: ""))
         
         syncTask = Task {
             do {
@@ -193,6 +193,11 @@ final class PhotoSyncManager: ObservableObject {
                     logError("Photo library access denied", context: "PhotoSync")
                     throw PhotoLibraryError.accessDenied
                 }
+
+                await updateState(
+                    .syncing(current: 0, total: 0, currentFile: "Scanning your library...", uploadSpeed: "", fileSize: ""),
+                    generation: generation
+                )
                 
                 log("Fetching all assets from photo library...", context: "PhotoSync")
                 let assets = photoLibrary.fetchAllAssets()

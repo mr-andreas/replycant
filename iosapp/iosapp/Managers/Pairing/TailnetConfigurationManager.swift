@@ -17,11 +17,10 @@ struct TailnetConfiguration: Codable, Equatable, Sendable {
     let headscaleHost: String
     let headscalePort: UInt16
 
-    /// MagicDNS name and base domain gitd answers on, so the server URL and the
-    /// in-tailnet control address can both be rebuilt without reopening the
-    /// pairing record.
-    let gitdTailnetName: String
-    let baseDomain: String
+    /// MagicDNS name gitd registers on the tailnet. Pinned rather than
+    /// delivered in a pairing record so a QR and a certificate SAN cannot
+    /// drift.
+    static let gitdHost = "gitd.replycant.internal"
 
     /// The port gitd serves Git and LFS on inside the tailnet.
     ///
@@ -41,8 +40,8 @@ struct TailnetConfiguration: Codable, Equatable, Sendable {
     /// The port is explicit because gitd's tailnet listener is not on 443, and
     /// an implied 443 would leave every request hanging against a port nothing
     /// is bound to.
-    var gitdURL: String {
-        "https://\(gitdTailnetName).\(baseDomain):\(Self.gitdPort)"
+    static var gitdURL: String {
+        "https://\(gitdHost):\(gitdPort)"
     }
 }
 
@@ -84,7 +83,13 @@ final class TailnetConfigurationManager {
     /// at the call site, so there is one place that decides what outlives the
     /// pairing attempt.
     static func from(payload: PairingRecord.Payload) throws -> TailnetConfiguration {
-        let trimmed = payload.headscaleURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        try from(headscaleURL: payload.headscaleURL)
+    }
+
+    /// Same derivation as a pairing record, for the first-device CA QR that
+    /// carries a join credential and no pairing payload.
+    static func from(headscaleURL: String) throws -> TailnetConfiguration {
+        let trimmed = headscaleURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmed), let host = components.host,
               !host.isEmpty else {
             throw PairingRecord.PairingError.malformedHeadscaleURL
@@ -95,9 +100,7 @@ final class TailnetConfigurationManager {
 
         return TailnetConfiguration(
             headscaleHost: host,
-            headscalePort: UInt16(port),
-            gitdTailnetName: payload.gitdTailnetName,
-            baseDomain: payload.baseDomain
+            headscalePort: UInt16(port)
         )
     }
 }

@@ -22,9 +22,7 @@ struct TailnetConfigurationManagerTests {
         PairingRecord.Payload(
             headscaleURL: headscaleURL,
             caPEM: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n",
-            preauthKey: "hskey-auth-example",
-            gitdTailnetName: "gitd",
-            baseDomain: "replycant.internal"
+            preauthKey: "hskey-auth-example"
         )
     }
 
@@ -77,7 +75,7 @@ struct TailnetConfigurationManagerTests {
     // over the tailnet unchanged.
     @Test func rebuildsTheGitdURLWithoutThePairingRecord() throws {
         let configuration = try TailnetConfigurationManager.from(payload: Self.payload())
-        #expect(configuration.gitdURL == "https://gitd.replycant.internal:8443")
+        #expect(TailnetConfiguration.gitdURL == "https://gitd.replycant.internal:8443")
     }
 
     // gitd's tailnet listener is not on 443, and the headscale policy only
@@ -85,7 +83,7 @@ struct TailnetConfigurationManagerTests {
     // by the tailnet before it ever reached gitd.
     @Test func namesThePortGitdServesOn() throws {
         let configuration = try TailnetConfigurationManager.from(payload: Self.payload())
-        #expect(configuration.gitdURL.hasSuffix(":\(TailnetConfiguration.gitdPort)"))
+        #expect(TailnetConfiguration.gitdURL.hasSuffix(":\(TailnetConfiguration.gitdPort)"))
     }
 
     @Test func reportsNoConfigurationBeforePairing() {

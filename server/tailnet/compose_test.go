@@ -88,3 +88,80 @@ func TestTunnelAgentRegistersWithTheDerivedShard(t *testing.T) {
 		t.Error("server-key must publish the relay address in tailnet.env")
 	}
 }
+
+// The hosted registration listener serves a self-signed certificate that
+// names no shard host. Without this pin the agent verifies sNN against
+// the system roots and every registration fails on the name check.
+func TestTunnelAgentPinsTheHostedRelayCertificate(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	if !regexp.MustCompile(`--relay-ca=/data/relay-ca\.crt`).Match(compose) {
+		t.Error("tunnel-agent must pin the hosted relay certificate")
+	}
+	if !regexp.MustCompile(`hosted-relay\.crt:/data/relay-ca\.crt`).Match(compose) {
+		t.Error("compose must mount the hosted relay pin into the agent")
+	}
+}
+
+// Home routers often cache NXDOMAIN from the hours before the shard
+// records existed, and Docker uses that resolver. The agent has to
+// ask a public resolver or a first-device join never reaches the relay.
+func TestTunnelAgentUsesPublicDNS(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	agent := regexp.MustCompile(`(?s)\n  tunnel-agent:\n(.*?\n)  [a-z]`).FindSubmatch(compose)
+	if agent == nil {
+		t.Fatal("compose must declare a tunnel-agent service")
+	}
+	body := string(agent[1])
+	if !regexp.MustCompile(`(?m)^\s+dns:\n\s+- 1\.1\.1\.1\n\s+- 8\.8\.8\.8`).MatchString(body) {
+		t.Error("tunnel-agent must resolve the relay hostname through public DNS")
+	}
+}
+
+// A plain `docker compose up` has to start the hosted relay. Gating the
+// agent on a profile meant a `.env` that only set a hostname never
+// published headscale, and the first device hung at NeedsLogin.
+func TestTunnelAgentStartsWithoutAProfile(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	agent := regexp.MustCompile(`(?s)\n  tunnel-agent:\n(.*?\n)  [a-z]`).FindSubmatch(compose)
+	if agent == nil {
+		t.Fatal("compose must declare a tunnel-agent service")
+	}
+	if regexp.MustCompile(`(?m)^\s+profiles:`).Match(agent[1]) {
+		t.Error("tunnel-agent must start on a default compose up, not behind a profile")
+	}
+}
+
+// The first device has no tailnet yet, so the only way to show it the join
+// QR is a host-published CA page. Loopback keeps that page off the LAN;
+// publishing the Git port would put gitd back on the internet.
+func TestGitdPublishesOnlyTheLoopbackCAPort(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	gitd := regexp.MustCompile(`(?s)\n  gitd:\n(.*?\n)  [a-z]`).FindSubmatch(compose)
+	if gitd == nil {
+		t.Fatal("compose must declare a gitd service")
+	}
+	body := string(gitd[1])
+
+	if !regexp.MustCompile(`127\.0\.0\.1:\$\{REPLYCANT_CA_PORT:-8080\}:8080`).MatchString(body) {
+		t.Error("gitd must publish the CA listener on 127.0.0.1:8080")
+	}
+	if regexp.MustCompile(`8443:8443`).MatchString(body) {
+		t.Error("gitd must not publish the Git listener; it is reachable only on the tailnet")
+	}
+}

@@ -5,8 +5,8 @@ gitd is a Go-based Git server that provides authenticated access to repositories
 ## Overview
 
 gitd runs three HTTP servers. Git and CA ports default to 8443 and 8080, set
-via `--addr` and `--ca-addr`, and the QR and `/config.json` payloads advertise
-the Git port.
+via `--addr` and `--ca-addr`. Compose publishes only the CA listener, on
+loopback (`127.0.0.1:8080`). The Git listener stays on the tailnet.
 
 | Server | Default port | Protocol | Purpose |
 |--------|--------------|----------|---------|
@@ -14,11 +14,12 @@ the Git port.
 | CA Server | 8080 | HTTP | Certificate distribution for device onboarding |
 | Internal LFS | 8085 | HTTP | Read-only LFS for compose-network services |
 
-**gitd publishes no host ports.** The Git listener is bound to an embedded
-`tsnet` node, so gitd is reachable only from inside the deployment's tailnet, at
-`gitd.replycant.internal`. `hsproxy` is the only service with a published port,
-and it binds to loopback unless the deployment is in manual-exposure mode. See
-[Connectivity](./connectivity.md) for the whole topology.
+**gitd publishes only the CA page**, on `127.0.0.1:8080`. The Git listener is
+bound to an embedded `tsnet` node, so gitd is reachable only from inside the
+deployment's tailnet, at `https://gitd.replycant.internal:8443`. `hsproxy` is
+the other published port, and it binds to loopback unless the deployment is in
+manual-exposure mode. See [Connectivity](./connectivity.md) for the whole
+topology.
 
 Media backends sit on the internal Docker network:
 
@@ -123,32 +124,29 @@ The CA server provides a simple way for devices to obtain the server's CA certif
 
 The QR code contains JSON with all information needed to configure a client:
 
+On a tailnet deployment each request mints a one-time join:
+
 ```json
 {
-  "url": "https://hostname:8443/",
-  "ca": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  "ca": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+  "headscale_url": "https://<ca-label>.s<NN>.tunnel.replycant.com",
+  "preauth_key": "hskey-..."
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `url` | Git server URL (mTLS endpoint) |
-| `ca` | PEM-encoded CA certificate for server validation |
+LAN-only / integration (no `--tsnet-dir`) still serves `{ca, url}`. Clients
+always reach gitd at `https://gitd.replycant.internal:8443` once they are on
+the tailnet; that address is not carried in the QR.
 
-Clients derive every service endpoint as `{origin(url)}/{service}` (for example
-`https://hostname:8443/lfs` or `https://hostname:8443/decryptd`), so discovery
-never carries per-service fields and adding a service needs no protocol change.
-
-The `/config.json` endpoint returns the same `{ca, url}` payload as the QR JSON
-and includes `Access-Control-Allow-Origin: *` so browser onboarding flows can
-discover configuration programmatically.
+The `/config.json` endpoint returns the same payload as the QR JSON and
+includes `Access-Control-Allow-Origin: *` so desktop onboarding can discover
+it.
 
 ### Device Onboarding
 
-1. Open CA server URL in browser (e.g., `http://server:8080`)
-2. Scan QR code with mobile app, or copy values manually
-3. App extracts CA certificate and server URLs from QR data
-4. App configures certificate pinning and server endpoints
+1. Open `http://127.0.0.1:8080` on the host running gitd
+2. Scan the QR with the app, or point the desktop app at that URL
+3. The first device joins the tailnet, then pushes to gitd over it
 
 ## Key Caching
 

@@ -48,7 +48,7 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
               type="url"
               value={flow.serverUrlInput}
               onChange={(event) => flow.setServerUrlInput(event.target.value)}
-              placeholder="http://replycant.local:8080"
+              placeholder="http://127.0.0.1:8080"
               disabled={flow.isDiscovering}
             />
           </label>

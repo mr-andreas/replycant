@@ -13,37 +13,54 @@ import (
 //go:embed logo.png
 var logoPNG []byte
 
+// Mints a one-time tailnet join credential for a first-device CA page visit.
+//
+// A preauth key is single-use, so this runs on every request rather than
+// once at startup. A failure must surface as 503, not a QR from an earlier
+// successful mint.
+type MintFunc func() (headscaleURL, preauthKey string, err error)
+
+// Configures the CA distribution page.
+//
+// LAN-only deployments (no Mint) serve {ca, url} so integration tests and
+// host-port gitd keep working. Tailnet deployments mint a join credential
+// instead: there is no reachable gitd URL until the device is on the tailnet.
+type Config struct {
+	CA        string
+	ServerURL string
+	Mint      MintFunc
+}
+
 // Provides HTTP endpoints for distributing CA certificate and server URL via QR code.
 // Enables mobile clients to scan and configure trust, while CLI clients can copy text directly.
 type handler struct {
-	ca            string
-	serverURL     string
-	qrCodePNG     []byte
-	qrCodeBase64  string
-	logoBase64    string
+	ca         string
+	serverURL  string
+	mint       MintFunc
+	logoBase64 string
 }
 
 // Encodes CA and upstream URLs into a stable JSON shape for non-QR setup clients.
-type configResponse struct {
+type lanConfig struct {
 	CA  string `json:"ca"`
 	URL string `json:"url"`
 }
 
-// Creates an HTTP handler serving CA certificate distribution endpoints.
-// The ca parameter is the PEM-encoded certificate content, serverURL is the gitd server address.
-// Returns an error if QR code generation fails, ensuring the handler is ready to serve immediately.
-func NewHandler(ca, serverURL string) (http.Handler, error) {
-	qrCode, err := generateQRCode(ca, serverURL)
-	if err != nil {
-		return nil, err
-	}
+// First-device join on a tailnet: the CA to trust, where to register, and a
+// single-use credential. No gitd URL — clients already know that address.
+type tailnetConfig struct {
+	CA           string `json:"ca"`
+	HeadscaleURL string `json:"headscale_url"`
+	PreauthKey   string `json:"preauth_key"`
+}
 
+// Creates an HTTP handler serving CA certificate distribution endpoints.
+func NewHandler(cfg Config) (http.Handler, error) {
 	h := &handler{
-		ca:           ca,
-		serverURL:    serverURL,
-		qrCodePNG:    qrCode,
-		qrCodeBase64: base64.StdEncoding.EncodeToString(qrCode),
-		logoBase64:   base64.StdEncoding.EncodeToString(logoPNG),
+		ca:         cfg.CA,
+		serverURL:  cfg.ServerURL,
+		mint:       cfg.Mint,
+		logoBase64: base64.StdEncoding.EncodeToString(logoPNG),
 	}
 
 	mux := http.NewServeMux()
@@ -54,30 +71,59 @@ func NewHandler(ca, serverURL string) (http.Handler, error) {
 	return mux, nil
 }
 
-// Generates QR code containing CA certificate and server URL as JSON.
-// The QR code encodes data that clients can parse to extract both values.
-func generateQRCode(ca, serverURL string) ([]byte, error) {
-	data := map[string]string{
-		"ca":  ca,
-		"url": serverURL,
+func (h *handler) qrPayload() ([]byte, error) {
+	var data any
+	if h.mint != nil {
+		headscaleURL, preauthKey, err := h.mint()
+		if err != nil {
+			return nil, err
+		}
+		data = tailnetConfig{
+			CA:           h.ca,
+			HeadscaleURL: headscaleURL,
+			PreauthKey:   preauthKey,
+		}
+	} else {
+		data = lanConfig{CA: h.ca, URL: h.serverURL}
 	}
+	return json.Marshal(data)
+}
 
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal QR data: %w", err)
-	}
-
-	qrCode, err := qrgen.GeneratePNG(string(jsonData), 256)
+func generateQRCode(payload []byte) ([]byte, error) {
+	qrCode, err := qrgen.GeneratePNG(string(payload), 256)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate QR code: %w", err)
 	}
-
 	return qrCode, nil
 }
 
 // Serves the main HTML page with QR code and copiable certificate data.
-// Provides both visual (QR) and textual interfaces for certificate distribution.
 func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.qrPayload()
+	if err != nil {
+		http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+		return
+	}
+	qrCode, err := generateQRCode(payload)
+	if err != nil {
+		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
+		return
+	}
+
+	serverDetails := ""
+	if h.mint == nil {
+		serverDetails = fmt.Sprintf(`
+    <details>
+        <summary>Server URL</summary>
+        <div class="details-body">
+            <pre id="url">%s</pre>
+            <button class="copy-btn" onclick="copyToClipboard('url')">
+                Copy URL
+            </button>
+        </div>
+    </details>`, h.serverURL)
+	}
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -174,17 +220,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
         <p>Scan the QR code from the app to bootstrap your library.</p>
         <img src="data:image/png;base64,%s" alt="QR Code" />
     </div>
-
-    <details>
-        <summary>Server URL</summary>
-        <div class="details-body">
-            <pre id="url">%s</pre>
-            <button class="copy-btn" onclick="copyToClipboard('url')">
-                Copy URL
-            </button>
-        </div>
-    </details>
-
+%s
     <details>
         <summary>CA Certificate</summary>
         <div class="details-body">
@@ -209,17 +245,26 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
         }
     </script>
 </body>
-</html>`, h.logoBase64, h.qrCodeBase64, h.serverURL, h.ca)
+</html>`, h.logoBase64, base64.StdEncoding.EncodeToString(qrCode), serverDetails, h.ca)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }
 
 // Serves the QR code as a PNG image.
-// Allows direct image access for apps that prefer separate endpoints.
 func (h *handler) handleQRCode(w http.ResponseWriter, r *http.Request) {
+	payload, err := h.qrPayload()
+	if err != nil {
+		http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+		return
+	}
+	qrCode, err := generateQRCode(payload)
+	if err != nil {
+		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "image/png")
-	w.Write(h.qrCodePNG)
+	w.Write(qrCode)
 }
 
 // Serves setup configuration JSON so browser onboarding can discover CA and upstream endpoints.
@@ -236,12 +281,12 @@ func (h *handler) handleConfigJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := configResponse{
-		CA:  h.ca,
-		URL: h.serverURL,
+	payload, err := h.qrPayload()
+	if err != nil {
+		http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		http.Error(w, "Failed to encode config JSON", http.StatusInternalServerError)
-	}
+	w.Write(payload)
+	w.Write([]byte("\n"))
 }

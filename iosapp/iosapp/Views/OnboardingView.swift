@@ -15,6 +15,8 @@ struct OnboardingView: View {
     static let connectToExistingRecoveryScanHint = "Scan your saved recovery QR, or paste backup text."
     static let serverSetupGuideText = "Before you continue, set up a Replycant server and make sure it's reachable from this device. Follow the guide below, then return here to scan your server QR code."
     static let serverSetupGuideURL = URL(string: "https://github.com/mr-andreas/replycant#getting-started")!
+    static let startingSetupMessage = "Starting setup..."
+    static let joiningNetworkMessage = "Joining your library's network..."
     
     @State private var currentStep: OnboardingStep
     @State private var introPageIndex: Int
@@ -414,6 +416,7 @@ struct OnboardingView: View {
         currentStep = .processing
         isProcessing = true
         progress = 0
+        progressMessage = Self.startingSetupMessage
         
         Task {
             do {
@@ -489,6 +492,7 @@ struct OnboardingView: View {
         currentStep = .processing
         isProcessing = true
         progress = 0
+        progressMessage = Self.startingSetupMessage
         
         Task {
             do {
@@ -609,6 +613,7 @@ struct OnboardingView: View {
                     currentStep = .processing
                     isProcessing = true
                     progress = 0
+                    progressMessage = Self.startingSetupMessage
                 }
                 try await performTailnetConnect(payload: payload)
 
@@ -650,8 +655,15 @@ struct OnboardingView: View {
     private func performTailnetConnect(payload: PairingRecord.Payload) async throws {
         log("=== PERFORMING TAILNET CONNECT (JOIN + CLONE) ===", context: "Onboarding")
 
-        updateProgress(10, message: "Joining your library's network...")
-        let serverURL = try await TailnetPairing.adopt(payload: payload)
+        updateProgress(10, message: Self.joiningNetworkMessage)
+        let serverURL = try await TailnetPairing.adopt(
+            payload: payload,
+            onProgress: { message in
+                Task { @MainActor in
+                    self.progressMessage = message
+                }
+            }
+        )
 
         updateProgress(30, message: "Configuring secure transport...")
         guard let identity = ClientIdentityManager.shared.loadSecIdentity() else {
@@ -697,17 +709,7 @@ struct OnboardingView: View {
         log("=== PERFORMING BOOTSTRAP SETUP (CREATE + PUSH) ===", context: "Onboarding")
         // Step 1: Parse and store server configuration
         updateProgress(10, message: "Configuring server...")
-        try ServerConfigurationManager.shared.configure(fromQRCodeString: qrCodeJSON)
-
-        // Step 2: Trigger local-network permission before the first push.
-        updateProgress(20, message: "Requesting local network access...")
-        guard let configuration = ServerConfigurationManager.shared.loadConfiguration() else {
-            throw OnboardingError.repositoryError("Server configuration missing after QR scan")
-        }
-        try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(
-            gitServerURL: configuration.url,
-            lfsServerURL: ServerConfigurationManager.shared.loadLFSURL()
-        )
+        try await adoptServerConfigQR(qrCodeJSON)
         
         // Step 3: Configure mTLS transport for libgit2 push/pull
         updateProgress(30, message: "Configuring secure transport...")
@@ -794,17 +796,7 @@ struct OnboardingView: View {
         log("=== PERFORMING CONNECT TO EXISTING (CLONE) ===", context: "Onboarding")
         // Step 1: Parse and store server configuration
         updateProgress(10, message: "Configuring server...")
-        try ServerConfigurationManager.shared.configure(fromQRCodeString: configJSON)
-
-        // Step 2: Trigger local-network permission before the first clone.
-        updateProgress(20, message: "Requesting local network access...")
-        guard let configuration = ServerConfigurationManager.shared.loadConfiguration() else {
-            throw OnboardingError.repositoryError("Server configuration missing after QR scan")
-        }
-        try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(
-            gitServerURL: configuration.url,
-            lfsServerURL: ServerConfigurationManager.shared.loadLFSURL()
-        )
+        try await adoptServerConfigQR(configJSON)
         
         // Step 3: Verify we have the identity that was generated at first boot
         // This is critical - we must use the same key whose public part was shared via QR
@@ -853,6 +845,45 @@ struct OnboardingView: View {
         log("Connect to existing setup completed successfully", context: "Onboarding")
     }
     
+    /// Installs the CA and, when the QR is a first-device tailnet join,
+    /// brings the node up before any gitd request.
+    ///
+    /// Ordered this way because gitd's MagicDNS name does not resolve until
+    /// the node is up, and the join itself needs the CA already pinned.
+    private func adoptServerConfigQR(_ json: String) async throws {
+        guard let payload = QRScanValidation.parseServerConfig(json) else {
+            throw OnboardingError.repositoryError(
+                "Invalid QR code. Expected server configuration.")
+        }
+        switch payload {
+        case .lan(let ca, let url):
+            try ServerConfigurationManager.shared.configure(url: url, caCertificate: ca)
+            updateProgress(20, message: "Requesting local network access...")
+            guard let configuration = ServerConfigurationManager.shared.loadConfiguration() else {
+                throw OnboardingError.repositoryError("Server configuration missing after QR scan")
+            }
+            try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(
+                gitServerURL: configuration.url,
+                lfsServerURL: ServerConfigurationManager.shared.loadLFSURL()
+            )
+        case .tailnet(let ca, let headscaleURL, let preauthKey):
+            try ServerConfigurationManager.shared.configure(
+                url: TailnetConfiguration.gitdURL,
+                caCertificate: ca
+            )
+            updateProgress(20, message: Self.joiningNetworkMessage)
+            try await TailnetBootstrap.shared.joinAndPersist(
+                headscaleURL: headscaleURL,
+                preauthKey: preauthKey,
+                onProgress: { message in
+                    Task { @MainActor in
+                        self.progressMessage = message
+                    }
+                }
+            )
+        }
+    }
+
     @MainActor
     private func getDeviceName() -> String {
         // Use device name or generate a unique identifier

@@ -59,7 +59,9 @@ type Config struct {
 	CAPath string
 
 	// Pins the relay's own certificate. Empty falls back to the system roots,
-	// which is the normal case for a public AWS endpoint.
+	// for a self-hosted relay that already has a publicly trusted name.
+	// The hosted listener is a self-signed certificate that names no shard
+	// host, so the compose stack always sets this.
 	RelayCAPath string
 
 	// Overrides the SNI presented to the relay. Empty derives it from
@@ -162,10 +164,43 @@ func New(config Config) (*Agent, error) {
 		if !pool.AppendCertsFromPEM(relayCAPEM) {
 			return nil, fmt.Errorf("no certificates found in relay CA file %q", config.RelayCAPath)
 		}
+		// One certificate serves every shard hostname and does not name
+		// them. Go still requires a ServerName unless verification is
+		// skipped, so the pin is checked here without a hostname.
 		tlsConfig.RootCAs = pool
+		tlsConfig.InsecureSkipVerify = true
+		tlsConfig.VerifyPeerCertificate = pinRelayCertificate(pool)
 	}
 
 	return &Agent{config: config, tlsConfig: tlsConfig}, nil
+}
+
+// Accepts the relay leaf only when it chains to the pinned certificate.
+// Hostname is deliberately not part of the check: the hosted listener
+// presents one self-signed certificate on every sNN name.
+func pinRelayCertificate(roots *x509.CertPool) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("tunnelagent: relay presented no certificate")
+		}
+		cert, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("parse relay certificate: %w", err)
+		}
+		intermediates := x509.NewCertPool()
+		for _, raw := range rawCerts[1:] {
+			parsed, parseErr := x509.ParseCertificate(raw)
+			if parseErr != nil {
+				return fmt.Errorf("parse relay intermediate: %w", parseErr)
+			}
+			intermediates.AddCert(parsed)
+		}
+		_, err = cert.Verify(x509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: intermediates,
+		})
+		return err
+	}
 }
 
 // Keeps a registration up until the context is cancelled.

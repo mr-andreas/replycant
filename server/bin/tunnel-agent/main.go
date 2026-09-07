@@ -27,7 +27,7 @@ type CLI struct {
 	Key  string `required:"" help:"Path to the hsproxy TLS private key" type:"path"`
 	CA   string `required:"" help:"Path to the deployment CA certificate; the relay derives the tunnel subdomain from it" type:"path"`
 
-	RelayCA         string `help:"Optional path to a CA pinning the relay's own certificate; defaults to the system roots" type:"path"`
+	RelayCA         string `help:"Optional path to a CA pinning the relay's own certificate; defaults to the system roots. Required for the hosted relay, whose certificate names no shard host" type:"path"`
 	RelayServerName string `help:"Overrides the SNI presented to the relay; defaults to the relay hostname"`
 
 	MinBackoff time.Duration `default:"1s" help:"Initial delay before retrying a failed registration"`

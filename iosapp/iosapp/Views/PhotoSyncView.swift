@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// Copy for the upload-tab status so a 0-of-0 bar is never the only thing
+/// on screen while the library is still being scanned.
+enum PhotoSyncStatusCopy {
+    static func headline(current: Int, total: Int, file: String) -> String {
+        total == 0 ? file : "Uploading \(current) of \(total)"
+    }
+}
+
 struct PhotoSyncView: View {
     @StateObject private var syncManager: PhotoSyncManager
 
@@ -83,18 +91,25 @@ struct PhotoSyncView: View {
         
         case .syncing(let current, let total, let currentFile, let uploadSpeed, let fileSize):
             VStack(spacing: 10) {
-                ProgressView(value: Double(current), total: Double(total))
-                    .progressViewStyle(LinearProgressViewStyle())
-                    .padding(.horizontal)
-                
-                Text("Uploading \(current) of \(total)")
+                if total == 0 {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                } else {
+                    ProgressView(value: Double(current), total: Double(total))
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .padding(.horizontal)
+                }
+
+                Text(PhotoSyncStatusCopy.headline(current: current, total: total, file: currentFile))
                     .font(.headline)
-                
-                Text(currentFile)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+
+                if total > 0 {
+                    Text(currentFile)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 
                 if !fileSize.isEmpty {
                     HStack(spacing: 15) {

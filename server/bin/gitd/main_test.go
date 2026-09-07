@@ -72,6 +72,21 @@ func parseCLI(t *testing.T, extraArgs ...string) CLI {
 	return cli
 }
 
+// Compose and the docs pass --headscale-api-url. Kong would otherwise
+// hyphenate HeadscaleAPIURL as --headscale-apiurl, which is what made
+// gitd refuse to start after the image was rebuilt.
+func TestHeadscaleAPIURLAcceptsTheComposeFlagName(t *testing.T) {
+	cli := parseCLI(t,
+		"--headscale-api-url", "http://headscale:8080",
+		"--headscale-api-key-file", t.TempDir()+"/apikey",
+		"--headscale-client-url", "https://example.tunnel.replycant.com",
+	)
+	if cli.HeadscaleAPIURL != "http://headscale:8080" {
+		t.Fatalf("HeadscaleAPIURL = %q, want the value passed as --headscale-api-url",
+			cli.HeadscaleAPIURL)
+	}
+}
+
 // Omitting --tsnet-dir has to keep gitd listening on a host port, because that
 // is what integration tests and LAN-only deployments rely on.
 func TestTsnetDisabledByDefault(t *testing.T) {
@@ -377,7 +392,7 @@ func TestTailnetHostnameToleratesADottedDomain(t *testing.T) {
 // cannot work.
 func TestNoPublisherIsBuiltWithoutATailnet(t *testing.T) {
 	cli := CLI{Hostname: "host"}
-	publisher, err := cli.buildPairingPublisher()
+	publisher, err := cli.buildPairingPublisher(nil)
 	if err != nil {
 		t.Fatalf("a LAN-only deployment must not fail to build: %v", err)
 	}
@@ -405,7 +420,11 @@ func TestManualModeBuildsAPublisher(t *testing.T) {
 		HeadscaleClientURL:  "https://headscale.example.com",
 		HeadscaleUser:       "replycant",
 	}
-	publisher, err := cli.buildPairingPublisher()
+	headscale, err := cli.headscaleClient()
+	if err != nil {
+		t.Fatalf("manual-exposure mode must build a headscale client: %v", err)
+	}
+	publisher, err := cli.buildPairingPublisher(headscale)
 	if err != nil {
 		t.Fatalf("manual-exposure mode must build a publisher: %v", err)
 	}
@@ -427,7 +446,7 @@ func TestMissingHeadscaleAPIKeyFailsStartup(t *testing.T) {
 		HeadscaleAPIKeyFile: filepath.Join(t.TempDir(), "absent.apikey"),
 		HeadscaleClientURL:  "https://abc.tunnel.replycant.com",
 	}
-	if _, err := cli.buildPairingPublisher(); err == nil {
+	if _, err := cli.headscaleClient(); err == nil {
 		t.Fatal("a missing headscale API key must fail startup")
 	}
 }
@@ -453,7 +472,11 @@ func TestCloudModeBuildsAPublisher(t *testing.T) {
 		HeadscaleClientURL:  "https://abc.tunnel.replycant.com",
 		HeadscaleUser:       "replycant",
 	}
-	publisher, err := cli.buildPairingPublisher()
+	headscale, err := cli.headscaleClient()
+	if err != nil {
+		t.Fatalf("a complete cloud config must build a headscale client: %v", err)
+	}
+	publisher, err := cli.buildPairingPublisher(headscale)
 	if err != nil {
 		t.Fatalf("a complete cloud config must build a publisher: %v", err)
 	}

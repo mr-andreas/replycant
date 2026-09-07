@@ -13,7 +13,7 @@ test.describe("Onboarding", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Replycant setup" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
-    await expect(page.getByPlaceholder("http://replycant.local:8080")).toBeVisible();
+    await expect(page.getByPlaceholder("http://127.0.0.1:8080")).toBeVisible();
   });
 
   test("server URL validation rejects empty input", async ({ page }) => {
@@ -26,7 +26,7 @@ test.describe("Onboarding", () => {
   test("server URL validation rejects malformed input", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Replycant setup" })).toBeVisible();
-    await page.getByPlaceholder("http://replycant.local:8080").fill("not-a-url");
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill("not-a-url");
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator(".setup-error")).toHaveText("Server URL must be a valid URL.");
   });
@@ -48,7 +48,7 @@ test.describe("Onboarding", () => {
 
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Replycant setup" })).toBeVisible();
-    await page.getByPlaceholder("http://replycant.local:8080").fill("http://localhost:18080");
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill("http://localhost:18080");
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(page.getByRole("button", { name: "Generate keypair" })).toBeVisible();
@@ -72,14 +72,14 @@ test.describe("Onboarding", () => {
     );
 
     await page.goto("/");
-    await page.getByPlaceholder("http://replycant.local:8080").fill("http://localhost:18080");
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill("http://localhost:18080");
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("button", { name: "Generate keypair" })).toBeVisible();
 
     await page.getByRole("button", { name: "Start over" }).click();
 
     await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
-    await expect(page.getByPlaceholder("http://replycant.local:8080")).toHaveValue("");
+    await expect(page.getByPlaceholder("http://127.0.0.1:8080")).toHaveValue("");
   });
 
   test("server URL form submits on Enter key", async ({ page }) => {
@@ -99,8 +99,8 @@ test.describe("Onboarding", () => {
 
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Replycant setup" })).toBeVisible();
-    await page.getByPlaceholder("http://replycant.local:8080").fill("http://localhost:18080");
-    await page.getByPlaceholder("http://replycant.local:8080").press("Enter");
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill("http://localhost:18080");
+    await page.getByPlaceholder("http://127.0.0.1:8080").press("Enter");
 
     await expect(page.getByRole("button", { name: "Generate keypair" })).toBeVisible();
   });
@@ -115,7 +115,7 @@ test.describe("Onboarding", () => {
     );
 
     await page.goto("/");
-    await page.getByPlaceholder("http://replycant.local:8080").fill("http://localhost:18080");
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill("http://localhost:18080");
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.locator(".setup-error")).toHaveText("Connection refused");
   });
@@ -136,7 +136,7 @@ test.describe("Onboarding", () => {
     );
 
     await page.goto("/");
-    await page.getByPlaceholder("http://replycant.local:8080").fill("http://localhost:18080");
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill("http://localhost:18080");
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("button", { name: "Generate keypair" })).toBeVisible();
 

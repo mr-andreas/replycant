@@ -46,7 +46,7 @@ test.describe("@integration Full onboarding against real backend", () => {
 
     // Server URL discovery.
     await expect(page.getByRole("heading", { name: "Replycant setup" })).toBeVisible();
-    await page.getByPlaceholder("http://replycant.local:8080").fill(CASERVER_URL);
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill(CASERVER_URL);
     await continueToCreateStep(page);
 
     // Identity creation.

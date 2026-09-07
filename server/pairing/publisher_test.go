@@ -154,8 +154,6 @@ func newTestPublisher(t *testing.T, fake *fakeDiscovery, minter Minter) (*Publis
 		Minter:          minter,
 		CACertPath:      caPath,
 		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		GitdTailnetName: "gitd.replycant.internal",
-		BaseDomain:      "replycant.internal",
 		DiscoveryURL:    fake.server.URL,
 		HTTPClient:      fake.client(),
 	})
@@ -198,12 +196,6 @@ func TestPublishedRecordOpensOnTheDevice(t *testing.T) {
 	}
 	if strings.TrimSpace(payload.CAPEM) != strings.TrimSpace(string(caPEM)) {
 		t.Error("the device must receive the deployment's real CA")
-	}
-	if payload.GitdTailnetName != "gitd.replycant.internal" {
-		t.Errorf("unexpected gitd name %q", payload.GitdTailnetName)
-	}
-	if payload.BaseDomain != "replycant.internal" {
-		t.Errorf("unexpected base domain %q", payload.BaseDomain)
 	}
 }
 
@@ -366,8 +358,6 @@ func TestCAIsReadAtPublishTime(t *testing.T) {
 		Minter:          &fakeMinter{key: "k"},
 		CACertPath:      caPath,
 		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		GitdTailnetName: "gitd.replycant.internal",
-		BaseDomain:      "replycant.internal",
 		DiscoveryURL:    fake.server.URL,
 		HTTPClient:      fake.client(),
 	})
@@ -404,8 +394,6 @@ func TestMissingCAIsReported(t *testing.T) {
 		Minter:          &fakeMinter{key: "k"},
 		CACertPath:      filepath.Join(t.TempDir(), "absent.crt"),
 		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		GitdTailnetName: "gitd.replycant.internal",
-		BaseDomain:      "replycant.internal",
 		DiscoveryURL:    fake.server.URL,
 		HTTPClient:      fake.client(),
 	})
@@ -428,8 +416,6 @@ func TestNewPublisherRejectsIncompleteConfig(t *testing.T) {
 		Minter:          &fakeMinter{key: "k"},
 		CACertPath:      caPath,
 		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		GitdTailnetName: "gitd.replycant.internal",
-		BaseDomain:      "replycant.internal",
 		DiscoveryURL:    "https://discovery.replycant.com",
 	}
 
@@ -440,8 +426,6 @@ func TestNewPublisherRejectsIncompleteConfig(t *testing.T) {
 		{"no minter", func(c *Config) { c.Minter = nil }},
 		{"no CA path", func(c *Config) { c.CACertPath = "" }},
 		{"no headscale URL", func(c *Config) { c.HeadscaleURL = "" }},
-		{"no gitd name", func(c *Config) { c.GitdTailnetName = "" }},
-		{"no base domain", func(c *Config) { c.BaseDomain = "" }},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			config := complete

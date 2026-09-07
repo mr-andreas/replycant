@@ -14,11 +14,6 @@ public struct TailnetJoinRequest: Sendable {
     public let headscaleHost: String
     public let headscalePort: UInt16
 
-    /// MagicDNS name and base domain gitd answers on, so the app can rebuild
-    /// its server URL without reopening the pairing record.
-    public let gitdTailnetName: String
-    public let baseDomain: String
-
     /// Single-use and short-lived. Absent when rejoining, because the node's
     /// key material persists in `stateDirectory` and registering again would
     /// need a credential the deployment has already retired.
@@ -31,15 +26,11 @@ public struct TailnetJoinRequest: Sendable {
     public init(
         headscaleHost: String,
         headscalePort: UInt16 = 443,
-        gitdTailnetName: String,
-        baseDomain: String,
         preauthKey: String?,
         hostName: String
     ) {
         self.headscaleHost = headscaleHost
         self.headscalePort = headscalePort
-        self.gitdTailnetName = gitdTailnetName
-        self.baseDomain = baseDomain
         self.preauthKey = preauthKey
         self.hostName = hostName
     }
@@ -83,7 +74,7 @@ public actor TailnetManager: TailnetNodeProviding {
     }
 
     private let stateDirectory: URL
-    private let logger: ((String) -> Void)?
+    private let logger: (@Sendable (String) -> Void)?
 
     private var shim: HeadscaleControlShim?
     private var node: TailscaleNode?
@@ -91,7 +82,7 @@ public actor TailnetManager: TailnetNodeProviding {
     /// - Parameter stateDirectory: where tsnet persists the node's machine key
     ///   and peer state. Must survive app launches, or every start would
     ///   register a new node and the deployment would accumulate dead ones.
-    public init(stateDirectory: URL, logger: ((String) -> Void)? = nil) {
+    public init(stateDirectory: URL, logger: (@Sendable (String) -> Void)? = nil) {
         self.stateDirectory = stateDirectory
         self.logger = logger
     }
@@ -109,9 +100,13 @@ public actor TailnetManager: TailnetNodeProviding {
     public func join(
         _ request: TailnetJoinRequest,
         pinnedCA: SecCertificate,
-        clientIdentity: SecIdentity
+        clientIdentity: SecIdentity,
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws {
         await shutDown()
+
+        logger?("tailnet: starting control shim for \(request.headscaleHost):\(request.headscalePort)")
+        onProgress?("Opening a secure path to the server...")
 
         let shim = HeadscaleControlShim(
             upstreamHost: request.headscaleHost,
@@ -126,6 +121,7 @@ public actor TailnetManager: TailnetNodeProviding {
             throw TailnetError.controlPlaneUnavailable("shim started without a control URL")
         }
         self.shim = shim
+        logger?("tailnet: shim listening at \(controlURL)")
 
         try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
 
@@ -141,10 +137,16 @@ public actor TailnetManager: TailnetNodeProviding {
         )
 
         do {
-            let node = try TailscaleNode(config: configuration, logger: nil)
+            let nodeLogger = logger.map { emit in
+                TailscaleLogBridge(emit: emit)
+            }
+            logger?("tailnet: bringing node up as \(request.hostName); preauthKey=\(request.preauthKey != nil)")
+            onProgress?("Waiting for the control plane to accept this device...")
+            let node = try TailscaleNode(config: configuration, logger: nodeLogger)
             try await node.up()
             self.node = node
         } catch {
+            logger?("tailnet: node.up failed: \(error)")
             shim.stop()
             self.shim = nil
             throw error
@@ -154,6 +156,7 @@ public actor TailnetManager: TailnetNodeProviding {
 
         isJoined = true
         logger?("tailnet: joined as \(request.hostName) via \(request.headscaleHost)")
+        onProgress?("Connected to your library's network")
     }
 
     /// Points the shim at gitd's in-tailnet control relay.
@@ -179,7 +182,7 @@ public actor TailnetManager: TailnetNodeProviding {
                 return
             }
             try shim.setTailnetRoute(HeadscaleControlShim.TailnetRoute(
-                host: "\(request.gitdTailnetName).\(request.baseDomain)",
+                host: Self.gitdHost,
                 port: Self.gitdControlPort,
                 socksProxy: .hostPort(host: NWEndpoint.Host(ip), port: proxyPort),
                 // tsnet's SOCKS5 listener always authenticates as this user,
@@ -191,6 +194,11 @@ public actor TailnetManager: TailnetNodeProviding {
             logger?("tailnet: in-tailnet control path unavailable, staying on the relay: \(error)")
         }
     }
+
+    /// MagicDNS name gitd registers on the tailnet. Pinned rather than
+    /// delivered in a pairing record so a QR and a certificate SAN cannot
+    /// drift.
+    static let gitdHost = "gitd.replycant.internal"
 
     /// The port gitd relays control-plane traffic on inside the tailnet.
     ///
@@ -252,5 +260,17 @@ public actor TailnetManager: TailnetNodeProviding {
         shim?.stop()
         shim = nil
         isJoined = false
+    }
+}
+
+/// Forwards TailscaleKit lines into the app log. `logger: nil` is what
+/// left a hung NeedsLogin looking like tsnet had gone silent.
+private struct TailscaleLogBridge: LogSink, Sendable {
+    let emit: @Sendable (String) -> Void
+
+    var logFileHandle: Int32? { nil }
+
+    func log(_ message: String) {
+        emit("tsnet: \(message)")
     }
 }

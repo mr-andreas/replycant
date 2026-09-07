@@ -18,8 +18,6 @@ const payload: PairingPayload = {
   headscaleUrl: "https://abc123.tunnel.replycant.com",
   caPem: "-----BEGIN CERTIFICATE-----ca-----END CERTIFICATE-----",
   preauthKey: "preauth-abc",
-  gitdTailnetName: "gitd",
-  baseDomain: "replycant.internal",
 };
 
 const identity = {
@@ -74,18 +72,14 @@ describe("gitdTailnetUrl", () => {
   // the matching SAN, which is what lets the existing mTLS transport work
   // unchanged over the tailnet.
   it("builds the MagicDNS URL for gitd", () => {
-    expect(gitdTailnetUrl({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toBe(
-      "https://gitd.replycant.internal:8443",
-    );
+    expect(gitdTailnetUrl()).toBe("https://gitd.replycant.internal:8443");
   });
 
   // gitd's tailnet listener is not on 443, and the headscale policy only opens
   // the ports gitd actually serves, so an implied port would be denied by the
   // tailnet before it ever reached gitd.
   it("names the port gitd serves on rather than implying 443", () => {
-    expect(gitdTailnetUrl({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toContain(
-      `:${GITD_TAILNET_PORT}`,
-    );
+    expect(gitdTailnetUrl()).toContain(`:${GITD_TAILNET_PORT}`);
   });
 });
 
@@ -93,7 +87,7 @@ describe("gitdControlAddr", () => {
   // The in-tailnet control path is what lets a paired device stop depending on
   // the hosted relay, so the sidecar has to be told where it is.
   it("targets gitd's control relay by MagicDNS name", () => {
-    expect(gitdControlAddr({ gitdTailnetName: "gitd", baseDomain: "replycant.internal" })).toEqual({
+    expect(gitdControlAddr()).toEqual({
       addr: "gitd.replycant.internal:8444",
       serverName: "gitd.replycant.internal",
     });
@@ -102,10 +96,7 @@ describe("gitdControlAddr", () => {
   // hsproxy presents one certificate covering both the tunnel hostname and the
   // tailnet name, so the name verified on this path is the tailnet one.
   it("verifies the tailnet name rather than the tunnel hostname", () => {
-    const { serverName } = gitdControlAddr({
-      gitdTailnetName: "gitd",
-      baseDomain: "replycant.internal",
-    });
+    const { serverName } = gitdControlAddr();
     expect(serverName).not.toContain("tunnel");
   });
 });
@@ -129,8 +120,6 @@ describe("tailnet config persistence", () => {
     expect(toTailnetConfigRecord(payload)).toEqual({
       headscaleAddr: "abc123.tunnel.replycant.com:443",
       headscaleServerName: "abc123.tunnel.replycant.com",
-      gitdTailnetName: "gitd",
-      baseDomain: "replycant.internal",
     });
   });
 

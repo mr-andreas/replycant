@@ -328,6 +328,8 @@ public final class HeadscaleControlShim {
                 self.lock.lock()
                 self.lastRouteUsed = attempt.route
                 self.lock.unlock()
+                self.logger?("headscale shim: \(attempt.route.rawValue) connected to "
+                    + "\(attempt.host):\(attempt.port)")
                 self.pump(from: local, to: upstream, teardown: { self.teardown(key) })
                 self.pump(from: upstream, to: local, teardown: { self.teardown(key) })
             case .failed(let error):

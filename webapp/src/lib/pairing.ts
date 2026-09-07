@@ -52,8 +52,6 @@ export interface PairingPayload {
   headscaleUrl: string;
   caPem: string;
   preauthKey: string;
-  gitdTailnetName: string;
-  baseDomain: string;
 }
 
 // A pairing attempt in progress. The encoded form goes in the QR; the slot is
@@ -155,8 +153,6 @@ interface WirePayload {
   headscale_url?: string;
   ca_pem?: string;
   preauth_key?: string;
-  gitd_tailnet_name?: string;
-  base_domain?: string;
 }
 
 // Fails a payload that would leave the device stuck at "waiting for
@@ -166,8 +162,6 @@ const toPayload = (wire: WirePayload): PairingPayload => {
     ["headscale_url", "headscaleUrl"],
     ["ca_pem", "caPem"],
     ["preauth_key", "preauthKey"],
-    ["gitd_tailnet_name", "gitdTailnetName"],
-    ["base_domain", "baseDomain"],
   ];
   const payload: Partial<PairingPayload> = {};
   const missing: string[] = [];

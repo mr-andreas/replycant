@@ -68,8 +68,6 @@ describe("openPairingRecord", () => {
       headscaleUrl: fixture.payload.headscale_url,
       caPem: fixture.payload.ca_pem,
       preauthKey: fixture.payload.preauth_key,
-      gitdTailnetName: fixture.payload.gitd_tailnet_name,
-      baseDomain: fixture.payload.base_domain,
     });
   });
 
@@ -181,8 +179,6 @@ describe("verifyCALabel", () => {
         headscaleUrl: "not a url",
         caPem: fixture.payload.ca_pem,
         preauthKey: "k",
-        gitdTailnetName: "gitd",
-        baseDomain: "replycant.internal",
       }),
     ).rejects.toThrow(/not a valid URL/);
   });

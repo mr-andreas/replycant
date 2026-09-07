@@ -53,7 +53,7 @@ test.describe("@integration Commit rewind setup against real backend", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Replycant setup" })).toBeVisible();
-    await page.getByPlaceholder("http://replycant.local:8080").fill(CASERVER_URL);
+    await page.getByPlaceholder("http://127.0.0.1:8080").fill(CASERVER_URL);
     await continueToCreateStep(page);
 
     await page.getByPlaceholder("replycant-webapp").fill("e2e-commit-rewind");

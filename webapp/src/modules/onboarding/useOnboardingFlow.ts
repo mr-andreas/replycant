@@ -45,6 +45,14 @@ export type SetupMode =
 // pairing secret and wait to be handed the CA.
 export type ConnectionMode = "lan" | "tailnet";
 
+// Held only in memory: a preauth key is single-use and must not survive a
+// reload as something the next start would try to redeem.
+interface FirstDeviceJoin {
+  ca: string;
+  headscaleUrl: string;
+  preauthKey: string;
+}
+
 // Captures browser-owned setup fields that must survive proxy restarts and page reloads.
 interface SetupConfigRecord {
   serverUrl: string;
@@ -164,6 +172,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("lan");
   const [pairingSecret, setPairingSecret] = useState<PairingSecret | null>(null);
+  const [firstDeviceJoin, setFirstDeviceJoin] = useState<FirstDeviceJoin | null>(null);
 
   // Abandons an in-flight discovery poll when the user starts over or the
   // component unmounts, so a discarded attempt stops consuming slot reads.
@@ -322,7 +331,30 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
         const detail = payload.detail ? ` ${payload.detail}` : "";
         throw new Error(`${message}${detail}`);
       }
-      const discovered = (await response.json()) as Partial<SetupConfigRecord>;
+      const discovered = (await response.json()) as Partial<SetupConfigRecord> & {
+        headscale_url?: string;
+        preauth_key?: string;
+      };
+      if (
+        typeof discovered.ca === "string" &&
+        typeof discovered.headscale_url === "string" &&
+        typeof discovered.preauth_key === "string"
+      ) {
+        if (!tailnetSupported()) {
+          throw new Error(
+            "This library is on a private network. Use the desktop app to join it.",
+          );
+        }
+        // Join waits until identity exists: hsproxy authorizes the same
+        // device certificate gitd will later see.
+        setFirstDeviceJoin({
+          ca: discovered.ca,
+          headscaleUrl: discovered.headscale_url,
+          preauthKey: discovered.preauth_key,
+        });
+        setSetupMode("create");
+        return;
+      }
       if (
         typeof discovered.ca !== "string" ||
         typeof discovered.url !== "string"
@@ -386,7 +418,30 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
       setIdentityRecord(created);
       const unlocked = await unlockIdentity(created, keySource);
       setIdentity(unlocked);
-      if (connectionMode === "tailnet") {
+      if (firstDeviceJoin) {
+        const tailnetRecord = toTailnetConfigRecord({
+          headscaleUrl: firstDeviceJoin.headscaleUrl,
+          caPem: firstDeviceJoin.ca,
+          preauthKey: firstDeviceJoin.preauthKey,
+        });
+        await joinTailnet({
+          record: tailnetRecord,
+          caPem: firstDeviceJoin.ca,
+          identity: unlocked,
+          preauthKey: firstDeviceJoin.preauthKey,
+        });
+        const config: SetupConfigRecord = {
+          serverUrl: gitdTailnetUrl(),
+          ca: firstDeviceJoin.ca,
+          url: gitdTailnetUrl(),
+        };
+        await configureProxy(config);
+        saveTailnetConfigRecord(tailnetRecord);
+        saveSetupConfigRecord(config);
+        setSetupConfig(config);
+        setFirstDeviceJoin(null);
+        setSetupMode("rehydrating");
+      } else if (connectionMode === "tailnet") {
         // Minted here rather than at the first screen so the secret's lifetime
         // matches the QR that carries it: one secret per attempt, discarded
         // when the attempt ends.
@@ -400,7 +455,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : "Failed to create identity.");
     }
-  }, [connectionMode, deviceNameInput, passwordInput, passwordRequired]);
+  }, [configureProxy, connectionMode, deviceNameInput, firstDeviceJoin, passwordInput, passwordRequired]);
 
   // Decrypts password-wrapped credentials so setup can continue without recreating identity.
   const handleUnlockIdentity = useCallback(async () => {
@@ -426,9 +481,9 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
   // Waits for the deployment to authorize this device, then joins its tailnet.
   //
   // Everything the device needs arrives in one sealed record: the CA to trust,
-  // where headscale is, a single-use tailnet credential, and the MagicDNS name
-  // gitd answers on. Until that record appears the device has no way to reach
-  // anything, which is why this is a poll rather than a request.
+  // where headscale is, and a single-use tailnet credential. Until that record
+  // appears the device has no way to reach anything, which is why this is a
+  // poll rather than a request.
   //
   // The CA is checked against the fingerprint in the headscale hostname before
   // it is installed. That check is independent of the record's encryption, so a
@@ -463,9 +518,9 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
         });
 
         const config: SetupConfigRecord = {
-          serverUrl: gitdTailnetUrl(tailnetRecord),
+          serverUrl: gitdTailnetUrl(),
           ca: payload.caPem,
-          url: gitdTailnetUrl(tailnetRecord),
+          url: gitdTailnetUrl(),
         };
         await configureProxy(config);
 
@@ -525,6 +580,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     setServerUrlInput("");
     setConnectionMode("lan");
     setPairingSecret(null);
+    setFirstDeviceJoin(null);
   }, []);
 
   // Lets users retry failed rehydration explicitly so bootstrap failures are recoverable.

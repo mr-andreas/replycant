@@ -64,7 +64,7 @@ flowchart TD
 The webapp now owns mTLS device identity in the browser instead of reading `device.key` and `device.crt` from server disk:
 
 1. On first visit, the app asks for the CA server URL.
-2. The browser discovers `{ca, url}` from `/config.json` and stores it in localStorage.
+2. The browser discovers `/config.json` from the CA page (`http://127.0.0.1:8080`). A tailnet payload is first-device join; `{ca, url}` is LAN-only. After joining, the proxy is pointed at `https://gitd.replycant.internal:8443`.
 3. The browser configures the local proxy with that discovered CA and upstream URL. The proxy derives every backend service from the git origin: `{origin(url)}/lfs`, `/decryptd`, and `/transcoded`, since gitd fronts them all.
 4. The app asks for a device name. Plain browser tabs also require a password; the Electron desktop app does not when OS keyring encryption is available.
 5. The app generates a P-256 key pair, self-signed certificate, and age X25519 key in-browser.

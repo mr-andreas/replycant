@@ -559,8 +559,6 @@ describe("useOnboardingFlow", () => {
       JSON.stringify({
         headscaleAddr: "abc.tunnel.replycant.com:443",
         headscaleServerName: "abc.tunnel.replycant.com",
-        gitdTailnetName: "gitd",
-        baseDomain: "replycant.internal",
       }),
     );
     gitdbMocks.mockLoadIdentityRecord.mockReturnValue({ wrap: "device", publicKeySsh: "ssh" });
@@ -639,5 +637,76 @@ describe("useOnboardingFlow", () => {
 
     expect(leaveTailnet).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).toBeNull();
+  });
+
+  // Fetching the CA page on a tailnet deployment is first-device setup: the
+  // payload is a live join, not a gitd URL. The existing wait-for-another-
+  // device path stays for a second phone.
+  it("treats a tailnet CA page as first-device join", async () => {
+    const { joinTailnet } = installTailnetBridge();
+    gitdbMocks.mockLoadIdentityRecord.mockReturnValue(null);
+    gitdbMocks.mockCreateIdentity.mockResolvedValue({
+      deviceName: "Test Device",
+      publicKeySsh: "ssh",
+      agePublicKey: pairingFixture.agePublicKeyBase64,
+      deviceUUID: "uuid",
+      wrap: "device",
+    });
+    gitdbMocks.mockUnlockIdentity.mockResolvedValue({
+      privateKeyPem: "key",
+      certificatePem: "cert",
+      deviceName: "Test Device",
+      agePrivateKeyBase64: pairingFixture.agePrivateKeyBase64,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ca: pairingFixture.payload.ca_pem,
+            headscale_url: pairingFixture.payload.headscale_url,
+            preauth_key: pairingFixture.payload.preauth_key,
+          }),
+        })
+        .mockResolvedValue({
+          ok: true,
+          json: async () => ({}),
+        }),
+    );
+
+    render(<OnboardingHarness />);
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("serverUrl"));
+    fireEvent.click(screen.getByRole("button", { name: "set-server-url" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "discover-server" }));
+    });
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("create"));
+
+    fireEvent.click(screen.getByRole("button", { name: "set-device" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "create" }));
+    });
+
+    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("rehydrating"));
+    expect(joinTailnet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headscaleAddr: `${pairingFixture.caLabel}.tunnel.replycant.com:443`,
+        caPem: pairingFixture.payload.ca_pem,
+        preauthKey: pairingFixture.payload.preauth_key,
+        gitdControlAddr: "gitd.replycant.internal:8444",
+      }),
+    );
+    const stored = JSON.parse(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY) ?? "{}") as {
+      url?: string;
+    };
+    expect(stored.url).toBe("https://gitd.replycant.internal:8443");
+    const tailnet = JSON.parse(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY) ?? "{}") as {
+      gitdTailnetName?: string;
+      baseDomain?: string;
+    };
+    expect(tailnet.gitdTailnetName).toBeUndefined();
+    expect(tailnet.baseDomain).toBeUndefined();
   });
 });

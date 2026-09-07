@@ -198,6 +198,33 @@ describe("createApp", () => {
     expect(res.body).toEqual({ ca: "ca", url: "https://git.example" });
   });
 
+  // The first-device CA page on a tailnet has no gitd URL. Discovery must
+  // pass the join credential through so the desktop app can join before
+  // pointing the proxy at the hardcoded address.
+  it("discovers a tailnet first-device join from caserver", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ca: "ca",
+          headscale_url: "https://hs.example",
+          preauth_key: "hskey-1",
+        }),
+      }),
+    );
+    const app = createApp(proxyConfig, createForwarderMock());
+    const res = await request(app).post("/api/setup/discover").send({
+      serverUrl: "http://127.0.0.1:8080",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ca: "ca",
+      headscale_url: "https://hs.example",
+      preauth_key: "hskey-1",
+    });
+  });
+
   // Verifies that Node fetch's opaque "fetch failed" gets unwrapped to the
   // underlying cause (e.g. ENOTFOUND, ECONNREFUSED) so the client can show
   // an actionable error.

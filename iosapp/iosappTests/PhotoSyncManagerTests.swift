@@ -465,6 +465,16 @@ final class MockUploadedMediaCache: UploadedMediaCaching {
 @MainActor
 @Suite("PhotoSyncManager Tests", .serialized, .sharedAppState)
 struct PhotoSyncManagerTests {
+
+    // A 0-of-0 determinate bar is a silent spinner. The preparing phase
+    // has to keep the file label as the headline so the user can see
+    // that access or the library scan is still running.
+    @Test func preparingSyncKeepsThePhaseAsTheHeadline() {
+        #expect(PhotoSyncStatusCopy.headline(current: 0, total: 0, file: "Asking for photo access...")
+            == "Asking for photo access...")
+        #expect(PhotoSyncStatusCopy.headline(current: 3, total: 10, file: "IMG.HEIC")
+            == "Uploading 3 of 10")
+    }
     
     // MARK: - Test Setup Helpers
     

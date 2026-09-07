@@ -18,8 +18,6 @@ struct PairingRecordCrossLanguageTests {
             let headscale_url: String
             let ca_pem: String
             let preauth_key: String
-            let gitd_tailnet_name: String
-            let base_domain: String
         }
 
         let secret: String
@@ -79,8 +77,6 @@ struct PairingRecordCrossLanguageTests {
         #expect(payload.headscaleURL == fixture.payload.headscale_url)
         #expect(payload.caPEM == fixture.payload.ca_pem)
         #expect(payload.preauthKey == fixture.payload.preauth_key)
-        #expect(payload.gitdTailnetName == fixture.payload.gitd_tailnet_name)
-        #expect(payload.baseDomain == fixture.payload.base_domain)
     }
 
     // Slots are public, so an abandoned attempt's record could be replayed at a
@@ -147,9 +143,7 @@ struct PairingRecordCrossLanguageTests {
             PairingRecord.Payload(
                 headscaleURL: "https://" + labels.joined(separator: "."),
                 caPEM: payload.caPEM,
-                preauthKey: payload.preauthKey,
-                gitdTailnetName: payload.gitdTailnetName,
-                baseDomain: payload.baseDomain
+                preauthKey: payload.preauthKey
             )
         )
     }

@@ -12,6 +12,28 @@ struct QRScanValidationTests {
         #expect(decision == .acceptRaw)
     }
 
+    // The first-device CA page on a tailnet has no reachable gitd URL, so
+    // the QR carries a one-time join instead. Rejecting it would leave a
+    // new deployment unable to create a library.
+    @Test func serverConfigAcceptsATailnetJoin() {
+        let code = #"{"ca":"pem","headscale_url":"https://hs.example","preauth_key":"hskey-1"}"#
+        let decision = QRScanValidation.validate(code: code, mode: .serverConfig)
+        #expect(decision == .acceptRaw)
+        #expect(
+            QRScanValidation.parseServerConfig(code)
+                == .tailnet(ca: "pem", headscaleURL: "https://hs.example", preauthKey: "hskey-1")
+        )
+    }
+
+    @Test func serverConfigRejectsAnIncompleteTailnetJoin() {
+        let code = #"{"ca":"pem","headscale_url":"https://hs.example"}"#
+        let decision = QRScanValidation.validate(code: code, mode: .serverConfig)
+        guard case .reject = decision else {
+            Issue.record("Expected rejection for a join QR missing its credential")
+            return
+        }
+    }
+
     // Verifies device-link mode extracts validated fields for downstream linking without reparsing.
     @Test func devicePublicKeyExtractsPayload() {
         let code = #"{"pubkey":"ssh-ed25519 AAAA test","age_pubkey":"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","name":"iphone","uuid":"abcd"}"#

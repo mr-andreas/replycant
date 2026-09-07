@@ -112,6 +112,7 @@ func writeFile(t *testing.T, path string, contents []byte) {
 type fakeRelay struct {
 	addr       string
 	caPool     *x509.CertPool
+	certPEM    []byte
 	chains     chan []*x509.Certificate
 	sessions   chan *yamux.Session
 	serverName string
@@ -159,6 +160,7 @@ func startFakeRelay(t *testing.T) *fakeRelay {
 	relay := &fakeRelay{
 		addr:       listener.Addr().String(),
 		caPool:     pool,
+		certPEM:    pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		chains:     make(chan []*x509.Certificate, 8),
 		sessions:   make(chan *yamux.Session, 8),
 		serverName: "relay.test",
@@ -406,6 +408,41 @@ func TestAgentRunStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+// The hosted relay presents one self-signed certificate on every shard
+// hostname, and that certificate names none of them. Pinning it is the
+// check; verifying sNN.tunnel.replycant.com against it is what left
+// every agent in a reconnect loop.
+func TestPinnedRelayIgnoresShardHostname(t *testing.T) {
+	credentials := newTestCredentials(t)
+	relay := startFakeRelay(t)
+
+	pinPath := filepath.Join(credentials.dir, "relay.crt")
+	writeFile(t, pinPath, relay.certPEM)
+
+	config := relay.agentConfig(credentials)
+	config.UpstreamAddr = "127.0.0.1:1"
+	config.RelayCAPath = pinPath
+	config.RelayServerName = "s01.tunnel.replycant.com"
+
+	agent, err := New(config)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if agent.tlsConfig.VerifyPeerCertificate == nil {
+		t.Fatal("a pin must install a certificate check that ignores the shard hostname")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = agent.Run(ctx) }()
+
+	select {
+	case <-relay.chains:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the agent must complete a handshake against a pinned relay whose certificate names no shard")
 	}
 }
 

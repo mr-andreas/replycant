@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
 	"github.com/mr-andreas/replycant/server/gitd"
 	"github.com/mr-andreas/replycant/server/gitd/auth"
 	"github.com/mr-andreas/replycant/server/gitd/caserver"
@@ -84,7 +85,7 @@ type CLI struct {
 	// in manual-exposure mode, where the pairing QR carries the headscale URL
 	// and CA directly and no record is ever published.
 	DiscoveryURL        string `help:"Base URL of the discovery API; the pairing slot is prepended as a subdomain. Leave unset for manual-exposure mode"`
-	HeadscaleAPIURL     string `help:"Headscale API base URL used to mint pre-auth keys for pairing devices (e.g. http://headscale:8080)"`
+	HeadscaleAPIURL     string `name:"headscale-api-url" help:"Headscale API base URL used to mint pre-auth keys for pairing devices (e.g. http://headscale:8080)"`
 	HeadscaleAPIKeyFile string `help:"File containing the headscale API key; read from a file so it stays out of logs and the process list" type:"path"`
 	HeadscaleUser       string `default:"replycant" help:"Headscale user that paired devices are registered under"`
 
@@ -171,9 +172,8 @@ func (c *CLI) pairingEnabled() bool {
 //
 // Returning a nil interface is what makes gitd's /pair endpoint answer 404 on
 // manual deployments, so the two modes are decided in exactly one place.
-func (c *CLI) buildPairingPublisher() (gitd.PairingPublisher, error) {
+func (c *CLI) headscaleClient() (*tailnet.Client, error) {
 	if !c.pairingEnabled() {
-		log.Printf("Tailnet pairing is disabled; gitd is serving on a host port without a tailnet")
 		return nil, nil
 	}
 
@@ -182,24 +182,26 @@ func (c *CLI) buildPairingPublisher() (gitd.PairingPublisher, error) {
 		return nil, fmt.Errorf("read headscale API key: %w", err)
 	}
 
-	headscale, err := tailnet.NewClient(tailnet.Config{
+	return tailnet.NewClient(tailnet.Config{
 		BaseURL:  c.HeadscaleAPIURL,
 		APIKey:   strings.TrimSpace(string(apiKey)),
 		UserName: c.HeadscaleUser,
 	})
-	if err != nil {
-		return nil, err
+}
+
+func (c *CLI) buildPairingPublisher(headscale *tailnet.Client) (gitd.PairingPublisher, error) {
+	if headscale == nil {
+		log.Printf("Tailnet pairing is disabled; gitd is serving on a host port without a tailnet")
+		return nil, nil
 	}
 
 	// DiscoveryURL may be empty. That selects manual-exposure delivery, where
 	// the record is returned to the authorizing device instead of published.
 	publisher, err := pairing.NewPublisher(pairing.Config{
-		Minter:          headscale,
-		CACertPath:      c.CA,
-		HeadscaleURL:    c.HeadscaleClientURL,
-		GitdTailnetName: c.tailnetHostname(),
-		BaseDomain:      strings.Trim(strings.TrimSpace(c.TailnetDomain), "."),
-		DiscoveryURL:    c.DiscoveryURL,
+		Minter:       headscale,
+		CACertPath:   c.CA,
+		HeadscaleURL: c.HeadscaleClientURL,
+		DiscoveryURL: c.DiscoveryURL,
 	})
 	if err != nil {
 		return nil, err
@@ -217,22 +219,19 @@ func (c *CLI) tsnetConfig() tsnetserve.Config {
 	}
 }
 
-// Builds the Git URL shown in QR and /config.json so onboarding clients
-// connect to the same host and port gitd is listening on.
+// Builds the Git URL shown in the LAN-only CA page.
 //
-// On a tailnet the LAN hostname no longer resolves to a reachable listener, so
-// the MagicDNS name has to be advertised instead.
+// On a tailnet the CA page mints a join credential instead of a URL; clients
+// already use pkg/tailnetaddr. This remains for integration tests and
+// host-port gitd.
 func (c *CLI) advertisedURL() string {
 	if c.tsnetConfig().Enabled() {
-		return advertisedServerURL(c.tailnetHostname(), c.Addr)
+		return tailnetaddr.GitdURL() + "/"
 	}
 	return advertisedServerURL(c.Hostname, c.Addr)
 }
 
 // The MagicDNS name tailnet peers use to reach this gitd.
-//
-// Shared by the advertised URL and the pairing record so a device is never told
-// one name in the QR and a different one in /config.json.
 func (c *CLI) tailnetHostname() string {
 	return fmt.Sprintf("%s.%s",
 		strings.TrimSpace(c.TsnetHostname),
@@ -265,8 +264,26 @@ func main() {
 
 	serverURL := cli.advertisedURL()
 
+	headscale, err := cli.headscaleClient()
+	ctx.FatalIfErrorf(err)
+
+	caCfg := caserver.Config{CA: string(caData), ServerURL: serverURL}
+	if headscale != nil {
+		// A preauth key is single-use, so the CA page mints on each visit
+		// rather than baking one credential into a QR at startup.
+		caCfg.Mint = func() (string, string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			key, err := headscale.MintPreauthKey(ctx, pairing.PreauthKeyTTL)
+			if err != nil {
+				return "", "", err
+			}
+			return cli.HeadscaleClientURL, key, nil
+		}
+	}
+
 	// Start CA distribution HTTP server
-	caHandler, err := caserver.NewHandler(string(caData), serverURL)
+	caHandler, err := caserver.NewHandler(caCfg)
 	ctx.FatalIfErrorf(err)
 	httpServer := &http.Server{
 		Addr:    cli.CaAddr,
@@ -283,7 +300,7 @@ func main() {
 	// Create mTLS Git server handler
 	auth := auth.NewAuthenticator(cli.Repo, cli.CacheTTL)
 
-	pairingPublisher, err := cli.buildPairingPublisher()
+	pairingPublisher, err := cli.buildPairingPublisher(headscale)
 	ctx.FatalIfErrorf(err)
 
 	handler, err := gitd.NewServer(auth, gitd.ServerConfig{

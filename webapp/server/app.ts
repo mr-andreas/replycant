@@ -76,6 +76,35 @@ export const createApp = (
     return { ca, url };
   };
 
+  // The CA page serves LAN {ca, url} or a first-device tailnet join.
+  // Discover must accept both; configure still requires a gitd URL.
+  const parseCaPageConfig = (
+    value: unknown,
+  ): DiscoveredServerConfig | { ca: string; headscale_url: string; preauth_key: string } | null => {
+    const lan = parseDiscoveredConfig(value);
+    if (lan) return lan;
+    if (!value || typeof value !== "object") return null;
+    const candidate = value as Record<string, unknown>;
+    if (
+      typeof candidate.ca !== "string" ||
+      typeof candidate.headscale_url !== "string" ||
+      typeof candidate.preauth_key !== "string"
+    ) {
+      return null;
+    }
+    const ca = candidate.ca.trim();
+    const headscaleUrl = candidate.headscale_url.trim();
+    const preauthKey = candidate.preauth_key.trim();
+    if (!ca || !headscaleUrl || !preauthKey) return null;
+    try {
+      // eslint-disable-next-line no-new
+      new URL(headscaleUrl);
+    } catch {
+      return null;
+    }
+    return { ca, headscale_url: headscaleUrl, preauth_key: preauthKey };
+  };
+
   // Keeps local diagnostics available before full sync path is configured.
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
@@ -127,7 +156,7 @@ export const createApp = (
       res.status(502).json({ error: "Server configuration endpoint returned invalid JSON." });
       return;
     }
-    const parsed = parseDiscoveredConfig(payload);
+    const parsed = parseCaPageConfig(payload);
     if (!parsed) {
       res.status(502).json({ error: "Server configuration endpoint returned an invalid payload." });
       return;

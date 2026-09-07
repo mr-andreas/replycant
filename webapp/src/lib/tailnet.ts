@@ -25,11 +25,6 @@ export const TAILNET_CONFIG_STORAGE_KEY = "replycant.tailnet.config";
 export interface TailnetConfigRecord {
   headscaleAddr: string;
   headscaleServerName: string;
-
-  // MagicDNS name and base domain, kept so the gitd URL can be rebuilt without
-  // reopening the pairing record.
-  gitdTailnetName: string;
-  baseDomain: string;
 }
 
 // Derives the dial target for headscale's control plane.
@@ -58,14 +53,18 @@ export const toHeadscaleAddr = (headscaleUrl: string): { addr: string; serverNam
 // device that dials anything else is denied by the tailnet itself, not by gitd.
 export const GITD_TAILNET_PORT = 8443;
 
+// MagicDNS name gitd registers on the tailnet. Pinned rather than delivered
+// in a pairing record so a QR and a certificate SAN cannot drift.
+export const GITD_TAILNET_HOST = "gitd.replycant.internal";
+
 // The URL gitd is reachable at once the device is on the tailnet.
 //
 // MagicDNS resolves this inside the tailnet, and gitd's certificate carries the
 // matching SAN, so the existing mTLS transport works unchanged. The port is
 // explicit because gitd's tailnet listener is not on 443, and an implied 443
 // would leave every request timing out against a port nothing is bound to.
-export const gitdTailnetUrl = (record: Pick<TailnetConfigRecord, "gitdTailnetName" | "baseDomain">): string =>
-  `https://${record.gitdTailnetName}.${record.baseDomain}:${GITD_TAILNET_PORT}`;
+export const gitdTailnetUrl = (): string =>
+  `https://${GITD_TAILNET_HOST}:${GITD_TAILNET_PORT}`;
 
 // The port gitd relays control-plane traffic on inside the tailnet.
 //
@@ -79,20 +78,16 @@ export const GITD_CONTROL_PORT = 8444;
 // This is the path that lets a paired device stop depending on the hosted
 // relay: gitd splices it through to the same hsproxy the relay leads to, so the
 // device's TLS session is unchanged apart from the name it verifies.
-export const gitdControlAddr = (
-  record: Pick<TailnetConfigRecord, "gitdTailnetName" | "baseDomain">,
-): { addr: string; serverName: string } => {
-  const serverName = `${record.gitdTailnetName}.${record.baseDomain}`;
-  return { addr: `${serverName}:${GITD_CONTROL_PORT}`, serverName };
-};
+export const gitdControlAddr = (): { addr: string; serverName: string } => ({
+  addr: `${GITD_TAILNET_HOST}:${GITD_CONTROL_PORT}`,
+  serverName: GITD_TAILNET_HOST,
+});
 
 export const toTailnetConfigRecord = (payload: PairingPayload): TailnetConfigRecord => {
   const { addr, serverName } = toHeadscaleAddr(payload.headscaleUrl);
   return {
     headscaleAddr: addr,
     headscaleServerName: serverName,
-    gitdTailnetName: payload.gitdTailnetName,
-    baseDomain: payload.baseDomain,
   };
 };
 
@@ -109,17 +104,13 @@ export const loadTailnetConfigRecord = (): TailnetConfigRecord | null => {
     const parsed = JSON.parse(raw) as Partial<TailnetConfigRecord>;
     if (
       typeof parsed.headscaleAddr !== "string" ||
-      typeof parsed.headscaleServerName !== "string" ||
-      typeof parsed.gitdTailnetName !== "string" ||
-      typeof parsed.baseDomain !== "string"
+      typeof parsed.headscaleServerName !== "string"
     ) {
       return null;
     }
     return {
       headscaleAddr: parsed.headscaleAddr,
       headscaleServerName: parsed.headscaleServerName,
-      gitdTailnetName: parsed.gitdTailnetName,
-      baseDomain: parsed.baseDomain,
     };
   } catch {
     return null;
@@ -168,7 +159,7 @@ export const joinTailnet = async ({
   if (!desktop?.joinTailnet) {
     throw new Error("This build cannot join a tailnet. Use the desktop app to pair over a tailnet.");
   }
-  const control = gitdControlAddr(record);
+  const control = gitdControlAddr();
   await desktop.joinTailnet({
     headscaleAddr: record.headscaleAddr,
     headscaleServerName: record.headscaleServerName,

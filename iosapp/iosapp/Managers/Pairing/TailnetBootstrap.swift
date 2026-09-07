@@ -62,7 +62,7 @@ actor TailnetBootstrap {
         guard let configuration = configurations.load() else { return }
         if let manager, await manager.isJoined { return }
 
-        try await join(configuration: configuration, preauthKey: nil)
+        try await join(configuration: configuration, preauthKey: nil, onProgress: nil)
     }
 
     /// Joins for the first time, from a freshly opened pairing record.
@@ -70,9 +70,30 @@ actor TailnetBootstrap {
     /// Persists the configuration only after the join succeeds, so a record
     /// that cannot actually be used does not leave the app trying to rejoin a
     /// tailnet it never reached.
-    func joinAndPersist(payload: PairingRecord.Payload) async throws {
-        let configuration = try TailnetConfigurationManager.from(payload: payload)
-        try await join(configuration: configuration, preauthKey: payload.preauthKey)
+    func joinAndPersist(
+        payload: PairingRecord.Payload,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws {
+        try await joinAndPersist(
+            headscaleURL: payload.headscaleURL,
+            preauthKey: payload.preauthKey,
+            onProgress: onProgress
+        )
+    }
+
+    /// Joins from the first-device CA QR, which carries a live pre-auth key
+    /// rather than a sealed pairing record.
+    func joinAndPersist(
+        headscaleURL: String,
+        preauthKey: String,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws {
+        let configuration = try TailnetConfigurationManager.from(headscaleURL: headscaleURL)
+        try await join(
+            configuration: configuration,
+            preauthKey: preauthKey,
+            onProgress: onProgress
+        )
         configurations.save(configuration)
     }
 
@@ -93,7 +114,11 @@ actor TailnetBootstrap {
         return try? await manager.status()
     }
 
-    private func join(configuration: TailnetConfiguration, preauthKey: String?) async throws {
+    private func join(
+        configuration: TailnetConfiguration,
+        preauthKey: String?,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async throws {
         guard let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
             throw BootstrapError.missingPinnedCA
         }
@@ -111,8 +136,6 @@ actor TailnetBootstrap {
             TailnetJoinRequest(
                 headscaleHost: configuration.headscaleHost,
                 headscalePort: configuration.headscalePort,
-                gitdTailnetName: configuration.gitdTailnetName,
-                baseDomain: configuration.baseDomain,
                 preauthKey: preauthKey,
                 // The same identifier the deployment already knows this device
                 // by, so a tailnet peer list reads the way the device list does
@@ -120,7 +143,8 @@ actor TailnetBootstrap {
                 hostName: DeviceIdentifierManager.shared.deviceSpaceIdentifier
             ),
             pinnedCA: pinnedCA,
-            clientIdentity: identity
+            clientIdentity: identity,
+            onProgress: onProgress
         )
 
         // Every URLSession the app builds routes through the node's proxy, and

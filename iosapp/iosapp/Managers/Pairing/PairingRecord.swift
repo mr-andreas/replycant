@@ -94,8 +94,6 @@ public enum PairingRecord {
         public let headscaleURL: String
         public let caPEM: String
         public let preauthKey: String
-        public let gitdTailnetName: String
-        public let baseDomain: String
     }
 
     /// A pairing attempt in progress. The encoded form goes in the QR; the slot
@@ -259,8 +257,6 @@ public enum PairingRecord {
         let headscale_url: String?
         let ca_pem: String?
         let preauth_key: String?
-        let gitd_tailnet_name: String?
-        let base_domain: String?
     }
 
     // Fails a payload that would leave the device stuck at "waiting for
@@ -278,9 +274,7 @@ public enum PairingRecord {
         let payload = Payload(
             headscaleURL: require(wire.headscale_url, "headscale_url"),
             caPEM: require(wire.ca_pem, "ca_pem"),
-            preauthKey: require(wire.preauth_key, "preauth_key"),
-            gitdTailnetName: require(wire.gitd_tailnet_name, "gitd_tailnet_name"),
-            baseDomain: require(wire.base_domain, "base_domain")
+            preauthKey: require(wire.preauth_key, "preauth_key")
         )
         guard missing.isEmpty else { throw PairingError.missingFields(missing) }
         return payload

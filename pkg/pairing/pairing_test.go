@@ -29,11 +29,9 @@ func newAgeKeypair(t *testing.T) (publicKey []byte, privateKeyBase64 string) {
 
 func testPayload() Payload {
 	return Payload{
-		HeadscaleURL:    "https://8d121a007a4ae234d4c6abac034e3094.tunnel.replycant.com",
-		CAPEM:           "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
-		PreauthKey:      "hskey-auth-abcdefghijkl-secret",
-		GitdTailnetName: "gitd.replycant.internal",
-		BaseDomain:      "replycant.internal",
+		HeadscaleURL: "https://8d121a007a4ae234d4c6abac034e3094.tunnel.replycant.com",
+		CAPEM:        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+		PreauthKey:   "hskey-auth-abcdefghijkl-secret",
 	}
 }
 
@@ -70,7 +68,6 @@ func TestSealedBlobLeaksNoPlaintext(t *testing.T) {
 	for _, secretValue := range []string{
 		payload.PreauthKey,
 		payload.HeadscaleURL,
-		payload.GitdTailnetName,
 		"BEGIN CERTIFICATE",
 	} {
 		assert.NotContains(t, string(blob), secretValue,
@@ -257,8 +254,6 @@ func TestSealRejectsIncompletePayload(t *testing.T) {
 		"no headscale url": func(p *Payload) { p.HeadscaleURL = "" },
 		"no ca":            func(p *Payload) { p.CAPEM = "" },
 		"no preauth key":   func(p *Payload) { p.PreauthKey = "" },
-		"no gitd name":     func(p *Payload) { p.GitdTailnetName = "" },
-		"no base domain":   func(p *Payload) { p.BaseDomain = "" },
 	}
 
 	for name, mutate := range cases {
@@ -293,11 +288,9 @@ LEj+/WUkDhfmrCRf4r0cNwQ/2M0wXWJmZSp+2FwsKscCIQDKQ2nEAj+8DkOn2h0o
 	require.NoError(t, err)
 
 	payload := Payload{
-		HeadscaleURL:    "https://" + host,
-		CAPEM:           caPEM,
-		PreauthKey:      "hskey-auth-a-b",
-		GitdTailnetName: "gitd.replycant.internal",
-		BaseDomain:      "replycant.internal",
+		HeadscaleURL: "https://" + host,
+		CAPEM:        caPEM,
+		PreauthKey:   "hskey-auth-a-b",
 	}
 	require.NoError(t, payload.VerifyCALabel())
 

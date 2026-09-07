@@ -61,7 +61,7 @@ describe("OnboardingGate", () => {
     });
 
     render(<OnboardingGate flow={flow} snapshot={snapshot}><div>app</div></OnboardingGate>);
-    await user.click(screen.getByPlaceholderText("http://replycant.local:8080"));
+    await user.click(screen.getByPlaceholderText("http://127.0.0.1:8080"));
     await user.keyboard("{Enter}");
     expect(handleDiscoverServer).toHaveBeenCalledTimes(1);
   });
@@ -119,7 +119,7 @@ describe("OnboardingGate", () => {
     });
 
     render(<OnboardingGate flow={flow} snapshot={snapshot}><div>app</div></OnboardingGate>);
-    const input = screen.getByPlaceholderText("http://replycant.local:8080") as HTMLInputElement;
+    const input = screen.getByPlaceholderText("http://127.0.0.1:8080") as HTMLInputElement;
     expect(input.disabled).toBe(true);
     const button = screen.getByRole("button", { name: "" });
     expect(button).toBeDisabled();

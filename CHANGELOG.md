@@ -4,7 +4,7 @@
 
 ### Breaking changes
 
-- all client-to-server traffic now runs over a private tailnet, so every device must be re-onboarded. The server publishes no ports for git, LFS, or media any more, and there is no LAN URL to enter; new devices join by showing a pairing QR to an already-paired device. Existing devices cannot be migrated: wipe app state and pair again. The control-plane hostname now includes a shard label (`{ca-hash}.s{NN}.tunnel.replycant.com`), which also invalidates any earlier pairing. Bring the stack up with `COMPOSE_PROFILES=tunnel` for hosted discovery, or set `REPLYCANT_HEADSCALE_URL` and `REPLYCANT_HSPROXY_BIND=0.0.0.0` to expose the control plane through your own router instead
+- all client-to-server traffic now runs over a private tailnet, so every device must be re-onboarded. The first device visits `http://127.0.0.1:8080` on the server host and scans (or fetches) a one-time join QR; later devices still show a pairing QR to an already-paired device. The CA page and pairing record no longer carry a gitd URL or tailnet name — clients always use `https://gitd.replycant.internal:8443`. Wipe existing pairings; the QR shape and pairing payload both changed. The control-plane hostname includes a shard label (`{ca-hash}.s{NN}.tunnel.replycant.com`). A plain `docker compose up` publishes the control plane through the hosted relay. Set `REPLYCANT_HEADSCALE_URL` and `REPLYCANT_HSPROXY_BIND=0.0.0.0` and start with `--scale tunnel-agent=0` to expose it through your own router instead
 
 ### Features
 
@@ -18,6 +18,15 @@
 
 - show how this device reaches the library — connected or not, which control path it is using, and whether peers are online — in the settings pane
 
+### Fixes
+
+#### iOS app
+
+- setup and photo upload now say what they are doing instead of showing a silent spinner
+
+#### Server
+
+- the hosted tunnel agent now trusts the relay's registration certificate, so a first device can join without a forwarded port
 
 ## 0.2.1 - 2026-09-07
 

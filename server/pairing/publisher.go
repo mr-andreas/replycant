@@ -48,7 +48,7 @@ const recordContentType = "application/octet-stream"
 // and a discovery record that sits in a hosted database. Ten minutes is long
 // enough for someone to finish scanning and joining, short enough that an
 // abandoned pairing does not leave a usable credential behind.
-const preauthKeyTTL = 10 * time.Minute
+const PreauthKeyTTL = 10 * time.Minute
 
 // How long to wait on the discovery API. Someone is watching a spinner.
 const publishTimeout = 15 * time.Second
@@ -75,13 +75,6 @@ type Config struct {
 	// Where the device should point its tailnet client. Either the tunnel
 	// hostname or, in manual-exposure mode, the operator's own DNS name.
 	HeadscaleURL string
-
-	// The MagicDNS name the device will use to reach gitd once on the tailnet.
-	GitdTailnetName string
-
-	// headscale's MagicDNS base domain, needed by clients that resolve names
-	// themselves rather than through the tailnet resolver.
-	BaseDomain string
 
 	// Base URL of the discovery API. The slot is prepended as a subdomain, so
 	// this is the parent domain rather than a full record URL.
@@ -120,12 +113,6 @@ func NewPublisher(config Config) (*Publisher, error) {
 	}
 	if strings.TrimSpace(config.HeadscaleURL) == "" {
 		missing = append(missing, "headscale URL")
-	}
-	if strings.TrimSpace(config.GitdTailnetName) == "" {
-		missing = append(missing, "gitd tailnet name")
-	}
-	if strings.TrimSpace(config.BaseDomain) == "" {
-		missing = append(missing, "tailnet base domain")
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("pairing publisher is missing %s", strings.Join(missing, ", "))
@@ -180,17 +167,15 @@ func (p *Publisher) Publish(ctx context.Context, secret Secret, deviceAgePublicK
 		return nil, fmt.Errorf("read CA certificate for the pairing record: %w", err)
 	}
 
-	preauthKey, err := p.config.Minter.MintPreauthKey(ctx, preauthKeyTTL)
+	preauthKey, err := p.config.Minter.MintPreauthKey(ctx, PreauthKeyTTL)
 	if err != nil {
 		return nil, fmt.Errorf("mint a tailnet credential for the pairing device: %w", err)
 	}
 
 	sealed, err := pairingblob.Seal(secret, recipient, Payload{
-		HeadscaleURL:    p.config.HeadscaleURL,
-		CAPEM:           string(caPEM),
-		PreauthKey:      preauthKey,
-		GitdTailnetName: p.config.GitdTailnetName,
-		BaseDomain:      p.config.BaseDomain,
+		HeadscaleURL: p.config.HeadscaleURL,
+		CAPEM:        string(caPEM),
+		PreauthKey:   preauthKey,
 	})
 	if err != nil {
 		return nil, err
