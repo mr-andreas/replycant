@@ -5,6 +5,7 @@
 //  Created by Andreas on 2025-10-16.
 //
 
+import LibGit2
 import SwiftUI
 
 // Container view for development settings pages.
@@ -13,6 +14,9 @@ struct SettingsView: View {
     let onWipeAndResync: () -> Void
     let showRecoveryWarning: Bool
     @State private var isShowingResetConfirmation = false
+    @State private var hasLoadedTailnet = false
+    @State private var isTailnetConfigured = false
+    @State private var tailnetReport: TailnetStatusReport?
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
 
     // Allows callers to surface repo-wide recovery readiness in the settings navigation row.
@@ -43,11 +47,13 @@ struct SettingsView: View {
                     Text("Device Management")
                 }
 
-                // Above Advanced because "can this device reach the library at
-                // all" is what a user checks first when a sync fails, and it
-                // should not be buried behind a submenu.
-                TailnetConnectionSection()
-                
+                // Loaded here, not inside the section, because a zero-height
+                // List child never runs `.task` and a joined device then
+                // looks like a LAN install. Above Advanced because "can
+                // this device reach the library at all" is what a user
+                // checks first when a sync fails.
+                connectionSection
+
                 Section {
                     NavigationLink(destination: RepositorySettingsView()) {
                         Label("Repository", systemImage: "arrow.triangle.branch")
@@ -80,6 +86,11 @@ struct SettingsView: View {
                     }
                 }
             }
+            .task {
+                isTailnetConfigured = await TailnetBootstrap.shared.isConfigured
+                tailnetReport = await TailnetBootstrap.shared.status()
+                hasLoadedTailnet = true
+            }
             .navigationTitle("Settings")
             .alert("Reset Local State?", isPresented: $isShowingResetConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -88,6 +99,35 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("This will remove local repository data and download it again from the server.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var connectionSection: some View {
+        switch TailnetConnectionSection.presentation(
+            hasLoaded: hasLoadedTailnet,
+            isConfigured: isTailnetConfigured,
+            report: tailnetReport
+        ) {
+        case .hidden:
+            EmptyView()
+        case .unavailable:
+            Section {
+                LabeledContent("Status") {
+                    Text("Unavailable")
+                        .foregroundStyle(.orange)
+                }
+            } header: {
+                Text("Connection")
+            }
+        case .report(let report):
+            Section {
+                TailnetConnectionSection(report: report)
+            } header: {
+                Text("Connection")
+            } footer: {
+                Text(TailnetConnectionSection.footer(for: report.controlRoute))
             }
         }
     }

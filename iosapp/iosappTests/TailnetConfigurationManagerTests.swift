@@ -135,5 +135,9 @@ struct TailnetBootstrapTests {
         #expect(await bootstrap.isConfigured == false)
         // Must not throw: a LAN device reaches this on every launch.
         try await bootstrap.ensureJoinedIfConfigured()
+        // Settings hides Connection when there is no node; a thrown
+        // status here would be indistinguishable from a joined device
+        // whose local API failed.
+        #expect(await bootstrap.status() == nil)
     }
 }

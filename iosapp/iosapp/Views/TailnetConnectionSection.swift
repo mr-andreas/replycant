@@ -1,73 +1,78 @@
 import LibGit2
 import SwiftUI
 
-/// Shows how this device reaches its library, in Settings.
+/// What Settings should put in the Connection slot.
 ///
-/// A device that cannot reach the server gives one symptom - a failed sync -
-/// whether it is off the tailnet, on the tailnet but unable to route, or on the
-/// tailnet with the server down. This is what lets a user tell those apart
-/// instead of re-pairing and hoping.
+/// Hidden until Settings has asked, so a LAN device never flashes a
+/// section that does not apply. After that: the live report, a plain
+/// unavailable row when this device is on a tailnet but status could not
+/// be read, or nothing on LAN.
+enum TailnetConnectionPresentation: Equatable {
+    case hidden
+    case unavailable
+    case report(TailnetStatusReport)
+}
+
+/// Rows for how this device reaches its library.
 ///
-/// Renders nothing on LAN deployments: there is no tailnet to describe, and a
-/// section reporting a broken connection would send the user chasing a problem
-/// they do not have.
+/// Settings owns the surrounding Section so List treats it as a real
+/// section. This view used to wrap the Section and load from `.task` on
+/// an empty Group; List skipped that child, so a joined device showed
+/// nothing.
 struct TailnetConnectionSection: View {
-    /// Injected so previews and tests can show a state without a running node.
-    let load: () async -> TailnetStatusReport?
-
-    @State private var report: TailnetStatusReport?
-    @State private var hasLoaded = false
-
-    init(load: @escaping () async -> TailnetStatusReport? = { await TailnetBootstrap.shared.status() }) {
-        self.load = load
-    }
+    let report: TailnetStatusReport
 
     var body: some View {
-        Group {
-            if let report {
-                Section {
-                    LabeledContent("Status") {
-                        Text(report.isConnected ? "Connected" : report.backendState)
-                            .foregroundStyle(report.isConnected ? Color.green : Color.orange)
-                    }
-                    if let address = report.tailnetIPs.first {
-                        LabeledContent("Address", value: address)
-                    }
-                    LabeledContent("Control path", value: Self.describe(report.controlRoute))
-                    if !report.derpHome.isEmpty {
-                        LabeledContent("Relay region", value: report.derpHome)
-                    }
-                    LabeledContent("Peers online", value: "\(report.peersOnline) of \(report.peers)")
-                    ForEach(report.health, id: \.self) { warning in
-                        Text(warning)
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    }
-                } header: {
-                    Text("Connection")
-                } footer: {
-                    // Named explicitly because a device that never leaves the
-                    // relay still works, but depends on hosted infrastructure
-                    // for every session, and nothing else would show that.
-                    Text(report.controlRoute == .relay
-                        ? "Control traffic is going through Replycant's hosted relay instead of directly to your server."
-                        : "Your device reaches this library over its own private network.")
-                }
-            }
+        LabeledContent("Status") {
+            Text(report.isConnected ? "Connected" : report.backendState)
+                .foregroundStyle(report.isConnected ? Color.green : Color.orange)
         }
-        .task {
-            guard !hasLoaded else { return }
-            hasLoaded = true
-            report = await load()
+        if let address = report.tailnetIPs.first {
+            LabeledContent("Address", value: address)
         }
+        LabeledContent("Control path", value: Self.describe(report.controlRoute))
+        if !report.derpHome.isEmpty {
+            LabeledContent("Relay region", value: report.derpHome)
+        }
+        LabeledContent("Peers online", value: "\(report.peersOnline) of \(report.peers)")
+        ForEach(report.health, id: \.self) { warning in
+            Text(warning)
+                .font(.footnote)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Decides whether Settings inserts the Connection section at all.
+    ///
+    /// The load lives on Settings, which always has on-screen List
+    /// content, because a zero-height List child never runs `.task`.
+    static func presentation(
+        hasLoaded: Bool,
+        isConfigured: Bool,
+        report: TailnetStatusReport?
+    ) -> TailnetConnectionPresentation {
+        guard hasLoaded else { return .hidden }
+        if let report {
+            return .report(report)
+        }
+        return isConfigured ? .unavailable : .hidden
     }
 
     /// How the control path reads to a user.
-    private static func describe(_ route: HeadscaleControlShim.Route?) -> String {
+    static func describe(_ route: HeadscaleControlShim.Route?) -> String {
         switch route {
         case .tailnet: return "Direct"
         case .relay: return "Hosted relay"
         case nil: return "Not yet used"
         }
+    }
+
+    /// Named explicitly because a device that never leaves the relay
+    /// still works, but depends on hosted infrastructure for every
+    /// session, and nothing else would show that.
+    static func footer(for route: HeadscaleControlShim.Route?) -> String {
+        route == .relay
+            ? "Control traffic is going through Replycant's hosted relay instead of directly to your server."
+            : "Your device reaches this library over its own private network."
     }
 }

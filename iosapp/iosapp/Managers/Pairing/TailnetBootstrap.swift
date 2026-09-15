@@ -108,10 +108,19 @@ actor TailnetBootstrap {
 
     /// How this device is connected, or nil when there is no tailnet to
     /// describe - a LAN deployment, or a paired device whose node has not come
-    /// up yet.
+    /// up yet. Failures are logged rather than thrown so Settings can still
+    /// tell a configured device from a LAN install.
     func status() async -> TailnetStatusReport? {
         guard let manager else { return nil }
-        return try? await manager.status()
+        do {
+            return try await manager.status()
+        } catch {
+            logError(
+                "Failed to read tailnet status: \(error.localizedDescription)",
+                context: "Tailnet"
+            )
+            return nil
+        }
     }
 
     private func join(
