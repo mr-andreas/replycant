@@ -1,5 +1,4 @@
 import SwiftUI
-import LibGit2
 
 // Handles the Device A side of device linking: scan new device's public key, grant it access, and display connection QR.
 // This allows an existing configured device to authorize a new device by adding its public key to the pubkeys/ directory.
@@ -234,20 +233,21 @@ struct DeviceLinkingView: View {
                     scannedDeviceName = payload.name
                     scannedDeviceUUID = payload.uuid
                 }
-                
-                try await addDeviceKeyToRepository(pubkey: payload.pubkey, agePubkey: payload.agePubkey, name: payload.name, uuid: payload.uuid)
 
-                // After the key is committed and pushed, because the record
-                // carries a tailnet credential the new device will use
-                // immediately: authorizing it to reach a server that does not
-                // yet know its key would only fail the first clone.
-                if let secret = payload.pairingSecret {
-                    try await authorizeTailnetPairing(
-                        pairingSecret: secret,
-                        agePublicKey: payload.agePubkey
-                    )
+                // Grant work lives off this view so commit+push cannot
+                // inherit MainActor and freeze the processing screen.
+                try await DeviceLinking.grantAccess(
+                    pubkey: payload.pubkey,
+                    agePubkey: payload.agePubkey,
+                    name: payload.name,
+                    uuid: payload.uuid,
+                    pairingSecret: payload.pairingSecret
+                ) { message in
+                    Task { @MainActor in
+                        self.progressMessage = message
+                    }
                 }
-                
+
                 await MainActor.run {
                     isProcessing = false
                     progressMessage = "Access granted!"
@@ -257,7 +257,7 @@ struct DeviceLinkingView: View {
                         dismiss()
                     }
                 }
-                
+
             } catch {
                 await MainActor.run {
                     isProcessing = false
@@ -267,75 +267,7 @@ struct DeviceLinkingView: View {
             }
         }
     }
-    
-    // Adds both identity keys and re-wraps KEK epochs so the new device can decrypt all existing encrypted content.
-    private func addDeviceKeyToRepository(pubkey: String, agePubkey: String, name: String, uuid: String) async throws {
-        updateProgress("Ensuring mTLS is configured...")
-        try ensureMTLSTransportConfigured()
-        
-        updateProgress("Adding device key to repository...")
-        let repo = try RepositoryManager.shared.getRepository()
-        let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-        
-        // Create key file paths with UUID suffix.
-        let fileName = "\(name)-\(uuid).pub"
-        let pubkeyPath = "pubkeys/\(fileName)"
-        let ageFileName = "\(name)-\(uuid).age"
-        let agePath = "pubkeys/\(ageFileName)"
-        
-        log("Adding device key: \(pubkeyPath)", context: "DeviceLinking")
-        
-        // Collect all age recipients including the newly scanned key.
-        let existingRecipientAgePubkeys = try loadAgeRecipientKeys(repository: repo)
-        let allRecipientAgePubkeys = Array(Set(existingRecipientAgePubkeys + [agePubkey]))
-        let epochFiles = try KEKEpochManager(repository: repo).rewrappedEpochFilesIncludingRecipients(allRecipientAgePubkeys)
 
-        // Create commit with both key files and re-wrapped epochs.
-        var files: [(path: String, content: String)] = [
-            (path: pubkeyPath, content: pubkey),
-            (path: agePath, content: agePubkey)
-        ]
-        files.append(contentsOf: epochFiles)
-        try await gitDB.commitFiles(
-            message: "Add device key for \(name) (\(uuid))",
-            files: files
-        )
-        
-        updateProgress("Pushing to server...")
-        try await gitDB.push()
-        
-        log("Successfully added and pushed device key", context: "DeviceLinking")
-    }
-
-    // Asks the server to seal and publish a pairing record for the scanned
-    // device.
-    //
-    // The new device generated the secret, showed it in its QR, and is now
-    // polling the slot it derives from it. Only the server can answer, because
-    // only it can mint a tailnet credential, so this device's role is to relay
-    // the request over its own authenticated connection.
-    private func authorizeTailnetPairing(pairingSecret: String, agePublicKey: String) async throws {
-        updateProgress("Authorizing on your library's network...")
-
-        guard let serverURL = ServerConfigurationManager.shared.loadURL() else {
-            throw PairingAuthorization.AuthorizationError.invalidServerURL
-        }
-        try await PairingAuthorization.publish(
-            pairingSecret: pairingSecret,
-            agePublicKey: agePublicKey,
-            serverURL: serverURL,
-            session: try await PairingAuthorization.session()
-        )
-        log("Published pairing record for the scanned device", context: "DeviceLinking")
-    }
-
-    // Loads repository age public keys so epoch re-wrap includes every currently authorized device.
-    private func loadAgeRecipientKeys(repository: Repository) throws -> [String] {
-        let files = try repository.listFiles(in: "pubkeys")
-        let ageFiles = files.filter { $0.hasSuffix(".age") }
-        return try ageFiles.map { try repository.readFile(at: $0).trimmingCharacters(in: .whitespacesAndNewlines) }
-    }
-    
     // Builds the configuration QR code JSON containing server URL and CA certificate.
     private func buildConfigQRCode() -> String? {
         guard let config = ServerConfigurationManager.shared.loadConfiguration() else {
@@ -355,22 +287,6 @@ struct DeviceLinkingView: View {
         }
         
         return jsonString
-    }
-
-    // Ensures the mTLS transport is registered with libgit2 before network operations.
-    private func ensureMTLSTransportConfigured() throws {
-        guard let identity = ClientIdentityManager.shared.loadSecIdentity(),
-              let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
-            throw LinkingError.noMTLSCredentials
-        }
-        
-        try MTLSTransport.shared.configure(clientIdentity: identity, pinnedCA: pinnedCA)
-    }
-    
-    @MainActor
-    // Updates progress text on the main actor so linking state changes render consistently.
-    private func updateProgress(_ message: String) {
-        progressMessage = message
     }
 
     // Presents an invalid-QR alert and exits scanner flow to prevent ambiguous retry states.
@@ -397,18 +313,6 @@ enum LinkingStep {
         case .processing: return "Granting Access"
         case .showConfig: return ""
         case .error: return "Error"
-        }
-    }
-}
-
-private enum LinkingError: Error, LocalizedError {
-    case noMTLSCredentials
-    
-    // Provides actionable user-facing errors when linking cannot proceed.
-    var errorDescription: String? {
-        switch self {
-        case .noMTLSCredentials:
-            return "mTLS credentials not configured. Please complete initial setup first."
         }
     }
 }

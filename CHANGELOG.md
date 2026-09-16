@@ -23,6 +23,7 @@
 #### iOS app
 
 - setup and photo upload now say what they are doing instead of showing a silent spinner
+- linking a new device no longer freezes after the pairing QR is scanned
 
 #### Server
 
