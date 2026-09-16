@@ -12,6 +12,7 @@ private final class FakeNode: TailnetNodeProviding, @unchecked Sendable {
     let proxyHost: String
     let shouldFail: Bool
     private(set) var applyCount = 0
+    private(set) var cachedApplyCount = 0
     private(set) var shutDownCount = 0
 
     init(proxyHost: String = "127.0.0.1", shouldFail: Bool = false) {
@@ -25,6 +26,18 @@ private final class FakeNode: TailnetNodeProviding, @unchecked Sendable {
             throw TailnetManager.TailnetError.notJoined
         }
         configuration.connectionProxyDictionary = ["stubProxyHost": proxyHost]
+    }
+
+    // The production node captures SOCKS settings at join so libgit2
+    // callbacks never hop onto the actor. This stub writes the same dict
+    // apply() would, which is how tests prove the sync path skipped apply().
+    nonisolated func applyCachedProxy(to configuration: URLSessionConfiguration) -> Bool {
+        cachedApplyCount += 1
+        if shouldFail {
+            return false
+        }
+        configuration.connectionProxyDictionary = ["stubProxyHost": proxyHost]
+        return true
     }
 
     func addresses() async throws -> (ip4: String?, ip6: String?) {
@@ -112,6 +125,22 @@ struct TailnetSessionRouterTests {
             let applied = TailnetSessionRouter.shared.applySynchronously(to: configuration)
 
             #expect(applied == true)
+            #expect(configuration.connectionProxyDictionary?["stubProxyHost"] as? String == "127.0.0.1")
+        }
+    }
+
+    // User-initiated git fetch and User-interactive playback wait on this
+    // path. Calling async apply() from a default-QoS Task.detached is the
+    // priority inversion those stacks report, so the cache must be enough.
+    @Test func synchronousPathUsesTheCachedProxyWithoutCallingApply() async throws {
+        let node = FakeNode()
+        try await withRouter(node) {
+            let configuration = URLSessionConfiguration.default
+            let applied = TailnetSessionRouter.shared.applySynchronously(to: configuration)
+
+            #expect(applied == true)
+            #expect(node.applyCount == 0)
+            #expect(node.cachedApplyCount == 1)
             #expect(configuration.connectionProxyDictionary?["stubProxyHost"] as? String == "127.0.0.1")
         }
     }

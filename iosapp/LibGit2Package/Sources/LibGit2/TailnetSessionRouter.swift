@@ -74,9 +74,10 @@ public final class TailnetSessionRouter: @unchecked Sendable {
     /// Applies the proxy from a context that cannot await.
     ///
     /// libgit2 drives its subtransport through synchronous C callbacks, so the
-    /// session there has to be built without an await. Blocking is acceptable
-    /// because the work is a local loopback query against an already-running
-    /// node, not a network round trip.
+    /// session there has to be built without an await. The SOCKS settings were
+    /// captured when the node joined, so this is a dictionary copy rather than
+    /// a hop onto the node actor — waiting on that hop from a User-initiated
+    /// or User-interactive thread is a priority inversion.
     ///
     /// Returns whether a proxy was installed, so the caller can log a bypass
     /// rather than discovering it as an unresolvable hostname.
@@ -85,19 +86,6 @@ public final class TailnetSessionRouter: @unchecked Sendable {
         guard let node = currentNode else {
             return false
         }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var applied = false
-        Task.detached {
-            do {
-                try await node.apply(to: configuration)
-                applied = true
-            } catch {
-                applied = false
-            }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return applied
+        return node.applyCachedProxy(to: configuration)
     }
 }

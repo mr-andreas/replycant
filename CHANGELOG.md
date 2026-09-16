@@ -24,6 +24,7 @@
 
 - setup and photo upload now say what they are doing instead of showing a silent spinner
 - linking a new device no longer freezes after the pairing QR is scanned
+- git fetch and first video load no longer hitch while installing the tailnet proxy
 
 #### Server
 

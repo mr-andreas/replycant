@@ -44,6 +44,10 @@ public protocol TailnetNodeProviding: AnyObject, Sendable {
     /// Installs this node's SOCKS5 proxy on a session configuration.
     func apply(to configuration: URLSessionConfiguration) async throws
 
+    /// Copies SOCKS settings captured when the node came up, so libgit2
+    /// callbacks do not hop onto the node actor from a higher-QoS thread.
+    nonisolated func applyCachedProxy(to configuration: URLSessionConfiguration) -> Bool
+
     /// This node's tailnet addresses, for diagnostics.
     func addresses() async throws -> (ip4: String?, ip6: String?)
 
@@ -67,14 +71,21 @@ public protocol TailnetNodeProviding: AnyObject, Sendable {
 /// are already foreground-only `Task` work, so nothing regresses, but it does
 /// mean joining is part of app startup rather than a one-time setup step.
 public actor TailnetManager: TailnetNodeProviding {
+    /// Failures a caller can act on: no node yet, missing identity, or a
+    /// control plane / proxy that came up too incomplete to carry traffic.
     public enum TailnetError: Error, Equatable {
         case notJoined
         case missingCredentials
         case controlPlaneUnavailable(String)
+        /// Join reached a live node that still could not hand out SOCKS
+        /// settings, so later sessions would have no way to reach gitd.
+        case missingProxy
     }
 
     private let stateDirectory: URL
     private let logger: (@Sendable (String) -> Void)?
+    /// SOCKS settings captured at join so C callbacks never wait on this actor.
+    private let proxyCache = ProxyConfigurationCache()
 
     private var shim: HeadscaleControlShim?
     private var node: TailscaleNode?
@@ -154,6 +165,17 @@ public actor TailnetManager: TailnetNodeProviding {
 
         await installTailnetControlRoute(on: shim, request: request)
 
+        do {
+            guard let node else {
+                throw TailnetError.notJoined
+            }
+            try await snapshotProxy(from: node)
+        } catch {
+            logger?("tailnet: SOCKS proxy snapshot failed: \(error)")
+            await shutDown()
+            throw error
+        }
+
         isJoined = true
         logger?("tailnet: joined as \(request.hostName) via \(request.headscaleHost)")
         onProgress?("Connected to your library's network")
@@ -214,6 +236,45 @@ public actor TailnetManager: TailnetNodeProviding {
         try await configuration.proxyVia(node)
     }
 
+    /// Copies SOCKS settings captured at join so C callbacks do not wait on
+    /// this actor from a higher-QoS thread.
+    nonisolated public func applyCachedProxy(to configuration: URLSessionConfiguration) -> Bool {
+        proxyCache.apply(to: configuration)
+    }
+
+    /// Reads the SOCKS settings TailscaleKit installs.
+    ///
+    /// `proxyVia` writes `proxyConfigurations` and leaves the older
+    /// `connectionProxyDictionary` empty. Treating that empty dictionary as
+    /// a failed join tore the node down on every launch after the first.
+    static func capturedProxyConfigurations(
+        from configuration: URLSessionConfiguration
+    ) -> [ProxyConfiguration]? {
+        let configurations = configuration.proxyConfigurations
+        return configurations.isEmpty ? nil : configurations
+    }
+
+    /// Installs a previously captured SOCKS proxy on a later session.
+    static func applyCapturedProxy(
+        _ configurations: [ProxyConfiguration],
+        to configuration: URLSessionConfiguration
+    ) -> Bool {
+        guard !configurations.isEmpty else { return false }
+        configuration.proxyConfigurations = configurations
+        return true
+    }
+
+    /// Captures the node's SOCKS settings so later libgit2 and AVFoundation
+    /// sessions can install the proxy without an actor hop.
+    private func snapshotProxy(from node: TailscaleNode) async throws {
+        let probe = URLSessionConfiguration.ephemeral
+        try await probe.proxyVia(node)
+        guard let configurations = Self.capturedProxyConfigurations(from: probe) else {
+            throw TailnetError.missingProxy
+        }
+        proxyCache.store(configurations)
+    }
+
     public func addresses() async throws -> (ip4: String?, ip6: String?) {
         guard let node else {
             throw TailnetError.notJoined
@@ -256,10 +317,36 @@ public actor TailnetManager: TailnetNodeProviding {
             }
         }
         node = nil
+        proxyCache.store(nil)
 
         shim?.stop()
         shim = nil
         isJoined = false
+    }
+}
+
+/// Holds SOCKS settings captured when the node came up so libgit2 callbacks
+/// can install the proxy without hopping onto the node actor from a higher-QoS
+/// thread.
+private final class ProxyConfigurationCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var configurations: [ProxyConfiguration]?
+
+    /// Replaces the snapshot used by later synchronous session builds.
+    func store(_ configurations: [ProxyConfiguration]?) {
+        lock.lock()
+        self.configurations = configurations
+        lock.unlock()
+    }
+
+    /// Copies the snapshot onto a configuration, or reports that join never
+    /// produced one so the caller can refuse to dial directly.
+    func apply(to configuration: URLSessionConfiguration) -> Bool {
+        lock.lock()
+        let configurations = self.configurations
+        lock.unlock()
+        guard let configurations else { return false }
+        return TailnetManager.applyCapturedProxy(configurations, to: configuration)
     }
 }
 
