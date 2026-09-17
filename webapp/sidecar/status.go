@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/types/key"
 )
 
 // Event types on stdout. Electron reads stdout as a stream of these rather
@@ -57,6 +60,12 @@ type statusEvent struct {
 	// the relay is a deployment problem with no other visible symptom.
 	ControlRoute string `json:"control_route"`
 
+	// How Git and LFS currently reach gitd. Distinct from ControlRoute: that
+	// hop is the shim's path to headscale, and a device on the hosted relay
+	// can still have a direct WireGuard path to the server.
+	ServerPath  string `json:"server_path,omitempty"`
+	ServerRelay string `json:"server_relay,omitempty"`
+
 	Peers       int `json:"peers"`
 	PeersOnline int `json:"peers_online"`
 
@@ -102,7 +111,46 @@ func newStatusEvent(status *ipnstate.Status, route string, queryErr error) statu
 			event.PeersOnline++
 		}
 	}
+	event.ServerPath, event.ServerRelay = serverPath(status.Peer)
 	return event
+}
+
+// Picks the gitd peer out of the map so the panel can show that hop
+// rather than an aggregate that mixes phones and the server.
+func serverPath(peers map[key.NodePublic]*ipnstate.PeerStatus) (path, relay string) {
+	peer := findGitd(peers)
+	if peer == nil {
+		return "", ""
+	}
+	if !peer.Online {
+		return "offline", ""
+	}
+	if peer.CurAddr != "" {
+		return "direct", ""
+	}
+	if peer.Relay != "" {
+		return "relay", peer.Relay
+	}
+	return "", ""
+}
+
+// Matches the pinned MagicDNS name, or the short hostname when a
+// payload omits DNSName. Either handle has to find gitd or a LAN
+// device would hide a path it actually has.
+func findGitd(peers map[key.NodePublic]*ipnstate.PeerStatus) *ipnstate.PeerStatus {
+	for _, peer := range peers {
+		if peer == nil {
+			continue
+		}
+		dns := strings.Trim(peer.DNSName, ".")
+		if strings.EqualFold(dns, tailnetaddr.GitdHost) {
+			return peer
+		}
+		if strings.EqualFold(peer.HostName, "gitd") {
+			return peer
+		}
+	}
+	return nil
 }
 
 // Where a status snapshot comes from.

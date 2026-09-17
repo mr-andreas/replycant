@@ -25,7 +25,7 @@ func runningStatus() *ipnstate.Status {
 		},
 		Self: &ipnstate.PeerStatus{Relay: "fra"},
 		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
-			key.NewNode().Public(): {HostName: "gitd", Online: true},
+			key.NewNode().Public(): {HostName: "gitd", DNSName: "gitd.replycant.internal.", Online: true, CurAddr: "192.0.2.10:41641"},
 			key.NewNode().Public(): {HostName: "phone", Online: false},
 		},
 	}
@@ -51,6 +51,76 @@ func TestStatusReportsWhatTheUserNeedsToTellFailuresApart(t *testing.T) {
 	}
 	if event.Peers != 2 || event.PeersOnline != 1 {
 		t.Errorf("peers = %d, online = %d", event.Peers, event.PeersOnline)
+	}
+	if event.ServerPath != "direct" {
+		t.Errorf("server path = %q, want direct", event.ServerPath)
+	}
+}
+
+// Control path and server path are different hops. A device on the hosted
+// relay can still have a direct WireGuard path to gitd, and the panel is
+// the only place that distinction is visible.
+func TestStatusReportsADirectPathWhenGitdHasACurrentAddress(t *testing.T) {
+	event := newStatusEvent(runningStatus(), "relay", nil)
+	if event.ServerPath != "direct" {
+		t.Errorf("server path = %q, want direct", event.ServerPath)
+	}
+	if event.ServerRelay != "" {
+		t.Errorf("server relay = %q, want empty on a direct path", event.ServerRelay)
+	}
+}
+
+// Empty CurAddr with a Relay region is Tailscale's DERP hop, not
+// Replycant's hosted tunnel. Showing the region is what keeps "hel"
+// from being read as the control-path hosted relay.
+func TestStatusReportsARelayPathWhenGitdHasNoCurrentAddress(t *testing.T) {
+	status := runningStatus()
+	for _, peer := range status.Peer {
+		if peer.HostName == "gitd" {
+			peer.CurAddr = ""
+			peer.Relay = "hel"
+		}
+	}
+
+	event := newStatusEvent(status, "tailnet", nil)
+	if event.ServerPath != "relay" {
+		t.Errorf("server path = %q, want relay", event.ServerPath)
+	}
+	if event.ServerRelay != "hel" {
+		t.Errorf("server relay = %q, want hel", event.ServerRelay)
+	}
+}
+
+// gitd being present but offline is the case the panel exists for: the
+// device is on the tailnet and the server is down.
+func TestStatusReportsOfflineWhenGitdIsNotOnline(t *testing.T) {
+	status := runningStatus()
+	for _, peer := range status.Peer {
+		if peer.HostName == "gitd" {
+			peer.Online = false
+			peer.Relay = "hel"
+		}
+	}
+
+	event := newStatusEvent(status, "tailnet", nil)
+	if event.ServerPath != "offline" {
+		t.Errorf("server path = %q, want offline", event.ServerPath)
+	}
+}
+
+// Status is read before peers appear. Claiming a path to a server that
+// has not been seen would be a guess.
+func TestStatusHidesTheServerPathWhenGitdIsMissing(t *testing.T) {
+	status := runningStatus()
+	for id, peer := range status.Peer {
+		if peer.HostName == "gitd" {
+			delete(status.Peer, id)
+		}
+	}
+
+	event := newStatusEvent(status, "tailnet", nil)
+	if event.ServerPath != "" {
+		t.Errorf("server path = %q, want empty", event.ServerPath)
 	}
 }
 

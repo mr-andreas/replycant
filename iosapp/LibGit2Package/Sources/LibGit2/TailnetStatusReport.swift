@@ -25,6 +25,23 @@ public struct TailnetStatusReport: Sendable, Equatable {
     /// other visible symptom.
     public let controlRoute: HeadscaleControlShim.Route?
 
+    /// How Git and LFS currently reach gitd, or nil before that peer appears.
+    ///
+    /// Distinct from `controlRoute`: that hop is the shim's path to headscale,
+    /// and a device on the hosted relay can still have a direct WireGuard
+    /// path to the server. This is the row that makes those distinguishable.
+    public let serverPath: ServerPath?
+
+    /// How this device reaches gitd over the tailnet.
+    ///
+    /// Worth its own type so Settings can name Tailscale DERP without
+    /// reusing the control path's "Hosted relay" wording.
+    public enum ServerPath: Equatable, Sendable {
+        case direct
+        case relay(region: String)
+        case offline
+    }
+
     public let peers: Int
     public let peersOnline: Int
 
@@ -46,7 +63,10 @@ public struct TailnetStatusReport: Sendable, Equatable {
     /// Keys are capitalised because that is what tailscale's local API emits.
     private struct Wire: Decodable {
         struct Peer: Decodable {
+            let HostName: String?
+            let DNSName: String?
             let Online: Bool?
+            let CurAddr: String?
             let Relay: String?
         }
 
@@ -75,9 +95,48 @@ public struct TailnetStatusReport: Sendable, Equatable {
             tailnetIPs: wire.TailscaleIPs ?? [],
             derpHome: wire.`Self`?.Relay ?? "",
             controlRoute: controlRoute,
+            serverPath: Self.serverPath(in: peers),
             peers: peers.count,
             peersOnline: peers.values.filter { $0.Online == true }.count,
             health: wire.Health ?? []
         )
+    }
+
+    /// Picks the gitd peer out of the map so Settings can show that hop
+    /// rather than an aggregate that mixes phones and the server.
+    private static func serverPath(in peers: [String: Wire.Peer]) -> ServerPath? {
+        guard let peer = peers.values.first(where: isGitd) else {
+            return nil
+        }
+        return classify(peer)
+    }
+
+    /// Matches the pinned MagicDNS name, or the short hostname when a
+    /// payload omits DNSName. Either handle has to find gitd or a LAN
+    /// device would hide a path it actually has.
+    private static func isGitd(_ peer: Wire.Peer) -> Bool {
+        if let dns = peer.DNSName {
+            let name = dns.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            if name.caseInsensitiveCompare(TailnetManager.gitdHost) == .orderedSame {
+                return true
+            }
+        }
+        return peer.HostName?.caseInsensitiveCompare("gitd") == .orderedSame
+    }
+
+    /// Follows Tailscale's own direct-vs-DERP rule without requiring an
+    /// active session, because status is polled and sessions go idle
+    /// between syncs.
+    private static func classify(_ peer: Wire.Peer) -> ServerPath? {
+        if peer.Online != true {
+            return .offline
+        }
+        if let address = peer.CurAddr, !address.isEmpty {
+            return .direct
+        }
+        if let region = peer.Relay, !region.isEmpty {
+            return .relay(region: region)
+        }
+        return nil
     }
 }

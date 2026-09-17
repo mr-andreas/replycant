@@ -8,6 +8,8 @@ const runningStatus: TailnetStatus = {
   tailnetIps: ["100.64.0.2"],
   derpHome: "fra",
   controlRoute: "tailnet",
+  serverPath: "direct",
+  serverRelay: "",
   peers: 2,
   peersOnline: 1,
   health: [],

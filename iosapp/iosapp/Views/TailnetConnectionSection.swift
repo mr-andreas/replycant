@@ -31,6 +31,9 @@ struct TailnetConnectionSection: View {
             LabeledContent("Address", value: address)
         }
         LabeledContent("Control path", value: Self.describe(report.controlRoute))
+        if let path = report.serverPath {
+            LabeledContent("Server path", value: Self.describe(path))
+        }
         if !report.derpHome.isEmpty {
             LabeledContent("Relay region", value: report.derpHome)
         }
@@ -64,6 +67,19 @@ struct TailnetConnectionSection: View {
         case .tailnet: return "Direct"
         case .relay: return "Hosted relay"
         case nil: return "Not yet used"
+        }
+    }
+
+    /// How the path to gitd reads to a user.
+    ///
+    /// Named without "hosted" so Tailscale DERP is not mistaken for the
+    /// control-plane tunnel. The region is what makes "hel" distinct.
+    static func describe(_ path: TailnetStatusReport.ServerPath) -> String {
+        switch path {
+        case .direct: return "Direct"
+        case .relay(let region):
+            return region.isEmpty ? "Relay" : "Relay (\(region))"
+        case .offline: return "Offline"
         }
     }
 

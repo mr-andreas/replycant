@@ -307,6 +307,8 @@ describe("startTailnetSidecar", () => {
       tailnetIps: ["100.64.0.2"],
       derpHome: "fra",
       controlRoute: "tailnet",
+      serverPath: "",
+      serverRelay: "",
       peers: 2,
       peersOnline: 1,
       health: [],
@@ -340,6 +342,29 @@ describe("startTailnetSidecar", () => {
 
     expect(seen[0]?.health).toEqual(["DERP region fra is unreachable"]);
     expect(seen[0]?.lastError).toBe("node is not answering");
+
+    await sidecar.stop();
+  });
+
+  // Server path is the hop the panel exists to name. Dropping it here would
+  // leave the renderer unable to tell a direct WireGuard path from DERP.
+  it("forwards the path to gitd", async () => {
+    const child = new FakeSidecarProcess();
+    const seen: TailnetStatus[] = [];
+    const starting = startTailnetSidecar({
+      binaryPath: "/opt/replycant/replycant-tsnet",
+      config,
+      onStatus: (status) => seen.push(status),
+      spawnFn: makeSpawn(child),
+    });
+    child.announceReady();
+    const sidecar = await starting;
+
+    child.emitStatus({ server_path: "relay", server_relay: "hel" });
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+
+    expect(seen[0]?.serverPath).toBe("relay");
+    expect(seen[0]?.serverRelay).toBe("hel");
 
     await sidecar.stop();
   });

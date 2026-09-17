@@ -10,6 +10,8 @@ const connected = {
     tailnetIps: ["100.64.0.2"],
     derpHome: "fra",
     controlRoute: "tailnet",
+    serverPath: "direct",
+    serverRelay: "",
     peers: 2,
     peersOnline: 1,
     health: [] as string[],
@@ -45,7 +47,22 @@ describe("TailnetStatusPanel", () => {
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("100.64.0.2")).toBeInTheDocument();
     expect(screen.getByText(/Direct \(tailnet\)/)).toBeInTheDocument();
+    expect(screen.getByText("Direct")).toBeInTheDocument();
     expect(screen.getByText("fra")).toBeInTheDocument();
+  });
+
+  // Server path must not reuse Control path's "Hosted relay" wording.
+  // That hop is Replycant's tunnel to headscale; this one is Tailscale
+  // DERP to gitd, and the region is what makes them distinguishable.
+  it("names the path to gitd without calling it the hosted relay", async () => {
+    installBridge({
+      running: true,
+      status: { ...connected.status, serverPath: "relay", serverRelay: "hel" },
+    });
+    render(<TailnetStatusPanel />);
+
+    expect(await screen.findByText("Relay (hel)")).toBeInTheDocument();
+    expect(screen.queryByText("Hosted relay")).not.toBeInTheDocument();
   });
 
   // A device that never gets off the relay is a deployment problem with no

@@ -12,11 +12,11 @@
 
 #### iOS app
 
-- show how this device reaches the library — connected or not, which control path it is using, and whether peers are online — in Settings
+- show how this device reaches the library — connected or not, which control path it is using, whether the server is reached directly or through a relay, and whether peers are online — in Settings
 
 #### Desktop app
 
-- show how this device reaches the library — connected or not, which control path it is using, and whether peers are online — in the settings pane
+- show how this device reaches the library — connected or not, which control path it is using, whether the server is reached directly or through a relay, and whether peers are online — in the settings pane
 
 ### Fixes
 

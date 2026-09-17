@@ -73,4 +73,13 @@ struct TailnetConnectionSectionTests {
             ) == .unavailable
         )
     }
+
+    // Server path must not reuse Control path's "Hosted relay" wording.
+    // That hop is Replycant's tunnel to headscale; this one is Tailscale
+    // DERP to gitd, and the region is what makes them distinguishable.
+    @Test func namesTheServerPathWithoutCallingItTheHostedRelay() {
+        #expect(TailnetConnectionSection.describe(.direct) == "Direct")
+        #expect(TailnetConnectionSection.describe(.relay(region: "hel")) == "Relay (hel)")
+        #expect(TailnetConnectionSection.describe(.offline) == "Offline")
+    }
 }

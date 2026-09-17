@@ -48,6 +48,11 @@ export interface TailnetStatus {
   // permanently on the relay is a deployment problem with no other symptom.
   controlRoute: string;
 
+  // How Git and LFS currently reach gitd. Distinct from controlRoute: that
+  // hop is the shim's path to headscale.
+  serverPath: string;
+  serverRelay: string;
+
   peers: number;
   peersOnline: number;
 
@@ -109,6 +114,8 @@ interface StatusMessage {
   tailnet_ips?: string[];
   derp_home?: string;
   control_route?: string;
+  server_path?: string;
+  server_relay?: string;
   peers?: number;
   peers_online?: number;
   health?: string[];
@@ -161,6 +168,8 @@ const toTailnetStatus = (event: { type?: unknown }): TailnetStatus => {
     tailnetIps: Array.isArray(message.tailnet_ips) ? message.tailnet_ips : [],
     derpHome: typeof message.derp_home === "string" ? message.derp_home : "",
     controlRoute: typeof message.control_route === "string" ? message.control_route : "",
+    serverPath: typeof message.server_path === "string" ? message.server_path : "",
+    serverRelay: typeof message.server_relay === "string" ? message.server_relay : "",
     peers: typeof message.peers === "number" ? message.peers : 0,
     peersOnline: typeof message.peers_online === "number" ? message.peers_online : 0,
     health: Array.isArray(message.health) ? message.health : [],

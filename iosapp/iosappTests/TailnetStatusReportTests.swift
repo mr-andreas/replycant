@@ -14,9 +14,23 @@ struct TailnetStatusReportTests {
     // capitalised keys and the "Self" key that Swift needs backticks for.
     private static func statusJSON(
         backendState: String = "Running",
-        extra: String = ""
+        extra: String = "",
+        gitdPeer: String? = """
+              "ID": "n1",
+              "HostName": "gitd",
+              "DNSName": "gitd.replycant.internal.",
+              "Online": true,
+              "CurAddr": "192.0.2.10:41641",
+              "ExitNode": false,
+              "ExitNodeOption": false
+        """
     ) -> Data {
-        Data("""
+        let gitdEntry = gitdPeer.map { """
+            "nodekey:aaa": {
+        \($0)
+            },
+        """ } ?? ""
+        return Data("""
         {
           "Version": "1.102.3",
           "BackendState": "\(backendState)",
@@ -32,14 +46,7 @@ struct TailnetStatusReportTests {
             "ExitNodeOption": false
           },
           "Peer": {
-            "nodekey:aaa": {
-              "ID": "n1",
-              "HostName": "gitd",
-              "DNSName": "gitd.replycant.internal.",
-              "Online": true,
-              "ExitNode": false,
-              "ExitNodeOption": false
-            },
+            \(gitdEntry)
             "nodekey:bbb": {
               "ID": "n2",
               "HostName": "desktop",
@@ -60,8 +67,72 @@ struct TailnetStatusReportTests {
         #expect(report.backendState == "Running")
         #expect(report.tailnetIPs == ["100.64.0.2", "fd7a:115c:a1e0::2"])
         #expect(report.derpHome == "fra")
+        #expect(report.serverPath == .direct)
         #expect(report.peers == 2)
         #expect(report.peersOnline == 1)
+    }
+
+    // Control path and server path are different hops. A device on the hosted
+    // relay can still have a direct WireGuard path to gitd, and the Settings
+    // row is the only place that distinction is visible.
+    @Test func reportsADirectPathWhenGitdHasACurrentAddress() throws {
+        #expect(try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .relay)
+            .serverPath == .direct)
+    }
+
+    // Empty CurAddr with a Relay region is Tailscale's DERP hop, not
+    // Replycant's hosted tunnel. Showing the region is what keeps "hel" from
+    // being read as the control-path hosted relay.
+    @Test func reportsARelayPathWhenGitdHasNoCurrentAddress() throws {
+        let json = Self.statusJSON(gitdPeer: """
+              "ID": "n1",
+              "HostName": "gitd",
+              "DNSName": "gitd.replycant.internal.",
+              "Online": true,
+              "Relay": "hel"
+        """)
+
+        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+            .serverPath == .relay(region: "hel"))
+    }
+
+    // gitd being present but offline is the case the panel exists for: the
+    // device is on the tailnet and the server is down.
+    @Test func reportsOfflineWhenGitdIsNotOnline() throws {
+        let json = Self.statusJSON(gitdPeer: """
+              "ID": "n1",
+              "HostName": "gitd",
+              "DNSName": "gitd.replycant.internal.",
+              "Online": false,
+              "Relay": "hel"
+        """)
+
+        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+            .serverPath == .offline)
+    }
+
+    // Status is read before peers appear. Claiming a path to a server that
+    // has not been seen would be a guess.
+    @Test func hidesTheServerPathWhenGitdIsMissing() throws {
+        #expect(try TailnetStatusReport.decode(
+            Self.statusJSON(gitdPeer: nil),
+            controlRoute: .tailnet
+        ).serverPath == nil)
+    }
+
+    // MagicDNS is the pinned name, but some status payloads only carry the
+    // short hostname. Either handle has to find gitd, or a LAN device would
+    // hide a path it actually has.
+    @Test func findsGitdByHostnameWhenDNSNameIsAbsent() throws {
+        let json = Self.statusJSON(gitdPeer: """
+              "ID": "n1",
+              "HostName": "gitd",
+              "Online": true,
+              "CurAddr": "192.0.2.10:41641"
+        """)
+
+        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+            .serverPath == .direct)
     }
 
     // Only Running means traffic can flow, and a section claiming a connection
@@ -115,6 +186,7 @@ struct TailnetStatusReportTests {
         #expect(report.backendState == "Starting")
         #expect(report.tailnetIPs.isEmpty)
         #expect(report.derpHome == "")
+        #expect(report.serverPath == nil)
         #expect(report.peers == 0)
         #expect(report.health.isEmpty)
     }
