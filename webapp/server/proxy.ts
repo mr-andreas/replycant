@@ -98,11 +98,15 @@ const buildMtlsAgentKey = (
 
 // Builds the SOCKS5 URL the agent dials through.
 //
+// socks5h, not socks5: gitd.replycant.internal exists only in the sidecar's
+// MagicDNS. socks5:// would resolve on the host and 502 with ENOTFOUND
+// before the CONNECT is even sent.
+//
 // Credentials are per-sidecar-run and loopback-only, but they are still
 // credentials: tsnet requires them, and without them the proxy refuses the
 // connection.
 const buildSocksUrl = ({ socksAddr, socksUsername, socksPassword }: TailnetProxy): string =>
-  `socks5://${encodeURIComponent(socksUsername)}:${encodeURIComponent(socksPassword)}@${socksAddr}`;
+  `socks5h://${encodeURIComponent(socksUsername)}:${encodeURIComponent(socksPassword)}@${socksAddr}`;
 
 // Maintains a small LRU of upstream TLS agents so the proxy can reuse sockets safely.
 export const createMtlsAgentPool = ({

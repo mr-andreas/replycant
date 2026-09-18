@@ -22,8 +22,9 @@ export interface StartDesktopServerOptions {
   //
   // A getter rather than a value because the tsnet sidecar comes up after this
   // server does, and can be restarted underneath it. Omitting it keeps the
-  // server dialling directly, which is what the dev server and LAN-only
-  // deployments need.
+  // server dialling directly, which is what browser `npm run dev` and LAN-only
+  // deployments need. desktop:dev and the packaged app both pass this so
+  // gitd.replycant.internal is reached through the sidecar.
   getTailnetProxy?: () => TailnetProxy | undefined;
 }
 

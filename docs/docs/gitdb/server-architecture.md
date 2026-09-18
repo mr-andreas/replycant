@@ -263,6 +263,8 @@ host:
 
 - Vite development middleware for browser-based webapp development
 - Electron desktop server for packaged desktop runtime
+- `desktop:dev` still serves the UI from Vite, but proxies `/api` through
+  Electron so the tailnet SOCKS pool is used
 
 `--git-base-url` and CA certificate flags remain optional for onboarding. The
 API app can boot unconfigured and receive runtime setup from the browser

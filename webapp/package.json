@@ -17,7 +17,7 @@
     "desktop:dist:mac": "npm run desktop:build && electron-builder --mac --publish never && npm run desktop:notarize:dmg",
     "desktop:notarize:dmg": "bash -lc 'set -euo pipefail; shopt -s nullglob; dmgs=(release/*.dmg); if [ ${#dmgs[@]} -eq 0 ]; then echo \"No DMG artifacts found in release/\"; exit 1; fi; for dmg in \"${dmgs[@]}\"; do xcrun notarytool submit \"$dmg\" --key \"$APPLE_API_KEY\" --key-id \"$APPLE_API_KEY_ID\" --issuer \"$APPLE_API_ISSUER\" --wait; xcrun stapler staple \"$dmg\"; done'",
     "desktop:dist:win": "npm run desktop:build && electron-builder --win --publish never",
-    "desktop:dev": "concurrently -k -n web,desktop \"cross-env VITE_PORT=5180 vite --strictPort\" \"wait-on tcp:5180 && npm run build:desktop:runtime && npm run build:sidecar && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5180 electron --no-sandbox dist-electron/dev-main.js\"",
+    "desktop:dev": "concurrently -k -n web,desktop \"cross-env VITE_PORT=5180 REPLYCANT_DESKTOP_API=http://127.0.0.1:5181 vite --strictPort\" \"wait-on tcp:5180 && npm run build:desktop:runtime && npm run build:sidecar && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5180 REPLYCANT_DESKTOP_API=http://127.0.0.1:5181 electron --no-sandbox dist-electron/dev-main.js\"",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

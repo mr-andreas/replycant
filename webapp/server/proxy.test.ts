@@ -133,6 +133,28 @@ describe("createMtlsAgentPool", () => {
     }
   });
 
+  // socks5:// resolves gitd.replycant.internal on the host, which has no
+  // MagicDNS. socks5h:// sends the name to the sidecar, which is the only
+  // resolver that can answer it.
+  it("leaves MagicDNS resolution to the sidecar", () => {
+    const pool = createMtlsAgentPool({
+      getTailnetProxy: () => ({
+        socksAddr: "127.0.0.1:41234",
+        socksUsername: "tsnet",
+        socksPassword: "deadbeef",
+      }),
+    });
+    try {
+      const agent = pool.acquire({
+        upstreamCa: "ca-a",
+        mtlsMaterial: materialA,
+      }) as SocksProxyAgent;
+      expect(agent.shouldLookup).toBe(false);
+    } finally {
+      pool.destroy();
+    }
+  });
+
   // The mTLS identity and CA pinning from ADR-0011/0013 must survive the move
   // onto the tailnet. The proxy carries ciphertext it cannot read, so the TLS
   // parameters have to be identical to the direct case.

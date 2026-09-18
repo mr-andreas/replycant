@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, shell } fr
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { URL } from "node:url";
+import { resolveDesktopApiListenPort, resolveDevApiMode } from "../server/devApi";
+import { DesktopServer, startDesktopServer } from "../server/desktopServer";
 import { registerIdentityKeyIpc } from "./registerIdentityKeyIpc";
 import { registerTailnetIpc } from "./registerTailnetIpc";
 import { createTailnetSupervisor, resolveSidecarPath, TailnetSupervisor } from "./tailnetSupervisor";
@@ -9,6 +11,7 @@ import { createTailnetSupervisor, resolveSidecarPath, TailnetSupervisor } from "
 const APP_NAME = "Replycant";
 
 let mainWindow: BrowserWindow | null = null;
+let desktopServer: DesktopServer | null = null;
 let tailnet: TailnetSupervisor | null = null;
 
 // Builds the renderer URL for local development where Vite hosts UI and proxies API routes.
@@ -85,11 +88,21 @@ const handleShutdownSignal = (): void => {
   app.quit();
 };
 
-app.on("before-quit", async () => {
+// Releases the API server before the sidecar so in-flight git and LFS
+// requests are not cut off by losing the SOCKS proxy underneath them.
+const stopDesktopServer = async (): Promise<void> => {
+  if (desktopServer) {
+    await desktopServer.close();
+    desktopServer = null;
+  }
   if (tailnet) {
     await tailnet.stop();
     tailnet = null;
   }
+};
+
+app.on("before-quit", async () => {
+  await stopDesktopServer();
 });
 process.on("SIGINT", handleShutdownSignal);
 process.on("SIGTERM", handleShutdownSignal);
@@ -144,6 +157,17 @@ app.whenReady().then(async () => {
       }
     },
   });
+
+  // Vite still hosts the UI and HMR. When desktop:dev points `/api` here,
+  // this process has to own the proxy so it shares the sidecar SOCKS pool.
+  const devApi = resolveDevApiMode();
+  if (devApi.mode === "proxy") {
+    desktopServer = await startDesktopServer({
+      host: "127.0.0.1",
+      port: resolveDesktopApiListenPort(devApi.target),
+      getTailnetProxy: () => tailnet?.getProxy(),
+    });
+  }
   const lastPagePath = join(storeDir, "lastPage.json");
   ipcMain.on("lastPage:read", (event) => {
     try {
