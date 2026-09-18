@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createTailnetSupervisor, resolveSidecarPath } from "./tailnetSupervisor";
 import { TailnetSidecar, TailnetSidecarConfig, TailnetStatus } from "../server/tailnetSidecar";
@@ -54,8 +55,22 @@ describe("resolveSidecarPath", () => {
       projectRoot: "/src/webapp",
       packaged: false,
     });
-    expect(path).toContain("/src/webapp");
-    expect(path).toContain("sidecar");
+    expect(path).toContain("/src/webapp/sidecar/build/replycant-tsnet");
+    expect(path).not.toContain("dist-electron");
+  });
+
+  // desktop:dev launches `electron dist-electron/dev-main.js`, so
+  // app.getAppPath() is dist-electron. Callers must walk up to the webapp
+  // package root or the sidecar would be looked up next to the bundle.
+  it("does not look under dist-electron when given the compiled bundle dir", () => {
+    const projectRoot = resolve("/src/webapp/dist-electron", "..");
+    const path = resolveSidecarPath({
+      resourcesPath: "/unused",
+      projectRoot,
+      packaged: false,
+    });
+    expect(path).toContain("/src/webapp/sidecar/build/replycant-tsnet");
+    expect(path).not.toContain("dist-electron/sidecar");
   });
 
   // Windows spawn will not find an extensionless file, and electron-builder

@@ -124,7 +124,10 @@ app.whenReady().then(async () => {
   tailnet = createTailnetSupervisor({
     binaryPath: resolveSidecarPath({
       resourcesPath: process.resourcesPath,
-      projectRoot: app.getAppPath(),
+      // app.getAppPath() is dist-electron when launched as
+      // `electron dist-electron/dev-main.js`. The sidecar lives next to
+      // the webapp package, one level above this compiled bundle.
+      projectRoot: resolve(import.meta.dirname, ".."),
       packaged: app.isPackaged,
     }),
     logf: (message) => console.log(message),

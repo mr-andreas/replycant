@@ -16,8 +16,8 @@ export interface ResolveSidecarPathOptions {
   // Where electron-builder unpacks `extraResources` in a packaged app.
   resourcesPath: string;
 
-  // The repository root when running unpackaged, so `npm run desktop:dev`
-  // picks up a locally built binary instead of failing.
+  // The webapp package root when running unpackaged, so
+  // `npm run desktop:dev` picks up the binary from sidecar/build.
   projectRoot: string;
 
   packaged: boolean;
@@ -28,7 +28,7 @@ export interface ResolveSidecarPathOptions {
 // This is the first native executable the desktop app has ever shipped, so the
 // packaged and unpackaged layouts genuinely differ: electron-builder places
 // `extraResources` under `process.resourcesPath`, while a development build has
-// only whatever `make webapp-sidecar` produced in the source tree.
+// only whatever `npm run build:sidecar` produced in the source tree.
 export const resolveSidecarPath = ({
   resourcesPath,
   projectRoot,
