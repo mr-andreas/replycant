@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -22,28 +19,30 @@ import (
 // TestNormalizeCloneOptions ensures CLI clone input validation fails fast on invalid arguments.
 func TestNormalizeCloneOptions(t *testing.T) {
 	t.Parallel()
-	_, err := NormalizeCloneOptions(CloneOptions{})
+	_, err := NormalizeCloneOptions(CloneOptions{DiscoveryURL: "not-a-url"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "server URL is required")
-
-	_, err = NormalizeCloneOptions(CloneOptions{ServerURL: "not-a-url"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid server URL")
+	assert.Contains(t, err.Error(), "invalid discovery URL")
 
 	_, err = NormalizeCloneOptions(CloneOptions{
-		ServerURL: "http://127.0.0.1:8080",
-		Bare:      true,
-		NoLFS:     false,
+		DiscoveryURL: "https://discovery.replycant.com",
+		QRAddr:       "0.0.0.0:0",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loopback")
+
+	_, err = NormalizeCloneOptions(CloneOptions{
+		DiscoveryURL: "https://discovery.replycant.com",
+		Bare:         true,
+		NoLFS:        false,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--bare requires --no-lfs")
 
-	opts, err := NormalizeCloneOptions(CloneOptions{
-		ServerURL:  " http://127.0.0.1:8080 ",
-		DeviceName: " test ",
-	})
+	opts, err := NormalizeCloneOptions(CloneOptions{DeviceName: " test "})
 	require.NoError(t, err)
-	assert.Equal(t, "http://127.0.0.1:8080", opts.ServerURL)
+	assert.Equal(t, defaultDiscoveryURL, opts.DiscoveryURL)
+	assert.Equal(t, defaultQRAddr, opts.QRAddr)
+	assert.Equal(t, defaultCloneDirectory, opts.Directory)
 	assert.Equal(t, "test", opts.DeviceName)
 }
 
@@ -96,34 +95,6 @@ func TestWriteCAToRepoReplycantDir(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
-// TestDiscoverServerConfig ensures clone discovery reads the same config contract used by browser onboarding.
-func TestDiscoverServerConfig(t *testing.T) {
-	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(DiscoveredServerConfig{
-			CA:  "pem",
-			URL: "https://git.example.test/repo.git",
-		})
-	}))
-	defer server.Close()
-
-	config, err := DiscoverServerConfig(server.URL)
-	require.NoError(t, err)
-	assert.Equal(t, "pem", config.CA)
-	assert.Equal(t, "https://git.example.test/repo.git", config.URL)
-}
-
-// TestBuildDiscoveryHTTPClientUsesMDNSDial ensures clone config discovery can resolve `.local` hosts.
-func TestBuildDiscoveryHTTPClientUsesMDNSDial(t *testing.T) {
-	t.Parallel()
-	client := buildDiscoveryHTTPClient()
-	require.NotNil(t, client)
-	transport, ok := client.Transport.(*http.Transport)
-	require.True(t, ok)
-	require.NotNil(t, transport.DialContext)
-}
-
 // TestDeriveLFSURL ensures clone setup always places LFS on the git origin using the /lfs route.
 func TestDeriveLFSURL(t *testing.T) {
 	t.Parallel()
@@ -150,15 +121,13 @@ func TestDeriveLFSURL(t *testing.T) {
 func TestStartQRServerReachability(t *testing.T) {
 	t.Parallel()
 
-	server, baseURL, err := StartQRServer("qr-payload")
+	server, baseURL, err := StartQRServer("qr-payload", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer server.Close()
 
 	parsedBaseURL, err := url.Parse(baseURL)
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1", parsedBaseURL.Hostname())
-	port := parsedBaseURL.Port()
-	require.NotEmpty(t, port)
 
 	resp, err := http.Get(baseURL)
 	require.NoError(t, err)
@@ -170,37 +139,18 @@ func TestStartQRServerReachability(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "Scan this QR code with the Replycant iOS app.")
 
-	bindAddr := chooseReachableBindAddress(t)
-	if bindAddr == "" {
-		t.Skip("no non-loopback IPv4 address available")
-	}
-	bindURL := "http://" + net.JoinHostPort(bindAddr, port)
-	bindResp, err := http.Get(bindURL)
+	payloadResp, err := http.Get(baseURL + "/payload.json")
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_ = bindResp.Body.Close()
+		_ = payloadResp.Body.Close()
 	})
-	assert.Equal(t, http.StatusOK, bindResp.StatusCode)
-}
-
-// chooseReachableBindAddress selects a non-loopback IPv4 address so tests can verify all-interface listeners.
-func chooseReachableBindAddress(t *testing.T) string {
-	t.Helper()
-
-	addrs, err := net.InterfaceAddrs()
+	payload, err := io.ReadAll(payloadResp.Body)
 	require.NoError(t, err)
-	for _, addr := range addrs {
-		ipNet, ok := addr.(*net.IPNet)
-		if !ok || ipNet.IP == nil {
-			continue
-		}
-		ip := ipNet.IP.To4()
-		if ip == nil || ip.IsLoopback() {
-			continue
-		}
-		return ip.String()
-	}
-	return ""
+	assert.Equal(t, "qr-payload", string(payload))
+
+	_, _, err = StartQRServer("qr-payload", "0.0.0.0:0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loopback")
 }
 
 // TestGitNonInteractiveEnv verifies clone-side git execution never prompts for credentials.
@@ -285,7 +235,7 @@ func TestInitializeRepository(t *testing.T) {
 	repoParent := t.TempDir()
 	target := filepath.Join(repoParent, "cloned")
 	repoURL := "https://example.com/repo.git"
-	repoDir, err := InitializeRepository(context.Background(), target, repoURL, "http://example.com:8080", false)
+	repoDir, err := InitializeRepository(context.Background(), target, repoURL, false)
 	require.NoError(t, err)
 	assert.Equal(t, target, repoDir)
 	assert.DirExists(t, filepath.Join(repoDir, ".git"))
@@ -300,7 +250,7 @@ func TestInitializeRepositoryRejectsExistingDirectory(t *testing.T) {
 	target := filepath.Join(repoParent, "cloned")
 	require.NoError(t, os.Mkdir(target, 0o755))
 
-	_, err := InitializeRepository(context.Background(), target, "https://example.com/repo.git", "http://example.com:8080", false)
+	_, err := InitializeRepository(context.Background(), target, "https://example.com/repo.git", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -310,7 +260,7 @@ func TestInitializeRepositoryBare(t *testing.T) {
 	repoParent := t.TempDir()
 	target := filepath.Join(repoParent, "cloned.git")
 	repoURL := "https://example.com/repo.git"
-	repoDir, err := InitializeRepository(context.Background(), target, repoURL, "http://example.com:8080", true)
+	repoDir, err := InitializeRepository(context.Background(), target, repoURL, true)
 	require.NoError(t, err)
 	assert.Equal(t, target, repoDir)
 	assert.DirExists(t, repoDir)

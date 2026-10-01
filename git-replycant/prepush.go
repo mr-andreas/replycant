@@ -291,7 +291,7 @@ func buildLFSHTTPClient(repoDir string) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return lfsclient.NewMTLSHTTPClient(caPath, certPath, keyPath)
+	return tailnetHTTPClient(repoDir, caPath, certPath, keyPath)
 }
 
 // gitConfigValue reads one local git config key and fails fast when clone bootstrap omitted required mTLS settings.

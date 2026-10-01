@@ -30,6 +30,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/mr-andreas/replycant/internal/gittest"
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/tailnetagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -71,8 +72,9 @@ func prepareClonedRepo(t *testing.T, initiallyAuthorized bool) testCloneFixture 
 	repoURL := fixture.repoURL
 	caFilePath, err := WriteCAToRepoReplycantDir(fixture.caPEM, local.ConfigDirectory)
 	require.NoError(t, err)
+	armTestTailnet(t, repoDir, fixture.server)
 
-	require.NoError(t, PollAuthorization(context.Background(), repoURL, local, caFilePath))
+	require.NoError(t, PollAuthorization(context.Background(), repoDir, repoURL, local, caFilePath))
 	require.NoError(t, FetchRepository(context.Background(), repoDir, local, caFilePath, 0))
 	require.NoError(t, ConfigureRepository(repoDir, fixture.lfsURL, local, caFilePath))
 	branch, err := ResolveDefaultRemoteBranch(repoDir)
@@ -119,17 +121,22 @@ func TestPollAuthorizationRetries(t *testing.T) {
 	fixture := setupCloneFixture(t, false)
 	defer fixture.server.Close()
 
+	binDir := t.TempDir()
+	buildGitReplycantBinary(t, filepath.Join(binDir, "git-replycant"))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	repoURL := fixture.repoURL
 	local := fixture.local
 	caFilePath, err := WriteCAToRepoReplycantDir(fixture.caPEM, local.ConfigDirectory)
 	require.NoError(t, err)
+	armTestTailnet(t, fixture.repoDir, fixture.server)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- PollAuthorization(ctx, repoURL, local, caFilePath)
+		done <- PollAuthorization(ctx, fixture.repoDir, repoURL, local, caFilePath)
 	}()
 
 	time.Sleep(500 * time.Millisecond)
@@ -312,9 +319,10 @@ func TestLFSPushUploadsObjectsWithPrePushHook(t *testing.T) {
 	repoURL := fixture.repoURL
 	caFilePath, err := WriteCAToRepoReplycantDir(fixture.caPEM, local.ConfigDirectory)
 	require.NoError(t, err)
+	armTestTailnet(t, repoDir, fixture.server)
 	lfsURL := lfsServer.URL
 
-	require.NoError(t, PollAuthorization(context.Background(), repoURL, local, caFilePath))
+	require.NoError(t, PollAuthorization(context.Background(), repoDir, repoURL, local, caFilePath))
 	require.NoError(t, FetchRepository(context.Background(), repoDir, local, caFilePath, 0))
 	require.NoError(t, ConfigureRepository(repoDir, lfsURL, local, caFilePath))
 	branch, err := ResolveDefaultRemoteBranch(repoDir)
@@ -347,17 +355,17 @@ func TestLFSPushUploadsObjectsWithPrePushHook(t *testing.T) {
 
 	t.Setenv("REPLYCANT_FAKE_LFS_STORE", remoteStoreDir)
 	secondOptions := CloneOptions{
-		ServerURL: fixture.options.ServerURL,
 		Directory: filepath.Join(t.TempDir(), "clone-target-2"),
 	}
-	secondRepoDir, err := InitializeRepository(context.Background(), secondOptions.Directory, repoURL, secondOptions.ServerURL, false)
+	secondRepoDir, err := InitializeRepository(context.Background(), secondOptions.Directory, repoURL, false)
 	require.NoError(t, err)
 	secondConfigDir := filepath.Join(secondRepoDir, ".git", "replycant")
 	require.NoError(t, copyTestDirectory(local.ConfigDirectory, secondConfigDir))
 	secondLocal, _, err := gitcrypt.EnsureLocalIdentity(secondRepoDir, "integration-test-device-2")
 	require.NoError(t, err)
 	secondCAPath := filepath.Join(secondLocal.ConfigDirectory, "ca.pem")
-	require.NoError(t, PollAuthorization(context.Background(), repoURL, secondLocal, secondCAPath))
+	armTestTailnet(t, secondRepoDir, fixture.server)
+	require.NoError(t, PollAuthorization(context.Background(), secondRepoDir, repoURL, secondLocal, secondCAPath))
 	require.NoError(t, FetchRepository(context.Background(), secondRepoDir, secondLocal, secondCAPath, 0))
 	require.NoError(t, ConfigureRepository(secondRepoDir, lfsURL, secondLocal, secondCAPath))
 	secondBranch, err := ResolveDefaultRemoteBranch(secondRepoDir)
@@ -388,8 +396,9 @@ func TestLFSCheckoutStreamsProgress(t *testing.T) {
 	repoURL := fixture.repoURL
 	caFilePath, err := WriteCAToRepoReplycantDir(fixture.caPEM, local.ConfigDirectory)
 	require.NoError(t, err)
+	armTestTailnet(t, repoDir, fixture.server)
 
-	require.NoError(t, PollAuthorization(context.Background(), repoURL, local, caFilePath))
+	require.NoError(t, PollAuthorization(context.Background(), repoDir, repoURL, local, caFilePath))
 	require.NoError(t, FetchRepository(context.Background(), repoDir, local, caFilePath, 0))
 	require.NoError(t, ConfigureRepository(repoDir, fixture.lfsURL, local, caFilePath))
 	branch, err := ResolveDefaultRemoteBranch(repoDir)
@@ -427,8 +436,9 @@ func TestLFSSmudgeFailsWhenEpochFileMissing(t *testing.T) {
 	repoURL := fixture.repoURL
 	caFilePath, err := WriteCAToRepoReplycantDir(fixture.caPEM, local.ConfigDirectory)
 	require.NoError(t, err)
+	armTestTailnet(t, repoDir, fixture.server)
 
-	require.NoError(t, PollAuthorization(context.Background(), repoURL, local, caFilePath))
+	require.NoError(t, PollAuthorization(context.Background(), repoDir, repoURL, local, caFilePath))
 	require.NoError(t, FetchRepository(context.Background(), repoDir, local, caFilePath, 0))
 	require.NoError(t, ConfigureRepository(repoDir, fixture.lfsURL, local, caFilePath))
 	branch, err := ResolveDefaultRemoteBranch(repoDir)
@@ -448,11 +458,10 @@ func TestLFSSmudgeFailsWhenEpochFileMissing(t *testing.T) {
 func setupCloneFixture(t *testing.T, initiallyAuthorized bool) testCloneFixture {
 	target := filepath.Join(t.TempDir(), "clone-target")
 	options := CloneOptions{
-		ServerURL: "http://placeholder.invalid:8080",
 		Directory: target,
 	}
 
-	repoDir, err := InitializeRepository(context.Background(), options.Directory, "https://placeholder.invalid/repo.git", options.ServerURL, false)
+	repoDir, err := InitializeRepository(context.Background(), options.Directory, "https://placeholder.invalid/repo.git", false)
 	require.NoError(t, err)
 	local, _, err := gitcrypt.EnsureLocalIdentity(repoDir, "integration-test-device")
 	require.NoError(t, err)
@@ -464,13 +473,10 @@ func setupCloneFixture(t *testing.T, initiallyAuthorized bool) testCloneFixture 
 	authorized := &atomic.Bool{}
 	authorized.Store(initiallyAuthorized)
 	server, caFilePath := startTestGitServer(t, projectRoot, authorized)
-	repoURL := server.URL + "/" + repoName
+	repoURL := remoteHelperPrefix + "https://gitd.replycant.internal:8443/" + repoName
 	caPEM, err := os.ReadFile(caFilePath)
 	require.NoError(t, err)
-	configServer := startTestConfigServer(t, string(caPEM), repoURL)
-	t.Cleanup(configServer.Close)
 	require.NoError(t, SetOriginRemote(context.Background(), repoDir, repoURL))
-	options.ServerURL = configServer.URL
 
 	return testCloneFixture{
 		repoDir:       repoDir,
@@ -504,8 +510,9 @@ func prepareLFSClonedRepo(t *testing.T) testLFSCloneFixture {
 	repoURL := fixture.repoURL
 	caFilePath, err := WriteCAToRepoReplycantDir(fixture.caPEM, local.ConfigDirectory)
 	require.NoError(t, err)
+	armTestTailnet(t, repoDir, fixture.server)
 
-	require.NoError(t, PollAuthorization(context.Background(), repoURL, local, caFilePath))
+	require.NoError(t, PollAuthorization(context.Background(), repoDir, repoURL, local, caFilePath))
 	require.NoError(t, FetchRepository(context.Background(), repoDir, local, caFilePath, 0))
 	require.NoError(t, ConfigureRepository(repoDir, fixture.lfsURL, local, caFilePath))
 	branch, err := ResolveDefaultRemoteBranch(repoDir)
@@ -525,11 +532,10 @@ func prepareLFSClonedRepo(t *testing.T) testLFSCloneFixture {
 func setupLFSCloneFixture(t *testing.T) testLFSCloneFixture {
 	target := filepath.Join(t.TempDir(), "clone-target")
 	options := CloneOptions{
-		ServerURL: "http://placeholder.invalid:8080",
 		Directory: target,
 	}
 
-	repoDir, err := InitializeRepository(context.Background(), options.Directory, "https://placeholder.invalid/repo.git", options.ServerURL, false)
+	repoDir, err := InitializeRepository(context.Background(), options.Directory, "https://placeholder.invalid/repo.git", false)
 	require.NoError(t, err)
 	local, _, err := gitcrypt.EnsureLocalIdentity(repoDir, "integration-test-device")
 	require.NoError(t, err)
@@ -542,14 +548,10 @@ func setupLFSCloneFixture(t *testing.T) testLFSCloneFixture {
 	authorized := &atomic.Bool{}
 	authorized.Store(true)
 	server, caFilePath := startTestGitServer(t, projectRoot, authorized)
-	repoURL := server.URL + "/" + repoName
+	repoURL := remoteHelperPrefix + "https://gitd.replycant.internal:8443/" + repoName
 	caPEM, err := os.ReadFile(caFilePath)
 	require.NoError(t, err)
-	configServer := startTestConfigServer(t, string(caPEM), repoURL)
-	t.Cleanup(configServer.Close)
 	require.NoError(t, SetOriginRemote(context.Background(), repoDir, repoURL))
-
-	options.ServerURL = configServer.URL
 
 	return testLFSCloneFixture{
 		testCloneFixture: testCloneFixture{
@@ -572,11 +574,10 @@ func setupLFSCloneFixture(t *testing.T) testLFSCloneFixture {
 func setupLFSCloneFixtureMissingEpoch(t *testing.T) testLFSCloneFixture {
 	target := filepath.Join(t.TempDir(), "clone-target")
 	options := CloneOptions{
-		ServerURL: "http://placeholder.invalid:8080",
 		Directory: target,
 	}
 
-	repoDir, err := InitializeRepository(context.Background(), options.Directory, "https://placeholder.invalid/repo.git", options.ServerURL, false)
+	repoDir, err := InitializeRepository(context.Background(), options.Directory, "https://placeholder.invalid/repo.git", false)
 	require.NoError(t, err)
 	local, _, err := gitcrypt.EnsureLocalIdentity(repoDir, "integration-test-device")
 	require.NoError(t, err)
@@ -588,14 +589,10 @@ func setupLFSCloneFixtureMissingEpoch(t *testing.T) testLFSCloneFixture {
 	authorized := &atomic.Bool{}
 	authorized.Store(true)
 	server, caFilePath := startTestGitServer(t, projectRoot, authorized)
-	repoURL := server.URL + "/" + repoName
+	repoURL := remoteHelperPrefix + "https://gitd.replycant.internal:8443/" + repoName
 	caPEM, err := os.ReadFile(caFilePath)
 	require.NoError(t, err)
-	configServer := startTestConfigServer(t, string(caPEM), repoURL)
-	t.Cleanup(configServer.Close)
 	require.NoError(t, SetOriginRemote(context.Background(), repoDir, repoURL))
-
-	options.ServerURL = configServer.URL
 
 	return testLFSCloneFixture{
 		testCloneFixture: testCloneFixture{
@@ -668,20 +665,42 @@ func startTestGitServer(t *testing.T, projectRoot string, authorized *atomic.Boo
 	return server, caFilePath
 }
 
-// startTestConfigServer serves caserver discovery responses so clone tests follow the production bootstrap contract.
-func startTestConfigServer(t *testing.T, caPEM string, repoURL string) *httptest.Server {
+// armTestTailnet publishes a loopback proxy that stands in for the tailnet
+// node. git still uses the remote helper; the helper finds this proxy because
+// it holds the repository lock, so the binary has no test-only bypass.
+func armTestTailnet(t *testing.T, repoDir string, server *httptest.Server) {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/config.json" {
-			http.NotFound(w, r)
+	gitDir, err := resolveGitDir(repoDir)
+	require.NoError(t, err)
+	require.NoError(t, tailnetagent.SaveConfig(gitDir, tailnetagent.PersistedConfig{
+		HeadscaleAddr:       "headscale.example:443",
+		HeadscaleServerName: "headscale.example",
+		Hostname:            "integration-test-device",
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	target := server.Listener.Addr().String()
+	go func() {
+		_ = (&tailnetagent.Server{
+			Dir:         tailnetagent.Dir(gitDir),
+			IdleTimeout: time.Hour,
+			Password:    "secret",
+			Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr == "gitd.replycant.internal:8443" {
+					addr = target
+				}
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			},
+		}).Run(ctx)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := tailnetagent.ProxyURL(gitDir); ok {
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(DiscoveredServerConfig{
-			CA:  caPEM,
-			URL: repoURL,
-		})
-	}))
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("test tailnet agent did not become ready")
 }
 
 // createTestBareRepo builds a minimal repository with encrypted manifest fixtures for clone-flow tests.
@@ -1187,7 +1206,7 @@ func generateTestServerCert(t *testing.T, caCertPEM []byte, caKey *ecdsa.Private
 		NotAfter:     now.Add(24 * time.Hour),
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		DNSNames:     []string{"localhost"},
+		DNSNames:     []string{"localhost", "gitd.replycant.internal"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, template, caCert, &serverKey.PublicKey, caKey)
@@ -1211,4 +1230,7 @@ func buildGitReplycantBinary(t *testing.T, outputPath string) {
 	cmd.Dir = cwd
 	out, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "go build failed: %s", string(out))
+	helper := filepath.Join(filepath.Dir(outputPath), remoteHelperName)
+	_ = os.Remove(helper)
+	require.NoError(t, os.Symlink(outputPath, helper))
 }

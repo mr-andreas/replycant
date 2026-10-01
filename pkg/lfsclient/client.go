@@ -14,8 +14,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/mr-andreas/replycant/pkg/mdns"
 )
 
 // Endpoint stores an LFS base URL and optional Basic auth derived from userinfo.
@@ -43,10 +41,10 @@ type Client struct {
 }
 
 type batchRequest struct {
-	Operation string            `json:"operation"`
-	Transfers []string          `json:"transfers,omitempty"`
-	Ref       *batchRequestRef  `json:"ref,omitempty"`
-	Objects   []Object          `json:"objects"`
+	Operation string           `json:"operation"`
+	Transfers []string         `json:"transfers,omitempty"`
+	Ref       *batchRequestRef `json:"ref,omitempty"`
+	Objects   []Object         `json:"objects"`
 }
 
 type batchRequestRef struct {
@@ -60,10 +58,10 @@ type batchResponse struct {
 }
 
 type batchObject struct {
-	OID     string                  `json:"oid"`
-	Size    int64                   `json:"size"`
-	Actions map[string]batchAction  `json:"actions"`
-	Error   *batchError             `json:"error"`
+	OID     string                 `json:"oid"`
+	Size    int64                  `json:"size"`
+	Actions map[string]batchAction `json:"actions"`
+	Error   *batchError            `json:"error"`
 }
 
 type batchAction struct {
@@ -115,7 +113,10 @@ func ParseEndpoint(rawURL string) (Endpoint, error) {
 
 // NewMTLSHTTPClient builds an HTTP client that presents the repository client
 // certificate so LFS requests authenticate the same way as git Smart HTTP.
-func NewMTLSHTTPClient(caPath, certPath, keyPath string) (*http.Client, error) {
+//
+// proxyURL, when set, is an HTTP CONNECT proxy. Tailnet clones have to pass
+// one: gitd has no address on the host network, so a direct dial cannot work.
+func NewMTLSHTTPClient(caPath, certPath, keyPath, proxyURL string) (*http.Client, error) {
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed loading mTLS client certificate: %w", err)
@@ -128,16 +129,21 @@ func NewMTLSHTTPClient(caPath, certPath, keyPath string) (*http.Client, error) {
 	if ok := rootCAs.AppendCertsFromPEM(caPEM); !ok {
 		return nil, fmt.Errorf("failed parsing CA certificate bundle at %q", caPath)
 	}
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: mdns.DialContext,
-			TLSClientConfig: &tls.Config{
-				MinVersion:   tls.VersionTLS13,
-				RootCAs:      rootCAs,
-				Certificates: []tls.Certificate{cert},
-			},
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			RootCAs:      rootCAs,
+			Certificates: []tls.Certificate{cert},
 		},
-	}, nil
+	}
+	if strings.TrimSpace(proxyURL) != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid tailnet proxy URL: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(parsed)
+	}
+	return &http.Client{Transport: transport}, nil
 }
 
 // Upload negotiates batch actions then sends missing object bytes through open.

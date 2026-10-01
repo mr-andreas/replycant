@@ -16,6 +16,14 @@ import (
 
 const (
 	testImage = "replycant-integration:test"
+
+	// Fixed inside the container so the provisioner can read the QR without
+	// learning an ephemeral port, and so discovery DNS matches dnsmasq.
+	e2eDiscoveryURL = "http://discovery.test:18082"
+	e2eQRAddr       = "127.0.0.1:18083"
+	e2eQRURL        = "http://127.0.0.1:18083/payload.json"
+	e2eCAConfigURL  = "http://127.0.0.1:18081/config.json"
+	e2ePairURL      = "https://gitd.replycant.internal:8443/pair"
 )
 
 // cleanupStaleContainers removes abandoned integration containers from prior interrupted runs.
@@ -58,6 +66,8 @@ func startContainer(t *testing.T) string {
 		"-d",
 		"--label",
 		"replycant-integration=true",
+		"-e",
+		"REPLYCANT_INTEGRATION_TAILNET=1",
 		testImage,
 	)
 	out, err := run.CombinedOutput()
@@ -69,7 +79,7 @@ func startContainer(t *testing.T) string {
 		_ = exec.Command("docker", "rm", "-f", containerID).Run()
 	})
 
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(6 * time.Minute)
 	for time.Now().Before(deadline) {
 		_, err := dockerExecAllowFail(containerID, "test", "-f", "/tmp/ready")
 		if err == nil {
@@ -117,7 +127,8 @@ func runReplycantCloneAllowFail(containerID string, cloneDir string) (string, er
 		containerID,
 		"git-replycant",
 		"clone",
-		"http://localhost:8080",
+		"--discovery-url", e2eDiscoveryURL,
+		"--qr-addr", e2eQRAddr,
 		cloneDir,
 	)
 }
@@ -130,7 +141,8 @@ func runReplycantCloneBareAllowFail(containerID string, cloneDir string) (string
 		"clone",
 		"--bare",
 		"--no-lfs",
-		"http://localhost:8080",
+		"--discovery-url", e2eDiscoveryURL,
+		"--qr-addr", e2eQRAddr,
 		cloneDir,
 	)
 }
@@ -171,6 +183,9 @@ func provisionDevice(t *testing.T, containerID string, cloneDir string) {
 		"--seeder-identity-dir=/tmp/identity",
 		"--new-identity-json="+cloneDir+"/.git/replycant/identity.json",
 		"--bare-repo=/tmp/repo.git",
+		"--qr-url="+e2eQRURL,
+		"--ca-config-url="+e2eCAConfigURL,
+		"--pair-url="+e2ePairURL,
 	)
 }
 
@@ -190,7 +205,7 @@ func cloneAndProvision(t *testing.T, containerID string, cloneDir string) {
 	select {
 	case err := <-cloneErr:
 		require.NoError(t, err)
-	case <-time.After(120 * time.Second):
+	case <-time.After(6 * time.Minute):
 		t.Fatal("clone timed out")
 	}
 	dockerExec(t, containerID, "git", "-C", cloneDir, "pull", "--rebase", "origin", "main")
@@ -216,11 +231,14 @@ func cloneAndProvisionBare(t *testing.T, containerID string, cloneDir string) {
 		"--seeder-identity-dir=/tmp/identity",
 		"--new-identity-json="+cloneDir+"/replycant/identity.json",
 		"--bare-repo=/tmp/repo.git",
+		"--qr-url="+e2eQRURL,
+		"--ca-config-url="+e2eCAConfigURL,
+		"--pair-url="+e2ePairURL,
 	)
 	select {
 	case err := <-cloneErr:
 		require.NoError(t, err)
-	case <-time.After(120 * time.Second):
+	case <-time.After(6 * time.Minute):
 		t.Fatal("clone timed out")
 	}
 }
@@ -473,8 +491,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 			"add cross-clone binary",
 		)
 		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "show", "HEAD:binary/test.bin")
-		oid := parsePointerOID(t, blob)
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "lfs", "push", "--object-id", "origin", oid)
+		parsePointerOID(t, blob)
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "push", "origin", "main")
 	})
 
@@ -503,8 +520,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 			"update cross-clone binary",
 		)
 		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "show", "HEAD:binary/test.bin")
-		oid := parsePointerOID(t, blob)
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "lfs", "push", "--object-id", "origin", oid)
+		parsePointerOID(t, blob)
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "push", "origin", "main")
 	})
 

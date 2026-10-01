@@ -6,6 +6,10 @@
 
 - all client-to-server traffic now runs over a private tailnet, so every device must be re-onboarded. The first device visits `http://127.0.0.1:8080` on the server host and scans (or fetches) a one-time join QR; later devices still show a pairing QR to an already-paired device. The CA page and pairing record no longer carry a gitd URL or tailnet name — clients always use `https://gitd.replycant.internal:8443`. Wipe existing pairings; the QR shape and pairing payload both changed. The control-plane hostname includes a shard label (`{ca-hash}.s{NN}.tunnel.replycant.com`). A plain `docker compose up` publishes the control plane through the hosted relay. Set `REPLYCANT_HEADSCALE_URL` and `REPLYCANT_HSPROXY_BIND=0.0.0.0` and start with `--scale tunnel-agent=0` to expose it through your own router instead
 
+#### git-replycant
+
+- `clone` no longer takes a server URL and no longer connects directly. Run `git-replycant clone` and approve the pairing QR from a device already on the tailnet. Existing command-line clones have to be cloned again. The release archive's `git-remote-replycant` symlink has to be on `PATH`, because that is how git reaches the repository
+
 ### Features
 
 - reach your library from anywhere without forwarding a router port or running dynamic dns. devices join a private network with the server, can reach the server but not each other, media travels directly between them where possible, and the hosted services that make the introduction cannot read any of it
@@ -17,6 +21,14 @@
 #### Desktop app
 
 - show how this device reaches the library — connected or not, which control path it is using, whether the server is reached directly or through a relay, and whether peers are online — in the settings pane
+
+#### git-replycant
+
+- fetch, push, and LFS share one background tailnet connection per repository. It starts when a command needs the network and exits after a few minutes of idle time
+
+#### replycant-importer
+
+- LFS uploads go through that same tailnet connection, and a repository that was not cloned with `git-replycant` is refused
 
 ### Fixes
 

@@ -6,7 +6,7 @@
 // so this sidecar provides one and hands back a SOCKS5 proxy that Node's
 // existing mTLS agents can dial through.
 //
-// It does two things. It runs the loopback shim from ./shim, which gives the
+// It does two things. It runs the loopback shim from pkg/tailnetshim, which gives the
 // Tailscale client a control-plane endpoint it will accept, and it runs a tsnet
 // node whose built-in SOCKS5 proxy is published on loopback.
 //
@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mr-andreas/replycant/webapp/sidecar/shim"
+	"github.com/mr-andreas/replycant/pkg/tailnetshim"
 	"tailscale.com/tsnet"
 )
 
@@ -128,7 +128,7 @@ func run() error {
 		return fmt.Errorf("the device certificate and key do not form a usable pair: %w", err)
 	}
 
-	controlPlane, err := shim.New(shim.Config{
+	controlPlane, err := tailnetshim.New(tailnetshim.Config{
 		UpstreamAddr:       config.HeadscaleAddr,
 		UpstreamServerName: config.HeadscaleServerName,
 		CAPEM:              []byte(config.CAPEM),
@@ -215,10 +215,10 @@ func run() error {
 // dial is tsnet's own dialer, because a tailnet name resolves only through the
 // node's MagicDNS resolver and the address is only routable through its
 // userspace WireGuard stack.
-func tailnetControlRoute(config input, dial dialFunc) (shim.TailnetRoute, bool) {
+func tailnetControlRoute(config input, dial dialFunc) (tailnetshim.TailnetRoute, bool) {
 	addr := strings.TrimSpace(config.GitdControlAddr)
 	if addr == "" {
-		return shim.TailnetRoute{}, false
+		return tailnetshim.TailnetRoute{}, false
 	}
 
 	serverName := strings.TrimSpace(config.GitdControlServerName)
@@ -230,7 +230,7 @@ func tailnetControlRoute(config input, dial dialFunc) (shim.TailnetRoute, bool) 
 		}
 	}
 
-	return shim.TailnetRoute{Addr: addr, ServerName: serverName, Dial: dial}, true
+	return tailnetshim.TailnetRoute{Addr: addr, ServerName: serverName, Dial: dial}, true
 }
 
 // Brings the tailnet node up, blocking until it has joined so a failure is

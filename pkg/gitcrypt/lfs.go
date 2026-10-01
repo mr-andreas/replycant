@@ -397,10 +397,10 @@ func DecryptChunked(encrypted []byte, dek []byte) ([]byte, error) {
 }
 
 // StartLFSFilterProcess starts git-lfs filter-process and negotiates pkt-line capabilities once.
-func StartLFSFilterProcess(repoRoot string) (*LFSFilterProcess, error) {
+func StartLFSFilterProcess(repoRoot string, extraEnv []string) (*LFSFilterProcess, error) {
 	cmd := buildLFSFilterProcessCommand(repoRoot)
 	cmd.Dir = repoRoot
-	cmd.Env = gitNonInteractiveEnv()
+	cmd.Env = append(gitNonInteractiveEnv(), extraEnv...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git-lfs stdin: %w", err)
@@ -464,13 +464,13 @@ func (p *LFSFilterProcess) Clean(pathname string, content []byte) ([]byte, error
 }
 
 // RunLFSSmudgeOneShot supports single-file workflows where starting a persistent process is unnecessary.
-func RunLFSSmudgeOneShot(repoRoot string, pathname string, content []byte) ([]byte, error) {
-	return runLFSOneShot(repoRoot, "smudge", pathname, content)
+func RunLFSSmudgeOneShot(repoRoot string, pathname string, content []byte, extraEnv []string) ([]byte, error) {
+	return runLFSOneShot(repoRoot, "smudge", pathname, content, extraEnv)
 }
 
 // RunLFSCleanOneShot supports single-file workflows where starting a persistent process is unnecessary.
-func RunLFSCleanOneShot(repoRoot string, pathname string, content []byte) ([]byte, error) {
-	return runLFSOneShot(repoRoot, "clean", pathname, content)
+func RunLFSCleanOneShot(repoRoot string, pathname string, content []byte, extraEnv []string) ([]byte, error) {
+	return runLFSOneShot(repoRoot, "clean", pathname, content, extraEnv)
 }
 
 // buildLFSFilterProcessCommand prefers git-lfs binary and falls back to git lfs subcommand for compatibility.
@@ -589,13 +589,13 @@ func (p *LFSFilterProcess) request(command string, pathname string, content []by
 }
 
 // runLFSOneShot delegates one payload to git-lfs clean/smudge for one-off command usage.
-func runLFSOneShot(repoRoot string, mode string, pathname string, content []byte) ([]byte, error) {
+func runLFSOneShot(repoRoot string, mode string, pathname string, content []byte, extraEnv []string) ([]byte, error) {
 	args := []string{"lfs", mode}
 	if strings.TrimSpace(pathname) != "" {
 		args = append(args, "--", pathname)
 	}
 	cmd := exec.Command("git", args...)
-	cmd.Env = gitNonInteractiveEnv()
+	cmd.Env = append(gitNonInteractiveEnv(), extraEnv...)
 	if strings.TrimSpace(repoRoot) != "" {
 		cmd.Dir = repoRoot
 	}

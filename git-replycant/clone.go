@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,56 +23,90 @@ import (
 
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	"github.com/mr-andreas/replycant/pkg/lfsclient"
-	"github.com/mr-andreas/replycant/pkg/mdns"
+	"github.com/mr-andreas/replycant/pkg/pairing"
+	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
+	"github.com/mr-andreas/replycant/pkg/tailnetagent"
 	"github.com/skip2/go-qrcode"
 )
 
 const (
 	// authPollInterval controls how frequently clone onboarding retries repository auth checks.
 	authPollInterval = 3 * time.Second
+	// discoveryPollInterval matches the desktop app: approval is a person
+	// scanning a QR code, so polling faster does not finish pairing sooner.
+	discoveryPollInterval = 2 * time.Second
+	// pairingTimeout matches the discovery record TTL. Waiting longer can
+	// only observe a slot the server has already deleted.
+	pairingTimeout = 10 * time.Minute
+
+	defaultDiscoveryURL   = "https://discovery.replycant.com"
+	defaultQRAddr         = "127.0.0.1:0"
+	defaultCloneDirectory = "replycant"
 )
 
-// CloneOptions captures CLI inputs required for onboarding and repository clone setup.
+// CloneOptions captures CLI inputs required for tailnet pairing and clone setup.
 type CloneOptions struct {
-	ServerURL  string
-	DeviceName string
-	Depth      int
-	Bare       bool
-	NoLFS      bool
-	Directory  string
+	DeviceName   string
+	Depth        int
+	Bare         bool
+	NoLFS        bool
+	DiscoveryURL string
+	QRAddr       string
+	Directory    string
 }
 
-// DiscoveredServerConfig captures caserver discovery fields needed to bootstrap clone trust and remotes.
-type DiscoveredServerConfig struct {
-	CA  string `json:"ca"`
-	URL string `json:"url"`
+// cloneRuntime replaces the parts of pairing that need a network or a live
+// tailnet node, so tests can seal a record and stop before git fetch.
+type cloneRuntime struct {
+	pollInterval time.Duration
+	httpClient   *http.Client
+	newSecret    func() (pairing.Secret, error)
+	join         func(context.Context, string, tailnetagent.StartConfig) error
+	finish       func(context.Context, cloneFinish) error
 }
 
-// RunCloneCommand orchestrates QR onboarding and clone initialization for replycant repositories.
+// cloneFinish is the repository state after the tailnet node is up and the
+// CA has been written. The real finish fetches and checks out.
+type cloneFinish struct {
+	RepoDir string
+	RepoURL string
+	Local   gitcrypt.LocalIdentity
+	CAFile  string
+	LFSURL  string
+	Depth   int
+	Bare    bool
+}
+
+// RunCloneCommand pairs this machine into the deployment tailnet and clones
+// gitd over it. There is no direct-connection alternative.
 func RunCloneCommand(options CloneOptions) error {
+	return runClone(options, cloneRuntime{})
+}
+
+func runClone(options CloneOptions, runtime cloneRuntime) error {
 	options, err := NormalizeCloneOptions(options)
 	if err != nil {
 		return err
 	}
-	discovered, err := DiscoverServerConfig(options.ServerURL)
-	if err != nil {
+	if err := requireRemoteHelper(); err != nil {
 		return err
 	}
-	lfsURL, err := DeriveLFSURL(discovered.URL)
+	repoURL := remoteHelperPrefix + tailnetaddr.GitdURL()
+	gitURL := tailnetaddr.GitdURL()
+	lfsURL, err := DeriveLFSURL(gitURL)
 	if err != nil {
 		return err
 	}
 	if options.NoLFS {
 		lfsURL = ""
 	}
-	caHash, err := gitcrypt.ComputeCAHash(discovered.CA)
-	if err != nil {
-		return fmt.Errorf("failed to compute discovered CA hash: %w", err)
-	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	pairCtx, cancelPair := context.WithTimeout(ctx, pairingTimeout)
+	defer cancelPair()
 
-	repoDir, err := InitializeRepository(ctx, options.Directory, discovered.URL, options.ServerURL, options.Bare)
+	repoDir, err := InitializeRepository(ctx, options.Directory, repoURL, options.Bare)
 	if err != nil {
 		return err
 	}
@@ -83,56 +117,189 @@ func RunCloneCommand(options CloneOptions) error {
 	if created {
 		fmt.Fprintf(os.Stderr, "Generated new local identity in %s\n", local.ConfigDirectory)
 	}
-	caFilePath, err := WriteCAToRepoReplycantDir(discovered.CA, local.ConfigDirectory)
-	if err != nil {
-		return err
-	}
 
-	qrPayload, err := gitcrypt.BuildPublicKeyQrPayload(local.Identity, caHash, "")
+	newSecret := runtime.newSecret
+	if newSecret == nil {
+		newSecret = pairing.NewSecret
+	}
+	secret, err := newSecret()
 	if err != nil {
 		return err
 	}
-	server, baseURL, err := StartQRServer(qrPayload)
+	qrPayload, err := gitcrypt.BuildPublicKeyQrPayload(local.Identity, "", secret.String())
+	if err != nil {
+		return err
+	}
+	server, baseURL, err := StartQRServer(qrPayload, options.QRAddr)
 	if err != nil {
 		return err
 	}
 	defer server.Close()
-	fmt.Fprintf(os.Stderr, "Open %s to view the authorization QR code.\n", baseURL)
-	fmt.Fprintln(os.Stderr, "Waiting for repository authorization...")
+	fmt.Fprintf(os.Stderr, "Open %s to view the pairing QR code.\n", baseURL)
+	fmt.Fprintln(os.Stderr, "Waiting for a paired device to approve this one...")
 
-	if err := PollAuthorization(ctx, discovered.URL, local, caFilePath); err != nil {
-		return err
+	interval := runtime.pollInterval
+	if interval <= 0 {
+		interval = discoveryPollInterval
 	}
-	fmt.Fprintln(os.Stderr, "Authorization confirmed. Proceeding with clone.")
-
-	if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("failed to stop QR server: %w", err)
-	}
-	if err := FetchRepository(ctx, repoDir, local, caFilePath, options.Depth); err != nil {
-		return err
-	}
-	defaultBranch, err := ResolveDefaultRemoteBranch(repoDir)
+	sealed, err := PollPairingRecord(pairCtx, options.DiscoveryURL, secret.Slot(), runtime.httpClient, interval)
 	if err != nil {
 		return err
 	}
-	if err := RequireSupportedDatabaseVersionAtRef(ctx, repoDir, "origin/"+defaultBranch); err != nil {
+	payload, err := pairing.Open(secret, local.Identity.AgePrivateKeyBase64, sealed)
+	if err != nil {
 		return err
 	}
-	if err := ConfigureRepository(repoDir, lfsURL, local, caFilePath); err != nil {
+	if err := payload.VerifyCALabel(); err != nil {
 		return err
 	}
-	if options.Bare {
-		fmt.Fprintf(os.Stderr, "Clone complete and filters configured in %s\n", repoDir)
-		return nil
-	}
-	if err := PreExtractEncryptionFiles(ctx, repoDir, defaultBranch); err != nil {
+
+	caFilePath, err := WriteCAToRepoReplycantDir(payload.CAPEM, local.ConfigDirectory)
+	if err != nil {
 		return err
 	}
-	if err := CheckoutTrackingBranch(ctx, repoDir, defaultBranch); err != nil {
+	gitDir, err := resolveGitDir(repoDir)
+	if err != nil {
+		return err
+	}
+	startCfg, persisted, err := tailnetStartConfig(gitDir, local, caFilePath, payload)
+	if err != nil {
+		return err
+	}
+	join := runtime.join
+	if join == nil {
+		join = joinTailnet
+	}
+	if err := join(ctx, gitDir, startCfg); err != nil {
+		return err
+	}
+	// Persisted only after the node is up, so a failed join leaves nothing
+	// for the next git command to treat as a trusted deployment.
+	if err := tailnetagent.SaveConfig(gitDir, persisted); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Joined the tailnet. Waiting for repository authorization...")
+
+	finish := runtime.finish
+	if finish == nil {
+		finish = finishClone
+	}
+	if err := finish(ctx, cloneFinish{
+		RepoDir: repoDir,
+		RepoURL: repoURL,
+		Local:   local,
+		CAFile:  caFilePath,
+		LFSURL:  lfsURL,
+		Depth:   options.Depth,
+		Bare:    options.Bare,
+	}); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Clone complete and filters configured in %s\n", repoDir)
 	return nil
+}
+
+// finishClone fetches and checks out once the device is on the tailnet and
+// an already-paired device has committed its key.
+func finishClone(ctx context.Context, finish cloneFinish) error {
+	if err := PollAuthorization(ctx, finish.RepoDir, finish.RepoURL, finish.Local, finish.CAFile); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Authorization confirmed. Proceeding with clone.")
+	if err := FetchRepository(ctx, finish.RepoDir, finish.Local, finish.CAFile, finish.Depth); err != nil {
+		return err
+	}
+	defaultBranch, err := ResolveDefaultRemoteBranch(finish.RepoDir)
+	if err != nil {
+		return err
+	}
+	if err := RequireSupportedDatabaseVersionAtRef(ctx, finish.RepoDir, "origin/"+defaultBranch); err != nil {
+		return err
+	}
+	if err := ConfigureRepository(finish.RepoDir, finish.LFSURL, finish.Local, finish.CAFile); err != nil {
+		return err
+	}
+	if finish.Bare {
+		return nil
+	}
+	if err := PreExtractEncryptionFiles(ctx, finish.RepoDir, defaultBranch); err != nil {
+		return err
+	}
+	return CheckoutTrackingBranch(ctx, finish.RepoDir, defaultBranch)
+}
+
+// requireRemoteHelper fails before pairing when git would be unable to reach
+// gitd. The helper is the same binary, installed under the name git looks up.
+func requireRemoteHelper() error {
+	if _, err := exec.LookPath(remoteHelperName); err != nil {
+		return fmt.Errorf("%s is not on PATH; symlink it to the git-replycant binary", remoteHelperName)
+	}
+	return nil
+}
+
+// tailnetStartConfig builds the agent stdin payload from the opened pairing
+// record and the identity just written into the repository.
+func tailnetStartConfig(gitDir string, local gitcrypt.LocalIdentity, caFilePath string, payload pairing.Payload) (tailnetagent.StartConfig, tailnetagent.PersistedConfig, error) {
+	addr, serverName, err := headscaleDial(payload.HeadscaleURL)
+	if err != nil {
+		return tailnetagent.StartConfig{}, tailnetagent.PersistedConfig{}, err
+	}
+	caPEM, err := os.ReadFile(caFilePath)
+	if err != nil {
+		return tailnetagent.StartConfig{}, tailnetagent.PersistedConfig{}, fmt.Errorf("read repository CA: %w", err)
+	}
+	certPEM, err := os.ReadFile(local.ClientCertPath)
+	if err != nil {
+		return tailnetagent.StartConfig{}, tailnetagent.PersistedConfig{}, fmt.Errorf("read device certificate: %w", err)
+	}
+	keyPEM, err := os.ReadFile(local.ClientKeyPath)
+	if err != nil {
+		return tailnetagent.StartConfig{}, tailnetagent.PersistedConfig{}, fmt.Errorf("read device key: %w", err)
+	}
+	persisted := tailnetagent.PersistedConfig{
+		HeadscaleAddr:       addr,
+		HeadscaleServerName: serverName,
+		Hostname:            local.Identity.DeviceName,
+	}
+	return tailnetagent.StartConfig{
+		GitDir:              gitDir,
+		HeadscaleAddr:       addr,
+		HeadscaleServerName: serverName,
+		CAPEM:               string(caPEM),
+		ClientCertPEM:       string(certPEM),
+		ClientKeyPEM:        string(keyPEM),
+		PreauthKey:          payload.PreauthKey,
+		Hostname:            local.Identity.DeviceName,
+	}, persisted, nil
+}
+
+// headscaleDial turns the URL from the pairing record into the host:port the
+// shim dials. The URL form is how headscale advertises itself.
+func headscaleDial(headscaleURL string) (string, string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(headscaleURL))
+	if err != nil {
+		return "", "", fmt.Errorf("headscale URL is not a valid URL: %w", err)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", "", fmt.Errorf("headscale URL has no hostname: %q", headscaleURL)
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(host, port), host, nil
+}
+
+// joinTailnet starts the per-repo agent with the single-use pre-auth key.
+// Later git commands start it again without that key, from the saved node.
+func joinTailnet(ctx context.Context, gitDir string, cfg tailnetagent.StartConfig) error {
+	_, err := tailnetagent.Ensure(ctx, gitDir, cfg, nil)
+	return err
 }
 
 // WriteCAToRepoReplycantDir stores discovered CA trust material per repository for stable git TLS setup.
@@ -147,20 +314,30 @@ func WriteCAToRepoReplycantDir(caPEM string, replycantDir string) (string, error
 	return destPath, nil
 }
 
-// NormalizeCloneOptions validates and normalizes parsed clone options before clone side effects run.
+// NormalizeCloneOptions validates clone inputs before any repository is created.
 func NormalizeCloneOptions(options CloneOptions) (CloneOptions, error) {
-	options.ServerURL = strings.TrimSpace(options.ServerURL)
 	options.DeviceName = strings.TrimSpace(options.DeviceName)
 	options.Directory = strings.TrimSpace(options.Directory)
-	if options.ServerURL == "" {
-		return CloneOptions{}, fmt.Errorf("server URL is required")
+	options.DiscoveryURL = strings.TrimSpace(options.DiscoveryURL)
+	options.QRAddr = strings.TrimSpace(options.QRAddr)
+	if options.DiscoveryURL == "" {
+		options.DiscoveryURL = defaultDiscoveryURL
 	}
-	parsed, err := url.Parse(options.ServerURL)
+	if options.QRAddr == "" {
+		options.QRAddr = defaultQRAddr
+	}
+	if options.Directory == "" {
+		options.Directory = defaultCloneDirectory
+	}
+	parsed, err := url.Parse(options.DiscoveryURL)
 	if err != nil {
-		return CloneOptions{}, fmt.Errorf("invalid server URL %q: %w", options.ServerURL, err)
+		return CloneOptions{}, fmt.Errorf("invalid discovery URL %q: %w", options.DiscoveryURL, err)
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return CloneOptions{}, fmt.Errorf("invalid server URL %q: include scheme and host", options.ServerURL)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return CloneOptions{}, fmt.Errorf("invalid discovery URL %q: include http(s) scheme and host", options.DiscoveryURL)
+	}
+	if err := requireLoopbackAddr(options.QRAddr); err != nil {
+		return CloneOptions{}, err
 	}
 	if options.Depth < 0 {
 		return CloneOptions{}, fmt.Errorf("depth must be >= 0")
@@ -168,47 +345,22 @@ func NormalizeCloneOptions(options CloneOptions) (CloneOptions, error) {
 	if options.Bare && !options.NoLFS {
 		return CloneOptions{}, fmt.Errorf("--bare requires --no-lfs: LFS setup needs a working directory")
 	}
-	options.ServerURL = parsed.String()
+	options.DiscoveryURL = parsed.String()
 	return options, nil
 }
 
-// DiscoverServerConfig fetches caserver config so clone can bootstrap CA trust without local files.
-func DiscoverServerConfig(serverURL string) (DiscoveredServerConfig, error) {
-	baseURL, err := url.Parse(strings.TrimSpace(serverURL))
+// requireLoopbackAddr keeps the pairing QR, which carries the pairing secret,
+// off every interface but loopback.
+func requireLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return DiscoveredServerConfig{}, fmt.Errorf("invalid server URL %q: %w", serverURL, err)
+		return fmt.Errorf("invalid QR address %q: %w", addr, err)
 	}
-	endpoint := baseURL.ResolveReference(&url.URL{Path: "./config.json"})
-	response, err := buildDiscoveryHTTPClient().Get(endpoint.String())
-	if err != nil {
-		return DiscoveredServerConfig{}, fmt.Errorf("failed to fetch server config %s: %w", endpoint.String(), err)
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("QR address must be a loopback address, got %q", addr)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return DiscoveredServerConfig{}, fmt.Errorf("server config request failed with status %s", response.Status)
-	}
-	var config DiscoveredServerConfig
-	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
-		return DiscoveredServerConfig{}, fmt.Errorf("failed to decode server config response: %w", err)
-	}
-	if strings.TrimSpace(config.CA) == "" {
-		return DiscoveredServerConfig{}, fmt.Errorf("server config response is missing ca")
-	}
-	if strings.TrimSpace(config.URL) == "" {
-		return DiscoveredServerConfig{}, fmt.Errorf("server config response is missing url")
-	}
-	config.CA = strings.TrimSpace(config.CA)
-	config.URL = strings.TrimSpace(config.URL)
-	return config, nil
-}
-
-// buildDiscoveryHTTPClient ensures clone discovery can still reach `.local` servers in static binaries.
-func buildDiscoveryHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: mdns.DialContext,
-		},
-	}
+	return nil
 }
 
 // DeriveLFSURL ensures LFS traffic stays on the same origin as git by forcing the /lfs route.
@@ -216,8 +368,12 @@ func DeriveLFSURL(gitURL string) (string, error) {
 	return lfsclient.DeriveEndpointURL(gitURL)
 }
 
-// StartQRServer serves a local page with the onboarding QR payload so mobile authorization can proceed.
-func StartQRServer(payload string) (*http.Server, string, error) {
+// StartQRServer serves the pairing QR on loopback. /payload.json exposes the
+// same JSON the QR encodes so a scripted approver can read it without a camera.
+func StartQRServer(payload string, addr string) (*http.Server, string, error) {
+	if err := requireLoopbackAddr(addr); err != nil {
+		return nil, "", err
+	}
 	png, err := qrcode.Encode(payload, qrcode.Medium, 300)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to encode QR code: %w", err)
@@ -226,12 +382,20 @@ func StartQRServer(payload string) (*http.Server, string, error) {
 	page := buildQRPage(dataURL)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(page))
 	})
+	mux.HandleFunc("/payload.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	})
 
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to start QR listener: %w", err)
 	}
@@ -239,17 +403,93 @@ func StartQRServer(payload string) (*http.Server, string, error) {
 	go func() {
 		_ = server.Serve(listener)
 	}()
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve QR listener port: %w", err)
-	}
-	return server, "http://127.0.0.1:" + port, nil
+	return server, "http://" + listener.Addr().String(), nil
 }
 
-// PollAuthorization retries ls-remote until credentials are accepted or the user aborts.
-func PollAuthorization(ctx context.Context, repoURL string, local gitcrypt.LocalIdentity, caFilePath string) error {
+// PollPairingRecord waits until the sealed record appears at the slot derived
+// from the pairing secret. A 404 means the other device has not approved yet.
+// Any other status is a misconfigured discovery host and is reported.
+func PollPairingRecord(ctx context.Context, discoveryURL, slot string, client *http.Client, interval time.Duration) ([]byte, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if interval <= 0 {
+		interval = discoveryPollInterval
+	}
+	endpoint, err := pairingRecordURL(discoveryURL, slot)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(pairingTimeout)
+	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
+		deadline = until
+	}
 	for {
-		err := RunGitWithMTLS(ctx, "", caFilePath, local.ClientCertPath, local.ClientKeyPath, "ls-remote", "--heads", repoURL)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		} else {
+			body, readErr := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				if readErr != nil {
+					return nil, fmt.Errorf("read pairing record: %w", readErr)
+				}
+				return body, nil
+			}
+			if response.StatusCode != http.StatusNotFound {
+				return nil, fmt.Errorf("discovery returned %s", response.Status)
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("pairing record did not appear within %s", pairingTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// pairingRecordURL inserts the slot as a subdomain so the address never
+// appears in a request path an intermediary would log.
+func pairingRecordURL(discoveryURL, slot string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(discoveryURL))
+	if err != nil {
+		return "", fmt.Errorf("invalid discovery URL %q: %w", discoveryURL, err)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("invalid discovery URL %q", discoveryURL)
+	}
+	if port := parsed.Port(); port != "" {
+		parsed.Host = net.JoinHostPort(slot+"."+host, port)
+	} else {
+		parsed.Host = slot + "." + host
+	}
+	parsed.Path = "/"
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+// PollAuthorization retries ls-remote until the paired device has committed
+// this machine's key. It runs inside the repository so the remote helper can
+// find the tailnet node.
+func PollAuthorization(ctx context.Context, repoDir string, repoURL string, local gitcrypt.LocalIdentity, caFilePath string) error {
+	for {
+		err := RunGitWithMTLS(ctx, repoDir, caFilePath, local.ClientCertPath, local.ClientKeyPath, "ls-remote", "--heads", repoURL)
 		if err == nil {
 			return nil
 		}
@@ -265,8 +505,8 @@ func PollAuthorization(ctx context.Context, repoURL string, local gitcrypt.Local
 }
 
 // InitializeRepository creates a local git directory before auth so per-repo identity can be stored in .git/replycant.
-func InitializeRepository(ctx context.Context, directory string, repoURL string, inferURL string, bare bool) (string, error) {
-	repoDir, err := resolveTargetRepoDir(directory, inferURL)
+func InitializeRepository(ctx context.Context, directory string, repoURL string, bare bool) (string, error) {
+	repoDir, err := resolveTargetRepoDir(directory, repoURL)
 	if err != nil {
 		return "", err
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,6 +17,9 @@ type provisionerConfig struct {
 	seederIdentityDir string
 	newIdentityJSON   string
 	bareRepo          string
+	qrURL             string
+	caConfigURL       string
+	pairURL           string
 }
 
 func runGit(dir string, args ...string) error {
@@ -80,6 +84,15 @@ func collectRecipients(workDir string, newIdentity gitcrypt.Identity) ([][]byte,
 }
 
 func provision(cfg provisionerConfig) error {
+	var payload qrPayload
+	if cfg.qrURL != "" {
+		var err error
+		payload, err = fetchQRPayload(context.Background(), cfg.qrURL)
+		if err != nil {
+			return err
+		}
+	}
+
 	seederIdentity, err := readIdentity(filepath.Join(cfg.seederIdentityDir, "identity.json"))
 	if err != nil {
 		return fmt.Errorf("read seeder identity: %w", err)
@@ -160,7 +173,15 @@ func provision(cfg provisionerConfig) error {
 	if err := runGit(workDir, "push", "origin", "main"); err != nil {
 		return err
 	}
-	return nil
+	if cfg.qrURL == "" {
+		return nil
+	}
+	if cfg.caConfigURL == "" || cfg.pairURL == "" {
+		return fmt.Errorf("--ca-config-url and --pair-url are required with --qr-url")
+	}
+	// The new key is on main before this join, so hsproxy will accept the
+	// pairing device once gitd publishes the record and that device connects.
+	return approveTailnetPairing(context.Background(), cfg.seederIdentityDir, cfg.caConfigURL, cfg.pairURL, payload)
 }
 
 func main() {
@@ -168,6 +189,9 @@ func main() {
 	flag.StringVar(&cfg.seederIdentityDir, "seeder-identity-dir", "", "Directory containing seeder identity.json")
 	flag.StringVar(&cfg.newIdentityJSON, "new-identity-json", "", "Path to new device identity.json")
 	flag.StringVar(&cfg.bareRepo, "bare-repo", "", "Path to bare repository")
+	flag.StringVar(&cfg.qrURL, "qr-url", "", "Clone QR payload URL; set to approve a tailnet pairing")
+	flag.StringVar(&cfg.caConfigURL, "ca-config-url", "", "gitd CA /config.json that mints a seeder pre-auth key")
+	flag.StringVar(&cfg.pairURL, "pair-url", "", "gitd /pair URL inside the tailnet")
 	flag.Parse()
 
 	if cfg.seederIdentityDir == "" || cfg.newIdentityJSON == "" || cfg.bareRepo == "" {

@@ -1,4 +1,4 @@
-// Package shim gives a Tailscale client a control-plane endpoint it is willing
+// Package tailnetshim gives a Tailscale client a control-plane endpoint it is willing
 // to talk to.
 //
 // The problem is narrow but blocking. replycant's headscale is fronted by
@@ -18,7 +18,7 @@
 // Binding loopback only is a security requirement rather than a convenience:
 // the shim speaks with the device's credential, so anything that can reach it
 // can reach the control plane as that device.
-package shim
+package tailnetshim
 
 import (
 	"context"

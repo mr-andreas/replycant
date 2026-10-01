@@ -65,6 +65,7 @@ Two paths matter and they are deliberately separate:
 | Discovery API | hosted | Holds one short-lived sealed record per slot |
 | tsnet in gitd | home host | Puts gitd on the tailnet instead of on a host port |
 | tsnet / TailscaleKit in clients | device | Puts the app on the tailnet |
+| `git-remote-replycant` | CLI | Starts one tailnet agent per repository and sends git, LFS, and the importer through its loopback proxy |
 | Loopback shim | device | Adds pinned TLS and the device certificate to headscale traffic |
 
 ### hsproxy
