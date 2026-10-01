@@ -45,6 +45,8 @@ LAN-only and integration setups (no tsnet) still serve `{ca, url}` from the same
 3. **Join, then push**: the first device joins the tailnet, creates a local repository, commits its public key to `pubkeys/`, and pushes. The server accepts because the repository is empty.
 4. **Access control active**: subsequent connections require a certificate matching a key in `pubkeys/`
 
+While the repository has no branches, `hsproxy` allows the first device's certificate even though it is not in `pubkeys/` yet. That exemption is what makes the join possible: the key cannot be committed until gitd is reachable over the tailnet, and the bootstrap push is what closes the window. [Joining a new repository](./connectivity.md#joining-a-new-repository) walks the whole path.
+
 ### Race Condition Prevention
 
 When multiple devices attempt to bootstrap simultaneously, a mutex prevents race conditions:
@@ -67,7 +69,7 @@ This ensures exactly one device can perform the initial bootstrap.
 
 ## Device Linking (Adding to Existing Repository)
 
-When a repository already has authorized devices, new devices must be explicitly authorized by an existing device. This uses a two-phase QR code exchange.
+When a repository already has authorized devices, new devices must be explicitly authorized by an existing device. Phase 1 is always a public-key QR. Phase 2 depends on the deployment: a LAN-only server hands over a `{url, ca}` QR, and a tailnet server uses [Tailnet Pairing](#tailnet-pairing).
 
 ### Flow
 
@@ -87,13 +89,16 @@ sequenceDiagram
     GitServer-->>DeviceA: Push successful
     Note over GitServer: Device B now authorized
     
-    Note over DeviceA,DeviceB: Phase 2: Server Config Exchange
-    DeviceA->>DeviceA: Display server config QR
-    DeviceB->>DeviceA: Scan server config QR
-    Note over DeviceB: Extract server URL and CA cert
-    DeviceB->>GitServer: Clone repository (mTLS)
-    Note over GitServer: Validate Device B certificate
-    GitServer-->>DeviceB: Clone successful
+    alt LAN-only
+        Note over DeviceA,DeviceB: Phase 2: server config QR
+        DeviceA->>DeviceA: Display URL and CA
+        DeviceB->>DeviceA: Scan server config QR
+        DeviceB->>GitServer: Clone repository (mTLS)
+        Note over GitServer: Validate Device B certificate
+        GitServer-->>DeviceB: Clone successful
+    else Tailnet
+        Note over DeviceA,DeviceB: Phase 2 is Tailnet Pairing, below
+    end
 ```
 
 ### Phase 1: Identity Exchange
@@ -104,12 +109,11 @@ sequenceDiagram
 4. **Device A commits key**: Adds `pubkeys/{name}-{uuid}.pub` to repository
 5. **Device A pushes**: Server now recognizes Device B's certificate
 
-### Phase 2: Server Configuration Exchange
+### Phase 2: Reaching the server
 
-1. **Device A displays config QR**: Shows server URL and CA certificate
-2. **Device B scans QR**: Obtains connection information
-3. **Device B clones**: Uses mTLS with its certificate (now authorized)
-4. **Sync complete**: Both devices have identical repository state
+On a LAN-only deployment, Device A displays a QR with the server URL and CA certificate. Device B scans it and clones with mTLS. Its certificate is already in `pubkeys/` from phase 1.
+
+On a tailnet deployment that QR has nothing useful to carry. gitd publishes no address Device B can dial, and the pre-auth key has to be minted by gitd. Phase 2 is [Tailnet Pairing](#tailnet-pairing). The `{url, ca}` QR is only for LAN-only setups.
 
 ### Why Two Phases?
 
@@ -344,7 +348,7 @@ An authorized device connects on its first attempt after the pubkey push lands o
 | Property | Bootstrap Mode | Device Linking |
 |----------|----------------|----------------|
 | Authorization | First push wins | Explicit by existing device |
-| Key exchange | Via CA server QR | Via device-to-device QR |
+| Key exchange | Via CA server QR | Pubkey QR, then tailnet pairing or a LAN config QR |
 | Audit trail | Git history of pubkeys/ | Git history of pubkeys/ |
 | Revocation | Remove key from pubkeys/ | Remove key from pubkeys/ |
 

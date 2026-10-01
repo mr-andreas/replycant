@@ -1,4 +1,12 @@
-# Connectivity
+---
+title: Connectivity (Tailscale and headscale)
+keywords:
+  - tailscale
+  - headscale
+  - tailnet
+---
+
+# Connectivity (Tailscale and headscale)
 
 Devices reach gitd over a private tailnet rather than over a published port on
 the user's router. The server hosts its own tailnet control plane (headscale)
@@ -53,6 +61,93 @@ Two paths matter and they are deliberately separate:
   splice to hsproxy) and falls back to the hosted relay if that path fails.
 - **Data path.** Git, LFS, decryptd, and transcoded all travel inside the
   tailnet, peer to peer. They never touch the relay.
+
+## Joining a new repository
+
+A new repository has no device keys, and the only tailnet member is gitd
+itself. Before any device exists, `headscale-init` creates the `replycant`
+user and mints a pre-auth key tagged `tag:server`. gitd uses that key to
+join headscale over the compose network (`http://headscale:8080`), then
+re-authenticates from its own node state. Devices never use this key, and
+this join does not cross the hosted relay.
+
+The first device gets its trust anchor from the CA page at
+`http://127.0.0.1:8080` on the machine running gitd. That listener is
+loopback-only, so the CA and the one-time pre-auth key never pass through
+the hosted relay or the discovery API. Every request to the page mints a
+fresh key: single-use, valid for 10 minutes. The QR shape is in
+[Device Onboarding](./device-onboarding.md#server-configuration-qr).
+
+The device pins the CA before it can join, and it joins before it can
+push. `gitd.replycant.internal` does not resolve until the node is up.
+
+1. Pin the CA and remember gitd as `https://gitd.replycant.internal:8443`.
+2. Start the loopback shim and point the Tailscale client at
+   `http://127.0.0.1:P`.
+3. The shim dials the tunnel hostname. This is the first control session,
+   so it can only go through the hosted relay: the node has no route to
+   gitd yet.
+4. `tunnel-agent` splices the stream to `hsproxy`. The repository has no
+   branches, so `hsproxy` allows the device certificate even though it is
+   not in `pubkeys/` yet. That exemption is the only way a first device
+   can join, because the key cannot be committed until gitd is reachable.
+5. `hsproxy` splices the authorized session to headscale, and the device
+   joins with the pre-auth key.
+6. The device pushes its public key. gitd accepts the push because the
+   repository is empty. That push closes the window: the next control
+   session and the next Git request both require a key in `pubkeys/`.
+
+```mermaid
+sequenceDiagram
+    participant App as First device
+    participant CA as CA page
+    participant Shim as Loopback shim
+    participant Relay as Hosted relay
+    participant Agent as tunnel-agent
+    participant HSP as hsproxy
+    participant HS as headscale
+    participant Gitd as gitd
+
+    App->>CA: Scan the loopback QR
+    CA->>HS: Mint a single-use pre-auth key
+    CA-->>App: CA, headscale URL, pre-auth key
+    App->>App: Pin the CA
+    App->>Shim: Control URL is loopback HTTP
+    Shim->>Relay: mTLS pinned to the deployment CA
+    Relay->>Agent: Splice by SNI
+    Agent->>HSP: Splice to local hsproxy
+    Note over HSP: Empty repository, unknown certificate allowed
+    HSP->>HS: Raw splice
+    App->>Gitd: Push the device public key
+    Note over HSP,Gitd: Bootstrap window closes
+```
+
+## Later devices and later launches
+
+A later device cannot open the CA page. It is not on the host, and gitd
+publishes nothing it could dial. An already-paired device fetches a sealed
+record for it. The record, the two encryption layers, and both delivery
+channels — the discovery API, or a second QR when the operator publishes
+headscale themselves — are in
+[Tailnet Pairing](./device-onboarding.md#tailnet-pairing).
+
+Joining is part of every launch. A userspace node only runs while the app
+does. The pre-auth key is not presented again: headscale retires it after
+the first registration, and the node re-authenticates from the state saved
+on that first successful join. A join that never succeeds does not save
+that state, so a record that cannot be used does not leave the app
+retrying a tailnet it never reached.
+
+Each launch still opens its first control session through the hosted
+relay. The shim cannot prefer the in-tailnet path until the node is up,
+and the node cannot come up without a control session. Once the node is
+running, later control sessions dial `gitd.replycant.internal:8444`, and
+gitd splices that listener to the same `hsproxy`. The shim gives this path
+two seconds, then falls back to the relay, so a peer that is offline does
+not hang the control connection.
+
+Git, LFS, and media take neither control path. They are tailnet
+connections to `gitd.replycant.internal:8443`.
 
 ## The pieces
 
@@ -207,6 +302,78 @@ a valid record cannot be relocated:
 
 Records have a 10-minute TTL and are deleted on read, so a stale record cannot
 be replayed.
+
+## Threat model: the hosted operator
+
+The relay and the discovery API are operated by Replycant. This is what
+stops that operator from sitting in the middle of a deployment. What they
+can still observe is the table in
+[What the hosted services can and cannot see](#what-the-hosted-services-can-and-cannot-see).
+
+**A public certificate for the tunnel hostname does not make the operator
+the control plane.** The hostname is under `tunnel.replycant.com`, a zone
+the operator controls, so they can obtain a publicly trusted certificate
+for any `{ca-label}.sNN` name. Clients do not consult the public PKI for
+this connection. The loopback shim trusts only the deployment CA pinned at
+onboarding:
+
+- The Go shim sets `RootCAs` to that CA and refuses to start if none is
+  configured. Accepting system roots would accept the operator's
+  certificate.
+- The iOS shim installs that CA as the only anchor
+  (`SecTrustSetAnchorCertificatesOnly`). A chain the system trust store
+  would accept is rejected.
+
+iOS evaluates the chain with a basic X.509 policy rather than the SSL
+policy. The SSL policy enforces Apple's 398-day certificate lifetime even
+for an anchor pinned in code, and this CA issues leaves that last for
+years so an unattended server does not expire. The basic policy does not
+compare hostnames. That comparison would not add a boundary: this CA signs
+only the server certificates on the user's own host, and issuing a
+certificate for any other name already requires one of those private keys.
+Device certificates are self-signed and are not issued by this CA.
+
+**The relay cannot terminate the session, and cannot borrow another
+deployment's name.** Device TLS ends at `hsproxy` on the home host. The
+relay copies bytes and holds no key for that certificate. Registration is
+tied to the same CA. The agent presents the `hsproxy` leaf plus the
+deployment CA, and the relay accepts the registration only when the
+SHA-256 of that chain root matches the hostname label being claimed.
+Registering under someone else's label requires a CA whose digest collides
+with that label in the 128 bits it keeps. The leaf has to be signed by
+that CA, so the deployment's own CA key is the credential for its
+hostname. The agent also pins the relay's own self-signed certificate,
+which names no shard hostname, so a substitute TLS endpoint cannot collect
+the registration.
+
+**The discovery API can satisfy the CA-label check on its own.** The
+operator can mint a CA, name that CA's own tunnel hostname inside a
+record, and the label check passes: the label is the hash of whichever CA
+the record contains. The check only rejects a record whose CA and hostname
+disagree. The device polls a slot the operator can see, and the operator
+can answer that poll. What they cannot produce is a record that opens.
+Writer authentication is the outer AEAD, under a key derived from the
+pairing secret. The new device generates that secret and shows it only in
+its QR code; the discovery API never receives it. Both layers also bind
+the slot as associated data, so a record sealed for one slot cannot be
+moved to another. Records expire after 10 minutes and are deleted on read.
+
+**Reading a control session would still not make the operator gitd.** Git,
+LFS, and media present the device certificate to gitd and verify gitd's
+certificate against the same pinned CA. Library contents inside that
+session are age-encrypted. The Tailscale control protocol is Noise-encrypted
+end to end as well. That is why the loopback hop can be plaintext without
+exposing the control session to other processes on the device, and why the
+outer TLS is the authorization gate in front of headscale rather than the
+only encryption on that path.
+
+**What remains.** The operator sees the metadata in the table above: the
+SNI hostname, timing, volume, and client IP addresses on the relay; an
+opaque blob and its slot on the discovery API; WireGuard ciphertext, peer
+public keys, and volume on DERP when a direct path fails. They can also
+drop traffic. A deployment that does not want either hosted service in the
+join path publishes `hsproxy` itself. See
+[Choosing manual exposure](#choosing-manual-exposure).
 
 ## Choosing manual exposure
 

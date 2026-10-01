@@ -204,7 +204,7 @@ gitd \
   --tailnet-domain replycant.internal \
   --headscale-api-url http://headscale:8080 \
   --headscale-api-key-file /data/tailnet/headscale.apikey \
-  --headscale-client-url https://abc123.tunnel.replycant.com \
+  --headscale-client-url https://<ca-label>.s<NN>.tunnel.replycant.com \
   --discovery-url https://discovery.replycant.com
 ```
 
