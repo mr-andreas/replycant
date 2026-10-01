@@ -32,6 +32,12 @@ public struct TailnetStatusReport: Sendable, Equatable {
     /// path to the server. This is the row that makes those distinguishable.
     public let serverPath: ServerPath?
 
+    /// The address Tailscale is currently using to reach gitd.
+    ///
+    /// Settings only keeps the direct-versus-relay classification. The
+    /// endpoint is what shows whether "Direct" is the LAN or some other hop.
+    public let gitdAddress: String?
+
     /// How this device reaches gitd over the tailnet.
     ///
     /// Worth its own type so Settings can name Tailscale DERP without
@@ -51,6 +57,27 @@ public struct TailnetStatusReport: Sendable, Equatable {
     public let health: [String]
 
     public var isConnected: Bool { backendState == Self.runningState }
+
+    /// One status line, then any health warnings.
+    ///
+    /// Uses the same words as Settings so a log captured during a slow
+    /// transfer shows direct versus relay without opening that screen.
+    public var logLines: [String] {
+        var parts = ["state=\(backendState)"]
+        if let address = tailnetIPs.first {
+            parts.append("address=\(address)")
+        }
+        parts.append("control=\(Self.controlLabel(controlRoute))")
+        parts.append("server=\(Self.serverLabel(serverPath))")
+        if let gitdAddress {
+            parts.append("gitd=\(gitdAddress)")
+        }
+        if !derpHome.isEmpty {
+            parts.append("derp=\(derpHome)")
+        }
+        parts.append("peers=\(peersOnline)/\(peers)")
+        return [parts.joined(separator: " ")] + health
+    }
 
     static let runningState = "Running"
 
@@ -89,26 +116,45 @@ public struct TailnetStatusReport: Sendable, Equatable {
     ) throws -> TailnetStatusReport {
         let wire = try JSONDecoder().decode(Wire.self, from: data)
         let peers = wire.Peer ?? [:]
+        let gitd = peers.values.first(where: isGitd)
 
         return TailnetStatusReport(
             backendState: wire.BackendState ?? "Unknown",
             tailnetIPs: wire.TailscaleIPs ?? [],
             derpHome: wire.`Self`?.Relay ?? "",
             controlRoute: controlRoute,
-            serverPath: Self.serverPath(in: peers),
+            serverPath: gitd.flatMap(classify),
+            gitdAddress: Self.endpoint(of: gitd),
             peers: peers.count,
             peersOnline: peers.values.filter { $0.Online == true }.count,
             health: wire.Health ?? []
         )
     }
 
-    /// Picks the gitd peer out of the map so Settings can show that hop
-    /// rather than an aggregate that mixes phones and the server.
-    private static func serverPath(in peers: [String: Wire.Peer]) -> ServerPath? {
-        guard let peer = peers.values.first(where: isGitd) else {
-            return nil
+    /// Names the control hop the way Settings does.
+    private static func controlLabel(_ route: HeadscaleControlShim.Route?) -> String {
+        switch route {
+        case .tailnet: return "Direct"
+        case .relay: return "Hosted relay"
+        case nil: return "Not yet used"
         }
-        return classify(peer)
+    }
+
+    /// Names the path to gitd the way Settings does.
+    private static func serverLabel(_ path: ServerPath?) -> String {
+        switch path {
+        case .direct: return "Direct"
+        case .relay(let region):
+            return region.isEmpty ? "Relay" : "Relay (\(region))"
+        case .offline: return "Offline"
+        case nil: return "Not yet used"
+        }
+    }
+
+    /// Keeps a non-empty CurAddr. An empty one means there is no endpoint.
+    private static func endpoint(of peer: Wire.Peer?) -> String? {
+        guard let address = peer?.CurAddr, !address.isEmpty else { return nil }
+        return address
     }
 
     /// Matches the pinned MagicDNS name, or the short hostname when a

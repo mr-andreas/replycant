@@ -1,4 +1,5 @@
 import Foundation
+import LibGit2
 
 /// Encodes LFS fetch urgency so interactive media can run before warmup.
 enum ImageLoadPriority: Int, Comparable, Sendable {
@@ -60,13 +61,25 @@ actor LFSRequestScheduler {
             return try await awaitShared(shared)
         }
 
+        let waitStart = DispatchTime.now()
         try await acquirePermit(priority: priority)
+        let waitMs = Int(
+            (DispatchTime.now().uptimeNanoseconds
+                - waitStart.uptimeNanoseconds) / 1_000_000
+        )
+        let inflight = runningCount
         try Task.checkCancellation()
 
+        // Task.detached does not inherit task-locals, so the queue
+        // facts have to be re-bound inside the worker. That is what
+        // lets GitLFS print wait and inflight without a new argument.
+        let queue = LFSDownloadQueueTrace(waitMs: waitMs, inflight: inflight)
         let shared = SharedRequest(
             typeID: ObjectIdentifier(T.self),
             task: Task.detached {
-                try await operation() as any Sendable
+                try await LFSDownloadLog.$queue.withValue(queue) {
+                    try await operation() as any Sendable
+                }
             }
         )
         inFlightByKey[key] = shared

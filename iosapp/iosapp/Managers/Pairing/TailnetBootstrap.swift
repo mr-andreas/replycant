@@ -31,8 +31,13 @@ actor TailnetBootstrap {
         }
     }
 
+    private static let statusPollInterval: Duration = .seconds(10)
+
     private let configurations: TailnetConfigurationManager
     private var manager: TailnetManager?
+    private var statusWatch: Task<Void, Never>?
+    private var lastLoggedStatus: TailnetStatusReport?
+    private var lastStatusError: String?
 
     init(configurations: TailnetConfigurationManager = .shared) {
         self.configurations = configurations
@@ -100,6 +105,10 @@ actor TailnetBootstrap {
     /// Takes the node down and forgets the deployment. Used when a device is
     /// unpaired or its state is wiped.
     func leave() async {
+        statusWatch?.cancel()
+        statusWatch = nil
+        lastLoggedStatus = nil
+        lastStatusError = nil
         await manager?.shutDown()
         manager = nil
         TailnetSessionRouter.shared.use(nil)
@@ -161,5 +170,50 @@ actor TailnetBootstrap {
         // registered. Registering here rather than at each call site is what
         // keeps a request from silently escaping the tailnet.
         TailnetSessionRouter.shared.use(manager)
+        startStatusWatch()
+    }
+
+    /// Samples the path to gitd and logs it when it changes.
+    ///
+    /// A join-time Direct path can become a relay during a long download,
+    /// and Settings is not open then, so the log is the only record.
+    private func startStatusWatch() {
+        statusWatch?.cancel()
+        lastLoggedStatus = nil
+        lastStatusError = nil
+        statusWatch = Task {
+            while !Task.isCancelled {
+                await logStatusIfChanged()
+                do {
+                    try await Task.sleep(for: Self.statusPollInterval)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    /// Writes a new connection summary, and repeats a status failure only
+    /// when the error itself changes.
+    private func logStatusIfChanged() async {
+        guard let manager else { return }
+        do {
+            let report = try await manager.status()
+            lastStatusError = nil
+            guard report != lastLoggedStatus else { return }
+            lastLoggedStatus = report
+            for line in report.logLines {
+                log(line, context: "Tailnet")
+            }
+        } catch {
+            let message = error.localizedDescription
+            guard message != lastStatusError else { return }
+            lastStatusError = message
+            lastLoggedStatus = nil
+            logError(
+                "Failed to read tailnet status: \(message)",
+                context: "Tailnet"
+            )
+        }
     }
 }

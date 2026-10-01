@@ -191,6 +191,66 @@ struct TailnetStatusReportTests {
         #expect(report.health.isEmpty)
     }
 
+    // The log line is what gets captured next to a slow LFS transfer.
+    // It has to name both hops the way Settings does, and keep the gitd
+    // endpoint Settings discards after deciding the path is direct.
+    @Test func summarizesADirectPathWithTheGitdEndpoint() throws {
+        let report = try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .relay)
+
+        #expect(report.gitdAddress == "192.0.2.10:41641")
+        #expect(report.logLines == [
+            "state=Running address=100.64.0.2 control=Hosted relay server=Direct gitd=192.0.2.10:41641 derp=fra peers=1/2"
+        ])
+    }
+
+    // A relayed gitd has no current address. Printing one would make a
+    // DERP hop look like a LAN path.
+    @Test func summarizesARelayPathWithoutAnEndpoint() throws {
+        let json = Self.statusJSON(gitdPeer: """
+              "ID": "n1",
+              "HostName": "gitd",
+              "DNSName": "gitd.replycant.internal.",
+              "Online": true,
+              "Relay": "hel"
+        """)
+
+        let report = try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+        #expect(report.gitdAddress == nil)
+        #expect(report.logLines == [
+            "state=Running address=100.64.0.2 control=Direct server=Relay (hel) derp=fra peers=1/2"
+        ])
+    }
+
+    // Offline is the case a log has to make obvious: this device is up
+    // and the server is not, which is not the same as a slow direct path.
+    @Test func summarizesAnOfflineServer() throws {
+        let json = Self.statusJSON(gitdPeer: """
+              "ID": "n1",
+              "HostName": "gitd",
+              "DNSName": "gitd.replycant.internal.",
+              "Online": false,
+              "Relay": "hel"
+        """)
+
+        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet).logLines == [
+            "state=Running address=100.64.0.2 control=Direct server=Offline derp=fra peers=0/2"
+        ])
+    }
+
+    // Health warnings follow the summary so a node that is Running and
+    // still unable to carry traffic is visible in the same capture.
+    @Test func followsTheSummaryWithHealthWarnings() throws {
+        let json = Self.statusJSON(extra: """
+        ,
+          "Health": ["DERP region fra is unreachable"]
+        """)
+
+        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet).logLines == [
+            "state=Running address=100.64.0.2 control=Direct server=Direct gitd=192.0.2.10:41641 derp=fra peers=1/2",
+            "DERP region fra is unreachable"
+        ])
+    }
+
     // The local API is reached over loopback and cannot be spoofed, but a
     // version change could still alter the payload, and that must fail loudly
     // rather than render as a disconnected tailnet.

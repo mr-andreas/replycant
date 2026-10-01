@@ -2,6 +2,25 @@ import Foundation
 import CryptoKit
 import Security
 
+/// Queueing facts from `LFSRequestScheduler` so one download log line
+/// can tell a slow transfer from time spent waiting for a slot.
+public struct LFSDownloadQueueTrace: Sendable {
+    public var waitMs: Int
+    public var inflight: Int
+
+    public init(waitMs: Int, inflight: Int) {
+        self.waitMs = waitMs
+        self.inflight = inflight
+    }
+}
+
+/// Carries scheduler queue facts into `GitLFS.downloadData` without
+/// threading them through EncryptedLFS. Absent when a caller downloads
+/// without going through the scheduler.
+public enum LFSDownloadLog {
+    @TaskLocal public static var queue: LFSDownloadQueueTrace?
+}
+
 public enum LFSError: Error {
     case invalidFileURL
     case fileReadError(String)
@@ -431,8 +450,8 @@ public final class GitLFS: NSObject {
     
     // Downloads one LFS object through this instance's URL loading
     // configuration so mocked transports are honored. Emits a single
-    // compact log line on success with status, byte count, TTFB, and
-    // total elapsed time.
+    // compact log line on success with transfer timing, throughput,
+    // and any scheduler wait so a slow body can be told from a queue.
     @available(iOS 13.0, macOS 10.15, *)
     public func downloadData(oid: String, size: Int64, progressHandler: ((Int64, Int64) -> Void)? = nil) async throws -> Data {
         let downloadInfo = try await requestBatchDownload(oid: oid, size: size)
@@ -484,15 +503,14 @@ public final class GitLFS: NSObject {
 
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
+                delegate.whenFinished(continuation)
                 let task = self.session.dataTask(with: request) {
                     data, response, error in
-                    if let error = error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(
-                            returning: (data ?? Data(), response)
-                        )
-                    }
+                    delegate.completeTask(
+                        data: data,
+                        response: response,
+                        error: error
+                    )
                 }
                 task.delegate = delegate
                 task.resume()
@@ -519,6 +537,15 @@ public final class GitLFS: NSObject {
         }
 
         let ttfb = delegate.ttfbMs.map { " ttfb=\($0)ms" } ?? ""
+        let elapsedMs = max(totalMs, 1)
+        let rate = " rate=\(data.count * 1000 / elapsedMs)B/s"
+        let proto = delegate.networkProtocolName.map { " proto=\($0)" } ?? ""
+        let reused = delegate.isReusedConnection.map {
+            " reused=\($0 ? "1" : "0")"
+        } ?? ""
+        let queue = LFSDownloadLog.queue.map {
+            " wait=\($0.waitMs)ms inflight=\($0.inflight)"
+        } ?? ""
         let href = downloadAction.href
         let displayURL = href.count > 72
             ? href.prefix(72) + "..." : href
@@ -526,6 +553,10 @@ public final class GitLFS: NSObject {
             + " status=\(httpResponse.statusCode)"
             + " bytes=\(data.count)"
             + "\(ttfb) total=\(totalMs)ms"
+            + rate
+            + proto
+            + reused
+            + queue
             + " url=\(displayURL)")
         return data
     }
@@ -758,15 +789,44 @@ private class UploadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelegate
     }
 }
 
-// Captures URLSession task metrics so the download path can report TTFB
-// alongside total elapsed time in one compact log line.
+// Captures URLSession task metrics so the download path can report TTFB,
+// protocol, and connection reuse alongside wall time in one log line.
+// Waits for both the body and the metrics callback because metrics
+// usually arrive after the completion handler, and proto/reused would
+// otherwise be missing from the line we print.
 private class DownloadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelegate {
     private let progressHandler: ((Int64, Int64) -> Void)?
+    private let lock = NSLock()
+    private var pending: CheckedContinuation<(Data, URLResponse?), Error>?
+    private var taskResult: Result<(Data, URLResponse?), Error>?
+    private var didCollectMetrics = false
     private(set) var ttfbMs: Int?
+    private(set) var networkProtocolName: String?
+    private(set) var isReusedConnection: Bool?
 
     init(progressHandler: ((Int64, Int64) -> Void)?, clientIdentity: SecIdentity?, pinnedCA: SecCertificate?) {
         self.progressHandler = progressHandler
         super.init(clientIdentity: clientIdentity, pinnedCA: pinnedCA)
+    }
+
+    func whenFinished(
+        _ continuation: CheckedContinuation<(Data, URLResponse?), Error>
+    ) {
+        lock.lock()
+        pending = continuation
+        finishIfReadyLocked()
+        lock.unlock()
+    }
+
+    func completeTask(data: Data?, response: URLResponse?, error: Error?) {
+        lock.lock()
+        if let error {
+            taskResult = .failure(error)
+        } else {
+            taskResult = .success((data ?? Data(), response))
+        }
+        finishIfReadyLocked()
+        lock.unlock()
     }
 
     func urlSession(
@@ -774,10 +834,30 @@ private class DownloadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelega
         task: URLSessionTask,
         didFinishCollecting metrics: URLSessionTaskMetrics
     ) {
-        guard let tx = metrics.transactionMetrics.last,
-              let reqStart = tx.requestStartDate,
-              let respStart = tx.responseStartDate else { return }
-        ttfbMs = Int(respStart.timeIntervalSince(reqStart) * 1000)
+        lock.lock()
+        if let tx = metrics.transactionMetrics.last {
+            if let reqStart = tx.requestStartDate,
+               let respStart = tx.responseStartDate {
+                ttfbMs = Int(respStart.timeIntervalSince(reqStart) * 1000)
+            }
+            networkProtocolName = tx.networkProtocolName
+            isReusedConnection = tx.isReusedConnection
+        }
+        didCollectMetrics = true
+        finishIfReadyLocked()
+        lock.unlock()
+    }
+
+    private func finishIfReadyLocked() {
+        guard didCollectMetrics, let taskResult, let pending else { return }
+        self.pending = nil
+        self.taskResult = nil
+        switch taskResult {
+        case .success(let value):
+            pending.resume(returning: value)
+        case .failure(let error):
+            pending.resume(throwing: error)
+        }
     }
 
     func urlSession(
