@@ -19,38 +19,7 @@ permanent attack surface for those who can.
 
 ## Topology
 
-```mermaid
-flowchart TB
-    subgraph client [Device: iOS or desktop]
-        App[App code]
-        TS["tsnet / TailscaleKit<br/>control URL = http://127.0.0.1:P"]
-        Shim["Loopback shim<br/>TLS pinned to the deployment CA"]
-        App --> TS
-        TS --> Shim
-    end
-
-    subgraph aws [Hosted services]
-        Disc["Discovery API<br/>stores one sealed record per slot"]
-        Tun["Reverse TCP relay<br/>routes by SNI, reads nothing"]
-    end
-
-    subgraph home [Home host: docker compose]
-        Agent[tunnel-agent]
-        HSP["hsproxy<br/>mTLS front door"]
-        HS[headscale]
-        GITD["gitd + embedded tsnet"]
-        Agent --> HSP --> HS
-        GITD --> HS
-    end
-
-    Shim -->|"first control session"| Tun
-    Tun -->|"reverse tunnel"| Agent
-    Shim -.->|"later control sessions"| GITD
-    GITD -->|"TCP splice"| HSP
-    App -->|"GET sealed record"| Disc
-    GITD -->|"PUT sealed record"| Disc
-    App -.->|"tailnet: Git, LFS, media"| GITD
-```
+![Topology: devices, hosted services, and the home host](./connectivity/topology.drawio.svg)
 
 Two paths matter and they are deliberately separate:
 
@@ -97,30 +66,7 @@ push. `gitd.replycant.internal` does not resolve until the node is up.
    repository is empty. That push closes the window: the next control
    session and the next Git request both require a key in `pubkeys/`.
 
-```mermaid
-sequenceDiagram
-    participant App as First device
-    participant CA as CA page
-    participant Shim as Loopback shim
-    participant Relay as Hosted relay
-    participant Agent as tunnel-agent
-    participant HSP as hsproxy
-    participant HS as headscale
-    participant Gitd as gitd
-
-    App->>CA: Scan the loopback QR
-    CA->>HS: Mint a single-use pre-auth key
-    CA-->>App: CA, headscale URL, pre-auth key
-    App->>App: Pin the CA
-    App->>Shim: Control URL is loopback HTTP
-    Shim->>Relay: mTLS pinned to the deployment CA
-    Relay->>Agent: Splice by SNI
-    Agent->>HSP: Splice to local hsproxy
-    Note over HSP: Empty repository, unknown certificate allowed
-    HSP->>HS: Raw splice
-    App->>Gitd: Push the device public key
-    Note over HSP,Gitd: Bootstrap window closes
-```
+![First device joining a new repository](./connectivity/first-device-join.drawio.svg)
 
 ## Later devices and later launches
 

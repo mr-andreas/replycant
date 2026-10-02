@@ -20,21 +20,7 @@ Bootstrap mode allows the first device to push to an empty repository without pr
 
 ### Flow
 
-```mermaid
-sequenceDiagram
-    participant Browser
-    participant CA as gitd CA 127.0.0.1:8080
-    participant HS as headscale
-    participant App
-    participant Gitd as gitd.replycant.internal:8443
-
-    Browser->>CA: GET /
-    CA->>HS: mint preauth key
-    CA-->>Browser: QR with ca, headscale_url, preauth_key
-    App->>Browser: scan
-    App->>HS: join tailnet
-    App->>Gitd: bootstrap push
-```
+![First device joining a new repository](./connectivity/first-device-join.drawio.svg)
 
 LAN-only and integration setups (no tsnet) still serve `{ca, url}` from the same page.
 
@@ -73,33 +59,7 @@ When a repository already has authorized devices, new devices must be explicitly
 
 ### Flow
 
-```mermaid
-sequenceDiagram
-    participant DeviceB as Device B (New)
-    participant DeviceA as Device A (Existing)
-    participant GitServer as Git Server
-    
-    Note over DeviceB: Phase 1: Identity Exchange
-    DeviceB->>DeviceB: Generate identity at first boot
-    DeviceB->>DeviceB: Display public key QR
-    DeviceA->>DeviceB: Scan public key QR
-    Note over DeviceA: Extract pubkey, name, uuid
-    DeviceA->>DeviceA: Commit pubkey to pubkeys/
-    DeviceA->>GitServer: Push new public key
-    GitServer-->>DeviceA: Push successful
-    Note over GitServer: Device B now authorized
-    
-    alt LAN-only
-        Note over DeviceA,DeviceB: Phase 2: server config QR
-        DeviceA->>DeviceA: Display URL and CA
-        DeviceB->>DeviceA: Scan server config QR
-        DeviceB->>GitServer: Clone repository (mTLS)
-        Note over GitServer: Validate Device B certificate
-        GitServer-->>DeviceB: Clone successful
-    else Tailnet
-        Note over DeviceA,DeviceB: Phase 2 is Tailnet Pairing, below
-    end
-```
+![Device linking in two phases](./device-onboarding/device-linking.drawio.svg)
 
 ### Phase 1: Identity Exchange
 
@@ -197,30 +157,7 @@ credentials and publish them where the new device can collect them. See
 
 ### Flow
 
-```mermaid
-sequenceDiagram
-    participant New as New device
-    participant Disc as Discovery API
-    participant Old as Paired device
-    participant GitServer as gitd
-    participant HS as headscale
-
-    New->>New: Generate identity and a fresh pairing secret
-    New->>New: Derive slot and wrap key from the secret
-    New->>Old: Show QR {pubkey, age_pubkey, name, uuid, pairing_secret}
-    Old->>Old: Commit pubkey to pubkeys/
-    Old->>GitServer: Push new public key
-    Old->>GitServer: POST /pair {pairing_secret, age_pubkey}
-    GitServer->>HS: Mint a single-use pre-auth key
-    GitServer->>GitServer: Seal the record to the age key, wrap under the secret
-    GitServer->>Disc: PUT sealed record at the slot
-    GitServer-->>Old: Sealed record (opaque to the caller)
-    New->>Disc: GET the slot until a record appears
-    Disc-->>New: Sealed record, then deletes it
-    New->>New: Unwrap, decrypt, check the CA against the hostname label
-    New->>HS: Join the tailnet with the pre-auth key
-    New->>GitServer: Clone over the tailnet
-```
+![Tailnet pairing through the discovery API](./device-onboarding/tailnet-pairing.drawio.svg)
 
 ### Step-by-step
 
@@ -275,28 +212,7 @@ channel changes.
 
 The webapp onboarding flow mirrors device linking trust semantics but begins with browser-side server discovery:
 
-```mermaid
-sequenceDiagram
-    participant Browser as Webapp Browser
-    participant Proxy as Webapp Proxy
-    participant CAServer as CA Server :8080
-    participant Device as iOS App
-    participant GitServer as Git Server :8443
-
-    Browser->>Proxy: POST /api/setup/discover {serverUrl}
-    Proxy->>CAServer: GET /config.json
-    CAServer-->>Proxy: {ca, url} or {ca, headscale_url, preauth_key}
-    Proxy-->>Browser: Discovered config
-    Browser->>Browser: Persist config in localStorage
-    Browser->>Proxy: POST /api/setup/configure
-    Browser->>Browser: Generate P-256 identity + ca_hash
-    Browser->>Device: Show QR {pubkey, age_pubkey, name, uuid, ca_hash}
-    Device->>Device: Verify ca_hash matches stored CA
-    Device->>GitServer: Commit + push pubkeys entry
-    Browser->>Proxy: Poll Git access
-    Proxy->>GitServer: Forward mTLS request
-    GitServer-->>Browser: Authorized, sync starts
-```
+![Webapp-first onboarding](./device-onboarding/webapp-onboarding.drawio.svg)
 
 1. User opens an uninitialized webapp and enters `http://127.0.0.1:8080`.
 2. Webapp discovery fetches `/config.json`. A tailnet payload is first-device join; `{ca, url}` is LAN-only.
