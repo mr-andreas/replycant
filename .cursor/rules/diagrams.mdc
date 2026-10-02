@@ -1,0 +1,49 @@
+---
+description: Use mermaid only for tiny diagrams; draw complex ones in draw.io as editable SVGs colocated with their page
+alwaysApply: true
+---
+
+# Diagrams
+
+## Mermaid or draw.io
+
+Mermaid is allowed only for very small diagrams, where automatic layout
+cannot get messy:
+
+- a flowchart with about five nodes or fewer, one direction, no subgraphs
+- a sequence diagram with at most three participants and a few messages
+
+Anything larger, or anything where arrows would cross or need routing, is a
+draw.io diagram.
+
+## Format
+
+- Save each diagram as one editable `.drawio.svg`: an SVG export with the
+  diagram embedded, so it renders in the docs and opens directly in draw.io.
+  Do not add a separate `.drawio`, `.png`, or plain `.svg` copy.
+- Export with the adaptive theme and a solid background, so it follows the
+  site's light/dark toggle:
+  `draw.io -x -f svg -e --embed-svg-fonts false --theme auto -b 16 -o out.drawio.svg in.drawio`
+- The Docusaurus build prints one "can't be read correctly" warning per
+  `.drawio.svg` reference. That is expected (draw.io's embedded diagram
+  defeats the image-size check); do not work around it.
+
+## Location
+
+Put diagrams in a folder named after the Markdown file, next to it. Name each
+file after what it shows, without repeating the page name.
+
+```
+docs/docs/gitdb/connectivity.md
+docs/docs/gitdb/connectivity/topology.drawio.svg
+docs/docs/gitdb/connectivity/first-device-join.drawio.svg
+```
+
+Reference it with a relative path:
+
+```markdown
+![Topology: devices, hosted services, and the home host](./connectivity/topology.drawio.svg)
+```
+
+A diagram used by several pages lives with the page that defines the concept;
+other pages reference that file instead of copying it.
