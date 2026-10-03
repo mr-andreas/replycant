@@ -46,6 +46,11 @@ mint a fresh single-use key whenever headscale does not know it.
   between mints.
 - **gitd mints its own key** (`tag:server`) over headscale's API with the
   same watcher. `gitd.authkey` and `--tsnet-auth-key-file` are removed.
+- **A first login gets its key before the node starts.** A node that has
+  never logged in, sitting in `NeedsLogin`, does not register when the
+  watcher restarts its backend with a key. So gitd mints a key on every
+  start, and a device without a saved login mints one before starting. The
+  watcher then waits one cooldown before second-guessing that login.
 - **The pairing record drops `preauth_key`.** By the time the record is
   published, the authorizing device has already committed the new device's
   key, so the new device mints its own key. The first device still gets a

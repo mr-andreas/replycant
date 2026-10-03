@@ -2,8 +2,12 @@ package tsnetserve
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // An unset state directory is how operators opt out of the tailnet, so it must
@@ -84,5 +88,29 @@ func TestStartRequiresAKeyMinter(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "minter") {
 		t.Fatalf("expected a missing minter to be rejected, got %v", err)
+	}
+}
+
+// gitd's node gets its key before tsnet starts, because a node that has never
+// logged in cannot be handed a key afterwards. Without a key there is no way
+// to join, so a failed mint has to stop startup before any node state is
+// written rather than leave a node waiting for a login that never comes.
+func TestStartFailsBeforeTheNodeStartsWhenNoKeyCanBeMinted(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := Start(ctx, Config{
+		Dir:        dir,
+		Hostname:   "gitd",
+		ControlURL: "http://127.0.0.1:9",
+		Mint: func(context.Context) (string, error) {
+			return "", errors.New("headscale API unreachable")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "headscale API unreachable") {
+		t.Fatalf("expected the mint failure to fail Start, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "tailscaled.state")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("no tsnet state may be written when no key could be minted, stat: %v", statErr)
 	}
 }

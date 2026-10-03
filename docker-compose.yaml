@@ -567,6 +567,7 @@ services:
         . /data/hostname/hostname.env
         . /data/tailnet/tailnet.env
         exec gitd --repo=/data/repo --addr=:${REPLYCANT_GIT_PORT:-8443} --ca-addr=:${REPLYCANT_CA_PORT:-8080} --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082 --tsnet-dir=/data/tsnet --tsnet-control-url=http://headscale:8080 --tsnet-hostname=gitd --tailnet-domain=$$REPLYCANT_TAILNET_DOMAIN --headscale-api-url=http://headscale:8080 --headscale-api-key-file=/data/tailnet/headscale.apikey --headscale-client-url=$$REPLYCANT_HEADSCALE_URL --tailnet-reconcile-marker=/data/tailnet-state/reconciled-pubkeys.json --discovery-url="$$REPLYCANT_DISCOVERY_URL"
+    restart: unless-stopped
 
   # Decrypts encrypted LFS objects on the fly. Reachable only through gitd's
   # mTLS-authenticated /decryptd route, so no host port is published.
@@ -582,6 +583,7 @@ services:
     command:
       - --upstream=http://gitd:8085/lfs
       - --listen=:8084
+    restart: unless-stopped
 
   # Run transcoded for on-demand video segments. Reachable only through gitd's
   # mTLS-authenticated /transcoded route, so no host port is published.
@@ -595,6 +597,7 @@ services:
       - decryptd
     command:
       - --upstream=http://decryptd:8084
+    restart: unless-stopped
 
 # Shares the headscale CLI unix socket between the server and its init job.
 volumes:

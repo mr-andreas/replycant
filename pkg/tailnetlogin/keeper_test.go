@@ -216,6 +216,32 @@ func TestCooldownStopsRepeatedMinting(t *testing.T) {
 	}
 }
 
+// A node started with a key sits in NeedsLogin until that login completes.
+// Acting on it then restarts the backend mid-login, which on a node that has
+// never logged in leaves it never registering. The keeper has to give the
+// up-front key a full cooldown before treating NeedsLogin as a lost node.
+func TestUpFrontKeyLoginIsNotInterrupted(t *testing.T) {
+	node := &fakeNode{needsLogin: true}
+	minter := &fakeMinter{}
+	keeper, clock := newTestKeeper(t, node, minter)
+
+	keeper.deferFirstAttempt()
+	keeper.check(context.Background())
+	clock.advance(30 * time.Second)
+	keeper.check(context.Background())
+	if minter.count() != 0 {
+		t.Fatalf("the keeper must not mint while an up-front key login is in flight, got %d mints",
+			minter.count())
+	}
+
+	clock.advance(30 * time.Second)
+	keeper.check(context.Background())
+	if minter.count() != 1 {
+		t.Errorf("a node still needing login after the cooldown must get a key, got %d mints",
+			minter.count())
+	}
+}
+
 // If the node's own state cannot be read, nothing is known about whether it
 // needs a key, so none is spent.
 func TestUnreadableStateMintsNothing(t *testing.T) {

@@ -37,9 +37,9 @@ type Config struct {
 	ControlURL string
 	Hostname   string
 
-	// Obtains a fresh single-use key whenever headscale does not know the
-	// node: on first start, and after headscale lost its state. gitd mints
-	// its own over the headscale API, so no key is ever stored on disk.
+	// Obtains a fresh single-use key on every start, and whenever headscale
+	// has lost its state. gitd mints its own over the headscale API, so no
+	// key is ever stored on disk.
 	Mint tailnetlogin.MintFunc
 
 	// Emits tsnet's user-facing messages (login URLs, state changes). Verbose
@@ -119,10 +119,20 @@ func Start(ctx context.Context, config Config) (*Node, error) {
 		return nil, fmt.Errorf("create tsnet state directory %q: %w", config.Dir, err)
 	}
 
+	// gitd is the first node on every tailnet and can always reach the
+	// headscale API, so it takes a key on every start rather than working
+	// out whether it has logged in before. A node that has ignores the key,
+	// which then expires unused.
+	authKey, err := config.Mint(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mint a tailnet key for %q: %w", config.Hostname, err)
+	}
+
 	server := &tsnet.Server{
 		Dir:        config.Dir,
 		Hostname:   config.Hostname,
 		ControlURL: config.ControlURL,
+		AuthKey:    authKey,
 		UserLogf:   logf,
 		// Verbose backend logs are dropped; magicsock and netcheck output
 		// would otherwise dominate gitd's logs.

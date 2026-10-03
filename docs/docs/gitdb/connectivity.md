@@ -35,8 +35,8 @@ Two paths matter and they are deliberately separate:
 
 A new repository has no device keys, and the only tailnet member is gitd
 itself. `headscale-init` creates the `replycant` user and an API key. gitd
-uses that API key to mint its own key, tagged `tag:server`, whenever its
-node needs to log in, and joins headscale over the compose network
+uses that API key to mint its own key, tagged `tag:server`, each time it
+starts and whenever headscale forgets it, and joins headscale over the compose network
 (`http://headscale:8080`). That join does not cross the hosted relay.
 
 The first device gets its trust anchor from the CA page at
@@ -168,6 +168,10 @@ sequenceDiagram
   device certificate. hsproxy checks that certificate against `pubkeys/`
   before minting.
 - **gitd** mints its own `tag:server` key over headscale's API.
+- **First login.** A node that has never logged in gets its key before its
+  tailnet node starts. gitd mints one on every start; a device mints one
+  only when it has no saved login. Handing a key to a node already waiting
+  in `NeedsLogin` does not reliably make it register.
 - **Noticing.** A node starting from saved state that headscale does not
   know lands in `NeedsLogin`. A node that is already running never changes
   state: it keeps reporting `Running` while its map polls fail with

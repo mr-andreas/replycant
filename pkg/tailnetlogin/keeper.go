@@ -111,6 +111,16 @@ func New(config Config) (*Keeper, error) {
 	}, nil
 }
 
+// Holds off the first login attempt for one cooldown.
+//
+// A node started with a key reports NeedsLogin until that login completes.
+// Treating that as a lost node would restart the backend mid-login, which on a
+// node that has never logged in leaves it never registering. Must be called
+// before Run.
+func (k *Keeper) deferFirstAttempt() {
+	k.lastAttempt = k.now()
+}
+
 // Watches tsnet's backend log for the control plane disowning the node.
 //
 // Meant to be installed as tsnet.Server.Logf, which is the only place a

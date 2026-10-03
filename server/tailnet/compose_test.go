@@ -252,6 +252,17 @@ func TestNoiseKeySurvivesADatabaseWipe(t *testing.T) {
 	}
 }
 
+// A long-running service that exits, for example gitd giving up on a tailnet
+// join, must come back on its own. Otherwise the stack keeps running without
+// it and devices see only an unreachable host.
+func TestLongRunningServicesRestart(t *testing.T) {
+	for _, name := range []string{"headscale", "hsproxy", "tunnel-agent", "gitd", "decryptd", "transcoded"} {
+		if !regexp.MustCompile(`\n    restart: unless-stopped\n`).MatchString(composeService(t, name)) {
+			t.Errorf("%s must declare restart: unless-stopped", name)
+		}
+	}
+}
+
 // Revocation compares pubkeys/ with the set gitd last reconciled. The marker
 // must persist on a writable volume, or every gitd restart would drop all
 // device nodes again.
