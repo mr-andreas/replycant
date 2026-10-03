@@ -38,6 +38,11 @@ type ServerConfig struct {
 	// behaviour for manual-exposure deployments that put the headscale URL and
 	// CA in the pairing QR directly and run no discovery service.
 	PairingPublisher PairingPublisher
+
+	// Optional. Called after every receive-pack request, which is the only
+	// way pubkeys/ changes, so tailnet revocation can run as soon as a push
+	// lands. Must not block: it runs on the push's request goroutine.
+	OnPush func()
 }
 
 // Implements http.Handler for Git Smart HTTP protocol with mTLS authentication.
@@ -53,6 +58,9 @@ type Server struct {
 
 	// Nil on deployments without cloud discovery; see ServerConfig.
 	pairingPublisher PairingPublisher
+
+	// Nil when nothing needs to know about pushes; see ServerConfig.
+	onPush func()
 
 	bootstrapMu sync.Mutex // Prevents race condition during initial repository bootstrap
 }
@@ -91,6 +99,7 @@ func NewServer(a Authenticator, cfg ServerConfig) (*Server, error) {
 		serviceProxies: proxies,
 
 		pairingPublisher: cfg.PairingPublisher,
+		onPush:           cfg.OnPush,
 	}
 
 	if err := server.installPreReceiveHook(); err != nil {
@@ -234,6 +243,12 @@ func (s *Server) handleAuthenticatedRequest(w http.ResponseWriter, r *http.Reque
 		log.Printf("Error proxying to git-http-backend: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
+	}
+
+	// Called whether or not the push was accepted: a rejected push leaves
+	// main unchanged, and the observer only acts on what main says.
+	if s.onPush != nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
+		s.onPush()
 	}
 }
 

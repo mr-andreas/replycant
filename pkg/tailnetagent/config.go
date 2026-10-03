@@ -12,8 +12,8 @@ import (
 // PersistedConfig is what survives a restart so later git commands can bring
 // the node back without another pairing.
 //
-// The pre-auth key is absent on purpose. It is single-use, and after the
-// first join the node re-authenticates from the state directory.
+// No tailnet key is stored. The agent mints a single-use one with the device
+// certificate whenever headscale does not know the node.
 type PersistedConfig struct {
 	HeadscaleAddr       string `json:"headscale_addr"`
 	HeadscaleServerName string `json:"headscale_server_name"`
@@ -21,7 +21,7 @@ type PersistedConfig struct {
 }
 
 // StartConfig is everything the agent needs, delivered on stdin so the device
-// key and the pre-auth key never appear in the process list.
+// key never appears in the process list.
 type StartConfig struct {
 	GitDir              string `json:"git_dir"`
 	HeadscaleAddr       string `json:"headscale_addr"`
@@ -29,7 +29,6 @@ type StartConfig struct {
 	CAPEM               string `json:"ca_pem"`
 	ClientCertPEM       string `json:"client_cert_pem"`
 	ClientKeyPEM        string `json:"client_key_pem"`
-	PreauthKey          string `json:"preauth_key,omitempty"`
 	Hostname            string `json:"hostname"`
 }
 
@@ -98,8 +97,7 @@ func (c PersistedConfig) validate() error {
 }
 
 // LoadStartConfig rebuilds an agent stdin payload from files already stored
-// in the repository. The pre-auth key is not among them; only the first join
-// has one, and it passes that in itself.
+// in the repository.
 func LoadStartConfig(gitDir string) (StartConfig, error) {
 	persisted, err := LoadConfig(gitDir)
 	if err != nil {

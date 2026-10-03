@@ -59,11 +59,14 @@ func TestTsnetRegistersAgainstMismatchedControlURL(t *testing.T) {
 	defer cancel()
 
 	node, err := tsnetserve.Start(ctx, tsnetserve.Config{
-		Dir:         t.TempDir(),
-		ControlURL:  controlURL,
-		Hostname:    fmt.Sprintf("spike-%d", time.Now().UnixNano()),
-		AuthKeyFile: authKeyFile,
-		Logf:        t.Logf,
+		Dir:        t.TempDir(),
+		ControlURL: controlURL,
+		Hostname:   fmt.Sprintf("spike-%d", time.Now().UnixNano()),
+		Mint: func(context.Context) (string, error) {
+			key, err := os.ReadFile(authKeyFile)
+			return strings.TrimSpace(string(key)), err
+		},
+		Logf: t.Logf,
 	})
 	if err != nil {
 		t.Fatalf("a node must be able to register through a mismatched control URL: %v", err)

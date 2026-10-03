@@ -1,8 +1,7 @@
 package tsnetserve
 
 import (
-	"os"
-	"path/filepath"
+	"context"
 	"strings"
 	"testing"
 )
@@ -74,65 +73,16 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-// The pre-auth key is read from a file rather than a flag because gitd logs its
-// whole parsed configuration at startup, and a flag value would also be visible
-// in the process list.
-func TestResolveAuthKeyReadsFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "authkey")
-	if err := os.WriteFile(path, []byte("  hskey-auth-abc-def\n\n"), 0o600); err != nil {
-		t.Fatalf("write authkey: %v", err)
-	}
-
-	config := Config{Dir: "/state", Hostname: "gitd", ControlURL: "https://hs.example", AuthKeyFile: path}
-	key, err := config.resolveAuthKey()
-	if err != nil {
-		t.Fatalf("resolve auth key: %v", err)
-	}
-	if key != "hskey-auth-abc-def" {
-		t.Fatalf("expected surrounding whitespace to be trimmed, got %q", key)
-	}
-}
-
-// A node with existing state re-authenticates from that state, so a missing key
-// file is only fatal when it was explicitly configured.
-func TestResolveAuthKeyWithoutFile(t *testing.T) {
-	config := Config{Dir: "/state", Hostname: "gitd", ControlURL: "https://hs.example"}
-	key, err := config.resolveAuthKey()
-	if err != nil {
-		t.Fatalf("an unset auth key file must not be an error: %v", err)
-	}
-	if key != "" {
-		t.Fatalf("expected an empty key, got %q", key)
-	}
-}
-
-// A configured-but-unreadable key file is a deployment mistake worth failing
-// on, because the node would otherwise silently wait for interactive login
-// that nobody is watching for.
-func TestResolveAuthKeyMissingFileFails(t *testing.T) {
-	config := Config{
-		Dir:         "/state",
-		Hostname:    "gitd",
-		ControlURL:  "https://hs.example",
-		AuthKeyFile: filepath.Join(t.TempDir(), "absent"),
-	}
-	if _, err := config.resolveAuthKey(); err == nil {
-		t.Fatal("expected a missing auth key file to fail")
-	}
-}
-
-// An empty key file is the shape a half-finished headscale-init run leaves
-// behind, and it must not be mistaken for "no key configured".
-func TestResolveAuthKeyEmptyFileFails(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "authkey")
-	if err := os.WriteFile(path, []byte("\n  \n"), 0o600); err != nil {
-		t.Fatalf("write authkey: %v", err)
-	}
-
-	config := Config{Dir: "/state", Hostname: "gitd", ControlURL: "https://hs.example", AuthKeyFile: path}
-	if _, err := config.resolveAuthKey(); err == nil {
-		t.Fatal("expected an empty auth key file to fail")
+// gitd has no stored key any more. Without a minter its node could never
+// rejoin after headscale loses its state, and would wait for an interactive
+// login nobody is watching for, so Start refuses before touching the network.
+func TestStartRequiresAKeyMinter(t *testing.T) {
+	_, err := Start(context.Background(), Config{
+		Dir:        t.TempDir(),
+		Hostname:   "gitd",
+		ControlURL: "http://127.0.0.1:9",
+	})
+	if err == nil || !strings.Contains(err.Error(), "minter") {
+		t.Fatalf("expected a missing minter to be rejected, got %v", err)
 	}
 }

@@ -1,7 +1,9 @@
 # ADR-0010: Headscale Tailnet Transport For All Client Traffic
 
 ## Status
-Accepted
+Accepted. Where tailnet keys come from, hsproxy's pure splicing, and init-time
+key capture are superseded by
+[ADR-0011](0011-headscale-state-derived-from-git.md).
 
 ## Context
 gitd published its mTLS Git port and its CA port on the host. Reaching a home

@@ -512,10 +512,11 @@ describe("useOnboardingFlow", () => {
   });
 
   // The whole point of the path: a record sealed by gitd is opened here, the
-  // tailnet is joined with the credential inside it, and the proxy is pointed
+  // tailnet is joined at the control plane it names, and the proxy is pointed
   // at gitd's MagicDNS name. This exercises the real decryption code against a
-  // record the Go writer produced.
-  it("joins the tailnet with the credentials from the pairing record", async () => {
+  // record the Go writer produced. No key is passed: this device's key is
+  // already in pubkeys/, so the sidecar mints one from hsproxy itself.
+  it("joins the tailnet at the control plane from the pairing record", async () => {
     const { joinTailnet } = installTailnetBridge();
     await startTailnetPairing();
 
@@ -528,9 +529,9 @@ describe("useOnboardingFlow", () => {
       expect.objectContaining({
         headscaleAddr: `${pairingFixture.caLabel}.tunnel.replycant.com:443`,
         caPem: pairingFixture.payload.ca_pem,
-        preauthKey: pairingFixture.payload.preauth_key,
       }),
     );
+    expect(joinTailnet.mock.calls[0][0]).not.toHaveProperty("preauthKey");
   });
 
   // The proxy has to be told where gitd is before rehydration starts, or the
@@ -550,7 +551,7 @@ describe("useOnboardingFlow", () => {
   });
 
   // A cold start has to rejoin, because the node only exists while the sidecar
-  // runs. It must use no pre-auth key: that credential was single-use.
+  // runs. It passes no key; the sidecar mints one if headscale forgot it.
   it("rejoins the tailnet on a later start without a pre-auth key", async () => {
     const { joinTailnet } = installTailnetBridge();
     saveSetupConfig();
@@ -667,7 +668,7 @@ describe("useOnboardingFlow", () => {
           json: async () => ({
             ca: pairingFixture.payload.ca_pem,
             headscale_url: pairingFixture.payload.headscale_url,
-            preauth_key: pairingFixture.payload.preauth_key,
+            preauth_key: "hskey-auth-first-device",
           }),
         })
         .mockResolvedValue({
@@ -694,7 +695,7 @@ describe("useOnboardingFlow", () => {
       expect.objectContaining({
         headscaleAddr: `${pairingFixture.caLabel}.tunnel.replycant.com:443`,
         caPem: pairingFixture.payload.ca_pem,
-        preauthKey: pairingFixture.payload.preauth_key,
+        preauthKey: "hskey-auth-first-device",
         gitdControlAddr: "gitd.replycant.internal:8444",
       }),
     );

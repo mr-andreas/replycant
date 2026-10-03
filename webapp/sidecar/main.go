@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mr-andreas/replycant/pkg/tailnetlogin"
 	"github.com/mr-andreas/replycant/pkg/tailnetshim"
 	"tailscale.com/tsnet"
 )
@@ -71,12 +72,13 @@ type input struct {
 	ClientCertPEM string `json:"client_cert_pem"`
 	ClientKeyPEM  string `json:"client_key_pem"`
 
-	// Single-use credential from the pairing record. Only needed for the
-	// first join; afterwards the node re-authenticates from its own state.
+	// Single-use credential from the CA page, which only the first device of
+	// a deployment has: its key is not in pubkeys/ yet, so hsproxy will not
+	// mint one for it. Every other join mints its own key.
 	PreauthKey string `json:"preauth_key"`
 
-	// Where tsnet keeps its node identity. Must persist across restarts, or
-	// every launch consumes a new pre-auth key the device does not have.
+	// Where tsnet keeps its node identity. Persisted so a restart rejoins as
+	// the same node instead of registering a new one each launch.
 	StateDir string `json:"state_dir"`
 
 	// The node's name on the tailnet.
@@ -152,7 +154,7 @@ func run() error {
 	go controlPlane.Serve(ctx)
 	log.Printf("control plane %s fronted at %s", controlPlane.UpstreamServerName(), controlPlane.Addr())
 
-	node, err := startNode(ctx, config, controlPlane.ControlURL())
+	node, err := startNode(ctx, config, controlPlane)
 	if err != nil {
 		return err
 	}
@@ -235,7 +237,11 @@ func tailnetControlRoute(config input, dial dialFunc) (tailnetshim.TailnetRoute,
 
 // Brings the tailnet node up, blocking until it has joined so a failure is
 // reported here rather than surfacing later as unreachable hosts.
-func startNode(ctx context.Context, config input, controlURL string) (*tsnet.Server, error) {
+//
+// The node is kept logged in for the sidecar's lifetime: whenever headscale
+// does not know it, on first join or after headscale lost its state, it mints
+// a key from hsproxy with the device certificate and logs in again.
+func startNode(ctx context.Context, config input, controlPlane *tailnetshim.Shim) (*tsnet.Server, error) {
 	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create tailnet state directory %q: %w", config.StateDir, err)
 	}
@@ -243,12 +249,16 @@ func startNode(ctx context.Context, config input, controlURL string) (*tsnet.Ser
 	node := &tsnet.Server{
 		Dir:        config.StateDir,
 		Hostname:   config.Hostname,
-		ControlURL: controlURL,
+		ControlURL: controlPlane.ControlURL(),
 		AuthKey:    config.PreauthKey,
 		UserLogf:   log.Printf,
 		// Backend logs are dropped. magicsock and netcheck output would
 		// otherwise dominate the desktop app's logs.
 		Logf: func(string, ...any) {},
+	}
+	if err := tailnetlogin.Keep(ctx, node, controlPlane.MintPreauthKey, log.Printf); err != nil {
+		_ = node.Close()
+		return nil, err
 	}
 
 	joinCtx, cancel := context.WithTimeout(ctx, joinTimeout)

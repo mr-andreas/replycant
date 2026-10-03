@@ -168,6 +168,43 @@ func TestServer_HandleGitRequest_Authenticated(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+// A push is the only way pubkeys/ changes, so it is when tailnet revocation
+// has to run. Fetches and ref advertisements change nothing and must not
+// trigger it, or every sync would cost a headscale round trip.
+func TestServer_OnPushRunsOnlyAfterReceivePack(t *testing.T) {
+	setupHookBinaryForTests(t)
+
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	cert := testCtx.CreateTestCertificate(t, &privKey.PublicKey, privKey)
+
+	pushes := 0
+	cfg := testServerConfig(t, testRepo.BareRepo)
+	cfg.OnPush = func() { pushes++ }
+	server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1"}, cfg)
+	require.NoError(t, err)
+
+	send := func(method, target, contentType string) {
+		req := httptest.NewRequest(method, target, strings.NewReader(""))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+		server.handleAuthenticatedRequest(httptest.NewRecorder(), req)
+	}
+
+	send(http.MethodGet, "/info/refs?service=git-receive-pack", "")
+	send(http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request")
+	assert.Equal(t, 0, pushes, "advertisements and fetches must not trigger reconciliation")
+
+	send(http.MethodPost, "/git-receive-pack", "application/x-git-receive-pack-request")
+	assert.Equal(t, 1, pushes, "a receive-pack request must trigger reconciliation")
+}
+
 // Tests HTTP request handler without client certificate.
 func TestServer_HandleGitRequest_NoClientCert(t *testing.T) {
 	setupHookBinaryForTests(t)

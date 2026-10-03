@@ -58,6 +58,10 @@ public struct TailnetStatusReport: Sendable, Equatable {
 
     public var isConnected: Bool { backendState == Self.runningState }
 
+    /// The node has no login headscale accepts and will not get one without a
+    /// fresh key, which is what a device sees after headscale lost its state.
+    public var needsLogin: Bool { backendState == "NeedsLogin" }
+
     /// One status line, then any health warnings.
     ///
     /// Uses the same words as Settings so a log captured during a slow

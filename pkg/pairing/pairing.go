@@ -141,25 +141,26 @@ func (s Secret) derive(info []byte, length int) []byte {
 // gitd's address is not here: every client already knows it
 // (pkg/tailnetaddr). Putting a name in the record would let a QR and a
 // certificate SAN drift, and the first device has no pairing record at all.
+//
+// No credential is here either. The authorizing device commits the new
+// device's key to pubkeys/ before publishing the record, so the new device
+// mints its own single-use tailnet key from hsproxy with its certificate, the
+// same way it does whenever headscale forgets it later.
 type Payload struct {
 	HeadscaleURL string `json:"headscale_url"`
 	CAPEM        string `json:"ca_pem"`
-	PreauthKey   string `json:"preauth_key"`
 }
 
 // Rejects a payload that would leave the device unable to finish joining. It is
 // far cheaper to catch this at the writer than to debug a client that sits at
 // "waiting for authorization" forever.
 func (p Payload) validate() error {
-	missing := make([]string, 0, 3)
+	missing := make([]string, 0, 2)
 	if strings.TrimSpace(p.HeadscaleURL) == "" {
 		missing = append(missing, "headscale_url")
 	}
 	if strings.TrimSpace(p.CAPEM) == "" {
 		missing = append(missing, "ca_pem")
-	}
-	if strings.TrimSpace(p.PreauthKey) == "" {
-		missing = append(missing, "preauth_key")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("pairing payload is missing %s", strings.Join(missing, ", "))

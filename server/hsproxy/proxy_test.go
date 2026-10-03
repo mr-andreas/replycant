@@ -1,12 +1,15 @@
 package hsproxy
 
 import (
+	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +20,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
+	"github.com/mr-andreas/replycant/server/tailnet"
 )
 
 // Records what the proxy asked about so tests can assert that authorization
@@ -502,6 +508,224 @@ func TestHealthListenerReportsReady(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+}
+
+// Stands in for headscale's key API, recording what hsproxy asked for so tests
+// can assert on the tag and lifetime of the credential handed to a device.
+type recordingMinter struct {
+	mu       sync.Mutex
+	calls    int
+	tag      string
+	validFor time.Duration
+	key      string
+	err      error
+}
+
+func (m *recordingMinter) MintPreauthKey(_ context.Context, tag string, validFor time.Duration) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	m.tag = tag
+	m.validFor = validFor
+	return m.key, m.err
+}
+
+func (m *recordingMinter) snapshot() (calls int, tag string, validFor time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls, m.tag, m.validFor
+}
+
+// Sends the key request a client would and parses the reply.
+func requestPreauthKey(t *testing.T, conn *tls.Conn) (*http.Response, []byte) {
+	t.Helper()
+
+	request := "POST " + tailnetaddr.PreauthKeyPath + " HTTP/1.1\r\nHost: control.example\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatalf("write key request: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read key response: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read key response body: %v", err)
+	}
+	return response, body
+}
+
+func newMintingProxy(t *testing.T, pki *testPKI, upstreamAddr string, authorizer Authorizer, minter Minter) *Proxy {
+	t.Helper()
+	proxy, err := New(Config{
+		Authorizer:   authorizer,
+		UpstreamAddr: upstreamAddr,
+		ServerCert:   pki.serverPair,
+		Minter:       minter,
+	})
+	if err != nil {
+		t.Fatalf("new proxy: %v", err)
+	}
+	return proxy
+}
+
+// A device in pubkeys/ that headscale no longer knows, because its database was
+// wiped or its node was deleted on revocation of another device, must be able
+// to get back onto the tailnet without re-pairing. Its certificate is the
+// whole credential, so hsproxy answers the key request itself and never
+// forwards it to headscale's control endpoint.
+func TestProxyMintsKeyForAuthorizedDevice(t *testing.T) {
+	pki := newTestPKI(t)
+	upstreamAddr, upstreamRequests := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")
+	minter := &recordingMinter{key: "hskey-auth-fresh"}
+	proxy := newMintingProxy(t, pki, upstreamAddr, &recordingAuthorizer{username: "my-phone"}, minter)
+
+	conn, err := dialProxy(t, startProxy(t, proxy), pki, ptr(newClientIdentity(t, "my-phone")))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	response, body := requestPreauthKey(t, conn)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("an authorized device must get a key, got %d: %s", response.StatusCode, body)
+	}
+	var decoded struct {
+		PreauthKey string `json:"preauth_key"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("the key response must be JSON: %v (%s)", err, body)
+	}
+	if decoded.PreauthKey != "hskey-auth-fresh" {
+		t.Errorf("expected the minted key, got %q", decoded.PreauthKey)
+	}
+
+	calls, tag, validFor := minter.snapshot()
+	if calls != 1 || tag != tailnet.DeviceTag || validFor != tailnet.PreauthKeyTTL {
+		t.Errorf("expected one device key with the standard TTL, got calls=%d tag=%q ttl=%v",
+			calls, tag, validFor)
+	}
+	if got := len(upstreamRequests()); got != 0 {
+		t.Errorf("the key request must not reach headscale's control endpoint, saw %d", got)
+	}
+}
+
+// While the repository is empty, hsproxy lets any certificate through so the
+// first device can join. That exemption must not extend to minting: otherwise
+// anyone who learned the tunnel hostname could take a key, join, and push
+// their own pubkey before the real first device does. The first device gets
+// its key from the loopback-only CA page instead.
+func TestProxyRefusesKeysDuringBootstrap(t *testing.T) {
+	pki := newTestPKI(t)
+	upstreamAddr, upstreamRequests := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")
+	minter := &recordingMinter{key: "hskey-auth-never"}
+	authorizer := &recordingAuthorizer{username: "bootstrap", err: ErrBootstrap}
+	proxy := newMintingProxy(t, pki, upstreamAddr, authorizer, minter)
+
+	conn, err := dialProxy(t, startProxy(t, proxy), pki, ptr(newClientIdentity(t, "stranger")))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	response, _ := requestPreauthKey(t, conn)
+	if response.StatusCode != http.StatusForbidden {
+		t.Errorf("bootstrap clients must be refused a key, got %d", response.StatusCode)
+	}
+	if calls, _, _ := minter.snapshot(); calls != 0 {
+		t.Errorf("no key may be minted during bootstrap, minted %d", calls)
+	}
+	if got := len(upstreamRequests()); got != 0 {
+		t.Errorf("the refused request must not reach headscale, saw %d", got)
+	}
+}
+
+// An unknown certificate must get no key and no reply, exactly as for control
+// traffic, so the minting path adds nothing an attacker can probe.
+func TestProxyRefusesKeysToUnauthorizedClients(t *testing.T) {
+	pki := newTestPKI(t)
+	upstreamAddr, _ := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")
+	minter := &recordingMinter{key: "hskey-auth-never"}
+	authorizer := &recordingAuthorizer{err: errors.New("public key not authorized")}
+	proxy := newMintingProxy(t, pki, upstreamAddr, authorizer, minter)
+
+	conn, err := dialProxy(t, startProxy(t, proxy), pki, ptr(newClientIdentity(t, "stranger")))
+	if err == nil {
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "POST "+tailnetaddr.PreauthKeyPath+" HTTP/1.1\r\n\r\n")
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Read(make([]byte, 64)); err == nil {
+			t.Fatal("an unauthorized client must get no reply")
+		}
+	}
+	if calls, _, _ := minter.snapshot(); calls != 0 {
+		t.Errorf("no key may be minted for an unauthorized client, minted %d", calls)
+	}
+}
+
+// A headscale failure must reach the device as a failure it can retry, not as
+// a closed connection that looks like being unauthorized.
+func TestProxyReportsMintFailureAsBadGateway(t *testing.T) {
+	pki := newTestPKI(t)
+	upstreamAddr, _ := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")
+	minter := &recordingMinter{err: errors.New("headscale returned 503")}
+	proxy := newMintingProxy(t, pki, upstreamAddr, &recordingAuthorizer{username: "my-phone"}, minter)
+
+	conn, err := dialProxy(t, startProxy(t, proxy), pki, ptr(newClientIdentity(t, "my-phone")))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	response, body := requestPreauthKey(t, conn)
+	if response.StatusCode != http.StatusBadGateway {
+		t.Errorf("a headscale failure must surface as 502, got %d", response.StatusCode)
+	}
+	if strings.Contains(string(body), "503") {
+		t.Errorf("headscale's internal error must not be echoed to the device, got %q", body)
+	}
+}
+
+// hsproxy has to read the request line to recognise the key request, and a
+// client may deliver it in more than one TLS record. Whatever was read while
+// deciding must still reach headscale in full and in order, or the control
+// protocol breaks for exactly the clients whose writes happen to be split.
+func TestProxyForwardsRequestLineSplitAcrossWrites(t *testing.T) {
+	pki := newTestPKI(t)
+	upstreamAddr, upstreamRequests := newEchoUpstream(t, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+	proxy := newMintingProxy(t, pki, upstreamAddr, &recordingAuthorizer{username: "my-phone"},
+		&recordingMinter{key: "unused"})
+
+	conn, err := dialProxy(t, startProxy(t, proxy), pki, ptr(newClientIdentity(t, "my-phone")))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, "GET /ke"); err != nil {
+		t.Fatalf("write first fragment: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	rest := "y?v=90 HTTP/1.1\r\nHost: control.example\r\n\r\n"
+	if _, err := io.WriteString(conn, rest); err != nil {
+		t.Fatalf("write second fragment: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if !strings.Contains(string(buf[:n]), "200 OK") {
+		t.Fatalf("expected upstream response, got %q", string(buf[:n]))
+	}
+	seen := strings.Join(upstreamRequests(), "")
+	if seen != "GET /ke"+rest {
+		t.Fatalf("upstream must see the request exactly once and in order, got %q", seen)
 	}
 }
 

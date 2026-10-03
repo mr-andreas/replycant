@@ -21,22 +21,8 @@ struct TailnetConfigurationManagerTests {
     ) -> PairingRecord.Payload {
         PairingRecord.Payload(
             headscaleURL: headscaleURL,
-            caPEM: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n",
-            preauthKey: "hskey-auth-example"
+            caPEM: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n"
         )
-    }
-
-    // The pre-auth key is single-use and expires in minutes, and the node's key
-    // material persists in the tsnet state directory, so a durable copy of the
-    // credential would be risk with no benefit.
-    @Test func theCredentialIsNeverPersisted() throws {
-        let (manager, defaults) = Self.manager()
-
-        manager.save(try TailnetConfigurationManager.from(payload: Self.payload()))
-
-        let raw = try #require(defaults.data(forKey: "replycant.tailnet.config"))
-        let text = String(decoding: raw, as: UTF8.self)
-        #expect(!text.contains("hskey-auth-example"))
     }
 
     @Test func roundTripsAConfiguration() throws {

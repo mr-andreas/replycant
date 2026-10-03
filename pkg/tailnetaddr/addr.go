@@ -22,6 +22,13 @@ const (
 	// Port gitd relays control-plane traffic on inside the tailnet. Must
 	// match --tailnet-control-addr.
 	ControlPort = 8444
+
+	// Path on the control-plane host (hsproxy) where a device whose key is
+	// in pubkeys/ asks for a fresh single-use pre-auth key. It lives on the
+	// control plane rather than on gitd because a device that headscale has
+	// forgotten is not on the tailnet and cannot reach gitd. hsproxy answers
+	// it from the same mTLS session it would otherwise splice to headscale.
+	PreauthKeyPath = "/replycant/preauthkey"
 )
 
 // URL clients use for Git and LFS after they have joined the tailnet.

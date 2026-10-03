@@ -165,3 +165,102 @@ func TestGitdPublishesOnlyTheLoopbackCAPort(t *testing.T) {
 		t.Error("gitd must not publish the Git listener; it is reachable only on the tailnet")
 	}
 }
+
+// Returns one service's block from the compose file, so a test can assert on
+// that service alone rather than on a flag that might belong to another.
+func composeService(t *testing.T, name string) string {
+	t.Helper()
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	service := regexp.MustCompile(`(?s)\n  ` + regexp.QuoteMeta(name) + `:\n(.*?\n)(  [a-z]|[a-z])`).
+		FindSubmatch(compose)
+	if service == nil {
+		t.Fatalf("compose must declare a %s service", name)
+	}
+	return string(service[1])
+}
+
+// gitd mints its own tailnet key over headscale's API whenever its node needs
+// one, so a key captured at init would be a second, stale source of truth.
+// It would also be exactly the state a headscale wipe invalidates.
+func TestNoTailnetKeyIsCapturedAtInit(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	for _, stale := range []string{"gitd.authkey", "preauthkeys create", "--tsnet-auth-key-file"} {
+		if regexp.MustCompile(regexp.QuoteMeta(stale)).Match(compose) {
+			t.Errorf("compose must not mention %q; tailnet keys are minted on demand", stale)
+		}
+	}
+}
+
+// Wiping headscale's database also deletes its API keys, while the key file on
+// disk survives. headscale-init has to notice the stored key is no longer
+// known and mint a new one, or every mint after a wipe fails with 401.
+func TestHeadscaleInitReplacesAnAPIKeyHeadscaleForgot(t *testing.T) {
+	body := composeService(t, "headscale-init")
+
+	if !regexp.MustCompile(`headscale apikeys list`).MatchString(body) {
+		t.Error("headscale-init must check the stored API key against headscale apikeys list")
+	}
+	// headscale lists a key by its first 22 characters: hskey-api- and the
+	// 12-character prefix.
+	if !regexp.MustCompile(`cut -c1-22`).MatchString(body) {
+		t.Error("headscale-init must compare the stored key's 22-character prefix")
+	}
+}
+
+// Devices mint their own keys through hsproxy, which therefore needs the
+// API key, and must not start before headscale-init has written it.
+func TestHsproxyCanMintDeviceKeys(t *testing.T) {
+	body := composeService(t, "hsproxy")
+
+	for _, flag := range []string{
+		`--headscale-api-url=http://headscale:8080`,
+		`--headscale-api-key-file=/data/tailnet/headscale.apikey`,
+	} {
+		if !regexp.MustCompile(regexp.QuoteMeta(flag)).MatchString(body) {
+			t.Errorf("hsproxy must be started with %s", flag)
+		}
+	}
+	// The directory rather than the file, so a key headscale-init replaces
+	// is visible without recreating the container.
+	if !regexp.MustCompile(`/tailnet:/data/tailnet:ro`).MatchString(body) {
+		t.Error("hsproxy must mount the tailnet directory holding the API key")
+	}
+	if !regexp.MustCompile(`(?s)headscale-init:\s*\n\s*condition: service_completed_successfully`).MatchString(body) {
+		t.Error("hsproxy must wait for headscale-init to write the API key")
+	}
+}
+
+// The noise key is the control plane's identity, and every client pins it.
+// Keeping it out of the database directory is what lets an operator delete
+// that directory without every node rejecting the restarted headscale.
+func TestNoiseKeySurvivesADatabaseWipe(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	if !regexp.MustCompile(`private_key_path: /var/lib/headscale-noise/noise_private\.key`).Match(compose) {
+		t.Error("headscale's noise key must live outside /var/lib/headscale")
+	}
+	if !regexp.MustCompile(`headscale/noise:/var/lib/headscale-noise`).MatchString(composeService(t, "headscale")) {
+		t.Error("headscale must mount the noise key directory separately")
+	}
+}
+
+// Revocation compares pubkeys/ with the set gitd last reconciled. The marker
+// must persist on a writable volume, or every gitd restart would drop all
+// device nodes again.
+func TestGitdKeepsItsReconcileMarker(t *testing.T) {
+	body := composeService(t, "gitd")
+	if !regexp.MustCompile(`--tailnet-reconcile-marker=/data/tailnet-state/reconciled-pubkeys\.json`).MatchString(body) {
+		t.Error("gitd must be given a reconcile marker path")
+	}
+	if !regexp.MustCompile(`gitd/tailnet-state:/data/tailnet-state\n`).MatchString(body) {
+		t.Error("gitd must mount a writable directory for the reconcile marker")
+	}
+}

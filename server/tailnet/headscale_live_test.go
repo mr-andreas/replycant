@@ -49,7 +49,7 @@ func TestMintsAgainstRealHeadscale(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	key, err := client.MintPreauthKey(ctx, 10*time.Minute)
+	key, err := client.MintPreauthKey(ctx, tailnet.DeviceTag, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("headscale must accept the minting request: %v", err)
 	}
@@ -63,11 +63,25 @@ func TestMintsAgainstRealHeadscale(t *testing.T) {
 	// Two mints in a row must produce different keys. A cached or reused key
 	// would mean two devices sharing one single-use credential, so the second
 	// device would fail to join for reasons that look unrelated.
-	second, err := client.MintPreauthKey(ctx, 10*time.Minute)
+	second, err := client.MintPreauthKey(ctx, tailnet.DeviceTag, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("a second mint must also succeed: %v", err)
 	}
 	if second == key {
 		t.Error("each pairing must get its own key")
 	}
+
+	// Revocation depends on listing nodes with their tags. A shape change in
+	// a headscale upgrade would make revocation silently delete nothing, so
+	// the listing is exercised against the real API too.
+	nodes, err := client.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("headscale must accept the node listing: %v", err)
+	}
+	for _, node := range nodes {
+		if node.ID == "" {
+			t.Errorf("every listed node must carry an id, got %+v", node)
+		}
+	}
+	t.Logf("listed %d nodes", len(nodes))
 }

@@ -19,9 +19,14 @@ struct TailnetPairingTests {
     private final class BundleMarker {}
 
     private struct Fixture: Decodable {
+        struct WirePayload: Decodable {
+            let headscale_url: String
+        }
+
         let secret: String
         let slot: String
         let agePrivateKeyBase64: String
+        let payload: WirePayload
         let sealedBase64: String
         let mismatchedCaSealedBase64: String
     }
@@ -126,7 +131,7 @@ struct TailnetPairingTests {
             session: StubDiscovery.session()
         )
 
-        #expect(payload.preauthKey.isEmpty == false)
+        #expect(payload.headscaleURL == fixture.payload.headscale_url)
         #expect(StubDiscovery.hosts.contains { $0.hasPrefix(fixture.slot) })
     }
 

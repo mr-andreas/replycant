@@ -82,7 +82,6 @@ func TestClonePersistsTailnetConfigOnlyAfterJoin(t *testing.T) {
 	server := pairingServer(t, dir, secret, pairing.Payload{
 		HeadscaleURL: "https://headscale.example",
 		CAPEM:        caPEM,
-		PreauthKey:   "hskey-test",
 	})
 	err := runClone(CloneOptions{
 		Directory:    dir,
@@ -94,7 +93,6 @@ func TestClonePersistsTailnetConfigOnlyAfterJoin(t *testing.T) {
 		httpClient:   dialClient(server),
 		newSecret:    func() (pairing.Secret, error) { return secret, nil },
 		join: func(_ context.Context, _ string, cfg tailnetagent.StartConfig) error {
-			assert.Equal(t, "hskey-test", cfg.PreauthKey)
 			assert.Equal(t, "headscale.example:443", cfg.HeadscaleAddr)
 			joined.Store(true)
 			return nil
@@ -126,7 +124,6 @@ func TestCloneDoesNotPersistConfigWhenJoinFails(t *testing.T) {
 	server := pairingServer(t, dir, secret, pairing.Payload{
 		HeadscaleURL: "https://headscale.example",
 		CAPEM:        "ca",
-		PreauthKey:   "hskey-test",
 	})
 	err := runClone(CloneOptions{
 		Directory:    dir,
@@ -161,7 +158,6 @@ func TestCloneRefusesMismatchedCALabel(t *testing.T) {
 	server := pairingServer(t, dir, secret, pairing.Payload{
 		HeadscaleURL: "https://0123456789abcdef0123456789abcdef.example.com",
 		CAPEM:        testCAPEM(t),
-		PreauthKey:   "hskey-test",
 	})
 	err := runClone(CloneOptions{
 		Directory:    dir,

@@ -61,8 +61,8 @@ actor TailnetBootstrap {
     ///
     /// Idempotent, because it runs at launch and again before any flow that
     /// must not proceed without connectivity. A rejoin carries no pre-auth key:
-    /// the node re-authenticates from the state directory, and the deployment
-    /// has already retired the credential from pairing.
+    /// the node re-authenticates from the state directory, and mints a fresh
+    /// key through hsproxy if headscale has lost track of it.
     func ensureJoinedIfConfigured() async throws {
         guard let configuration = configurations.load() else { return }
         if let manager, await manager.isJoined { return }
@@ -71,6 +71,10 @@ actor TailnetBootstrap {
     }
 
     /// Joins for the first time, from a freshly opened pairing record.
+    ///
+    /// The record carries no tailnet key: this device's key is already in
+    /// `pubkeys/` by the time the record appears, and that is what lets it
+    /// mint its own key through hsproxy.
     ///
     /// Persists the configuration only after the join succeeds, so a record
     /// that cannot actually be used does not leave the app trying to rejoin a
@@ -81,16 +85,17 @@ actor TailnetBootstrap {
     ) async throws {
         try await joinAndPersist(
             headscaleURL: payload.headscaleURL,
-            preauthKey: payload.preauthKey,
+            preauthKey: nil,
             onProgress: onProgress
         )
     }
 
     /// Joins from the first-device CA QR, which carries a live pre-auth key
-    /// rather than a sealed pairing record.
+    /// rather than a sealed pairing record. The first device has no entry in
+    /// `pubkeys/` yet, so it cannot mint one itself.
     func joinAndPersist(
         headscaleURL: String,
-        preauthKey: String,
+        preauthKey: String?,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws {
         let configuration = try TailnetConfigurationManager.from(headscaleURL: headscaleURL)

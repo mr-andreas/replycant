@@ -73,7 +73,7 @@ When a repository already has authorized devices, new devices must be explicitly
 
 On a LAN-only deployment, Device A displays a QR with the server URL and CA certificate. Device B scans it and clones with mTLS. Its certificate is already in `pubkeys/` from phase 1.
 
-On a tailnet deployment that QR has nothing useful to carry. gitd publishes no address Device B can dial, and the pre-auth key has to be minted by gitd. Phase 2 is [Tailnet Pairing](#tailnet-pairing). The `{url, ca}` QR is only for LAN-only setups.
+On a tailnet deployment that QR has nothing useful to carry. gitd publishes no address Device B can dial, and Device B does not yet know the CA or where the control plane is. Phase 2 is [Tailnet Pairing](#tailnet-pairing). The `{url, ca}` QR is only for LAN-only setups.
 
 ### Why Two Phases?
 
@@ -113,7 +113,7 @@ LAN-only QR (no tsnet):
 |-------|-------------|
 | `ca` | PEM-encoded CA certificate for server validation (pinning) |
 | `headscale_url` | Control plane the first device joins (tailnet only) |
-| `preauth_key` | Single-use tailnet credential, minted per request (tailnet only) |
+| `preauth_key` | Single-use tailnet key, minted per request (tailnet only). Only the first device gets one this way; every later device mints its own once its public key is in `pubkeys/` |
 | `url` | Git server URL (LAN-only deployments) |
 
 Clients derive the LFS endpoint as `{origin(url)}/lfs`. On a tailnet, `url` is always `https://gitd.replycant.internal:8443`.
@@ -150,10 +150,12 @@ the existing device to send it everything.
 ## Tailnet Pairing
 
 A device that is not on the server's network cannot discover anything: gitd
-publishes no port, and joining the tailnet requires credentials it does not
-have. Tailnet pairing solves that by having an already-paired device fetch the
-credentials and publish them where the new device can collect them. See
-[Connectivity](./connectivity.md) for the transport this sets up.
+publishes no port, and the device does not know the CA or where the control
+plane is. Tailnet pairing solves that by having an already-paired device ask
+gitd to publish both where the new device can collect them. The record holds
+no tailnet key: the new device is in `pubkeys/` by then, so it mints its own
+through hsproxy. See [Connectivity](./connectivity.md) for the transport this
+sets up.
 
 ### Flow
 
@@ -170,19 +172,19 @@ credentials and publish them where the new device can collect them. See
    device linking.
 4. **Paired device calls `POST /pair`** on gitd with the secret and age key from
    the QR. Only a device already in `pubkeys/` can reach this endpoint, because
-   it is behind the same mTLS gate as everything else — which matters, since the
-   endpoint mints a tailnet credential.
-5. **gitd mints a pre-auth key** over headscale's API, builds the record, seals
-   it, and publishes it at the slot. The request is held open until the record
-   is stored, so a downstream failure surfaces as an error rather than as an
-   unexplained timeout on the other device.
+   it is behind the same mTLS gate as everything else.
+5. **gitd builds the record** from the CA and the control-plane hostname,
+   seals it, and publishes it at the slot. The request is held open until the
+   record is stored, so a downstream failure surfaces as an error rather than
+   as an unexplained timeout on the other device.
 6. **New device polls its slot** until the record appears. The API deletes it on
    read, and it expires after 10 minutes regardless.
 7. **New device opens the record**, then checks that the CA inside it hashes to
    the label in the headscale hostname. That is what stops the record from
    naming a CA the deployment does not own.
-8. **New device joins the tailnet** with the pre-auth key and clones gitd at its
-   MagicDNS name.
+8. **New device mints a tailnet key** through hsproxy, presenting its device
+   certificate, which step 3 already put in `pubkeys/`. It joins the tailnet
+   with that key and clones gitd at its MagicDNS name.
 
 ### Why the secret is needed
 
@@ -203,7 +205,7 @@ relocated to a different slot.
 ### Manual-exposure deployments
 
 When the operator publishes headscale themselves, gitd has no discovery API to
-publish to. It still mints the credential and seals the record, and returns it
+publish to. It still seals the record, and returns it
 to the authorizing device, which renders it as a second QR code for the new
 device to scan. The record and its protections are identical; only the delivery
 channel changes.
@@ -217,7 +219,7 @@ The webapp onboarding flow mirrors device linking trust semantics but begins wit
 1. User opens an uninitialized webapp and enters `http://127.0.0.1:8080`.
 2. Webapp discovery fetches `/config.json`. A tailnet payload is first-device join; `{ca, url}` is LAN-only.
 3. User creates a device identity. The join waits for this because hsproxy authorizes the same certificate gitd will later see.
-4. Desktop joins the tailnet when the payload is a join credential, then points the proxy at `https://gitd.replycant.internal:8443`.
+4. Desktop joins the tailnet with the payload's key when it is a first-device join, then points the proxy at `https://gitd.replycant.internal:8443`.
 5. Webapp generates a P-256 key pair and computes `ca_hash` from CA DER bytes (SHA256 hex).
 6. Webapp displays QR payload `{pubkey, age_pubkey, name, uuid, ca_hash}`.
 7. iOS scans the QR, verifies `ca_hash` against its configured CA, then commits the key.

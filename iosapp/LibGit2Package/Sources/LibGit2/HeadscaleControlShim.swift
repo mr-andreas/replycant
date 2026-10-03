@@ -27,7 +27,15 @@ public final class HeadscaleControlShim {
         case notStarted
         case listenerFailed(String)
         case invalidUpstream(String)
+        /// hsproxy declined to mint a key, with the HTTP status it gave. A
+        /// 403 means this device is not, or is no longer, in `pubkeys/`.
+        case keyRefused(Int)
+        case malformedKeyResponse
     }
+
+    /// The one request hsproxy answers itself instead of passing to
+    /// headscale. Shared with the Go clients through hsproxy's contract.
+    static let preauthKeyPath = "/replycant/preauthkey"
 
     /// Which way a control connection reached the deployment.
     ///
@@ -214,6 +222,63 @@ public final class HeadscaleControlShim {
         lock.lock()
         defer { lock.unlock() }
         return lastRouteUsed
+    }
+
+    /// Forgets the in-tailnet path while the node behind it is replaced.
+    ///
+    /// The route points at the old node's SOCKS proxy. Keeping it would make
+    /// every control session of the replacement node wait out the fallback
+    /// timeout before reaching the relay.
+    public func clearTailnetRoute() {
+        lock.lock()
+        tailnetRoute = nil
+        lock.unlock()
+    }
+
+    /// Asks hsproxy for a fresh single-use key for this device's node.
+    ///
+    /// headscale's state is a cache of the deployment's `pubkeys/`, so it can
+    /// be wiped at any time, and a device being authorized is what entitles
+    /// it to a key. The request rides this shim's own loopback listener, so
+    /// it gets the pinned CA, the device certificate, and the tailnet-first
+    /// route for free, and hsproxy can check the certificate before minting.
+    ///
+    /// Throws `keyRefused` if hsproxy declines, which is what a device that
+    /// was removed from `pubkeys/` sees; that is not worth retrying soon.
+    public func mintPreauthKey() async throws -> String {
+        guard let controlURL, let url = URL(string: controlURL + Self.preauthKeyPath) else {
+            throw ShimError.notStarted
+        }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.data(for: request)
+        return try Self.decodePreauthKey(data: data, response: response)
+    }
+
+    /// Reads hsproxy's answer to a key request.
+    ///
+    /// Strict about an empty key because a node handed one would sit waiting
+    /// for an interactive login that a phone can never complete.
+    static func decodePreauthKey(data: Data, response: URLResponse) throws -> String {
+        guard let http = response as? HTTPURLResponse else {
+            throw ShimError.malformedKeyResponse
+        }
+        guard http.statusCode == 200 else {
+            throw ShimError.keyRefused(http.statusCode)
+        }
+        struct Wire: Decodable {
+            let preauth_key: String?
+        }
+        let key = (try? JSONDecoder().decode(Wire.self, from: data))?
+            .preauth_key?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !key.isEmpty else {
+            throw ShimError.malformedKeyResponse
+        }
+        return key
     }
 
     // Bridges one accepted loopback connection to a fresh mTLS connection.

@@ -60,14 +60,14 @@ describe("pairing secrets", () => {
 
 describe("openPairingRecord", () => {
   // The whole point of the format: a record produced by the Go writer has to
-  // open in the browser. Every other test here is downstream of this one.
+  // open in the browser. Every other test here is downstream of this one. It
+  // carries no tailnet key: the paired device mints its own from hsproxy.
   it("opens a record written by the Go implementation", async () => {
     const payload = await openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, sealed);
 
     expect(payload).toEqual({
       headscaleUrl: fixture.payload.headscale_url,
       caPem: fixture.payload.ca_pem,
-      preauthKey: fixture.payload.preauth_key,
     });
   });
 
@@ -106,7 +106,7 @@ describe("openPairingRecord", () => {
   });
 
   // Flipping a byte must fail authentication rather than yield garbage, since
-  // the payload is about to be trusted as a CA and a tailnet credential.
+  // the payload is about to be trusted as a CA and a control-plane address.
   it("refuses a tampered record", async () => {
     const tampered = new Uint8Array(sealed);
     tampered[tampered.length - 1] ^= 0x01;
@@ -178,7 +178,6 @@ describe("verifyCALabel", () => {
       verifyCALabel({
         headscaleUrl: "not a url",
         caPem: fixture.payload.ca_pem,
-        preauthKey: "k",
       }),
     ).rejects.toThrow(/not a valid URL/);
   });

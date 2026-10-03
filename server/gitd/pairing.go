@@ -25,8 +25,8 @@ const maxPairingRequestBytes = 8 << 10
 // Produces the sealed record a pairing device needs, publishing it to the
 // discovery API when the deployment has one.
 //
-// An interface so gitd does not depend on the discovery client or headscale,
-// which keeps this package testable and lets a deployment swap the transport.
+// An interface so gitd does not depend on the discovery client, which keeps
+// this package testable and lets a deployment swap the transport.
 // The record is returned in every case, because manual-exposure deployments
 // deliver it by displaying it rather than by publishing it.
 type PairingPublisher interface {
@@ -49,9 +49,9 @@ type pairingRequest struct {
 //
 // Authorization is inherited from the mTLS handshake: only a device already in
 // pubkeys/ reaches this handler, which is the same trust boundary that governs
-// pushing a new device's key into the repository. That matters because this
-// endpoint mints a tailnet credential, so an unauthenticated caller could
-// otherwise enroll itself.
+// pushing a new device's key into the repository. The record carries no
+// credential; the new device can only join once that push has landed, because
+// it mints its own tailnet key from hsproxy with its certificate.
 //
 // The sealed record is returned in the response body. It is safe to hand back
 // because it is encrypted to the pairing device's key and authenticated under
@@ -71,8 +71,8 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Deployments with no tailnet at all - LAN-only, and the integration
-	// harness - cannot mint a credential, so the endpoint genuinely does not
-	// exist there.
+	// harness - have no control plane to describe, so the endpoint genuinely
+	// does not exist there.
 	if s.pairingPublisher == nil {
 		http.Error(w, "Tailnet pairing is not enabled on this deployment", http.StatusNotFound)
 		return
@@ -95,8 +95,8 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 
 	record, err := s.pairingPublisher.PublishPairingRecord(r.Context(), secret, deviceKey)
 	if err != nil {
-		// Logged but not returned: the detail names internal hosts and
-		// headscale state that a client has no business learning.
+		// Logged but not returned: the detail names internal hosts that a
+		// client has no business learning.
 		log.Printf("Failed to publish pairing record: %v", err)
 		http.Error(w, "Could not publish the pairing record", http.StatusBadGateway)
 		return

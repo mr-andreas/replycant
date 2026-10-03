@@ -72,6 +72,18 @@ func parseCLI(t *testing.T, extraArgs ...string) CLI {
 	return cli
 }
 
+// The headscale API flags every tailnet deployment carries, because gitd mints
+// its own tailnet key over that API.
+func headscaleArgs(t *testing.T) []string {
+	t.Helper()
+	return []string{
+		"--headscale-api-url", "http://headscale:8080",
+		"--headscale-api-key-file", t.TempDir() + "/apikey",
+		"--headscale-client-url", "https://example.tunnel.replycant.com",
+		"--tailnet-reconcile-marker", t.TempDir() + "/reconciled-pubkeys.json",
+	}
+}
+
 // Compose and the docs pass --headscale-api-url. Kong would otherwise
 // hyphenate HeadscaleAPIURL as --headscale-apiurl, which is what made
 // gitd refuse to start after the image was rebuilt.
@@ -80,6 +92,7 @@ func TestHeadscaleAPIURLAcceptsTheComposeFlagName(t *testing.T) {
 		"--headscale-api-url", "http://headscale:8080",
 		"--headscale-api-key-file", t.TempDir()+"/apikey",
 		"--headscale-client-url", "https://example.tunnel.replycant.com",
+		"--tailnet-reconcile-marker", t.TempDir()+"/reconciled-pubkeys.json",
 	)
 	if cli.HeadscaleAPIURL != "http://headscale:8080" {
 		t.Fatalf("HeadscaleAPIURL = %q, want the value passed as --headscale-api-url",
@@ -102,13 +115,12 @@ func TestTsnetDisabledByDefault(t *testing.T) {
 // The tsnet flags have to reach the node config unchanged, since a wrong
 // control URL would silently join the wrong tailnet.
 func TestTsnetConfigFromFlags(t *testing.T) {
-	cli := parseCLI(t,
+	cli := parseCLI(t, append(headscaleArgs(t),
 		"--tsnet-dir", "/var/lib/replycant/tsnet",
 		"--tsnet-control-url", "http://headscale:8080",
 		"--tsnet-hostname", "gitd",
-		"--tsnet-auth-key-file", "/run/secrets/authkey",
 		"--tailnet-domain", "replycant.internal",
-	)
+	)...)
 
 	config := cli.tsnetConfig()
 	if !config.Enabled() {
@@ -123,9 +135,6 @@ func TestTsnetConfigFromFlags(t *testing.T) {
 	if config.Hostname != "gitd" {
 		t.Fatalf("Hostname = %q", config.Hostname)
 	}
-	if config.AuthKeyFile != "/run/secrets/authkey" {
-		t.Fatalf("AuthKeyFile = %q", config.AuthKeyFile)
-	}
 }
 
 // Once a device is on the tailnet it should reach the control plane over the
@@ -133,12 +142,12 @@ func TestTsnetConfigFromFlags(t *testing.T) {
 // on by default whenever tsnet is. Making it opt-in would leave every
 // deployment permanently dependent on the relay.
 func TestTailnetControlRelayIsOnByDefaultWithTsnet(t *testing.T) {
-	cli := parseCLI(t,
+	cli := parseCLI(t, append(headscaleArgs(t),
 		"--tsnet-dir", "/state",
 		"--tsnet-control-url", "http://headscale:8080",
 		"--tsnet-hostname", "gitd",
 		"--tailnet-domain", "replycant.internal",
-	)
+	)...)
 
 	if cli.TailnetControlAddr == "" {
 		t.Fatal("the tailnet control relay must have a default listen address")
@@ -165,13 +174,13 @@ func TestTailnetControlRelayNeedsTsnet(t *testing.T) {
 // which is what leaves manual-exposure deployments free to keep the relay as
 // the only way in.
 func TestEmptyTailnetControlAddrDisablesTheRelay(t *testing.T) {
-	cli := parseCLI(t,
+	cli := parseCLI(t, append(headscaleArgs(t),
 		"--tsnet-dir", "/state",
 		"--tsnet-control-url", "http://headscale:8080",
 		"--tsnet-hostname", "gitd",
 		"--tailnet-domain", "replycant.internal",
 		"--tailnet-control-addr", "",
-	)
+	)...)
 
 	if cli.tailnetControlRelayEnabled() {
 		t.Fatal("an empty --tailnet-control-addr must disable the relay")
@@ -232,12 +241,12 @@ func TestValidateRejectsIncompleteTsnetConfig(t *testing.T) {
 // With tsnet enabled the advertised URL must name the MagicDNS host, because
 // the LAN hostname no longer resolves to a reachable listener.
 func TestAdvertisedServerURLPrefersTailnetHostname(t *testing.T) {
-	cli := parseCLI(t,
+	cli := parseCLI(t, append(headscaleArgs(t),
 		"--tsnet-dir", "/state",
 		"--tsnet-control-url", "http://headscale:8080",
 		"--tsnet-hostname", "gitd",
 		"--tailnet-domain", "replycant.internal",
-	)
+	)...)
 
 	got := cli.advertisedURL()
 	want := "https://gitd.replycant.internal:8443/"
@@ -255,6 +264,26 @@ func TestAdvertisedServerURLFallsBackToLanHostname(t *testing.T) {
 	want := "https://host:9443/"
 	if got != want {
 		t.Fatalf("advertisedURL() = %q, want %q", got, want)
+	}
+}
+
+// gitd stores no tailnet key any more; it mints its own over the headscale API
+// whenever headscale does not know its node. A tailnet without that API would
+// start and then sit waiting for an interactive login, so it is refused.
+func TestValidateRequiresTheHeadscaleAPIWithTsnet(t *testing.T) {
+	cli := CLI{
+		Hostname:        "host",
+		TsnetDir:        "/state",
+		TsnetControlURL: "http://headscale:8080",
+		TsnetHostname:   "gitd",
+		TailnetDomain:   "replycant.internal",
+	}
+	err := cli.Validate()
+	if err == nil {
+		t.Fatal("expected validation to require the headscale API when tsnet is enabled")
+	}
+	if !strings.Contains(err.Error(), "--headscale-api-url") {
+		t.Errorf("the error should name the missing flag, got %v", err)
 	}
 }
 
@@ -286,25 +315,26 @@ func TestNoTailnetNeedsNoPairingFlags(t *testing.T) {
 }
 
 // Manual-exposure mode is the headscale flags without a discovery URL. gitd
-// still mints credentials; it just hands the record back for the authorizing
-// device to display instead of publishing it.
+// still seals pairing records; it just hands them back for the authorizing
+// device to display instead of publishing them.
 func TestManualExposureModeNeedsNoDiscoveryURL(t *testing.T) {
 	cli := CLI{
-		Hostname:            "host",
-		HeadscaleAPIURL:     "http://headscale:8080",
-		HeadscaleAPIKeyFile: "/data/tailnet/headscale.apikey",
-		HeadscaleClientURL:  "https://headscale.example.com",
+		Hostname:               "host",
+		HeadscaleAPIURL:        "http://headscale:8080",
+		HeadscaleAPIKeyFile:    "/data/tailnet/headscale.apikey",
+		HeadscaleClientURL:     "https://headscale.example.com",
+		TailnetReconcileMarker: "/data/tailnet-state/reconciled-pubkeys.json",
 	}
 	if err := cli.validateDiscovery(); err != nil {
 		t.Fatalf("manual-exposure mode must be a valid configuration: %v", err)
 	}
 	if !cli.pairingEnabled() {
-		t.Error("manual-exposure mode still needs to mint credentials")
+		t.Error("manual-exposure mode still needs to produce pairing records")
 	}
 }
 
-// A discovery URL with no way to mint a credential would leave gitd with
-// nothing to publish, so it is caught rather than accepted.
+// A discovery URL with no tailnet to describe would leave gitd with nothing
+// to publish, so it is caught rather than accepted.
 func TestDiscoveryURLAloneIsRejected(t *testing.T) {
 	cli := CLI{Hostname: "host", DiscoveryURL: "https://discovery.replycant.com"}
 	err := cli.validateDiscovery()
@@ -321,11 +351,12 @@ func TestDiscoveryURLAloneIsRejected(t *testing.T) {
 // operator finds out while they are still looking at the logs.
 func TestPartialDiscoveryConfigIsRejected(t *testing.T) {
 	complete := CLI{
-		Hostname:            "host",
-		DiscoveryURL:        "https://discovery.replycant.com",
-		HeadscaleAPIURL:     "http://headscale:8080",
-		HeadscaleAPIKeyFile: "/data/tailnet/headscale.apikey",
-		HeadscaleClientURL:  "https://abc.tunnel.replycant.com",
+		Hostname:               "host",
+		DiscoveryURL:           "https://discovery.replycant.com",
+		HeadscaleAPIURL:        "http://headscale:8080",
+		HeadscaleAPIKeyFile:    "/data/tailnet/headscale.apikey",
+		HeadscaleClientURL:     "https://abc.tunnel.replycant.com",
+		TailnetReconcileMarker: "/data/tailnet-state/reconciled-pubkeys.json",
 	}
 	if err := complete.validateDiscovery(); err != nil {
 		t.Fatalf("a complete discovery config must be accepted: %v", err)
@@ -339,6 +370,9 @@ func TestPartialDiscoveryConfigIsRejected(t *testing.T) {
 		{"no headscale API URL", func(c *CLI) { c.HeadscaleAPIURL = "" }, "--headscale-api-url"},
 		{"no API key file", func(c *CLI) { c.HeadscaleAPIKeyFile = "" }, "--headscale-api-key-file"},
 		{"no client URL", func(c *CLI) { c.HeadscaleClientURL = "" }, "--headscale-client-url"},
+		// Without a marker gitd cannot tell a revocation from a restart, so a
+		// tailnet deployment without one would silently never revoke.
+		{"no reconcile marker", func(c *CLI) { c.TailnetReconcileMarker = "" }, "--tailnet-reconcile-marker"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cli := complete
@@ -384,6 +418,50 @@ func TestTailnetHostnameToleratesADottedDomain(t *testing.T) {
 	cli := CLI{TsnetHostname: "gitd", TailnetDomain: ".replycant.internal."}
 	if got := cli.tailnetHostname(); got != "gitd.replycant.internal" {
 		t.Errorf("unexpected tailnet hostname %q", got)
+	}
+}
+
+// Revocation only exists where there is a tailnet to revoke from. Without
+// headscale there must be no reconciler, so pushes cost nothing extra on
+// LAN-only deployments and in the integration harness.
+func TestNoReconcilerIsBuiltWithoutATailnet(t *testing.T) {
+	cli := CLI{Hostname: "host"}
+	reconciler, err := cli.buildReconciler(nil)
+	if err != nil {
+		t.Fatalf("a LAN-only deployment must not fail to build: %v", err)
+	}
+	if reconciler != nil {
+		t.Error("a deployment without a tailnet must not reconcile headscale")
+	}
+}
+
+// With headscale configured, pushes have to drive revocation, so the
+// reconciler must be built from the same flags that build the client.
+func TestReconcilerIsBuiltWithHeadscale(t *testing.T) {
+	dir := t.TempDir()
+	apiKeyPath := filepath.Join(dir, "headscale.apikey")
+	if err := os.WriteFile(apiKeyPath, []byte("test-api-key\n"), 0o600); err != nil {
+		t.Fatalf("write API key: %v", err)
+	}
+	cli := CLI{
+		Hostname:               "host",
+		Repo:                   dir,
+		HeadscaleAPIURL:        "http://headscale:8080",
+		HeadscaleAPIKeyFile:    apiKeyPath,
+		HeadscaleClientURL:     "https://headscale.example.com",
+		HeadscaleUser:          "replycant",
+		TailnetReconcileMarker: filepath.Join(dir, "reconciled-pubkeys.json"),
+	}
+	headscale, err := cli.headscaleClient()
+	if err != nil {
+		t.Fatalf("build headscale client: %v", err)
+	}
+	reconciler, err := cli.buildReconciler(headscale)
+	if err != nil {
+		t.Fatalf("build reconciler: %v", err)
+	}
+	if reconciler == nil {
+		t.Fatal("a tailnet deployment must reconcile headscale against pubkeys/")
 	}
 }
 

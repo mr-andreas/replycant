@@ -21,6 +21,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/mr-andreas/replycant/server/gitd/auth"
 	"github.com/mr-andreas/replycant/server/hsproxy"
+	"github.com/mr-andreas/replycant/server/tailnet"
 )
 
 // Mirrors gitd's flag shape so operators configure both services the same way,
@@ -36,6 +37,14 @@ type CLI struct {
 	// Separate from Addr because readiness probes have no device identity to
 	// present and must never be reachable through the tunnel.
 	HealthAddr string `default:":8091" help:"Plain-HTTP readiness listen address (empty disables)"`
+
+	// Lets hsproxy mint a fresh pre-auth key for any device in pubkeys/, which
+	// is what makes headscale's database a cache: a device it forgot simply
+	// asks again. The API key is read from a file so it never appears in
+	// flags or the process listing.
+	HeadscaleAPIURL     string `name:"headscale-api-url" help:"Headscale API base URL for minting device keys (e.g. http://headscale:8080)"`
+	HeadscaleAPIKeyFile string `help:"Path to the headscale API key used to mint device keys" type:"path"`
+	HeadscaleUser       string `default:"replycant" help:"Headscale user devices belong to"`
 }
 
 // Validate implements kong.Validatable to catch address mistakes at startup,
@@ -48,7 +57,24 @@ func (c *CLI) Validate() error {
 	if strings.Contains(c.Upstream, "://") {
 		return fmt.Errorf("upstream must be a host:port address, not a URL: %q", c.Upstream)
 	}
+	if (c.HeadscaleAPIURL == "") != (c.HeadscaleAPIKeyFile == "") {
+		return fmt.Errorf("--headscale-api-url and --headscale-api-key-file must be set together")
+	}
 	return nil
+}
+
+// Builds the key minter, or nil when the deployment does not issue keys
+// through hsproxy. The key file is re-read per call, because headscale-init
+// replaces it after headscale's database is wiped while hsproxy keeps running.
+func (c *CLI) minter() (hsproxy.Minter, error) {
+	if c.HeadscaleAPIURL == "" {
+		return nil, nil
+	}
+	return tailnet.NewClient(tailnet.Config{
+		BaseURL:    c.HeadscaleAPIURL,
+		APIKeyFile: c.HeadscaleAPIKeyFile,
+		UserName:   c.HeadscaleUser,
+	})
 }
 
 func main() {
@@ -64,10 +90,14 @@ func main() {
 	serverCert, err := tls.LoadX509KeyPair(cli.Cert, cli.Key)
 	ctx.FatalIfErrorf(err)
 
+	minter, err := cli.minter()
+	ctx.FatalIfErrorf(err)
+
 	proxy, err := hsproxy.New(hsproxy.Config{
 		Authorizer:   auth.NewAuthenticator(cli.Repo, cli.CacheTTL),
 		UpstreamAddr: cli.Upstream,
 		ServerCert:   serverCert,
+		Minter:       minter,
 	})
 	ctx.FatalIfErrorf(err)
 

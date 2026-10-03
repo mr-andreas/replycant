@@ -5,9 +5,9 @@ import LibGit2
 ///
 /// A device joining over the tailnet cannot ask gitd for anything, so an
 /// already-paired device has to ask on its behalf. This is that request: it
-/// hands gitd the secret and age recipient from the scanned QR, and gitd mints
-/// a tailnet credential, seals a record under them, and publishes it to the
-/// slot the scanned device is polling.
+/// hands gitd the secret and age recipient from the scanned QR, and gitd seals
+/// a record telling the device where the control plane is and which CA to
+/// trust, and publishes it to the slot the scanned device is polling.
 ///
 /// Authorization is inherited from the mTLS handshake - only a device already
 /// in `pubkeys/` can reach the endpoint - which is the same boundary that

@@ -26,7 +26,7 @@ Media backends sit on the internal Docker network:
 | Route | Implementation | Purpose |
 |-------|----------------|---------|
 | `/lfs` | in-process LFS store (`--lfs-dir`) | Git LFS object storage |
-| `/pair` | headscale API + discovery client | Mints a tailnet credential and seals a pairing record for a device being onboarded |
+| `/pair` | discovery client | Seals a pairing record (CA and control-plane hostname) for a device being onboarded |
 | `/decryptd` | reverse proxy to decryptd (`:8084`) | On-the-fly decryption of LFS objects |
 | `/transcoded` | reverse proxy to transcoded (`:8082`) | HLS transcoding for video playback |
 
@@ -91,7 +91,7 @@ The Git server handles all Git Smart HTTP operations with mTLS authentication.
 2. Server extracts P-256 public key from certificate
 3. Server validates key against authorized keys in `pubkeys/` directory
 4. If authorized and the path is under `/lfs`, the native LFS handler serves batch/upload/download from the file-backed store
-5. If authorized and the path is `/pair`, gitd mints a headscale pre-auth key, seals a pairing record, and publishes it to the discovery API
+5. If authorized and the path is `/pair`, gitd seals a pairing record and publishes it to the discovery API
 6. If authorized and the path matches `/decryptd/*` or `/transcoded/*`, the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
 7. Otherwise, request is proxied to `git-http-backend` via CGI
 8. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist on disk
@@ -234,20 +234,21 @@ setups and the integration harness use.
 | `--tsnet-dir` | No | - | Tailnet node state directory; set to serve the Git listener on the tailnet |
 | `--tsnet-control-url` | With `--tsnet-dir` | - | headscale control URL as seen from the compose network |
 | `--tsnet-hostname` | No | `gitd` | Name to register on the tailnet |
-| `--tsnet-auth-key-file` | With `--tsnet-dir` | - | File holding the pre-auth key, kept out of logs and the process list |
 | `--tailnet-domain` | With `--tsnet-dir` | - | MagicDNS base domain, used to advertise the tailnet Git URL |
 
 ### Pairing flags
 
-These three are all-or-nothing. A partial configuration would start cleanly and
-then fail at the moment a user tries to pair a device. Leave all three unset to
-run without tailnet pairing; `/pair` is then not offered.
+These four are all-or-nothing. A partial configuration would start cleanly and
+then fail at the moment a user tries to pair a device. Leave all four unset to
+run without tailnet pairing; `/pair` is then not offered. `--tsnet-dir` needs
+them too, because gitd mints its own tailnet key over the headscale API.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--headscale-api-url` | Together | - | headscale API base URL used to mint per-device pre-auth keys |
-| `--headscale-api-key-file` | Together | - | File holding the headscale API key |
+| `--headscale-api-url` | Together | - | headscale API base URL, used to mint gitd's own tailnet key and the first device's key, and to remove device nodes on revocation |
+| `--headscale-api-key-file` | Together | - | File holding the headscale API key, re-read on every call so a key replaced after a database wipe takes effect |
 | `--headscale-client-url` | Together | - | headscale URL advertised to pairing devices: the tunnel hostname, or your own DNS name in manual mode |
+| `--tailnet-reconcile-marker` | Together | - | Writable file recording the `pubkeys/` set last reconciled with headscale. Losing it makes every device rejoin once |
 | `--headscale-user` | No | `replycant` | headscale user that paired devices register under |
 | `--discovery-url` | No | - | Discovery API base URL, with the slot prepended as a subdomain. Unset selects manual-exposure delivery |
 

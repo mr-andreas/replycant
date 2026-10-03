@@ -60,10 +60,13 @@ type CLI struct {
 	// Setting TsnetDir moves the mTLS Git listener onto the tailnet so no host
 	// port has to be published. Left empty, gitd keeps its previous host-port
 	// behaviour, which integration tests and LAN-only setups depend on.
-	TsnetDir         string `help:"Directory for tailnet node state; set to serve the Git listener on the tailnet instead of a host port" type:"path"`
-	TsnetControlURL  string `help:"Headscale control URL for the tailnet node (e.g. http://headscale:8080)"`
-	TsnetHostname    string `default:"gitd" help:"Hostname to register on the tailnet"`
-	TsnetAuthKeyFile string `help:"File containing the headscale pre-auth key; read from a file so it stays out of logs and the process list" type:"path"`
+	//
+	// No key flag: gitd mints its own tailnet key over the headscale API
+	// whenever headscale does not know its node, so a tailnet deployment
+	// needs the --headscale-api-* flags as well.
+	TsnetDir        string `help:"Directory for tailnet node state; set to serve the Git listener on the tailnet instead of a host port" type:"path"`
+	TsnetControlURL string `help:"Headscale control URL for the tailnet node (e.g. http://headscale:8080)"`
+	TsnetHostname   string `default:"gitd" help:"Hostname to register on the tailnet"`
 
 	// The MagicDNS domain that headscale is configured with. Needed so the QR
 	// and /config.json advertise a name tailnet peers can actually resolve.
@@ -81,11 +84,11 @@ type CLI struct {
 	TailnetControlAddr     string `default:":8444" help:"Tailnet listen address for control-plane traffic; empty disables the tailnet control path"`
 	TailnetControlUpstream string `default:"hsproxy:8443" help:"hsproxy address that tailnet control-plane traffic is spliced to"`
 
-	// Cloud discovery. All three are needed together: without them gitd runs
-	// in manual-exposure mode, where the pairing QR carries the headscale URL
-	// and CA directly and no record is ever published.
+	// Cloud discovery. Without a discovery URL gitd runs in manual-exposure
+	// mode, where the authorizing device shows the sealed record as a QR and
+	// no record is ever published.
 	DiscoveryURL        string `help:"Base URL of the discovery API; the pairing slot is prepended as a subdomain. Leave unset for manual-exposure mode"`
-	HeadscaleAPIURL     string `name:"headscale-api-url" help:"Headscale API base URL used to mint pre-auth keys for pairing devices (e.g. http://headscale:8080)"`
+	HeadscaleAPIURL     string `name:"headscale-api-url" help:"Headscale API base URL used to mint keys for gitd and the first device, and to delete revoked device nodes (e.g. http://headscale:8080)"`
 	HeadscaleAPIKeyFile string `help:"File containing the headscale API key; read from a file so it stays out of logs and the process list" type:"path"`
 	HeadscaleUser       string `default:"replycant" help:"Headscale user that paired devices are registered under"`
 
@@ -94,6 +97,12 @@ type CLI struct {
 	// uses: devices reach the control plane through the tunnel or a forwarded
 	// port, never over the compose network.
 	HeadscaleClientURL string `help:"Headscale URL advertised to pairing devices (the tunnel hostname, or your own DNS name in manual mode)"`
+
+	// Records which keys were authorized the last time headscale was
+	// reconciled with pubkeys/, so a removal can be told apart from a
+	// restart. Lives in gitd's own writable state, not in the read-only
+	// tailnet directory headscale-init writes.
+	TailnetReconcileMarker string `help:"File recording the pubkeys/ set last reconciled with headscale; losing it only costs one device re-enrollment" type:"path"`
 }
 
 // Validate implements kong.Validatable to enforce constraints beyond struct tags.
@@ -113,7 +122,14 @@ func (c *CLI) Validate() error {
 			"--tailnet-control-addr is set, otherwise the listener accepts " +
 			"control connections and has nowhere to send them")
 	}
-	return c.validateDiscovery()
+	if err := c.validateDiscovery(); err != nil {
+		return err
+	}
+	if c.tsnetConfig().Enabled() && !c.pairingEnabled() {
+		return fmt.Errorf("--tsnet-dir needs --headscale-api-url and the other " +
+			"headscale flags, since gitd mints its own tailnet key over that API")
+	}
+	return nil
 }
 
 // Whether to serve the control plane on the tailnet as well as through the
@@ -133,9 +149,10 @@ func (c *CLI) tailnetControlRelayEnabled() bool {
 // authorizing device to display as a QR.
 func (c *CLI) validateDiscovery() error {
 	required := map[string]string{
-		"--headscale-api-url":      strings.TrimSpace(c.HeadscaleAPIURL),
-		"--headscale-api-key-file": strings.TrimSpace(c.HeadscaleAPIKeyFile),
-		"--headscale-client-url":   strings.TrimSpace(c.HeadscaleClientURL),
+		"--headscale-api-url":        strings.TrimSpace(c.HeadscaleAPIURL),
+		"--headscale-api-key-file":   strings.TrimSpace(c.HeadscaleAPIKeyFile),
+		"--headscale-client-url":     strings.TrimSpace(c.HeadscaleClientURL),
+		"--tailnet-reconcile-marker": strings.TrimSpace(c.TailnetReconcileMarker),
 	}
 
 	missing := make([]string, 0, len(required))
@@ -150,7 +167,7 @@ func (c *CLI) validateDiscovery() error {
 	if len(missing) == len(required) {
 		if strings.TrimSpace(c.DiscoveryURL) != "" {
 			return fmt.Errorf("--discovery-url needs the headscale flags as well, " +
-				"since gitd has to mint a credential before it has anything to publish")
+				"since a pairing record describes a tailnet gitd is not configured for")
 		}
 		return nil
 	}
@@ -177,15 +194,10 @@ func (c *CLI) headscaleClient() (*tailnet.Client, error) {
 		return nil, nil
 	}
 
-	apiKey, err := os.ReadFile(c.HeadscaleAPIKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("read headscale API key: %w", err)
-	}
-
 	return tailnet.NewClient(tailnet.Config{
-		BaseURL:  c.HeadscaleAPIURL,
-		APIKey:   strings.TrimSpace(string(apiKey)),
-		UserName: c.HeadscaleUser,
+		BaseURL:    c.HeadscaleAPIURL,
+		APIKeyFile: c.HeadscaleAPIKeyFile,
+		UserName:   c.HeadscaleUser,
 	})
 }
 
@@ -198,7 +210,6 @@ func (c *CLI) buildPairingPublisher(headscale *tailnet.Client) (gitd.PairingPubl
 	// DiscoveryURL may be empty. That selects manual-exposure delivery, where
 	// the record is returned to the authorizing device instead of published.
 	publisher, err := pairing.NewPublisher(pairing.Config{
-		Minter:       headscale,
 		CACertPath:   c.CA,
 		HeadscaleURL: c.HeadscaleClientURL,
 		DiscoveryURL: c.DiscoveryURL,
@@ -209,13 +220,40 @@ func (c *CLI) buildPairingPublisher(headscale *tailnet.Client) (gitd.PairingPubl
 	return publisher, nil
 }
 
-// Collects the tailnet flags into the shape tsnetserve expects.
+// Builds the reconciler that deletes device nodes when a key leaves pubkeys/,
+// or nil on deployments without headscale, where there is nothing to revoke.
+func (c *CLI) buildReconciler(headscale *tailnet.Client) (*tailnet.Reconciler, error) {
+	if headscale == nil {
+		return nil, nil
+	}
+	return tailnet.NewReconciler(tailnet.ReconcilerConfig{
+		Nodes:          headscale,
+		AuthorizedKeys: func() ([]string, error) { return authorizedKeyFingerprints(c.Repo) },
+		MarkerPath:     c.TailnetReconcileMarker,
+	})
+}
+
+// Reads pubkeys/ on main the same way authentication does and reduces it to
+// fingerprints, so revocation and Git access always agree on who is a member.
+func authorizedKeyFingerprints(repoPath string) ([]string, error) {
+	keys, err := auth.ReadAuthorizedKeys(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	fingerprints := make([]string, 0, len(keys))
+	for _, key := range keys {
+		fingerprints = append(fingerprints, auth.KeyFingerprint(key))
+	}
+	return fingerprints, nil
+}
+
+// Collects the tailnet flags into the shape tsnetserve expects. The minter is
+// added in main, once the headscale client exists.
 func (c *CLI) tsnetConfig() tsnetserve.Config {
 	return tsnetserve.Config{
-		Dir:         c.TsnetDir,
-		ControlURL:  c.TsnetControlURL,
-		Hostname:    c.TsnetHostname,
-		AuthKeyFile: c.TsnetAuthKeyFile,
+		Dir:        c.TsnetDir,
+		ControlURL: c.TsnetControlURL,
+		Hostname:   c.TsnetHostname,
 	}
 }
 
@@ -270,11 +308,13 @@ func main() {
 	caCfg := caserver.Config{CA: string(caData), ServerURL: serverURL}
 	if headscale != nil {
 		// A preauth key is single-use, so the CA page mints on each visit
-		// rather than baking one credential into a QR at startup.
+		// rather than baking one credential into a QR at startup. This is
+		// the only key a device gets without presenting a certificate in
+		// pubkeys/, which is why the page is published on loopback only.
 		caCfg.Mint = func() (string, string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			key, err := headscale.MintPreauthKey(ctx, pairing.PreauthKeyTTL)
+			key, err := headscale.MintPreauthKey(ctx, tailnet.DeviceTag, tailnet.PreauthKeyTTL)
 			if err != nil {
 				return "", "", err
 			}
@@ -303,14 +343,31 @@ func main() {
 	pairingPublisher, err := cli.buildPairingPublisher(headscale)
 	ctx.FatalIfErrorf(err)
 
+	reconciler, err := cli.buildReconciler(headscale)
+	ctx.FatalIfErrorf(err)
+	var onPush func()
+	if reconciler != nil {
+		onPush = reconciler.Trigger
+	}
+
 	handler, err := gitd.NewServer(auth, gitd.ServerConfig{
 		RepoPath:         cli.Repo,
 		LfsDir:           cli.LfsDir,
 		DecryptdURL:      cli.DecryptdURL,
 		TranscodedURL:    cli.TranscodedURL,
 		PairingPublisher: pairingPublisher,
+		OnPush:           onPush,
 	})
 	ctx.FatalIfErrorf(err)
+
+	// Reconciled once at startup as well as after each push, because a push
+	// may have landed just before gitd last stopped.
+	reconcileCtx, stopReconciling := context.WithCancel(context.Background())
+	defer stopReconciling()
+	if reconciler != nil {
+		reconciler.Trigger()
+		go reconciler.Run(reconcileCtx)
+	}
 
 	// Start HTTPS server with mTLS enabled
 	gitServer := &http.Server{
@@ -332,8 +389,14 @@ func main() {
 		gitListener net.Listener
 	)
 	if cli.tsnetConfig().Enabled() {
+		tsnetCfg := cli.tsnetConfig()
+		// gitd's own node is tagged as the server, which is what keeps the
+		// revocation sweep, which only drops device nodes, from touching it.
+		tsnetCfg.Mint = func(ctx context.Context) (string, error) {
+			return headscale.MintPreauthKey(ctx, tailnet.ServerTag, tailnet.PreauthKeyTTL)
+		}
 		joinCtx, cancelJoin := context.WithTimeout(context.Background(), tsnetJoinTimeout)
-		tsnetNode, err = tsnetserve.Start(joinCtx, cli.tsnetConfig())
+		tsnetNode, err = tsnetserve.Start(joinCtx, tsnetCfg)
 		cancelJoin()
 		ctx.FatalIfErrorf(err)
 		log.Printf("Joined tailnet as %q with addresses %v", cli.TsnetHostname, tsnetNode.Addrs())

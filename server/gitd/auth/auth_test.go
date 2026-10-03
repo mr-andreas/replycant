@@ -430,6 +430,64 @@ func createTestCertificate(t *testing.T, pubKey *ecdsa.PublicKey, privKey *ecdsa
 	return cert
 }
 
+// Tailnet revocation compares the authorized set before and after a push, so
+// it needs every key on main, read the same way authentication reads them.
+// A removed key must disappear from the set on the very next read, without
+// waiting on any cache.
+func TestReadAuthorizedKeysReflectsMainAfterEachPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	bob, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
+	addKeyToRepo(t, testRepo, "bob.pub", &bob.PublicKey)
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Len(t, keys, 2)
+	assert.True(t, keys["alice"].Equal(&alice.PublicKey))
+	assert.True(t, keys["bob"].Equal(&bob.PublicKey))
+
+	removeKeyFromRepo(t, testRepo, "bob.pub")
+
+	keys, err = ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	assert.Len(t, keys, 1)
+	assert.Contains(t, keys, "alice")
+}
+
+// An empty repository authorizes nobody by key. Reporting that as an empty set
+// rather than an error lets revocation run on a fresh deployment without
+// treating the absence of history as a failure.
+func TestReadAuthorizedKeysOnEmptyRepositoryIsEmpty(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	emptyRepo := testCtx.CreateEmptyTestRepo(t)
+
+	keys, err := ReadAuthorizedKeys(emptyRepo)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+// Revocation is decided per key, not per file name: renaming a .pub file must
+// not look like a removal, and two files holding different keys must never
+// collide. The fingerprint is therefore derived from the key alone.
+func TestKeyFingerprintDependsOnlyOnTheKey(t *testing.T) {
+	first, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	second, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	copyOfFirst := &ecdsa.PublicKey{Curve: first.Curve, X: first.X, Y: first.Y}
+	assert.Equal(t, KeyFingerprint(&first.PublicKey), KeyFingerprint(copyOfFirst))
+	assert.NotEqual(t, KeyFingerprint(&first.PublicKey), KeyFingerprint(&second.PublicKey))
+	assert.Regexp(t, `^SHA256:[0-9a-f]{64}$`, KeyFingerprint(&first.PublicKey))
+}
+
 // Tests that empty repositories return ErrUnauthorizedBootstrap for any valid P-256 certificate.
 func TestAuthenticator_EmptyRepository_AllowsAnyValidCert(t *testing.T) {
 	testCtx := gittest.NewContext(t)

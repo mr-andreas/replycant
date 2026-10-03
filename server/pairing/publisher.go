@@ -1,10 +1,11 @@
 // Package pairing is gitd's writer side of the discovery handshake.
 //
 // A device that has never paired knows nothing about the deployment: not the
-// CA, not where headscale is, and it has no way to get a tailnet credential.
-// Everything it needs has to arrive in one record it can both decrypt and
-// trust, published by something that already holds the deployment's secrets.
-// That is gitd, which is why this lives here rather than in the hosted service.
+// CA, and not where headscale is. Both have to arrive in one record it can
+// both decrypt and trust, published by something that already holds the
+// deployment's CA. That is gitd, which is why this lives here rather than in
+// the hosted service. No tailnet credential travels in the record: once its
+// key is in pubkeys/, the device mints its own from hsproxy.
 //
 // The record is published to a slot derived from the pairing secret shown in
 // the QR code, so the discovery API never learns who a record is for and the
@@ -41,33 +42,14 @@ type (
 // never be in a position to read one.
 const recordContentType = "application/octet-stream"
 
-// How long a minted pre-auth key stays usable.
-//
-// Deliberately short. The key is the one credential in the record that grants
-// tailnet access, and it passes through a QR code that could be photographed
-// and a discovery record that sits in a hosted database. Ten minutes is long
-// enough for someone to finish scanning and joining, short enough that an
-// abandoned pairing does not leave a usable credential behind.
-const PreauthKeyTTL = 10 * time.Minute
-
 // How long to wait on the discovery API. Someone is watching a spinner.
 const publishTimeout = 15 * time.Second
 
 // How much of a failed response to quote back when reporting an error.
 const maxErrorBodyBytes = 512
 
-// Mints the single-use tailnet credential a pairing device needs.
-//
-// An interface so the publisher can be tested without a headscale, and so the
-// headscale client stays the only thing that knows the control-plane API.
-type Minter interface {
-	MintPreauthKey(ctx context.Context, validFor time.Duration) (string, error)
-}
-
 // Everything gitd needs to describe its own deployment to a new device.
 type Config struct {
-	Minter Minter
-
 	// Read at publish time rather than cached, so rotating the CA reaches
 	// newly paired devices without restarting gitd.
 	CACertPath string
@@ -103,11 +85,7 @@ type Publisher struct {
 // Validates the deployment description so a misconfiguration surfaces when
 // gitd starts instead of when a user is standing there with a QR code open.
 func NewPublisher(config Config) (*Publisher, error) {
-	if config.Minter == nil {
-		return nil, errors.New("a pre-auth key minter is required")
-	}
-
-	missing := make([]string, 0, 5)
+	missing := make([]string, 0, 2)
 	if strings.TrimSpace(config.CACertPath) == "" {
 		missing = append(missing, "CA certificate path")
 	}
@@ -143,19 +121,14 @@ func NewPublisher(config Config) (*Publisher, error) {
 	}, nil
 }
 
-// Mints a credential and seals it with the rest of the deployment description,
-// returning the record and, when cloud discovery is configured, also storing it
-// where the pairing device is polling.
+// Seals the deployment description, returning the record and, when cloud
+// discovery is configured, also storing it where the pairing device is polling.
 //
 // The record is returned in both modes because it is safe to hand back: it is
 // encrypted to the pairing device's key and authenticated under the pairing
 // secret, so only the device that produced the QR can open it. That is what
 // lets manual-exposure mode work with no hosted service at all, by having the
 // authorizing device display the record as a QR instead.
-//
-// Ordering matters: nothing is published unless a key was minted successfully,
-// because a record without a usable key would consume the device's single-use
-// slot read and leave it with nothing to retry against.
 func (p *Publisher) Publish(ctx context.Context, secret Secret, deviceAgePublicKey string) ([]byte, error) {
 	recipient, err := decodeDeviceKey(deviceAgePublicKey)
 	if err != nil {
@@ -167,15 +140,9 @@ func (p *Publisher) Publish(ctx context.Context, secret Secret, deviceAgePublicK
 		return nil, fmt.Errorf("read CA certificate for the pairing record: %w", err)
 	}
 
-	preauthKey, err := p.config.Minter.MintPreauthKey(ctx, PreauthKeyTTL)
-	if err != nil {
-		return nil, fmt.Errorf("mint a tailnet credential for the pairing device: %w", err)
-	}
-
 	sealed, err := pairingblob.Seal(secret, recipient, Payload{
 		HeadscaleURL: p.config.HeadscaleURL,
 		CAPEM:        string(caPEM),
-		PreauthKey:   preauthKey,
 	})
 	if err != nil {
 		return nil, err
@@ -240,7 +207,7 @@ func (p *Publisher) store(ctx context.Context, slot string, record []byte) error
 // the record format needs.
 //
 // This is the first thing done with a scanned value, so a garbled or hostile QR
-// is rejected before any credential is minted for it.
+// is rejected before anything is sealed for it.
 func decodeDeviceKey(agePublicKey string) ([]byte, error) {
 	trimmed := strings.TrimSpace(agePublicKey)
 	if trimmed == "" {

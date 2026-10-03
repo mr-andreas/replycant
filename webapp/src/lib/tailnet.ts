@@ -133,8 +133,9 @@ export interface JoinTailnetOptions {
   caPem: string;
   identity: Pick<DecryptedIdentity, "privateKeyPem" | "certificatePem" | "deviceName">;
 
-  // Only present on a first join. A rejoin reuses the node persisted in the
-  // sidecar's state directory.
+  // Only the first device of a deployment has one, from the CA page. Every
+  // other join, and every rejoin, lets the sidecar mint its own key from
+  // hsproxy with the device certificate.
   preauthKey?: string;
 }
 

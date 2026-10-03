@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/mr-andreas/replycant/server/tailnet"
 )
 
 // The compose file is the only place the policy exists, so these tests read
@@ -123,13 +125,13 @@ func TestPolicyAllowsDevicesToReachOnlyTheServerPorts(t *testing.T) {
 }
 
 // headscale refuses a pre-auth key carrying a tag that no owner claims, so a
-// missing tagOwners entry surfaces as devices failing to pair rather than as a
-// policy error. Both tags are asserted because each is used by a different
-// component: headscale-init tags gitd, gitd tags every device it pairs.
+// missing tagOwners entry surfaces as nodes failing to join rather than as a
+// policy error. The constants are checked rather than literals because they
+// are what gitd and hsproxy actually mint keys with.
 func TestPolicyDeclaresOwnersForBothTags(t *testing.T) {
 	policy := loadComposePolicy(t)
 
-	for _, tag := range []string{"tag:server", "tag:device"} {
+	for _, tag := range []string{tailnet.ServerTag, tailnet.DeviceTag} {
 		owners, ok := policy.TagOwners[tag]
 		if !ok {
 			t.Errorf("tagOwners must claim %s", tag)
@@ -156,19 +158,5 @@ func TestHeadscaleIsConfiguredToLoadThePolicyFile(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "path: /etc/headscale/policy.json") {
 		t.Error("headscale must be pointed at the policy file headscale-config writes")
-	}
-}
-
-// A tagged node loses its user association in headscale, so the tag has to be
-// attached when the credential is minted; there is no way to add it later from
-// the device side.
-func TestPreauthKeysCarryTheirTags(t *testing.T) {
-	compose, err := os.ReadFile(composePath)
-	if err != nil {
-		t.Fatalf("read the compose file: %v", err)
-	}
-
-	if !strings.Contains(string(compose), "--tags tag:server") {
-		t.Error("headscale-init must tag gitd's pre-auth key tag:server")
 	}
 }

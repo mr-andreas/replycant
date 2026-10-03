@@ -62,7 +62,6 @@ func main() {
 	payload := pairing.Payload{
 		HeadscaleURL: fmt.Sprintf("https://%s.tunnel.replycant.com", label),
 		CAPEM:        caPEM,
-		PreauthKey:   "fixture-preauth-key",
 	}
 
 	sealed, err := pairing.Seal(secret, publicKey, payload)

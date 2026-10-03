@@ -1,17 +1,18 @@
-// Package tailnet is gitd's client for the headscale control plane it is
-// colocated with.
+// Package tailnet is the server stack's client for the headscale control plane
+// it is colocated with.
 //
-// gitd needs this for one job: minting the single-use pre-auth key that a
-// pairing device uses to join the tailnet. The key cannot come from the QR code
-// because headscale generates key material server-side and stores only a hash,
-// so there is no way for a device to propose a key of its own. gitd is
-// therefore the component that asks headscale for a key on the device's behalf
-// and delivers it inside the sealed pairing record.
+// headscale's database is a cache of what pubkeys/ in the repository already
+// says, so everything here exists to keep that cache in line with git:
+// minting single-use pre-auth keys for nodes git already authorizes (gitd's
+// own node, and devices that ask hsproxy over mTLS), and deleting device nodes
+// once their key leaves pubkeys/. Keys have to be minted on demand because
+// headscale generates key material server-side and stores only a hash, so a
+// key cannot be stored anywhere and replayed later.
 //
 // The headscale CLI is not used because it talks over a unix socket in
-// headscale's own container. Reaching it would mean sharing that socket with
-// gitd and granting gitd full control-plane administration, when all it needs
-// is to create keys for one user.
+// headscale's own container. Reaching it would mean sharing that socket and
+// granting full control-plane administration, when all the callers need is to
+// create keys and remove nodes.
 package tailnet
 
 import (
@@ -23,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -45,15 +47,33 @@ const maxErrorBodyBytes = 512
 // policy in the same commit, or every device joins with a tag no rule mentions.
 const DeviceTag = "tag:device"
 
+// How long a minted pre-auth key stays usable.
+//
+// Deliberately short. A key is a bearer credential for the tailnet, and the
+// first device's passes through a QR code that could be photographed. Ten
+// minutes covers scanning and joining; a node that misses the window simply
+// asks for another.
+const PreauthKeyTTL = 10 * time.Minute
+
+// The tag gitd's own node carries. The policy names it as the only
+// destination devices may reach, so gitd's key must carry it or no device can
+// connect to the server.
+const ServerTag = "tag:server"
+
 // Where headscale is and who to mint keys for.
 type Config struct {
 	// Reached over the compose network, so plain http is expected here. The
 	// control plane's public exposure is hsproxy's job, not gitd's.
 	BaseURL string
 
-	// Minted by headscale-init and read from disk by the caller, so it is
-	// never present in gitd's flags or process listing.
+	// A fixed API key. Mostly for tests; deployments use APIKeyFile.
 	APIKey string
+
+	// Where headscale-init writes the API key. Read on every call rather than
+	// once, because headscale-init mints a new key after headscale's database
+	// is wiped, and gitd and hsproxy keep running across that. Keeping it in
+	// a file also keeps it out of flags and the process listing.
+	APIKeyFile string
 
 	// The headscale user every replycant device belongs to. Devices are not
 	// separated by user because the tailnet is one household's, and per-user
@@ -69,6 +89,7 @@ type Config struct {
 type Client struct {
 	baseURL    string
 	apiKey     string
+	apiKeyFile string
 	userName   string
 	httpClient *http.Client
 
@@ -91,8 +112,12 @@ func NewClient(config Config) (*Client, error) {
 		return nil, fmt.Errorf("headscale base URL is not a valid URL: %w", err)
 	}
 	apiKey := strings.TrimSpace(config.APIKey)
-	if apiKey == "" {
+	apiKeyFile := strings.TrimSpace(config.APIKeyFile)
+	switch {
+	case apiKey == "" && apiKeyFile == "":
 		return nil, errors.New("headscale API key is required")
+	case apiKey != "" && apiKeyFile != "":
+		return nil, errors.New("set either a headscale API key or a key file, not both")
 	}
 	userName := strings.TrimSpace(config.UserName)
 	if userName == "" {
@@ -104,21 +129,44 @@ func NewClient(config Config) (*Client, error) {
 		httpClient = &http.Client{Timeout: requestTimeout}
 	}
 
-	return &Client{
+	client := &Client{
 		baseURL:    baseURL,
 		apiKey:     apiKey,
+		apiKeyFile: apiKeyFile,
 		userName:   userName,
 		httpClient: httpClient,
-	}, nil
+	}
+	// Read once now so a headscale-init that never ran fails startup instead
+	// of the first device that asks for a key.
+	if _, err := client.currentAPIKey(); err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
-// Creates a key a single device can use once to join the tailnet.
+func (c *Client) currentAPIKey() (string, error) {
+	if c.apiKeyFile == "" {
+		return c.apiKey, nil
+	}
+	raw, err := os.ReadFile(c.apiKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("read headscale API key: %w", err)
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" {
+		return "", fmt.Errorf("headscale API key file %s is empty", c.apiKeyFile)
+	}
+	return key, nil
+}
+
+// Creates a key a single node can use once to join the tailnet carrying tag.
 //
-// Single-use and short-lived by construction: the key travels to a device that
-// has not been trusted with anything yet, over a path that includes a QR code
-// someone could photograph. A reusable or long-lived key would turn one
-// intercepted pairing into indefinite tailnet access.
-func (c *Client) MintPreauthKey(ctx context.Context, validFor time.Duration) (string, error) {
+// Single-use and short-lived by construction: the first device's key passes
+// through a QR code someone could photograph, and every key is a bearer
+// credential. A reusable or long-lived key would turn one intercepted key into
+// indefinite tailnet access. Nothing needs a durable key anyway, because an
+// authorized node can always ask for a fresh one.
+func (c *Client) MintPreauthKey(ctx context.Context, tag string, validFor time.Duration) (string, error) {
 	userID, err := c.resolveUserID(ctx)
 	if err != nil {
 		return "", err
@@ -133,7 +181,7 @@ func (c *Client) MintPreauthKey(ctx context.Context, validFor time.Duration) (st
 		// tagged by the credential it registers with. Without this the device
 		// joins untagged, the policy grants it nothing, and the failure
 		// surfaces much later as an unreachable server.
-		"aclTags": []string{DeviceTag},
+		"aclTags": []string{tag},
 	}
 
 	var response struct {
@@ -142,6 +190,9 @@ func (c *Client) MintPreauthKey(ctx context.Context, validFor time.Duration) (st
 		} `json:"preAuthKey"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/api/v1/preauthkey", request, &response); err != nil {
+		// A wiped headscale recreates the user, maybe under another id, so
+		// the cached one is not trusted after a failure.
+		c.forgetUserID()
 		return "", fmt.Errorf("mint headscale pre-auth key: %w", err)
 	}
 
@@ -150,6 +201,54 @@ func (c *Client) MintPreauthKey(ctx context.Context, validFor time.Duration) (st
 		return "", errors.New("headscale accepted the request but returned no pre-auth key")
 	}
 	return key, nil
+}
+
+// A registered tailnet node, reduced to what revocation needs to decide whether
+// to delete it.
+type Node struct {
+	ID   string   `json:"id"`
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+
+// Reports whether the node carries tag, which is how device nodes are told
+// apart from gitd's own node.
+func (n Node) HasTag(tag string) bool {
+	for _, candidate := range n.Tags {
+		if candidate == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// Lists every node headscale knows.
+//
+// Deliberately unfiltered by user: a tagged node loses its user association in
+// headscale, and every replycant node is tagged, so a user filter would return
+// nothing useful.
+func (c *Client) ListNodes(ctx context.Context) ([]Node, error) {
+	var response struct {
+		Nodes []Node `json:"nodes"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/node", nil, &response); err != nil {
+		return nil, fmt.Errorf("list headscale nodes: %w", err)
+	}
+	return response.Nodes, nil
+}
+
+// Removes a node from the tailnet. headscale ends its sessions and drops it
+// from every peer's netmap, which is what makes revocation immediate rather
+// than waiting for the device to reconnect.
+func (c *Client) DeleteNode(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("a headscale node id is required")
+	}
+	if err := c.do(ctx, http.MethodDelete, "/api/v1/node/"+url.PathEscape(id), nil, nil); err != nil {
+		return fmt.Errorf("delete headscale node %s: %w", id, err)
+	}
+	return nil
 }
 
 // Maps the configured user name to the numeric id headscale's API requires.
@@ -179,6 +278,12 @@ func (c *Client) resolveUserID(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("headscale has no user %q; headscale-init should have created it", c.userName)
 }
 
+func (c *Client) forgetUserID() {
+	c.userIDMu.Lock()
+	c.userID = ""
+	c.userIDMu.Unlock()
+}
+
 // Issues one authenticated call, decoding a JSON response when one is wanted.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	var payload io.Reader
@@ -194,7 +299,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	apiKey, err := c.currentAPIKey()
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

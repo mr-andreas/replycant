@@ -3,9 +3,11 @@
 package integration
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -590,6 +592,59 @@ func TestE2ELFSCloneExistingRepo(t *testing.T) {
 			assert.Equal(t, checksums[f.path], clonedChecksum)
 		}
 	})
+}
+
+// headscale's database is a cache of pubkeys/, so an operator must be able to
+// delete it without re-pairing anyone. After a wipe, gitd's node and an
+// already-cloned device both have to notice headscale forgot them, mint fresh
+// keys with what git already authorizes, and register again.
+//
+// A fetch alone would not prove that: WireGuard sessions set up before the
+// wipe can keep carrying traffic for a while. So the test first waits for
+// both nodes to reappear in the wiped headscale, then fetches.
+func TestE2ETailnetSurvivesAHeadscaleWipe(t *testing.T) {
+	t.Parallel()
+	containerID := startContainer(t)
+	cloneAndProvision(t, containerID, "/tmp/wipe-clone")
+
+	dockerExec(t, containerID, "/entrypoint.sh", "wipe-headscale")
+	nodes := dockerExec(t, containerID, "headscale", "nodes", "list", "--output", "json")
+	require.NotContains(t, nodes, "tag:", "the wipe must leave headscale with no nodes")
+
+	// Online rather than merely listed: a node is listed as soon as it
+	// registers, before its map session is up and peers can reach it.
+	onlineWithTag := func(nodes string, tag string) bool {
+		var listed []struct {
+			Online bool     `json:"online"`
+			Tags   []string `json:"tags"`
+		}
+		if json.Unmarshal([]byte(nodes), &listed) != nil {
+			return false
+		}
+		for _, node := range listed {
+			if node.Online && slices.Contains(node.Tags, tag) {
+				return true
+			}
+		}
+		return false
+	}
+
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		nodes, _ = dockerExecAllowFail(containerID, "headscale", "nodes", "list", "--output", "json")
+		if onlineWithTag(nodes, "tag:server") && onlineWithTag(nodes, "tag:device") {
+			break
+		}
+		if time.Now().After(deadline) {
+			gitdLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd-tailnet.log")
+			hsproxyLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/hsproxy.log")
+			t.Fatalf("gitd and the device did not rejoin the wiped headscale\nnodes: %s\ngitd:\n%s\nhsproxy:\n%s",
+				nodes, gitdLog, hsproxyLog)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	dockerExec(t, containerID, "timeout", "120", "git", "-C", "/tmp/wipe-clone", "fetch", "origin", "main")
 }
 
 // TestE2EBareClone validates clone bootstrap behavior for bare repository targets.

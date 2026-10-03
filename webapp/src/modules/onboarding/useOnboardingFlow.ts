@@ -45,8 +45,10 @@ export type SetupMode =
 // pairing secret and wait to be handed the CA.
 export type ConnectionMode = "lan" | "tailnet";
 
-// Held only in memory: a preauth key is single-use and must not survive a
-// reload as something the next start would try to redeem.
+// The first device's join, from the CA page. It is the only join that comes
+// with a key, because hsproxy only mints for keys already in pubkeys/. Held
+// only in memory: the key is single-use and must not survive a reload as
+// something the next start would try to redeem.
 interface FirstDeviceJoin {
   ca: string;
   headscaleUrl: string;
@@ -422,7 +424,6 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
         const tailnetRecord = toTailnetConfigRecord({
           headscaleUrl: firstDeviceJoin.headscaleUrl,
           caPem: firstDeviceJoin.ca,
-          preauthKey: firstDeviceJoin.preauthKey,
         });
         await joinTailnet({
           record: tailnetRecord,
@@ -510,11 +511,12 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
         await verifyCALabel(payload);
 
         const tailnetRecord = toTailnetConfigRecord(payload);
+        // No key: the authorizing device committed this device's key before
+        // publishing the record, so the sidecar mints its own from hsproxy.
         await joinTailnet({
           record: tailnetRecord,
           caPem: payload.caPem,
           identity,
-          preauthKey: payload.preauthKey,
         });
 
         const config: SetupConfigRecord = {

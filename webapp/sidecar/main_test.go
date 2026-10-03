@@ -152,15 +152,16 @@ func TestReadInputRejectsBlankFields(t *testing.T) {
 	}
 }
 
-// The pre-auth key is only needed for the first join. Requiring it afterwards
-// would make every restart fail, since the credential is single-use.
+// Only the first device of a deployment arrives with a key, from the CA page.
+// Every paired device, and every restart, joins without one and mints its own,
+// so requiring it would make all of those fail.
 func TestReadInputAcceptsAMissingPreauthKey(t *testing.T) {
 	config := validInput()
 	delete(config, "preauth_key")
 
 	parsed, err := readInput(encode(t, config))
 	if err != nil {
-		t.Fatalf("a rejoining node has no pre-auth key: %v", err)
+		t.Fatalf("a paired or rejoining node has no pre-auth key: %v", err)
 	}
 	if parsed.PreauthKey != "" {
 		t.Errorf("expected no pre-auth key, got one")
@@ -169,7 +170,7 @@ func TestReadInputAcceptsAMissingPreauthKey(t *testing.T) {
 
 // A relative state directory would resolve against whatever directory Electron
 // was launched from, so the node identity would not survive a restart and each
-// launch would need a fresh single-use credential it does not have.
+// launch would register the device as a new node.
 func TestReadInputRequiresAnAbsoluteStateDir(t *testing.T) {
 	config := validInput()
 	config["state_dir"] = "relative/tsnet"

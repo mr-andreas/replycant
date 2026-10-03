@@ -17,7 +17,6 @@ struct PairingRecordCrossLanguageTests {
         struct WirePayload: Decodable {
             let headscale_url: String
             let ca_pem: String
-            let preauth_key: String
         }
 
         let secret: String
@@ -76,7 +75,6 @@ struct PairingRecordCrossLanguageTests {
 
         #expect(payload.headscaleURL == fixture.payload.headscale_url)
         #expect(payload.caPEM == fixture.payload.ca_pem)
-        #expect(payload.preauthKey == fixture.payload.preauth_key)
     }
 
     // Slots are public, so an abandoned attempt's record could be replayed at a
@@ -142,8 +140,7 @@ struct PairingRecordCrossLanguageTests {
         try PairingRecord.verifyCALabel(
             PairingRecord.Payload(
                 headscaleURL: "https://" + labels.joined(separator: "."),
-                caPEM: payload.caPEM,
-                preauthKey: payload.preauthKey
+                caPEM: payload.caPEM
             )
         )
     }

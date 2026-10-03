@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -83,30 +82,6 @@ func (f *fakeDiscovery) setStatus(status int) {
 	f.status = status
 }
 
-// Returns a fixed key, standing in for headscale.
-type fakeMinter struct {
-	key       string
-	err       error
-	requested []time.Duration
-	mu        sync.Mutex
-}
-
-func (m *fakeMinter) MintPreauthKey(_ context.Context, validFor time.Duration) (string, error) {
-	m.mu.Lock()
-	m.requested = append(m.requested, validFor)
-	m.mu.Unlock()
-	if m.err != nil {
-		return "", m.err
-	}
-	return m.key, nil
-}
-
-func (m *fakeMinter) ttls() []time.Duration {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]time.Duration(nil), m.requested...)
-}
-
 // Writes a CA certificate to disk, since the publisher reads the CA it
 // distributes from the same file the rest of the stack uses.
 func writeTestCA(t *testing.T) (path string, pemBytes []byte) {
@@ -147,15 +122,14 @@ func newTestDevice(t *testing.T) gitcrypt.Identity {
 	return identity
 }
 
-func newTestPublisher(t *testing.T, fake *fakeDiscovery, minter Minter) (*Publisher, []byte) {
+func newTestPublisher(t *testing.T, fake *fakeDiscovery) (*Publisher, []byte) {
 	t.Helper()
 	caPath, caPEM := writeTestCA(t)
 	publisher, err := NewPublisher(Config{
-		Minter:          minter,
-		CACertPath:      caPath,
-		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		DiscoveryURL:    fake.server.URL,
-		HTTPClient:      fake.client(),
+		CACertPath:   caPath,
+		HeadscaleURL: "https://abc.tunnel.replycant.com",
+		DiscoveryURL: fake.server.URL,
+		HTTPClient:   fake.client(),
 	})
 	if err != nil {
 		t.Fatalf("a complete config must build a publisher: %v", err)
@@ -169,8 +143,7 @@ func newTestPublisher(t *testing.T, fake *fakeDiscovery, minter Minter) (*Publis
 // writer and the reader.
 func TestPublishedRecordOpensOnTheDevice(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	minter := &fakeMinter{key: "hskey-auth-forthisdevice"}
-	publisher, caPEM := newTestPublisher(t, fake, minter)
+	publisher, caPEM := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
@@ -188,9 +161,6 @@ func TestPublishedRecordOpensOnTheDevice(t *testing.T) {
 		t.Fatalf("the device must be able to open what gitd published: %v", err)
 	}
 
-	if payload.PreauthKey != "hskey-auth-forthisdevice" {
-		t.Errorf("the minted key must reach the device, got %q", payload.PreauthKey)
-	}
 	if payload.HeadscaleURL != "https://abc.tunnel.replycant.com" {
 		t.Errorf("unexpected headscale URL %q", payload.HeadscaleURL)
 	}
@@ -205,7 +175,7 @@ func TestPublishedRecordOpensOnTheDevice(t *testing.T) {
 // completes.
 func TestRecordIsPublishedToTheSecretsSlot(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "k"})
+	publisher, _ := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
@@ -225,10 +195,10 @@ func TestRecordIsPublishedToTheSecretsSlot(t *testing.T) {
 
 // A record that is readable by the discovery service, or by anyone who can see
 // the request, would defeat the design. The stored bytes must not contain the
-// pre-auth key or the CA in the clear.
+// control-plane address or the CA in the clear.
 func TestPublishedRecordIsOpaque(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, caPEM := newTestPublisher(t, fake, &fakeMinter{key: "hskey-auth-secretvalue"})
+	publisher, caPEM := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
@@ -241,7 +211,6 @@ func TestPublishedRecordIsOpaque(t *testing.T) {
 
 	_, _, _, raw := fake.snapshot()
 	for _, secretValue := range []string{
-		"hskey-auth-secretvalue",
 		"replycant.internal",
 		"tunnel.replycant.com",
 		string(caPEM),
@@ -252,36 +221,12 @@ func TestPublishedRecordIsOpaque(t *testing.T) {
 	}
 }
 
-// Pre-auth keys are the one credential in the record that grants tailnet
-// access. A long TTL would leave a usable key sitting in a discovery record or
-// a photographed QR long after pairing was abandoned.
-func TestMintedKeyIsShortLived(t *testing.T) {
-	fake := newFakeDiscovery(t)
-	minter := &fakeMinter{key: "k"}
-	publisher, _ := newTestPublisher(t, fake, minter)
-	device := newTestDevice(t)
-
-	secret, _ := pairingblob.NewSecret()
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err != nil {
-		t.Fatalf("publishing must succeed: %v", err)
-	}
-
-	ttls := minter.ttls()
-	if len(ttls) != 1 {
-		t.Fatalf("exactly one key should be minted per pairing, got %d", len(ttls))
-	}
-	if ttls[0] > time.Hour {
-		t.Errorf("the pre-auth key TTL should be short, got %v", ttls[0])
-	}
-}
-
-// A key that was minted but never delivered is a small leak: it stays valid in
-// headscale with nobody holding it. More importantly, the operator needs to
-// know pairing failed rather than seeing it hang.
+// The operator and the authorizing device need to know pairing failed rather
+// than seeing the new device wait for a record that never arrives.
 func TestDiscoveryFailureIsReported(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	fake.setStatus(http.StatusInternalServerError)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "k"})
+	publisher, _ := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	secret, _ := pairingblob.NewSecret()
@@ -294,31 +239,12 @@ func TestDiscoveryFailureIsReported(t *testing.T) {
 	}
 }
 
-// If headscale cannot mint a key there is nothing worth publishing, so the
-// record must not be written at all. Publishing a record without a usable key
-// would consume the device's single-use slot read for nothing.
-func TestNothingIsPublishedWhenMintingFails(t *testing.T) {
-	fake := newFakeDiscovery(t)
-	minter := &fakeMinter{err: errors.New("headscale is down")}
-	publisher, _ := newTestPublisher(t, fake, minter)
-	device := newTestDevice(t)
-
-	secret, _ := pairingblob.NewSecret()
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err == nil {
-		t.Fatal("publishing must fail when no key can be minted")
-	}
-
-	if puts, _, _, _ := fake.snapshot(); puts != 0 {
-		t.Errorf("no record should be written when minting failed, got %d writes", puts)
-	}
-}
-
 // The device's age public key comes off a scanned QR code, so a garbled or
 // hostile value has to be rejected rather than producing a record nobody can
 // open.
 func TestMalformedDeviceKeyIsRejected(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "k"})
+	publisher, _ := newTestPublisher(t, fake)
 
 	secret, _ := pairingblob.NewSecret()
 	for _, name := range []string{"", "not-an-age-key", "age1invalid"} {
@@ -337,7 +263,7 @@ func TestMalformedDeviceKeyIsRejected(t *testing.T) {
 // rejected there. Asserting it here keeps the failure local to this package.
 func TestRecordIsSentAsOpaqueBytes(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "k"})
+	publisher, _ := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	secret, _ := pairingblob.NewSecret()
@@ -355,11 +281,10 @@ func TestCAIsReadAtPublishTime(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	caPath, _ := writeTestCA(t)
 	publisher, err := NewPublisher(Config{
-		Minter:          &fakeMinter{key: "k"},
-		CACertPath:      caPath,
-		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		DiscoveryURL:    fake.server.URL,
-		HTTPClient:      fake.client(),
+		CACertPath:   caPath,
+		HeadscaleURL: "https://abc.tunnel.replycant.com",
+		DiscoveryURL: fake.server.URL,
+		HTTPClient:   fake.client(),
 	})
 	if err != nil {
 		t.Fatalf("build publisher: %v", err)
@@ -391,11 +316,10 @@ func TestCAIsReadAtPublishTime(t *testing.T) {
 func TestMissingCAIsReported(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, err := NewPublisher(Config{
-		Minter:          &fakeMinter{key: "k"},
-		CACertPath:      filepath.Join(t.TempDir(), "absent.crt"),
-		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		DiscoveryURL:    fake.server.URL,
-		HTTPClient:      fake.client(),
+		CACertPath:   filepath.Join(t.TempDir(), "absent.crt"),
+		HeadscaleURL: "https://abc.tunnel.replycant.com",
+		DiscoveryURL: fake.server.URL,
+		HTTPClient:   fake.client(),
 	})
 	if err != nil {
 		t.Fatalf("a missing file should not fail construction: %v", err)
@@ -413,17 +337,15 @@ func TestMissingCAIsReported(t *testing.T) {
 func TestNewPublisherRejectsIncompleteConfig(t *testing.T) {
 	caPath, _ := writeTestCA(t)
 	complete := Config{
-		Minter:          &fakeMinter{key: "k"},
-		CACertPath:      caPath,
-		HeadscaleURL:    "https://abc.tunnel.replycant.com",
-		DiscoveryURL:    "https://discovery.replycant.com",
+		CACertPath:   caPath,
+		HeadscaleURL: "https://abc.tunnel.replycant.com",
+		DiscoveryURL: "https://discovery.replycant.com",
 	}
 
 	for _, testCase := range []struct {
 		name   string
 		mutate func(*Config)
 	}{
-		{"no minter", func(c *Config) { c.Minter = nil }},
 		{"no CA path", func(c *Config) { c.CACertPath = "" }},
 		{"no headscale URL", func(c *Config) { c.HeadscaleURL = "" }},
 	} {
@@ -441,7 +363,7 @@ func TestNewPublisherRejectsIncompleteConfig(t *testing.T) {
 // produce the same record as the parsed form.
 func TestPublishFromScannedValues(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "hskey-auth-scanned"})
+	publisher, _ := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
@@ -458,8 +380,8 @@ func TestPublishFromScannedValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the device must be able to open the record: %v", err)
 	}
-	if payload.PreauthKey != "hskey-auth-scanned" {
-		t.Errorf("unexpected key %q", payload.PreauthKey)
+	if payload.HeadscaleURL != "https://abc.tunnel.replycant.com" {
+		t.Errorf("unexpected headscale URL %q", payload.HeadscaleURL)
 	}
 }
 
@@ -467,7 +389,7 @@ func TestPublishFromScannedValues(t *testing.T) {
 // slot nobody is polling, which looks like a pairing that just never finishes.
 func TestUnparseableScannedSecretIsRejected(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "k"})
+	publisher, _ := newTestPublisher(t, fake)
 	device := newTestDevice(t)
 
 	for _, name := range []string{"", "!!!not base64!!!", "dG9vLXNob3J0"} {
@@ -487,7 +409,7 @@ func TestUnparseableScannedSecretIsRejected(t *testing.T) {
 // gitd's request goroutines.
 func TestConcurrentPublishesAreIndependent(t *testing.T) {
 	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake, &fakeMinter{key: "k"})
+	publisher, _ := newTestPublisher(t, fake)
 
 	const devices = 6
 	errs := make(chan error, devices)

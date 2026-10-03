@@ -3,6 +3,7 @@ package pairing
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -31,8 +32,27 @@ func testPayload() Payload {
 	return Payload{
 		HeadscaleURL: "https://8d121a007a4ae234d4c6abac034e3094.tunnel.replycant.com",
 		CAPEM:        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
-		PreauthKey:   "hskey-auth-abcdefghijkl-secret",
 	}
+}
+
+// The record travels through a hosted discovery API and may be shown as a QR,
+// so it must carry no credential at all. A newly paired device mints its own
+// tailnet key from hsproxy with its certificate, which is already in pubkeys/
+// by the time it joins. The wire shape is shared with the Swift and TypeScript
+// readers, so it is pinned field by field.
+func TestPayloadCarriesOnlyTheCAAndControlURL(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(testPayload())
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &fields))
+
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	assert.ElementsMatch(t, []string{"headscale_url", "ca_pem"}, keys)
 }
 
 // The happy path: whoever scanned the QR can write a record that only the
@@ -66,7 +86,6 @@ func TestSealedBlobLeaksNoPlaintext(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, secretValue := range []string{
-		payload.PreauthKey,
 		payload.HeadscaleURL,
 		"BEGIN CERTIFICATE",
 	} {
@@ -96,7 +115,7 @@ func TestOpenRejectsBlobSealedWithADifferentSecret(t *testing.T) {
 }
 
 // Holding the pairing secret alone must not be enough. A bystander who
-// photographs the QR still cannot read the CA or the pre-auth key.
+// photographs the QR still cannot read the CA or the control-plane address.
 func TestOpenRejectsWrongAgeKey(t *testing.T) {
 	t.Parallel()
 
@@ -253,7 +272,6 @@ func TestSealRejectsIncompletePayload(t *testing.T) {
 	cases := map[string]func(*Payload){
 		"no headscale url": func(p *Payload) { p.HeadscaleURL = "" },
 		"no ca":            func(p *Payload) { p.CAPEM = "" },
-		"no preauth key":   func(p *Payload) { p.PreauthKey = "" },
 	}
 
 	for name, mutate := range cases {
@@ -290,7 +308,6 @@ LEj+/WUkDhfmrCRf4r0cNwQ/2M0wXWJmZSp+2FwsKscCIQDKQ2nEAj+8DkOn2h0o
 	payload := Payload{
 		HeadscaleURL: "https://" + host,
 		CAPEM:        caPEM,
-		PreauthKey:   "hskey-auth-a-b",
 	}
 	require.NoError(t, payload.VerifyCALabel())
 

@@ -93,7 +93,6 @@ public enum PairingRecord {
     public struct Payload: Equatable, Sendable {
         public let headscaleURL: String
         public let caPEM: String
-        public let preauthKey: String
     }
 
     /// A pairing attempt in progress. The encoded form goes in the QR; the slot
@@ -256,7 +255,6 @@ public enum PairingRecord {
     private struct WirePayload: Decodable {
         let headscale_url: String?
         let ca_pem: String?
-        let preauth_key: String?
     }
 
     // Fails a payload that would leave the device stuck at "waiting for
@@ -273,8 +271,7 @@ public enum PairingRecord {
 
         let payload = Payload(
             headscaleURL: require(wire.headscale_url, "headscale_url"),
-            caPEM: require(wire.ca_pem, "ca_pem"),
-            preauthKey: require(wire.preauth_key, "preauth_key")
+            caPEM: require(wire.ca_pem, "ca_pem")
         )
         guard missing.isEmpty else { throw PairingError.missingFields(missing) }
         return payload

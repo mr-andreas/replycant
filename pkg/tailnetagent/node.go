@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
+	"github.com/mr-andreas/replycant/pkg/tailnetlogin"
 	"github.com/mr-andreas/replycant/pkg/tailnetshim"
 	"tailscale.com/tsnet"
 )
@@ -47,7 +48,7 @@ func Run(ctx context.Context, cfg StartConfig) error {
 
 	go controlPlane.Serve(ctx)
 
-	node, err := startNode(ctx, cfg, controlPlane.ControlURL())
+	node, err := startNode(ctx, cfg, controlPlane, logger.Printf)
 	if err != nil {
 		return err
 	}
@@ -71,7 +72,11 @@ func Run(ctx context.Context, cfg StartConfig) error {
 
 // startNode blocks until the node has joined so a failure is reported here
 // rather than later as an unreachable gitd.
-func startNode(ctx context.Context, cfg StartConfig, controlURL string) (*tsnet.Server, error) {
+//
+// The node is kept logged in for the agent's lifetime: whenever headscale does
+// not know it, on first join or after headscale lost its state, it mints a key
+// from hsproxy with the device certificate and logs in again.
+func startNode(ctx context.Context, cfg StartConfig, controlPlane *tailnetshim.Shim, logf func(string, ...any)) (*tsnet.Server, error) {
 	dir := statePath(Dir(cfg.GitDir))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create tailnet state directory: %w", err)
@@ -79,10 +84,13 @@ func startNode(ctx context.Context, cfg StartConfig, controlURL string) (*tsnet.
 	node := &tsnet.Server{
 		Dir:        dir,
 		Hostname:   cfg.Hostname,
-		ControlURL: controlURL,
-		AuthKey:    cfg.PreauthKey,
+		ControlURL: controlPlane.ControlURL(),
 		UserLogf:   log.Printf,
 		Logf:       func(string, ...any) {},
+	}
+	if err := tailnetlogin.Keep(ctx, node, controlPlane.MintPreauthKey, logf); err != nil {
+		_ = node.Close()
+		return nil, err
 	}
 	joinCtx, cancel := context.WithTimeout(ctx, joinTimeout)
 	defer cancel()

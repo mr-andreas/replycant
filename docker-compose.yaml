@@ -232,8 +232,11 @@ services:
         # spoof their own logged source address.
         trusted_proxies: []
 
+        # Kept apart from the database so the database can be deleted at
+        # any time: it is only a cache of pubkeys/, but this key is the
+        # control plane's identity and every node has it pinned.
         noise:
-          private_key_path: /var/lib/headscale/noise_private.key
+          private_key_path: /var/lib/headscale-noise/noise_private.key
 
         prefixes:
           v4: 100.64.0.0/10
@@ -332,6 +335,7 @@ services:
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/headscale/config:/etc/headscale:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/headscale/lib:/var/lib/headscale
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/headscale/noise:/var/lib/headscale-noise
       # The headscale CLI reaches the running server over this unix socket, so
       # headscale-init has to share the directory. A named volume rather than a
       # bind mount because unix sockets do not work reliably across the
@@ -340,13 +344,16 @@ services:
     command: ["serve"]
     restart: unless-stopped
 
-  # Mint the tailnet user and the pre-auth key gitd needs to join.
+  # Create the tailnet user and the API key gitd and hsproxy mint keys with.
+  #
+  # No tailnet key is captured here. headscale's database is a cache of
+  # pubkeys/: gitd mints its own node's key, and devices mint theirs through
+  # hsproxy, whenever headscale does not know them. Deleting headscale/lib
+  # and running `docker compose up` therefore recovers without re-pairing.
   #
   # Uses the -debug image because the default headscale image is distroless and
   # has no shell. That image is built with ko, so its busybox shell lives at
-  # /busybox/sh rather than /bin/sh. Pre-auth keys are only returned once at
-  # creation, so the key is captured here and written to disk rather than read
-  # back later.
+  # /busybox/sh rather than /bin/sh.
   headscale-init:
     image: ${REPLYCANT_HEADSCALE_DEBUG_IMAGE:-ghcr.io/juanfont/headscale:0.29.3-debug}
     depends_on:
@@ -389,35 +396,25 @@ services:
           exit 1
         fi
 
-        # gitd re-authenticates from its own tsnet state after the first join,
-        # so the key is only minted when it has not been minted before.
+        # gitd and hsproxy mint pre-auth keys over headscale's HTTP API. The
+        # CLI is not an option there: it talks over this container's unix
+        # socket, and sharing that would hand them full control-plane
+        # administration.
         #
-        # The tag is applied here because a tagged node loses its user
-        # association in headscale and there is no way for the node to claim
-        # the tag later. tag:server is what the policy grants devices access
-        # to, so a key minted without it produces a node no device can reach.
-        if [ ! -s /data/tailnet/gitd.authkey ]; then
-          echo "Creating gitd pre-auth key for user $$USER_ID"
-          headscale preauthkeys create --user "$$USER_ID" --expiration 24h --tags tag:server --output json \
-            | grep -o '"key": *"[^"]*"' \
-            | sed -e 's/.*: *"//' -e 's/"$$//' \
-            > /data/tailnet/gitd.authkey
-          chmod 600 /data/tailnet/gitd.authkey
+        # API keys are only shown at creation, so the key lives in a file. A
+        # wiped database forgets it while the file survives, so a key
+        # headscale no longer lists is replaced. headscale lists a key by
+        # its first 22 characters: hskey-api- and a 12-character prefix.
+        if [ -s /data/tailnet/headscale.apikey ]; then
+          STORED_PREFIX=$$(cut -c1-22 /data/tailnet/headscale.apikey)
+          if ! headscale apikeys list --output json | grep -Fq "\"$${STORED_PREFIX}-"; then
+            echo "headscale no longer knows the stored API key; replacing it"
+            rm -f /data/tailnet/headscale.apikey
+          fi
         fi
 
-        if [ ! -s /data/tailnet/gitd.authkey ]; then
-          echo "Failed to mint a gitd pre-auth key" >&2
-          exit 1
-        fi
-
-        # gitd mints a fresh pre-auth key for every device that pairs, which it
-        # does over headscale's HTTP API. The CLI is not an option there: it
-        # talks over this container's unix socket, and sharing that with gitd
-        # would hand it full control-plane administration.
-        #
-        # API keys, like pre-auth keys, are only shown at creation.
         if [ ! -s /data/tailnet/headscale.apikey ]; then
-          echo "Creating headscale API key for gitd"
+          echo "Creating headscale API key for gitd and hsproxy"
           headscale apikeys create --expiration 87600h \
             | tr -d '\r\n' \
             > /data/tailnet/headscale.apikey
@@ -449,10 +446,15 @@ services:
         condition: service_completed_successfully
       headscale:
         condition: service_started
+      headscale-init:
+        condition: service_completed_successfully
     ports:
       - "${REPLYCANT_HSPROXY_BIND:-127.0.0.1}:${REPLYCANT_HSPROXY_PORT:-8443}:8443"
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo:ro
+      # The directory rather than the key file, so a key headscale-init
+      # replaces after a database wipe is picked up without a restart.
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.crt:/data/hsproxy.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.key:/data/hsproxy.key:ro
     entrypoint: /usr/local/bin/hsproxy
@@ -464,6 +466,10 @@ services:
       - --key=/data/hsproxy.key
       - --cache-ttl=5m
       - --health-addr=:8091
+      # Lets any device in pubkeys/ mint its own tailnet key, which is what
+      # makes headscale's database disposable.
+      - --headscale-api-url=http://headscale:8080
+      - --headscale-api-key-file=/data/tailnet/headscale.apikey
     restart: unless-stopped
 
   # Holds the outbound connection that publishes headscale through the hosted
@@ -538,9 +544,9 @@ services:
     environment:
       REPLYCANT_GIT_PORT: ${REPLYCANT_GIT_PORT:-8443}
       REPLYCANT_CA_PORT: ${REPLYCANT_CA_PORT:-8080}
-      # Empty selects manual-exposure delivery: gitd still mints a credential
-      # and seals a pairing record, but hands it back to the authorizing device
-      # to display as a QR instead of publishing it to the hosted API.
+      # Empty selects manual-exposure delivery: gitd still seals a pairing
+      # record, but hands it back to the authorizing device to display as a
+      # QR instead of publishing it to the hosted API.
       REPLYCANT_DISCOVERY_URL: ${REPLYCANT_DISCOVERY_URL-https://discovery.replycant.com}
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
@@ -550,6 +556,9 @@ services:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/server.key:/data/server.key:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/tsnet:/data/tsnet
+      # The pubkeys/ set last reconciled with headscale, so a removed key
+      # can be told apart from one that was never there.
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/tailnet-state:/data/tailnet-state
       - ${REPLYCANT_LFS_DIR:-./replycant-lfs}:/data/lfs
     entrypoint: /bin/sh
     command:
@@ -557,7 +566,7 @@ services:
       - |
         . /data/hostname/hostname.env
         . /data/tailnet/tailnet.env
-        exec gitd --repo=/data/repo --addr=:${REPLYCANT_GIT_PORT:-8443} --ca-addr=:${REPLYCANT_CA_PORT:-8080} --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082 --tsnet-dir=/data/tsnet --tsnet-control-url=http://headscale:8080 --tsnet-hostname=gitd --tsnet-auth-key-file=/data/tailnet/gitd.authkey --tailnet-domain=$$REPLYCANT_TAILNET_DOMAIN --headscale-api-url=http://headscale:8080 --headscale-api-key-file=/data/tailnet/headscale.apikey --headscale-client-url=$$REPLYCANT_HEADSCALE_URL --discovery-url="$$REPLYCANT_DISCOVERY_URL"
+        exec gitd --repo=/data/repo --addr=:${REPLYCANT_GIT_PORT:-8443} --ca-addr=:${REPLYCANT_CA_PORT:-8080} --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082 --tsnet-dir=/data/tsnet --tsnet-control-url=http://headscale:8080 --tsnet-hostname=gitd --tailnet-domain=$$REPLYCANT_TAILNET_DOMAIN --headscale-api-url=http://headscale:8080 --headscale-api-key-file=/data/tailnet/headscale.apikey --headscale-client-url=$$REPLYCANT_HEADSCALE_URL --tailnet-reconcile-marker=/data/tailnet-state/reconciled-pubkeys.json --discovery-url="$$REPLYCANT_DISCOVERY_URL"
 
   # Decrypts encrypted LFS objects on the fly. Reachable only through gitd's
   # mTLS-authenticated /decryptd route, so no host port is published.

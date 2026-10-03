@@ -1,10 +1,91 @@
 #!/bin/bash
 set -euo pipefail
 
+# Fixed so `entrypoint.sh wipe-headscale` restarts headscale where the rest
+# of the stack expects it.
+headscale_port=18084
+
+# start_headscale runs headscale in the background and waits until its CLI
+# answers. setsid keeps a headscale started from `docker exec` alive after
+# that exec session ends.
+start_headscale() {
+  setsid headscale serve >>/tmp/headscale.log 2>&1 < /dev/null &
+  local headscale_pid=$!
+  echo "$headscale_pid" > /tmp/headscale.pid
+
+  for _ in $(seq 1 60); do
+    if ! kill -0 "$headscale_pid" 2>/dev/null; then
+      echo "headscale exited" >&2
+      cat /tmp/headscale.log >&2 || true
+      exit 1
+    fi
+    if timeout 3 headscale users list >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "headscale did not become ready" >&2
+  cat /tmp/headscale.log >&2 || true
+  exit 1
+}
+
+# init_headscale mirrors headscale-init in docker-compose.yaml: the replycant
+# user, and an API key that is replaced once headscale no longer lists it.
+init_headscale() {
+  json_number() {
+    grep -o "\"$1\": *[0-9]*" | head -n1 | grep -o '[0-9]*$' || true
+  }
+  if [[ -z "$(headscale users list --name replycant --output json | json_number id)" ]]; then
+    headscale users create replycant
+  fi
+  if [[ -z "$(headscale users list --name replycant --output json | json_number id)" ]]; then
+    echo "could not determine the replycant user id" >&2
+    exit 1
+  fi
+
+  if [[ -s /tmp/tailnet/headscale.apikey ]]; then
+    local stored_prefix
+    stored_prefix="$(cut -c1-22 /tmp/tailnet/headscale.apikey)"
+    if ! headscale apikeys list --output json | grep -Fq "\"${stored_prefix}-"; then
+      echo "headscale no longer knows the stored API key; replacing it"
+      rm -f /tmp/tailnet/headscale.apikey
+    fi
+  fi
+  if [[ ! -s /tmp/tailnet/headscale.apikey ]]; then
+    headscale apikeys create --expiration 87600h | tr -d '\r\n' > /tmp/tailnet/headscale.apikey.new
+    chmod 600 /tmp/tailnet/headscale.apikey.new
+    mv /tmp/tailnet/headscale.apikey.new /tmp/tailnet/headscale.apikey
+  fi
+  if [[ ! -s /tmp/tailnet/headscale.apikey ]]; then
+    echo "failed to mint a headscale API key" >&2
+    exit 1
+  fi
+}
+
+# wipe_headscale throws away headscale's database while the rest of the stack
+# keeps running, which is the recovery path an operator is promised: nothing
+# headscale stores is needed, because pubkeys/ rebuilds it.
+wipe_headscale() {
+  if [[ -s /tmp/headscale.pid ]]; then
+    kill "$(cat /tmp/headscale.pid)" 2>/dev/null || true
+    for _ in $(seq 1 30); do
+      kill -0 "$(cat /tmp/headscale.pid)" 2>/dev/null || break
+      sleep 0.2
+    done
+  fi
+  rm -rf /var/lib/headscale/*
+  start_headscale
+  init_headscale
+}
+
+if [[ "${1:-}" == "wipe-headscale" ]]; then
+  wipe_headscale
+  exit 0
+fi
+
 # start_tailnet brings up the control plane and the tsnet gitd the CLI clones
 # against. Ports stay off the ones the direct gitd already binds.
 start_tailnet() {
-  local headscale_port=18084
   local hsproxy_port=18085
   local ca_port=18081
   local discovery_port=18082
@@ -42,7 +123,7 @@ EOF
 
   discovery --addr="127.0.0.1:${discovery_port}" >/tmp/discovery.log 2>&1 &
 
-  mkdir -p /etc/headscale /var/lib/headscale /var/run/headscale /tmp/tailnet
+  mkdir -p /etc/headscale /var/lib/headscale /var/lib/headscale-noise /var/run/headscale /tmp/tailnet
   cat > /etc/headscale/config.yaml << EOF
 server_url: https://localhost:${hsproxy_port}
 listen_addr: 127.0.0.1:${headscale_port}
@@ -53,7 +134,7 @@ unix_socket: /var/run/headscale/headscale.sock
 unix_socket_permission: "0770"
 trusted_proxies: []
 noise:
-  private_key_path: /var/lib/headscale/noise_private.key
+  private_key_path: /var/lib/headscale-noise/noise_private.key
 prefixes:
   v4: 100.64.0.0/10
   v6: fd7a:115c:a1e0::/48
@@ -105,55 +186,8 @@ EOF
 }
 EOF
 
-  headscale serve >/tmp/headscale.log 2>&1 &
-  local headscale_pid=$!
-
-  local ready=0
-  for _ in $(seq 1 60); do
-    if ! kill -0 "$headscale_pid" 2>/dev/null; then
-      echo "headscale exited" >&2
-      cat /tmp/headscale.log >&2 || true
-      exit 1
-    fi
-    if timeout 3 headscale users list >/dev/null 2>&1; then
-      ready=1
-      break
-    fi
-    sleep 1
-  done
-  if [[ "$ready" -ne 1 ]]; then
-    echo "headscale did not become ready" >&2
-    cat /tmp/headscale.log >&2 || true
-    exit 1
-  fi
-
-  json_number() {
-    grep -o "\"$1\": *[0-9]*" | head -n1 | grep -o '[0-9]*$' || true
-  }
-  if [[ -z "$(headscale users list --name replycant --output json | json_number id)" ]]; then
-    headscale users create replycant
-  fi
-  local user_id
-  user_id="$(headscale users list --name replycant --output json | json_number id)"
-  if [[ -z "$user_id" ]]; then
-    echo "could not determine the replycant user id" >&2
-    exit 1
-  fi
-  headscale preauthkeys create --user "$user_id" --expiration 24h --tags tag:server --output json \
-    | grep -o '"key": *"[^"]*"' \
-    | sed -e 's/.*: *"//' -e 's/"$//' \
-    > /tmp/tailnet/gitd.authkey
-  chmod 600 /tmp/tailnet/gitd.authkey
-  if [[ ! -s /tmp/tailnet/gitd.authkey ]]; then
-    echo "failed to mint a gitd pre-auth key" >&2
-    exit 1
-  fi
-  headscale apikeys create --expiration 87600h | tr -d '\r\n' > /tmp/tailnet/headscale.apikey
-  chmod 600 /tmp/tailnet/headscale.apikey
-  if [[ ! -s /tmp/tailnet/headscale.apikey ]]; then
-    echo "failed to mint a headscale API key" >&2
-    exit 1
-  fi
+  start_headscale
+  init_headscale
 
   # :port rather than 127.0.0.1. Clients dial "localhost", which resolves to
   # ::1 first, and a v4-only listener refuses that connection.
@@ -164,7 +198,9 @@ EOF
     --cert=/tmp/pki/tailnet.crt \
     --key=/tmp/pki/tailnet.key \
     --cache-ttl=1s \
-    --health-addr=127.0.0.1:18086 >/tmp/hsproxy.log 2>&1 &
+    --health-addr=127.0.0.1:18086 \
+    --headscale-api-url="http://127.0.0.1:${headscale_port}" \
+    --headscale-api-key-file=/tmp/tailnet/headscale.apikey >/tmp/hsproxy.log 2>&1 &
   local hsproxy_pid=$!
   sleep 0.5
   if ! kill -0 "$hsproxy_pid" 2>/dev/null; then
@@ -192,13 +228,13 @@ EOF
     --tsnet-dir=/tmp/tsnet-gitd \
     --tsnet-control-url="http://127.0.0.1:${headscale_port}" \
     --tsnet-hostname=gitd \
-    --tsnet-auth-key-file=/tmp/tailnet/gitd.authkey \
     --tailnet-domain=replycant.internal \
     --tailnet-control-addr=:8444 \
     --tailnet-control-upstream="127.0.0.1:${hsproxy_port}" \
     --headscale-api-url="http://127.0.0.1:${headscale_port}" \
     --headscale-api-key-file=/tmp/tailnet/headscale.apikey \
     --headscale-client-url="https://localhost:${hsproxy_port}" \
+    --tailnet-reconcile-marker=/tmp/tailnet/reconciled-pubkeys.json \
     --discovery-url="http://discovery.test:${discovery_port}" >/tmp/gitd-tailnet.log 2>&1 &
   local tailnet_pid=$!
 

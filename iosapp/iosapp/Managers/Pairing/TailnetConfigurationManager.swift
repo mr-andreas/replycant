@@ -7,10 +7,10 @@ import Foundation
 /// clients derive the same thing from the same pairing record and a divergence
 /// would show up as one platform being unable to reconnect.
 ///
-/// Notably absent is the pre-auth key. It is single-use and expires in minutes,
-/// and the node's own key material persists in the tsnet state directory, so a
-/// rejoin needs no credential beyond the device's existing identity. Keeping a
-/// durable copy would be risk with no benefit.
+/// Notably absent is any tailnet key. The node's own key material persists in
+/// the tsnet state directory, and when headscale has lost the node the device
+/// mints a fresh key with its existing identity, so a rejoin needs nothing
+/// stored here.
 struct TailnetConfiguration: Codable, Equatable, Sendable {
     /// hsproxy's hostname and port, and the name its certificate is verified
     /// against on the bootstrap path.
@@ -78,10 +78,6 @@ final class TailnetConfigurationManager {
     }
 
     /// Derives what to persist from a pairing record.
-    ///
-    /// The pre-auth key in the record is deliberately dropped here rather than
-    /// at the call site, so there is one place that decides what outlives the
-    /// pairing attempt.
     static func from(payload: PairingRecord.Payload) throws -> TailnetConfiguration {
         try from(headscaleURL: payload.headscaleURL)
     }

@@ -242,6 +242,49 @@ struct HeadscaleControlShimRouteTests {
         #expect(shim.lastRoute == nil)
     }
 
+    // A device mints its tailnet key through the shim's own loopback listener,
+    // so before the shim listens there is nowhere to send the request.
+    @Test func mintingAKeyBeforeTheShimStartsFails() async throws {
+        let relay = try await RecordingListener.started()
+        defer { relay.stop() }
+
+        let shim = HeadscaleControlShim(
+            upstreamHost: "127.0.0.1",
+            upstreamPort: relay.port,
+            pinnedCA: try Self.deploymentCA(),
+            clientIdentity: try Self.deviceIdentity()
+        )
+
+        await #expect(throws: HeadscaleControlShim.ShimError.notStarted) {
+            _ = try await shim.mintPreauthKey()
+        }
+        #expect(relay.acceptCount == 0)
+    }
+
+    // The key request has to take the same pinned-CA path as control traffic,
+    // since hsproxy only grants keys to a device certificate it can see.
+    @Test func mintingAKeyGoesThroughTheShim() async throws {
+        let relay = try await RecordingListener.started()
+        defer { relay.stop() }
+
+        let shim = HeadscaleControlShim(
+            upstreamHost: "127.0.0.1",
+            upstreamPort: relay.port,
+            pinnedCA: try Self.deploymentCA(),
+            clientIdentity: try Self.deviceIdentity()
+        )
+        try await shim.start()
+        defer { shim.stop() }
+
+        // The relay never completes the handshake, so the request itself
+        // fails; what matters is that it left through the shim's upstream.
+        let mint = Task { try await shim.mintPreauthKey() }
+        defer { mint.cancel() }
+
+        #expect(await relay.waitForAccept(atLeast: 1, within: 5),
+                "the key request must reach hsproxy through the shim")
+    }
+
     // A route with no host would be dialled as an empty name and fail on every
     // connection, silently costing every session the fallback timeout.
     @Test func anEmptyTailnetHostIsRejected() async throws {

@@ -3,9 +3,11 @@ import { decryptAesGcmCombined, decryptAgeEnvelope, importAes256Key } from "../m
 // Client half of the discovery handshake, mirroring pkg/pairing in the Go tree.
 //
 // A device that has never paired knows nothing about the deployment: not the
-// CA, not where headscale lives, and it holds no tailnet credential. It shows a
-// QR carrying its own age public key plus a freshly minted pairing secret, then
-// waits for gitd to publish a record it alone can open.
+// CA, and not where headscale lives. It shows a QR carrying its own age public
+// key plus a freshly minted pairing secret, then waits for gitd to publish a
+// record it alone can open. The record carries no tailnet credential: the
+// authorizing device commits this device's key to pubkeys/ first, so the
+// sidecar mints its own key from hsproxy with the device certificate.
 //
 // Both halves of that record matter. The pairing secret proves the record was
 // written in response to *this* QR, and the age key proves the record was
@@ -51,7 +53,6 @@ const CONTENT_KEY_ID = textEncoder.encode("replycant/discovery-content/v1");
 export interface PairingPayload {
   headscaleUrl: string;
   caPem: string;
-  preauthKey: string;
 }
 
 // A pairing attempt in progress. The encoded form goes in the QR; the slot is
@@ -152,7 +153,6 @@ interface WireEnvelope {
 interface WirePayload {
   headscale_url?: string;
   ca_pem?: string;
-  preauth_key?: string;
 }
 
 // Fails a payload that would leave the device stuck at "waiting for
@@ -161,7 +161,6 @@ const toPayload = (wire: WirePayload): PairingPayload => {
   const fields: Array<[keyof WirePayload, keyof PairingPayload]> = [
     ["headscale_url", "headscaleUrl"],
     ["ca_pem", "caPem"],
-    ["preauth_key", "preauthKey"],
   ];
   const payload: Partial<PairingPayload> = {};
   const missing: string[] = [];

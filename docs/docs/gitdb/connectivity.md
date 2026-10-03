@@ -34,11 +34,10 @@ Two paths matter and they are deliberately separate:
 ## Joining a new repository
 
 A new repository has no device keys, and the only tailnet member is gitd
-itself. Before any device exists, `headscale-init` creates the `replycant`
-user and mints a pre-auth key tagged `tag:server`. gitd uses that key to
-join headscale over the compose network (`http://headscale:8080`), then
-re-authenticates from its own node state. Devices never use this key, and
-this join does not cross the hosted relay.
+itself. `headscale-init` creates the `replycant` user and an API key. gitd
+uses that API key to mint its own key, tagged `tag:server`, whenever its
+node needs to log in, and joins headscale over the compose network
+(`http://headscale:8080`). That join does not cross the hosted relay.
 
 The first device gets its trust anchor from the CA page at
 `http://127.0.0.1:8080` on the machine running gitd. That listener is
@@ -61,7 +60,8 @@ push. `gitd.replycant.internal` does not resolve until the node is up.
    not in `pubkeys/` yet. That exemption is the only way a first device
    can join, because the key cannot be committed until gitd is reachable.
 5. `hsproxy` splices the authorized session to headscale, and the device
-   joins with the pre-auth key.
+   joins with the key from the CA page. This is the only key hsproxy does
+   not mint itself: while the repository is empty, it refuses key requests.
 6. The device pushes its public key. gitd accepts the push because the
    repository is empty. That push closes the window: the next control
    session and the next Git request both require a key in `pubkeys/`.
@@ -77,12 +77,16 @@ channels — the discovery API, or a second QR when the operator publishes
 headscale themselves — are in
 [Tailnet Pairing](./device-onboarding.md#tailnet-pairing).
 
+The record carries no tailnet key. The authorizing device commits the new
+device's public key before it asks gitd to publish the record, so the new
+device is already in `pubkeys/` and mints its own key through hsproxy. See
+[headscale holds only a cache](#headscale-holds-only-a-cache).
+
 Joining is part of every launch. A userspace node only runs while the app
-does. The pre-auth key is not presented again: headscale retires it after
-the first registration, and the node re-authenticates from the state saved
-on that first successful join. A join that never succeeds does not save
-that state, so a record that cannot be used does not leave the app
-retrying a tailnet it never reached.
+does. On a normal launch the node logs in again with the state it saved on
+its first successful join. A join that never succeeds does not save that
+state, so a record that cannot be used does not leave the app retrying a
+tailnet it never reached.
 
 Each launch still opens its first control session through the hosted
 relay. The shim cannot prefer the in-tailnet path until the node is up,
@@ -120,7 +124,10 @@ a `.pub` file therefore revokes tailnet access and Git access at once.
 
 `hsproxy` splices raw bytes rather than proxying HTTP. Tailscale's control
 protocol upgrades a `POST` into a long-lived bidirectional stream, which no
-HTTP-aware proxy layer survives.
+HTTP-aware proxy layer survives. The one exception is
+`POST /replycant/preauthkey`. hsproxy reads the request line of each
+authorized connection, answers that request itself with a fresh `tag:device`
+key, and splices every other request to headscale unchanged.
 
 Once a device is on the tailnet, later control sessions go to gitd's second
 tsnet listener (`:8444`), which splices to this same `hsproxy`. The
@@ -136,6 +143,48 @@ is no device-to-device rule and no server-to-device rule, so a compromised
 phone cannot enumerate or attack the rest of the household. gitd's own node
 is tagged `tag:server` at mint time; every paired device is tagged
 `tag:device`.
+
+### headscale holds only a cache
+
+Every node that git authorizes can ask for a fresh key, so nothing in
+headscale's database has to be kept. An operator can delete `headscale/lib`
+and run `docker compose up`, and every device comes back without being
+paired again.
+
+```mermaid
+sequenceDiagram
+    participant Device
+    participant hsproxy
+    participant headscale
+    Device->>hsproxy: POST /replycant/preauthkey (device certificate)
+    hsproxy->>headscale: mint tag:device key, 10 minutes, single use
+    hsproxy-->>Device: preauth_key
+    Device->>hsproxy: control session, log in with the key
+    hsproxy->>headscale: spliced unchanged
+```
+
+- **Devices** mint a single-use `tag:device` key, valid for 10 minutes,
+  through their loopback shim, so the request carries the pinned CA and the
+  device certificate. hsproxy checks that certificate against `pubkeys/`
+  before minting.
+- **gitd** mints its own `tag:server` key over headscale's API.
+- **Noticing.** A node starting from saved state that headscale does not
+  know lands in `NeedsLogin`. A node that is already running never changes
+  state: it keeps reporting `Running` while its map polls fail with
+  `404 node not found`. Clients watch for both, then mint a key and log in
+  again. They wait at least 30 seconds between mints.
+- **Durable state.** Only headscale's noise key has to survive. It is the
+  control plane's identity and every node pins it, so it lives in
+  `headscale/noise`, outside the database directory. `headscale-init`
+  replaces the API key when the wiped database no longer lists it, and gitd
+  and hsproxy re-read that key file on every call.
+
+Revocation runs the other way. gitd records the `pubkeys/` set it last
+reconciled, and compares it with `main` at startup and after every
+successful push. If any key was removed, it deletes every `tag:device` node.
+Devices that are still authorized notice and mint their way back in. The
+revoked one is refused at hsproxy. Deleting only the revoked node would need
+a node-to-key mapping that headscale cannot store.
 
 ### The loopback shim
 
@@ -223,18 +272,15 @@ itself, and neither survives a reverse TCP relay.
 ```json
 {
   "headscale_url": "https://<ca-label>.s<NN>.tunnel.replycant.com",
-  "ca_pem": "-----BEGIN CERTIFICATE-----\n...",
-  "preauth_key": "..."
+  "ca_pem": "-----BEGIN CERTIFICATE-----\n..."
 }
 ```
 
 gitd's address is not in the record. Every client already uses
 `https://gitd.replycant.internal:8443`.
 
-`preauth_key` is minted by gitd per pairing attempt over headscale's API.
-headscale generates pre-auth key material server-side and stores only a hash of
-it, so a device cannot propose its own key; the credential has to travel the
-other way, inside the record.
+No tailnet key is in the record either. The device mints one through hsproxy
+once it has the CA and the control-plane hostname.
 
 The record is sealed in two layers, both binding the slot as associated data so
 a valid record cannot be relocated:

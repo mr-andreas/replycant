@@ -127,9 +127,9 @@ enum DeviceLinking {
 
     /// Relays the scanned secret to gitd so the waiting device can join.
     ///
-    /// Only the server can mint a tailnet credential. This device already
-    /// has an authenticated path, so its job is to hand gitd the secret
-    /// and age recipient from the QR.
+    /// The waiting device cannot reach gitd yet. This device already has an
+    /// authenticated path, so its job is to hand gitd the secret and age
+    /// recipient from the QR.
     static func authorizeTailnetPairing(
         pairingSecret: String,
         agePublicKey: String,

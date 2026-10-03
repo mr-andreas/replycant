@@ -17,8 +17,10 @@ import type { PairingPayload } from "./pairing";
 const payload: PairingPayload = {
   headscaleUrl: "https://abc123.tunnel.replycant.com",
   caPem: "-----BEGIN CERTIFICATE-----ca-----END CERTIFICATE-----",
-  preauthKey: "preauth-abc",
 };
+
+// Only the first device's join carries a key, from the CA page.
+const firstDeviceKey = "preauth-abc";
 
 const identity = {
   privateKeyPem: "-----BEGIN PRIVATE KEY-----k",
@@ -102,14 +104,6 @@ describe("gitdControlAddr", () => {
 });
 
 describe("tailnet config persistence", () => {
-  // The pre-auth key is single-use and expires in minutes, and the node's key
-  // material persists in the sidecar's state directory, so keeping a durable
-  // copy of the credential would be risk with no benefit.
-  it("does not persist the pre-auth key", () => {
-    saveTailnetConfigRecord(toTailnetConfigRecord(payload));
-    expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).not.toContain("preauth-abc");
-  });
-
   it("round-trips a record", () => {
     const record = toTailnetConfigRecord(payload);
     saveTailnetConfigRecord(record);
@@ -179,7 +173,7 @@ describe("joinTailnet", () => {
       record: toTailnetConfigRecord(payload),
       caPem: payload.caPem,
       identity,
-      preauthKey: payload.preauthKey,
+      preauthKey: firstDeviceKey,
     });
 
     expect(joinTailnetBridge).toHaveBeenCalledWith({
@@ -195,9 +189,10 @@ describe("joinTailnet", () => {
     });
   });
 
-  // A rejoin after restart has no credential to offer, and must not send an
-  // empty one: the sidecar would try to register with it and fail.
-  it("omits the pre-auth key when rejoining", async () => {
+  // A paired device, and any rejoin after restart, has no key to offer and
+  // must not send an empty one: the sidecar would try to register with it
+  // instead of minting its own.
+  it("omits the pre-auth key when there is none", async () => {
     await joinTailnet({
       record: toTailnetConfigRecord(payload),
       caPem: payload.caPem,

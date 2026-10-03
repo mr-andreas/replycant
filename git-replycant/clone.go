@@ -268,7 +268,6 @@ func tailnetStartConfig(gitDir string, local gitcrypt.LocalIdentity, caFilePath 
 		CAPEM:               string(caPEM),
 		ClientCertPEM:       string(certPEM),
 		ClientKeyPEM:        string(keyPEM),
-		PreauthKey:          payload.PreauthKey,
 		Hostname:            local.Identity.DeviceName,
 	}, persisted, nil
 }
@@ -295,8 +294,9 @@ func headscaleDial(headscaleURL string) (string, string, error) {
 	return net.JoinHostPort(host, port), host, nil
 }
 
-// joinTailnet starts the per-repo agent with the single-use pre-auth key.
-// Later git commands start it again without that key, from the saved node.
+// joinTailnet starts the per-repo agent, which mints its own tailnet key
+// because the authorizing device committed this device's key before it
+// published the pairing record. Later git commands start it the same way.
 func joinTailnet(ctx context.Context, gitDir string, cfg tailnetagent.StartConfig) error {
 	_, err := tailnetagent.Ensure(ctx, gitDir, cfg, nil)
 	return err

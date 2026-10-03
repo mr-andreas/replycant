@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mr-andreas/replycant/pkg/tailnetlogin"
 	"tailscale.com/tsnet"
 )
 
@@ -36,10 +37,10 @@ type Config struct {
 	ControlURL string
 	Hostname   string
 
-	// Read from a file rather than passed inline because gitd logs its parsed
-	// configuration at startup and flag values are visible in the process
-	// list. Optional once the node has joined and has state on disk.
-	AuthKeyFile string
+	// Obtains a fresh single-use key whenever headscale does not know the
+	// node: on first start, and after headscale lost its state. gitd mints
+	// its own over the headscale API, so no key is ever stored on disk.
+	Mint tailnetlogin.MintFunc
 
 	// Emits tsnet's user-facing messages (login URLs, state changes). Verbose
 	// backend logging is intentionally discarded to keep gitd's output usable.
@@ -82,30 +83,11 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Loads the pre-auth key if one was configured. A configured-but-unusable file
-// is fatal: without it the node waits for an interactive login that no one is
-// watching for, which looks like a hang rather than a misconfiguration.
-func (c Config) resolveAuthKey() (string, error) {
-	path := strings.TrimSpace(c.AuthKeyFile)
-	if path == "" {
-		return "", nil
-	}
-
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read tsnet auth key file %q: %w", path, err)
-	}
-	key := strings.TrimSpace(string(contents))
-	if key == "" {
-		return "", fmt.Errorf("tsnet auth key file %q is empty", path)
-	}
-	return key, nil
-}
-
 // A started tailnet node plus the listeners opened on it. Close tears down the
 // node and every listener derived from it.
 type Node struct {
-	server *tsnet.Server
+	server      *tsnet.Server
+	stopKeeping context.CancelFunc
 }
 
 // Brings the node up and blocks until it has joined the tailnet, so callers can
@@ -122,10 +104,10 @@ func Start(ctx context.Context, config Config) (*Node, error) {
 	if !config.Enabled() {
 		return nil, errors.New("tsnetserve: cannot start a disabled config")
 	}
-
-	authKey, err := config.resolveAuthKey()
-	if err != nil {
-		return nil, err
+	// Without one the node would wait for an interactive login no one is
+	// watching for, which looks like a hang rather than a misconfiguration.
+	if config.Mint == nil {
+		return nil, errors.New("tsnetserve: a key minter is required")
 	}
 
 	logf := config.Logf
@@ -141,19 +123,28 @@ func Start(ctx context.Context, config Config) (*Node, error) {
 		Dir:        config.Dir,
 		Hostname:   config.Hostname,
 		ControlURL: config.ControlURL,
-		AuthKey:    authKey,
 		UserLogf:   logf,
 		// Verbose backend logs are dropped; magicsock and netcheck output
 		// would otherwise dominate gitd's logs.
 		Logf: func(string, ...any) {},
 	}
 
+	// The keeper outlives the join, so it gets its own context rather than
+	// the caller's join deadline; Close stops it.
+	keepCtx, stopKeeping := context.WithCancel(context.Background())
+	if err := tailnetlogin.Keep(keepCtx, server, config.Mint, logf); err != nil {
+		stopKeeping()
+		_ = server.Close()
+		return nil, err
+	}
+
 	if _, err := server.Up(ctx); err != nil {
+		stopKeeping()
 		_ = server.Close()
 		return nil, fmt.Errorf("join tailnet at %s as %q: %w", config.ControlURL, config.Hostname, err)
 	}
 
-	return &Node{server: server}, nil
+	return &Node{server: server, stopKeeping: stopKeeping}, nil
 }
 
 // Opens a listener reachable only from the tailnet.
@@ -181,5 +172,6 @@ func (n *Node) Addrs() []string {
 
 // Shuts the node down, closing every listener opened on it.
 func (n *Node) Close() error {
+	n.stopKeeping()
 	return n.server.Close()
 }
