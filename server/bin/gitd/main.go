@@ -220,7 +220,7 @@ func (c *CLI) buildPairingPublisher(headscale *tailnet.Client) (gitd.PairingPubl
 	return publisher, nil
 }
 
-// Builds the reconciler that deletes device nodes when a key leaves pubkeys/,
+// Builds the reconciler that expires device nodes when a key leaves pubkeys/,
 // or nil on deployments without headscale, where there is nothing to revoke.
 func (c *CLI) buildReconciler(headscale *tailnet.Client) (*tailnet.Reconciler, error) {
 	if headscale == nil {

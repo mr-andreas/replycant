@@ -4,7 +4,7 @@
 // headscale's database is a cache of what pubkeys/ in the repository already
 // says, so everything here exists to keep that cache in line with git:
 // minting single-use pre-auth keys for nodes git already authorizes (gitd's
-// own node, and devices that ask hsproxy over mTLS), and deleting device nodes
+// own node, and devices that ask hsproxy over mTLS), and expiring device nodes
 // once their key leaves pubkeys/. Keys have to be minted on demand because
 // headscale generates key material server-side and stores only a hash, so a
 // key cannot be stored anywhere and replayed later.
@@ -12,7 +12,7 @@
 // The headscale CLI is not used because it talks over a unix socket in
 // headscale's own container. Reaching it would mean sharing that socket and
 // granting full control-plane administration, when all the callers need is to
-// create keys and remove nodes.
+// create keys and expire nodes.
 package tailnet
 
 import (
@@ -237,16 +237,22 @@ func (c *Client) ListNodes(ctx context.Context) ([]Node, error) {
 	return response.Nodes, nil
 }
 
-// Removes a node from the tailnet. headscale ends its sessions and drops it
-// from every peer's netmap, which is what makes revocation immediate rather
-// than waiting for the device to reconnect.
-func (c *Client) DeleteNode(ctx context.Context, id string) error {
+// Expires a node's key now, taking it off the tailnet until it logs in again.
+//
+// Expiry rather than deletion, because headscale 0.29 deletes a node without
+// closing its live map session: a running device would never learn it was
+// dropped and would sit on a dead tailnet until restarted. An expiry is pushed
+// down that session, peers stop accepting the node, and the device itself
+// moves to NeedsLogin, which every client watches for. Logging in again with
+// a key reuses the same node, so expired nodes do not pile up; a revoked
+// device's node stays listed as expired because hsproxy will not give it one.
+func (c *Client) ExpireNode(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return errors.New("a headscale node id is required")
 	}
-	if err := c.do(ctx, http.MethodDelete, "/api/v1/node/"+url.PathEscape(id), nil, nil); err != nil {
-		return fmt.Errorf("delete headscale node %s: %w", id, err)
+	if err := c.do(ctx, http.MethodPost, "/api/v1/node/"+url.PathEscape(id)+"/expire", nil, nil); err != nil {
+		return fmt.Errorf("expire headscale node %s: %w", id, err)
 	}
 	return nil
 }

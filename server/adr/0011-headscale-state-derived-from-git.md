@@ -36,10 +36,12 @@ mint a fresh single-use key whenever headscale does not know it.
   unchanged. Connections admitted under the empty-repository bootstrap
   exemption get `403` on that path, so only the CA page hands out keys
   while nothing is committed.
-- **Clients log in whenever they need to.** A node that headscale does not
-  know shows up in one of two ways. A node starting from saved state lands
-  in `NeedsLogin`. A node that is already running keeps reporting `Running`
-  while every map poll fails with `404 node not found`. The Go clients
+- **Clients log in whenever they need to.** A node that cannot use the
+  tailnet shows up in one of two ways. A node starting from saved state
+  headscale does not know, or whose key gitd expired, lands in
+  `NeedsLogin`. A running node that a wiped headscale forgot keeps
+  reporting `Running` while every map poll fails with
+  `404 node not found`. The Go clients
   (`pkg/tailnetlogin`) and the iOS `TailnetManager` watch for both, mint a
   key through their loopback shim (pinned CA, device certificate,
   tailnet-first route), and log in again. They wait at least 30 seconds
@@ -58,11 +60,14 @@ mint a fresh single-use key whenever headscale does not know it.
 - **Revocation is reconciled from git.** gitd keeps a marker file with the
   `pubkeys/` set it last reconciled. It compares that set with `main` at
   startup and after every successful push. If any key was removed, or the
-  marker is missing, it deletes every `tag:device` node. Authorized devices
-  notice and mint their way back in; the revoked one is refused. Deleting
-  only the revoked device's node would need a node-to-key mapping that
-  headscale cannot store: tags are fixed by the policy, and hostnames do
-  not match key filenames.
+  marker is missing, it expires every `tag:device` node. Expiring rather
+  than deleting matters: headscale 0.29 deletes a node without closing its
+  live map session, so a running device would never notice, while an
+  expiry is pushed to it and moves it to `NeedsLogin`. Authorized devices
+  log the same node back in with a minted key; the revoked one is refused
+  and its node stays listed as expired. Expiring only the revoked device's
+  node would need a node-to-key mapping that headscale cannot store: tags
+  are fixed by the policy, and hostnames do not match key filenames.
 - **Only the noise key is durable.** It is the control plane's identity, and
   every node pins it, so it moves to its own mount (`headscale/noise`).
   `headscale-init` replaces the API key whenever `headscale apikeys list` no

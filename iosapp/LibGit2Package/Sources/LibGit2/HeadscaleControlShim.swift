@@ -241,17 +241,6 @@ public final class HeadscaleControlShim {
         return lastRouteUsed
     }
 
-    /// Forgets the in-tailnet path while the node behind it is replaced.
-    ///
-    /// The route points at the old node's SOCKS proxy. Keeping it would make
-    /// every control session of the replacement node wait out the fallback
-    /// timeout before reaching the relay.
-    public func clearTailnetRoute() {
-        lock.lock()
-        tailnetRoute = nil
-        lock.unlock()
-    }
-
     /// Asks hsproxy for a fresh single-use key for this device's node.
     ///
     /// headscale's state is a cache of the deployment's `pubkeys/`, so it can

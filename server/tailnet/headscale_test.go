@@ -35,7 +35,7 @@ type fakeHeadscale struct {
 	userStatus      int
 	nodesResponse   string
 	nodesQuery      string
-	deletedNodes    []string
+	expiredNodes    []string
 	server          *httptest.Server
 }
 
@@ -45,10 +45,10 @@ func (f *fakeHeadscale) setNodesResponse(body string) {
 	f.nodesResponse = body
 }
 
-func (f *fakeHeadscale) deleted() []string {
+func (f *fakeHeadscale) expired() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.deletedNodes...)
+	return append([]string(nil), f.expiredNodes...)
 }
 
 // Reads a guarded field. Tests inspect the fake only after the calls they are
@@ -131,10 +131,10 @@ func newFakeHeadscale(t *testing.T) *fakeHeadscale {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, body)
 	})
-	mux.HandleFunc("DELETE /api/v1/node/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/node/{id}/expire", func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
 		fake.lastAuthHeader = r.Header.Get("Authorization")
-		fake.deletedNodes = append(fake.deletedNodes, r.PathValue("id"))
+		fake.expiredNodes = append(fake.expiredNodes, r.PathValue("id"))
 		fake.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -257,7 +257,7 @@ func TestMintedKeysCarryTheRequestedTag(t *testing.T) {
 	}
 }
 
-// Revocation deletes device nodes by tag, so listing has to return every
+// Revocation expires device nodes by tag, so listing has to return every
 // node with its id and tags. The list is not filtered by user because a
 // tagged node loses its user association in headscale, so a user filter
 // would hide exactly the nodes revocation is looking for.
@@ -292,34 +292,35 @@ func TestListNodesReturnsIDsAndTags(t *testing.T) {
 	}
 }
 
-// Deleting a node is what actually removes a revoked device's netmap entry
-// and ends its control session, so the call must address the node by id.
-func TestDeleteNodeAddressesTheNodeByID(t *testing.T) {
+// Expiring a node is what takes a revoked device off its peers' netmaps and,
+// unlike deleting it, reaches the device's own live control session, so the
+// call must address the node by id.
+func TestExpireNodeAddressesTheNodeByID(t *testing.T) {
 	fake := newFakeHeadscale(t)
 	client := newTestClient(t, fake)
 
-	if err := client.DeleteNode(context.Background(), "42"); err != nil {
-		t.Fatalf("deleting must succeed against a healthy headscale: %v", err)
+	if err := client.ExpireNode(context.Background(), "42"); err != nil {
+		t.Fatalf("expiring must succeed against a healthy headscale: %v", err)
 	}
-	if got := fake.deleted(); len(got) != 1 || got[0] != "42" {
-		t.Errorf("expected node 42 to be deleted, got %v", got)
+	if got := fake.expired(); len(got) != 1 || got[0] != "42" {
+		t.Errorf("expected node 42 to be expired, got %v", got)
 	}
 	_, _, authHeader, _ := fake.snapshot()
 	if authHeader != "Bearer test-api-key" {
-		t.Errorf("node deletion must be authenticated, got %q", authHeader)
+		t.Errorf("node expiry must be authenticated, got %q", authHeader)
 	}
 }
 
-// An empty id would turn the request into DELETE /api/v1/node/, which at best
-// 404s and at worst matches a different route after a headscale upgrade.
-func TestDeleteNodeRejectsAnEmptyID(t *testing.T) {
+// An empty id would turn the request into POST /api/v1/node//expire, which at
+// best 404s and at worst matches a different route after a headscale upgrade.
+func TestExpireNodeRejectsAnEmptyID(t *testing.T) {
 	fake := newFakeHeadscale(t)
 	client := newTestClient(t, fake)
 
-	if err := client.DeleteNode(context.Background(), " "); err == nil {
+	if err := client.ExpireNode(context.Background(), " "); err == nil {
 		t.Fatal("an empty node id must be rejected before any request is sent")
 	}
-	if got := fake.deleted(); len(got) != 0 {
+	if got := fake.expired(); len(got) != 0 {
 		t.Errorf("no request should reach headscale, got %v", got)
 	}
 }

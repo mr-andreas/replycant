@@ -5,7 +5,7 @@ import Testing
 // Covers how the device gets back onto the tailnet after headscale forgot it.
 //
 // headscale's database is a cache of pubkeys/ in the repository. It can be
-// wiped and rebuilt, and gitd drops every device node whenever a key leaves
+// wiped and rebuilt, and gitd expires every device node whenever a key leaves
 // pubkeys/. A device that is still authorized has to notice and rejoin with a
 // key it mints itself; nobody should have to re-pair it. A real node cannot
 // run in a unit test, so these pin down each decision the rejoin depends on.
@@ -71,6 +71,48 @@ struct TailnetReloginTests {
         #expect(!signal.consume())
     }
 
+    // tsnet's backend log arrives through a pipe in whatever chunks the OS
+    // hands over. One read often holds several lines, and each has to reach
+    // the signal and the app log on its own.
+    @Test func aChunkWithSeveralLinesYieldsEachLine() {
+        var lines = TailnetLogLines()
+        #expect(lines.feed(Data("magicsock: up\ncontrol: mapRoutine\n".utf8)) == [
+            "magicsock: up",
+            "control: mapRoutine",
+        ])
+    }
+
+    // A read can end mid-line, even mid-word. The 404 marker split across two
+    // reads must still be seen once the line is complete, or a forgotten node
+    // would go unnoticed depending on pipe timing.
+    @Test func aLineSplitAcrossReadsIsReassembled() {
+        var lines = TailnetLogLines()
+        let signal = TailnetForgottenNodeSignal()
+
+        let first = lines.feed(Data("control: [v1] PollNetMap: initial fetch fa".utf8))
+        #expect(first.isEmpty)
+
+        let second = lines.feed(Data("iled 404: node not found\n".utf8))
+        #expect(second == ["control: [v1] PollNetMap: initial fetch failed 404: node not found"])
+        second.forEach(signal.observe)
+        #expect(signal.consume())
+    }
+
+    // Emitting a partial line would log half a message now and the rest as a
+    // separate line later, and could match a marker against a fragment.
+    @Test func aTrailingPartialLineIsHeldBack() {
+        var lines = TailnetLogLines()
+        #expect(lines.feed(Data("complete\npartial".utf8)) == ["complete"])
+        #expect(lines.feed(Data(" line\n".utf8)) == ["partial line"])
+    }
+
+    // Tailscale tags structured lines with a NUL ("[v\0JSON]"). Left in, it
+    // makes the shared app log look binary to grep and similar tools.
+    @Test func nulBytesAreDropped() {
+        var lines = TailnetLogLines()
+        #expect(lines.feed(Data("control: [v\u{0}JSON]1{}\n".utf8)) == ["control: [vJSON]1{}"])
+    }
+
     private static func stateDirectory(_ state: String?) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("tailnet-state-\(UUID().uuidString)", isDirectory: true)
@@ -103,6 +145,42 @@ struct TailnetReloginTests {
             #"{"_machinekey":"AAAA","_current-profile":"BBBB","_profiles":"CCCC"}"#
         )
         #expect(!TailnetManager.isFirstLogin(stateDirectory: directory))
+    }
+
+    // A node that starts from saved state headscale no longer has is logged in
+    // again by restarting its backend with a key. The options must carry only
+    // the key: any prefs sent along would overwrite the node's stored ones,
+    // including its control URL and hostname.
+    @Test func loginOptionsCarryOnlyTheKey() throws {
+        let options = try TailnetManager.loginOptions(authKey: "hskey-auth-minted")
+        let encoded = try JSONEncoder().encode(options)
+        let fields = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        #expect(fields?.count == 1)
+        #expect(fields?["AuthKey"] as? String == "hskey-auth-minted")
+    }
+
+    // On a cold start from forgotten state the node waits in NeedsLogin inside
+    // tailscale_up until something logs it in. The first time that is seen, a
+    // key has to be minted, or the join never returns.
+    @Test func needsLoginWithoutAnEarlierAttemptMints() {
+        #expect(TailnetManager.shouldMint(needsLogin: true, lastAttempt: nil, now: Date()))
+    }
+
+    // tsnet passes through NeedsLogin while a key login is in flight. Minting
+    // again then would waste a key and restart the backend mid-login.
+    @Test func needsLoginWithinTheCooldownWaits() {
+        let now = Date()
+        let recent = now.addingTimeInterval(-(TailnetManager.reloginCooldown - 1))
+        #expect(!TailnetManager.shouldMint(needsLogin: true, lastAttempt: recent, now: now))
+
+        let old = now.addingTimeInterval(-(TailnetManager.reloginCooldown + 1))
+        #expect(TailnetManager.shouldMint(needsLogin: true, lastAttempt: old, now: now))
+    }
+
+    // A node headscale still knows comes up on its own. Minting on every
+    // launch would cost a key each time for nothing.
+    @Test func aNodeThatDoesNotNeedLoginNeverMints() {
+        #expect(!TailnetManager.shouldMint(needsLogin: false, lastAttempt: nil, now: Date()))
     }
 
     // NeedsLogin is read from the node's own status, which is the structured

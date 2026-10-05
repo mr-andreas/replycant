@@ -16,8 +16,8 @@ import (
 type fakeNodeStore struct {
 	mu        sync.Mutex
 	nodes     []Node
-	deleted   []string
-	deleteErr error
+	expired   []string
+	expireErr error
 	listErr   error
 }
 
@@ -30,27 +30,20 @@ func (s *fakeNodeStore) ListNodes(context.Context) ([]Node, error) {
 	return append([]Node(nil), s.nodes...), nil
 }
 
-func (s *fakeNodeStore) DeleteNode(_ context.Context, id string) error {
+func (s *fakeNodeStore) ExpireNode(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.deleteErr != nil {
-		return s.deleteErr
+	if s.expireErr != nil {
+		return s.expireErr
 	}
-	s.deleted = append(s.deleted, id)
-	remaining := s.nodes[:0]
-	for _, node := range s.nodes {
-		if node.ID != id {
-			remaining = append(remaining, node)
-		}
-	}
-	s.nodes = remaining
+	s.expired = append(s.expired, id)
 	return nil
 }
 
-func (s *fakeNodeStore) deletedIDs() []string {
+func (s *fakeNodeStore) expiredIDs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ids := append([]string(nil), s.deleted...)
+	ids := append([]string(nil), s.expired...)
 	sort.Strings(ids)
 	return ids
 }
@@ -107,17 +100,17 @@ func primedReconciler(t *testing.T, store *fakeNodeStore, keys *keySource) *Reco
 		t.Fatalf("priming reconcile: %v", err)
 	}
 	store.mu.Lock()
-	store.deleted = nil
+	store.expired = nil
 	store.nodes = newHouseholdStore().nodes
 	store.mu.Unlock()
 	return reconciler
 }
 
 // Removing a key from pubkeys/ is how a device is revoked. headscale cannot
-// say which node belongs to which key, so every device node is deleted and the
+// say which node belongs to which key, so every device node is expired and the
 // still-authorized devices re-enroll through hsproxy; the revoked one cannot.
 // gitd's own node must survive, or no device could reach the server at all.
-func TestRemovedKeyDeletesEveryDeviceNodeButNotTheServer(t *testing.T) {
+func TestRemovedKeyExpiresEveryDeviceNodeButNotTheServer(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone", "SHA256:laptop")
@@ -128,14 +121,14 @@ func TestRemovedKeyDeletesEveryDeviceNodeButNotTheServer(t *testing.T) {
 		t.Fatalf("reconcile after a revocation: %v", err)
 	}
 
-	if got := store.deletedIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
-		t.Errorf("expected both device nodes to be deleted, got %v", got)
+	if got := store.expiredIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
+		t.Errorf("expected both device nodes to be expired, got %v", got)
 	}
 }
 
-// Pairing adds a key on every new device. Deleting nodes then would knock the
+// Pairing adds a key on every new device. Expiring nodes then would knock the
 // whole household off the tailnet each time someone pairs a phone.
-func TestAddedKeyDeletesNothing(t *testing.T) {
+func TestAddedKeyExpiresNothing(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone")
@@ -146,8 +139,8 @@ func TestAddedKeyDeletesNothing(t *testing.T) {
 		t.Fatalf("reconcile after a pairing: %v", err)
 	}
 
-	if got := store.deletedIDs(); len(got) != 0 {
-		t.Errorf("adding a key must not delete any node, got %v", got)
+	if got := store.expiredIDs(); len(got) != 0 {
+		t.Errorf("adding a key must not expire any node, got %v", got)
 	}
 }
 
@@ -166,14 +159,14 @@ func TestFirstKeyDropsDeviceNodesThatJoinedDuringBootstrap(t *testing.T) {
 		t.Fatalf("reconcile after the bootstrap push: %v", err)
 	}
 
-	if got := store.deletedIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
-		t.Errorf("expected both device nodes and not gitd to be deleted, got %v", got)
+	if got := store.expiredIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
+		t.Errorf("expected both device nodes and not gitd to be expired, got %v", got)
 	}
 }
 
 // An empty repository is reconciled on every timer tick before the first push.
-// Those runs must not keep deleting the node the first device is joining with.
-func TestEmptyKeySetStaysEmptyDeletesNothing(t *testing.T) {
+// Those runs must not keep expiring the node the first device is joining with.
+func TestEmptyKeySetStaysEmptyExpiresNothing(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	reconciler := primedReconciler(t, store, keys)
@@ -181,14 +174,14 @@ func TestEmptyKeySetStaysEmptyDeletesNothing(t *testing.T) {
 	if err := reconciler.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile of a still-empty repository: %v", err)
 	}
-	if got := store.deletedIDs(); len(got) != 0 {
-		t.Errorf("a still-empty key set must not delete any node, got %v", got)
+	if got := store.expiredIDs(); len(got) != 0 {
+		t.Errorf("a still-empty key set must not expire any node, got %v", got)
 	}
 }
 
 // Reconciling the same authorized set twice is what happens on every push that
 // does not touch pubkeys/. It must be free of side effects.
-func TestUnchangedKeysDeleteNothing(t *testing.T) {
+func TestUnchangedKeysExpireNothing(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone", "SHA256:laptop")
@@ -197,8 +190,8 @@ func TestUnchangedKeysDeleteNothing(t *testing.T) {
 	if err := reconciler.Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile with nothing changed: %v", err)
 	}
-	if got := store.deletedIDs(); len(got) != 0 {
-		t.Errorf("an unchanged key set must not delete any node, got %v", got)
+	if got := store.expiredIDs(); len(got) != 0 {
+		t.Errorf("an unchanged key set must not expire any node, got %v", got)
 	}
 }
 
@@ -217,7 +210,7 @@ func TestMissingMarkerDropsDeviceNodesOnce(t *testing.T) {
 	if err := reconciler.Reconcile(context.Background()); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
-	if got := store.deletedIDs(); len(got) != 2 {
+	if got := store.expiredIDs(); len(got) != 2 {
 		t.Fatalf("a missing marker must drop both device nodes, got %v", got)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -225,14 +218,14 @@ func TestMissingMarkerDropsDeviceNodesOnce(t *testing.T) {
 	}
 
 	store.mu.Lock()
-	store.deleted = nil
+	store.expired = nil
 	store.nodes = newHouseholdStore().nodes
 	store.mu.Unlock()
 
 	if err := newTestReconciler(t, store, keys, marker).Reconcile(context.Background()); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
-	if got := store.deletedIDs(); len(got) != 0 {
+	if got := store.expiredIDs(); len(got) != 0 {
 		t.Errorf("once the marker exists, a restart must not drop nodes again, got %v", got)
 	}
 }
@@ -251,15 +244,15 @@ func TestCorruptMarkerIsTreatedAsMissing(t *testing.T) {
 	if err := newTestReconciler(t, store, keys, marker).Reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile with a corrupt marker: %v", err)
 	}
-	if got := store.deletedIDs(); len(got) != 2 {
+	if got := store.expiredIDs(); len(got) != 2 {
 		t.Errorf("a corrupt marker must drop device nodes, got %v", got)
 	}
 }
 
-// If headscale refuses a deletion, the revocation has not happened. The marker
-// must keep the old set so the next reconcile sees the removal again and
-// retries, instead of recording the revocation as done.
-func TestFailedDeletionIsRetriedNextTime(t *testing.T) {
+// If headscale refuses to expire a node, the revocation has not happened. The
+// marker must keep the old set so the next reconcile sees the removal again
+// and retries, instead of recording the revocation as done.
+func TestFailedExpiryIsRetriedNextTime(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone", "SHA256:laptop")
@@ -267,26 +260,26 @@ func TestFailedDeletionIsRetriedNextTime(t *testing.T) {
 
 	keys.set("SHA256:laptop")
 	store.mu.Lock()
-	store.deleteErr = errors.New("headscale returned 503")
+	store.expireErr = errors.New("headscale returned 503")
 	store.mu.Unlock()
 	if err := reconciler.Reconcile(context.Background()); err == nil {
-		t.Fatal("a failed deletion must be reported")
+		t.Fatal("a failed expiry must be reported")
 	}
 
 	store.mu.Lock()
-	store.deleteErr = nil
+	store.expireErr = nil
 	store.mu.Unlock()
 	if err := reconciler.Reconcile(context.Background()); err != nil {
 		t.Fatalf("retry after headscale recovers: %v", err)
 	}
-	if got := store.deletedIDs(); len(got) != 2 {
-		t.Errorf("the retry must delete the device nodes, got %v", got)
+	if got := store.expiredIDs(); len(got) != 2 {
+		t.Errorf("the retry must expire the device nodes, got %v", got)
 	}
 }
 
-// If git cannot be read, nothing is known about who is authorized. Deleting
+// If git cannot be read, nothing is known about who is authorized. Expiring
 // nodes on that basis would disconnect the household for no reason.
-func TestUnreadableKeysDeleteNothing(t *testing.T) {
+func TestUnreadableKeysExpireNothing(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone")
@@ -298,8 +291,8 @@ func TestUnreadableKeysDeleteNothing(t *testing.T) {
 	if err := reconciler.Reconcile(context.Background()); err == nil {
 		t.Fatal("an unreadable key set must be reported")
 	}
-	if got := store.deletedIDs(); len(got) != 0 {
-		t.Errorf("nothing may be deleted when git cannot be read, got %v", got)
+	if got := store.expiredIDs(); len(got) != 0 {
+		t.Errorf("nothing may be expired when git cannot be read, got %v", got)
 	}
 }
 
@@ -323,12 +316,12 @@ func TestTriggerIsNonBlockingAndEventuallyReconciles(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(store.deletedIDs()) == 2 {
+		if len(store.expiredIDs()) == 2 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("a queued trigger must lead to a reconcile, deleted %v", store.deletedIDs())
+	t.Fatalf("a queued trigger must lead to a reconcile, expired %v", store.expiredIDs())
 }
 
 // Every dependency is needed to decide anything, so an incomplete config is

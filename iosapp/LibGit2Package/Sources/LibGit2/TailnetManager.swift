@@ -92,7 +92,9 @@ public actor TailnetManager: TailnetNodeProviding {
     private var node: TailscaleNode?
 
     /// Fed by every node's log so a forgotten running node is noticed.
-    private let forgottenNode = TailnetForgottenNodeSignal()
+    private let forgottenNode: TailnetForgottenNodeSignal
+    /// tsnet's backend log, the only place a forgotten running node shows up.
+    private let backendLog: TailnetLogPipe
     private var reloginWatch: Task<Void, Never>?
     private var lastRelogin: Date?
 
@@ -109,6 +111,12 @@ public actor TailnetManager: TailnetNodeProviding {
     public init(stateDirectory: URL, logger: (@Sendable (String) -> Void)? = nil) {
         self.stateDirectory = stateDirectory
         self.logger = logger
+        let forgottenNode = TailnetForgottenNodeSignal()
+        self.forgottenNode = forgottenNode
+        self.backendLog = TailnetLogPipe { line in
+            forgottenNode.observe(line)
+            logger?("tsnet: \(line)")
+        }
     }
 
     public private(set) var isJoined = false
@@ -187,7 +195,7 @@ public actor TailnetManager: TailnetNodeProviding {
         isJoined = true
         logger?("tailnet: joined as \(request.hostName) via \(request.headscaleHost)")
         onProgress?("Connected to your library's network")
-        startReloginWatch(request, controlURL: controlURL)
+        startReloginWatch()
     }
 
     /// Creates a node pointed at the shim. Not ephemeral: an ephemeral node is
@@ -205,7 +213,11 @@ public actor TailnetManager: TailnetNodeProviding {
             controlURL: controlURL,
             ephemeral: false
         )
-        let sink = TailscaleLogBridge(emit: logger, forgottenNode: forgottenNode)
+        let sink = TailscaleLogBridge(
+            emit: logger,
+            forgottenNode: forgottenNode,
+            logFileHandle: backendLog.writeHandleForNode()
+        )
         return try TailscaleNode(config: configuration, logger: sink)
     }
 
@@ -214,9 +226,16 @@ public actor TailnetManager: TailnetNodeProviding {
     /// A paired or recovering device starts with no key. The key has to be
     /// in place before the node starts: started without one, the node waits
     /// in NeedsLogin inside `tailscale_up`, which libtailscale can neither
-    /// cancel nor close, so the join would never return. A node that has
-    /// logged in before needs no key; if headscale has since forgotten it,
-    /// it keeps reporting Running and the relogin watch takes over.
+    /// cancel nor close, so the join would never return.
+    ///
+    /// A node that has logged in before starts without a key, so a launch
+    /// does not cost one. If headscale still knows it, it comes up on its
+    /// own. If its key was expired or headscale forgot it while the app was
+    /// closed - a revocation sweep, the first push into an empty library, a
+    /// wiped database - it waits in NeedsLogin inside `tailscale_up` too.
+    /// The cold-start watch then logs that same node in with a minted key,
+    /// which lets `up()` return. The relogin watch started after the join
+    /// covers the same events while the node is running.
     private func bringUp(
         _ request: TailnetJoinRequest,
         controlURL: String,
@@ -235,6 +254,10 @@ public actor TailnetManager: TailnetNodeProviding {
         }
 
         let node = try makeNode(request, controlURL: controlURL, authKey: nil)
+        let watch = Task {
+            await self.logInWhileJoining(node: node, shim: shim, onProgress: onProgress)
+        }
+        defer { watch.cancel() }
         do {
             try await node.up()
         } catch {
@@ -242,6 +265,73 @@ public actor TailnetManager: TailnetNodeProviding {
             throw error
         }
         return node
+    }
+
+    /// Logs a cold-started node back in while `up()` waits on it.
+    ///
+    /// `up()` reports nothing until the node is Running, and a forgotten node
+    /// never gets there by itself, so the node's own status is polled for
+    /// NeedsLogin. Runs until `bringUp` cancels it. Mints at most once per
+    /// cooldown, because tsnet passes through NeedsLogin while a key login is
+    /// still in flight.
+    private func logInWhileJoining(
+        node: TailscaleNode,
+        shim: HeadscaleControlShim,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async {
+        var lastAttempt: Date?
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.coldStartCheckInterval)
+            guard !Task.isCancelled else { return }
+            let needsLogin = await Self.needsLogin(node)
+            guard Self.shouldMint(needsLogin: needsLogin, lastAttempt: lastAttempt, now: Date()) else {
+                continue
+            }
+            lastAttempt = Date()
+
+            logger?("tailnet: headscale does not know this node; minting a key")
+            onProgress?("Asking your server to let this device in...")
+            do {
+                let key = try await shim.mintPreauthKey()
+                try await Self.logIn(node: node, key: key)
+                logger?("tailnet: logged in again with a new key")
+            } catch {
+                logger?("tailnet: could not log this node back in: \(error)")
+            }
+        }
+    }
+
+    /// How often a joining node is checked for waiting on a login. Short,
+    /// because the whole app is waiting on this join.
+    static let coldStartCheckInterval: Duration = .seconds(1)
+
+    /// Whether a node's login state justifies spending a key now.
+    static func shouldMint(needsLogin: Bool, lastAttempt: Date?, now: Date) -> Bool {
+        guard needsLogin else { return false }
+        guard let lastAttempt else { return true }
+        return now.timeIntervalSince(lastAttempt) >= reloginCooldown
+    }
+
+    /// Logs a node that headscale no longer knows back in, keeping its
+    /// machine key and stored prefs.
+    ///
+    /// Mirrors the desktop and CLI keeper: restarting the backend with a key
+    /// logs a node that still has a node key straight in, and one that lands
+    /// in NeedsLogin anyway is pushed into the login explicitly, the way
+    /// tsnet handles a key on its own first start.
+    static func logIn(node: TailscaleNode, key: String) async throws {
+        let client = LocalAPIClient(localNode: node, logger: nil)
+        try await client.start(options: loginOptions(authKey: key))
+        if await needsLogin(node) {
+            try await client.startLoginInteractive()
+        }
+    }
+
+    /// Backend start options carrying only a key. Built by decoding because
+    /// TailscaleKit gives `Ipn.Options` no memberwise initializer.
+    static func loginOptions(authKey: String) throws -> Ipn.Options {
+        let wire = try JSONEncoder().encode(["AuthKey": authKey])
+        return try JSONDecoder().decode(Ipn.Options.self, from: wire)
     }
 
     private func upWithKey(
@@ -279,12 +369,15 @@ public actor TailnetManager: TailnetNodeProviding {
         return report.needsLogin
     }
 
-    /// Keeps a running node on the tailnet when headscale forgets it.
+    /// Keeps a running node on the tailnet when headscale stops accepting it.
     ///
-    /// A forgotten node never reaches NeedsLogin on its own; its map polls
-    /// fail with 404 and it keeps reporting Running. Without this, a headscale
-    /// wipe would strand every device until its next app launch.
-    private func startReloginWatch(_ request: TailnetJoinRequest, controlURL: String) {
+    /// A revocation sweep, including the first push into an empty library,
+    /// expires the node, and it moves to NeedsLogin. A node a wiped headscale
+    /// forgot never does; its map polls fail with 404 and it keeps reporting
+    /// Running. That 404 only shows up in tsnet's backend log, which reaches
+    /// the signal through the log pipe. Without this watch, every device
+    /// would be stranded until its next launch.
+    private func startReloginWatch() {
         reloginWatch?.cancel()
         // A 404 seen while joining was already answered by the join itself.
         _ = forgottenNode.consume()
@@ -292,15 +385,17 @@ public actor TailnetManager: TailnetNodeProviding {
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.reloginCheckInterval)
                 guard let self, !Task.isCancelled else { return }
-                await self.reloginIfForgotten(request, controlURL: controlURL)
+                await self.reloginIfForgotten()
             }
         }
     }
 
-    // Replaces the node with one logged in under a fresh key. Leaves the old
-    // node in place when no key can be had, since it may still be serving
-    // traffic to peers that have not noticed anything.
-    private func reloginIfForgotten(_ request: TailnetJoinRequest, controlURL: String) async {
+    // Logs the running node back in under a fresh key, in place. Replacing
+    // it would not work: a new node started on the same state directory has
+    // a profile, so tsnet ignores its key and it waits in NeedsLogin inside
+    // tailscale_up for good. Keeping the node also keeps its SOCKS proxy and
+    // the shim's tailnet route valid, so nothing else has to be redone.
+    private func reloginIfForgotten() async {
         guard let node, let shim else { return }
         if let lastRelogin, Date().timeIntervalSince(lastRelogin) < Self.reloginCooldown {
             return
@@ -313,29 +408,12 @@ public actor TailnetManager: TailnetNodeProviding {
         lastRelogin = Date()
 
         logger?("tailnet: headscale forgot this node; minting a key")
-        let key: String
         do {
-            key = try await shim.mintPreauthKey()
+            let key = try await shim.mintPreauthKey()
+            try await Self.logIn(node: node, key: key)
+            logger?("tailnet: logged in again with a new key")
         } catch {
-            logger?("tailnet: could not mint a key to rejoin: \(error)")
-            return
-        }
-
-        try? await node.close()
-        self.node = nil
-        proxyCache.store(nil)
-        isJoined = false
-        shim.clearTailnetRoute()
-
-        do {
-            let fresh = try await upWithKey(request, controlURL: controlURL, key: key)
-            self.node = fresh
-            await installTailnetControlRoute(on: shim, request: request)
-            try await snapshotProxy(from: fresh)
-            isJoined = true
-            logger?("tailnet: rejoined as \(request.hostName)")
-        } catch {
-            logger?("tailnet: rejoin failed: \(error)")
+            logger?("tailnet: could not log this node back in: \(error)")
         }
     }
 
@@ -510,16 +588,22 @@ private final class ProxyConfigurationCache: @unchecked Sendable {
     }
 }
 
-/// Forwards TailscaleKit lines into the app log. `logger: nil` is what
-/// left a hung NeedsLogin looking like tsnet had gone silent.
+/// Forwards TailscaleKit's own lines into the app log, and hands tsnet the
+/// descriptor its backend log is written to. `logger: nil` is what left a
+/// hung NeedsLogin looking like tsnet had gone silent.
 ///
-/// Also the only place a forgotten running node shows up, so every line is
-/// offered to the signal even when the app has no logger.
+/// The two logs are separate: `log(_:)` only gets the Swift wrapper's few
+/// lifecycle lines, while control, map-poll and relay messages, including
+/// the 404 for a forgotten node, only ever reach `logFileHandle`. Without a
+/// descriptor tsnet discards them. Both feed the signal, even when the app
+/// has no logger.
 private struct TailscaleLogBridge: LogSink, Sendable {
     let emit: (@Sendable (String) -> Void)?
     let forgottenNode: TailnetForgottenNodeSignal
 
-    var logFileHandle: Int32? { nil }
+    /// Owned by the node from here on: libtailscale wraps it in a Go file,
+    /// which closes it once the node is gone.
+    let logFileHandle: Int32?
 
     func log(_ message: String) {
         forgottenNode.observe(message)
@@ -527,11 +611,68 @@ private struct TailscaleLogBridge: LogSink, Sendable {
     }
 }
 
+/// Carries tsnet's backend log into the app for as long as the manager lives.
+///
+/// One pipe serves every node the manager ever starts. Each node gets its
+/// own duplicate of the write end, because Go closes the descriptor it was
+/// given when that node is collected, and a shared one would then go dead
+/// for every later node.
+final class TailnetLogPipe: @unchecked Sendable {
+    private let pipe = Pipe()
+    private let lock = NSLock()
+    private var lines = TailnetLogLines()
+
+    /// - Parameter onLine: called with each complete line, off the caller's
+    ///   queue. Must not block for long: tsnet's logging waits on this pipe
+    ///   once its buffer is full.
+    init(onLine: @escaping @Sendable (String) -> Void) {
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard let self, !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            self.lock.lock()
+            let complete = self.lines.feed(data)
+            self.lock.unlock()
+            complete.forEach(onLine)
+        }
+    }
+
+    /// A fresh write descriptor for one node, or nil if none can be had. A
+    /// node without one runs normally, only blind to being forgotten.
+    func writeHandleForNode() -> Int32? {
+        let handle = dup(pipe.fileHandleForWriting.fileDescriptor)
+        return handle >= 0 ? handle : nil
+    }
+}
+
+/// Reassembles log lines from pipe reads, which end wherever the OS chooses,
+/// often mid-line. A line is only released once its newline has arrived, so
+/// nothing is logged in pieces or matched against a fragment. NULs, which
+/// Tailscale puts in its structured-line tag, are dropped so the app log
+/// stays plain text.
+struct TailnetLogLines {
+    private var pending = Data()
+
+    mutating func feed(_ data: Data) -> [String] {
+        pending.append(data)
+        var complete: [String] = []
+        while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+            let line = pending[pending.startIndex..<newline].filter { $0 != 0 }
+            complete.append(String(decoding: line, as: UTF8.self))
+            pending.removeSubrange(pending.startIndex...newline)
+        }
+        return complete
+    }
+}
+
 /// Remembers that headscale answered a map poll with "node not found".
 ///
-/// That 404 is how a running node learns its registration is gone: after a
-/// headscale wipe, or after gitd dropped every device node because a key
-/// left `pubkeys/`. The node itself retries forever and stays Running.
+/// That 404 is how a running node learns that a wiped headscale lost its
+/// registration. The node itself retries forever and stays Running. When
+/// gitd expires device nodes instead, the node goes to NeedsLogin, which the
+/// relogin watch reads from the node's status.
 final class TailnetForgottenNodeSignal: @unchecked Sendable {
     static let marker = "initial fetch failed 404"
 

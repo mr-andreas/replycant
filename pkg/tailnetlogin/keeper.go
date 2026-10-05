@@ -2,16 +2,17 @@
 // forget it.
 //
 // headscale's database is a cache of pubkeys/ in the repository, not a source
-// of truth. It can be wiped and rebuilt, and gitd deletes every device node
+// of truth. It can be wiped and rebuilt, and gitd expires every device node
 // whenever a key leaves pubkeys/. Either way a node that was fine a moment ago
-// is unknown to the control plane, and the device's only recovery is a fresh
+// cannot use the tailnet, and the device's only recovery is a fresh
 // single-use key, which it can mint for itself while its certificate is still
 // in pubkeys/.
 //
 // Two different symptoms mean the same thing. A node that starts on state
-// headscale no longer has asks to log in (NeedsLogin). A node that was already
-// running never does: its map polls fail with 404 and it keeps reporting
-// Running on a stale network map. The keeper watches for both.
+// headscale no longer has, or whose key gitd expired, asks to log in
+// (NeedsLogin). A running node that a wiped headscale forgot never does: its
+// map polls fail with 404 and it keeps reporting Running on a stale network
+// map. The keeper watches for both.
 package tailnetlogin
 
 import (

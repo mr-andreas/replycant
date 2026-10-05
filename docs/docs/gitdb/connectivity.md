@@ -196,10 +196,11 @@ sequenceDiagram
   only when it has no saved login. Handing a key to a node already waiting
   in `NeedsLogin` does not reliably make it register.
 - **Noticing.** A node starting from saved state that headscale does not
-  know lands in `NeedsLogin`. A node that is already running never changes
+  know lands in `NeedsLogin`, and so does a running node whose key gitd
+  expires. A running node that a wiped headscale forgot never changes
   state: it keeps reporting `Running` while its map polls fail with
-  `404 node not found`. Clients watch for both, then mint a key and log in
-  again. They wait at least 30 seconds between mints.
+  `404 node not found`. Clients watch for both, then mint a key and log the
+  same node in again. They wait at least 30 seconds between mints.
 - **Durable state.** Only headscale's noise key has to survive. It is the
   control plane's identity and every node pins it, so it lives in
   `headscale/noise`, outside the database directory. `headscale-init`
@@ -208,10 +209,12 @@ sequenceDiagram
 
 Revocation runs the other way. gitd records the `pubkeys/` set it last
 reconciled, and compares it with `main` at startup and after every
-successful push. If any key was removed, it deletes every `tag:device` node.
+successful push. If any key was removed, it expires every `tag:device` node.
+Expiry, unlike deletion, reaches a device that is online at that moment.
 Devices that are still authorized notice and mint their way back in. The
-revoked one is refused at hsproxy. Deleting only the revoked node would need
-a node-to-key mapping that headscale cannot store.
+revoked one is refused at hsproxy, and its node stays listed as expired.
+Expiring only the revoked node would need a node-to-key mapping that
+headscale cannot store.
 
 ### The loopback shim
 

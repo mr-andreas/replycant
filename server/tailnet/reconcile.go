@@ -25,7 +25,7 @@ const reconcileTimeout = 30 * time.Second
 // can be tested without a control plane; production uses Client.
 type NodeStore interface {
 	ListNodes(ctx context.Context) ([]Node, error)
-	DeleteNode(ctx context.Context, id string) error
+	ExpireNode(ctx context.Context, id string) error
 }
 
 // Everything a reconciler needs to keep headscale in line with pubkeys/.
@@ -48,16 +48,17 @@ type ReconcilerConfig struct {
 	Logf func(format string, args ...any)
 }
 
-// Removes device nodes from headscale when a key leaves pubkeys/, so revoking
+// Expires device nodes in headscale when a key leaves pubkeys/, so revoking
 // a device takes it off the tailnet immediately instead of only refusing its
 // next control session.
 //
 // headscale cannot record which pubkey a node belongs to: tailnet hostnames are
 // chosen by devices and do not match pubkey file names, and tags are fixed by
-// the policy file. So a revocation deletes every tag:device node. The devices
-// that are still authorized notice they need to log in, ask hsproxy for a fresh
+// the policy file. So a revocation expires every tag:device node. The devices
+// that are still authorized see they need to log in, ask hsproxy for a fresh
 // key with their certificate, and come straight back; the revoked one cannot.
-// gitd's own tag:server node is never touched.
+// gitd's own tag:server node is never touched. See Client.ExpireNode for why
+// nodes are expired rather than deleted.
 type Reconciler struct {
 	nodes          NodeStore
 	authorizedKeys func() ([]string, error)
@@ -132,11 +133,11 @@ func (r *Reconciler) Run(ctx context.Context) {
 
 // Brings headscale in line with pubkeys/ once.
 //
-// Device nodes are deleted when any key from the last reconciled set is gone,
+// Device nodes are expired when any key from the last reconciled set is gone,
 // when there is no usable record of that set, or at the first push. The first
 // push counts because, while the repository was empty, the CA page and hsproxy
 // let any visitor join without a key in pubkeys/. The new set is recorded only
-// after every deletion succeeded, so a failure is retried rather than
+// after every expiry succeeded, so a failure is retried rather than
 // forgotten.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
 	current, err := r.authorizedKeys()
@@ -162,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	return r.writeMarker(current)
 }
 
-// Deletes every node tagged as a device, leaving gitd's own node in place.
+// Expires every node tagged as a device, leaving gitd's own node in place.
 func (r *Reconciler) dropDeviceNodes(ctx context.Context) error {
 	nodes, err := r.nodes.ListNodes(ctx)
 	if err != nil {
@@ -172,10 +173,10 @@ func (r *Reconciler) dropDeviceNodes(ctx context.Context) error {
 		if !node.HasTag(DeviceTag) || node.HasTag(ServerTag) {
 			continue
 		}
-		if err := r.nodes.DeleteNode(ctx, node.ID); err != nil {
+		if err := r.nodes.ExpireNode(ctx, node.ID); err != nil {
 			return err
 		}
-		r.logf("tailnet: deleted device node %s (%s)", node.ID, node.Name)
+		r.logf("tailnet: expired device node %s (%s)", node.ID, node.Name)
 	}
 	return nil
 }
