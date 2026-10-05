@@ -546,6 +546,37 @@ func TestAuthenticator_EmptyRepository_AfterPush_RequiresAuthorizedKey(t *testin
 	assert.ErrorIs(t, err, ErrUnauthorized)
 }
 
+// The CA page hands out first-device join keys only while the repository is
+// empty, and must agree with hsproxy about when that window closes. Both read
+// it from HasBranch, so it has to flip exactly at the first push.
+func TestAuthenticator_HasBranchFlipsAtFirstPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	emptyRepo := testCtx.CreateEmptyTestRepo(t)
+	auth := NewAuthenticator(emptyRepo, 1*time.Minute)
+
+	hasBranch, err := auth.HasBranch()
+	require.NoError(t, err)
+	assert.False(t, hasBranch, "an empty repository is not bootstrapped")
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	_ = simulateBootstrapPush(t, emptyRepo, "alice", &privKey.PublicKey)
+
+	hasBranch, err = auth.HasBranch()
+	require.NoError(t, err)
+	assert.True(t, hasBranch, "the first push bootstraps the repository")
+}
+
+// An unreadable repository must surface as an error, so callers fail closed
+// instead of treating it as empty and handing out bootstrap credentials.
+func TestAuthenticator_HasBranchReportsUnreadableRepository(t *testing.T) {
+	auth := NewAuthenticator(filepath.Join(t.TempDir(), "missing"), 1*time.Minute)
+
+	_, err := auth.HasBranch()
+	assert.Error(t, err)
+}
+
 // Tests that multiple different certificates return ErrUnauthorizedBootstrap in bootstrap mode.
 func TestAuthenticator_EmptyRepository_MultipleCertsAllowed(t *testing.T) {
 	testCtx := gittest.NewContext(t)

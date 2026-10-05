@@ -69,6 +69,12 @@ hostname or port change.
 
 Using your computer, open the URL that you host the server on. Usually, this is http://localhost:8080 (or `http://localhost:$REPLYCANT_CA_PORT` if you changed the CA port). Start the iOS app and scan the QR code.
 
+If the server has no browser, open `http://<server>:8080` from another
+computer on your network instead. The page stops handing out join codes
+once the first device has joined, and later devices are paired from that
+one. To keep the page reachable only from the server itself, add
+`REPLYCANT_CA_BIND=127.0.0.1` to `.env`.
+
 ## How Replycant works
 
 ### Private by design

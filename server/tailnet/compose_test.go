@@ -3,6 +3,7 @@ package tailnet_test
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -144,9 +145,15 @@ func TestTunnelAgentStartsWithoutAProfile(t *testing.T) {
 }
 
 // The first device has no tailnet yet, so the only way to show it the join
-// QR is a host-published CA page. Loopback keeps that page off the LAN;
-// publishing the Git port would put gitd back on the internet.
-func TestGitdPublishesOnlyTheLoopbackCAPort(t *testing.T) {
+// QR is a host-published CA page. It defaults to every interface so a server
+// without a browser can be bootstrapped from another machine on the LAN;
+// REPLYCANT_CA_BIND=127.0.0.1 keeps it local. That default is tolerable only
+// because the page stops minting at the first push. Publishing the Git port
+// would put gitd back on the internet.
+//
+// gitd must listen on the fixed container port the mapping targets, or a
+// custom REPLYCANT_CA_PORT would publish a port nothing answers on.
+func TestGitdPublishesOnlyTheCAPortOnAllInterfacesByDefault(t *testing.T) {
 	compose, err := os.ReadFile(composePath)
 	if err != nil {
 		t.Fatalf("read the compose file: %v", err)
@@ -158,8 +165,11 @@ func TestGitdPublishesOnlyTheLoopbackCAPort(t *testing.T) {
 	}
 	body := string(gitd[1])
 
-	if !regexp.MustCompile(`127\.0\.0\.1:\$\{REPLYCANT_CA_PORT:-8080\}:8080`).MatchString(body) {
-		t.Error("gitd must publish the CA listener on 127.0.0.1:8080")
+	if !regexp.MustCompile(`"\$\{REPLYCANT_CA_BIND:-0\.0\.0\.0\}:\$\{REPLYCANT_CA_PORT:-8080\}:8080"`).MatchString(body) {
+		t.Error("gitd must publish the CA listener on ${REPLYCANT_CA_BIND:-0.0.0.0}, defaulting to all interfaces")
+	}
+	if !strings.Contains(body, "--ca-addr=:8080 ") {
+		t.Error("gitd must listen for the CA page on the container port the mapping targets")
 	}
 	if regexp.MustCompile(`8443:8443`).MatchString(body) {
 		t.Error("gitd must not publish the Git listener; it is reachable only on the tailnet")

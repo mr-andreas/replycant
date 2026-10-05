@@ -305,12 +305,18 @@ func main() {
 	headscale, err := cli.headscaleClient()
 	ctx.FatalIfErrorf(err)
 
+	// Built before the CA page so the page and the Git server agree on when
+	// the repository leaves bootstrap mode.
+	auth := auth.NewAuthenticator(cli.Repo, cli.CacheTTL)
+
 	caCfg := caserver.Config{CA: string(caData), ServerURL: serverURL}
 	if headscale != nil {
 		// A preauth key is single-use, so the CA page mints on each visit
 		// rather than baking one credential into a QR at startup. This is
 		// the only key a device gets without presenting a certificate in
-		// pubkeys/, which is why the page is published on loopback only.
+		// pubkeys/. The page is published on the LAN by default, so it
+		// mints only until the first push.
+		caCfg.Bootstrapped = auth.HasBranch
 		caCfg.Mint = func() (string, string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -336,9 +342,6 @@ func main() {
 			log.Fatalf("CA server failed: %v", err)
 		}
 	}()
-
-	// Create mTLS Git server handler
-	auth := auth.NewAuthenticator(cli.Repo, cli.CacheTTL)
 
 	pairingPublisher, err := cli.buildPairingPublisher(headscale)
 	ctx.FatalIfErrorf(err)

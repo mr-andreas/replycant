@@ -84,6 +84,18 @@ func (a *Authenticator) repoState() (hasBranch bool, mainHash plumbing.Hash, err
 	return true, ref.Hash(), nil
 }
 
+// Reports whether the repository has left bootstrap mode, using the same
+// definition Authenticate does. The CA page needs it to stop handing out
+// first-device join keys at exactly the moment hsproxy stops admitting
+// unknown certificates. An unreadable repository is an error, not "empty".
+func (a *Authenticator) HasBranch() (bool, error) {
+	hasBranch, _, err := a.repoState()
+	if err != nil && !hasBranch {
+		return false, err
+	}
+	return hasBranch, nil
+}
+
 // Validates that the client certificate contains an authorized P-256 public key.
 // Returns the username (filename without .pub extension) if authorized.
 // For empty repositories, returns ErrUnauthorizedBootstrap to signal that bootstrap mode

@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -20,24 +21,37 @@ var logoPNG []byte
 // successful mint.
 type MintFunc func() (headscaleURL, preauthKey string, err error)
 
+// Reports whether the repository has had its first push. Asked before every
+// mint, because the page may be published on the LAN and must stop handing
+// out join keys the moment the first-device window closes.
+type BootstrappedFunc func() (bool, error)
+
 // Configures the CA distribution page.
 //
 // LAN-only deployments (no Mint) serve {ca, url} so integration tests and
 // host-port gitd keep working. Tailnet deployments mint a join credential
 // instead: there is no reachable gitd URL until the device is on the tailnet.
+// With Bootstrapped set, a tailnet page answers 410 Gone once the repository
+// has a branch, since later devices pair through an existing device.
 type Config struct {
-	CA        string
-	ServerURL string
-	Mint      MintFunc
+	CA           string
+	ServerURL    string
+	Mint         MintFunc
+	Bootstrapped BootstrappedFunc
 }
+
+// Distinguishes "the window has closed" from a transient failure, so visitors
+// get a permanent answer rather than a retry prompt.
+var errBootstrapped = errors.New("repository is already bootstrapped")
 
 // Provides HTTP endpoints for distributing CA certificate and server URL via QR code.
 // Enables mobile clients to scan and configure trust, while CLI clients can copy text directly.
 type handler struct {
-	ca         string
-	serverURL  string
-	mint       MintFunc
-	logoBase64 string
+	ca           string
+	serverURL    string
+	mint         MintFunc
+	bootstrapped BootstrappedFunc
+	logoBase64   string
 }
 
 // Encodes CA and upstream URLs into a stable JSON shape for non-QR setup clients.
@@ -57,10 +71,11 @@ type tailnetConfig struct {
 // Creates an HTTP handler serving CA certificate distribution endpoints.
 func NewHandler(cfg Config) (http.Handler, error) {
 	h := &handler{
-		ca:         cfg.CA,
-		serverURL:  cfg.ServerURL,
-		mint:       cfg.Mint,
-		logoBase64: base64.StdEncoding.EncodeToString(logoPNG),
+		ca:           cfg.CA,
+		serverURL:    cfg.ServerURL,
+		mint:         cfg.Mint,
+		bootstrapped: cfg.Bootstrapped,
+		logoBase64:   base64.StdEncoding.EncodeToString(logoPNG),
 	}
 
 	mux := http.NewServeMux()
@@ -71,9 +86,20 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	return mux, nil
 }
 
+// Builds the QR/JSON payload. Returns errBootstrapped instead of minting once
+// the repository has a branch, and fails closed if that cannot be determined.
 func (h *handler) qrPayload() ([]byte, error) {
 	var data any
 	if h.mint != nil {
+		if h.bootstrapped != nil {
+			done, err := h.bootstrapped()
+			if err != nil {
+				return nil, err
+			}
+			if done {
+				return nil, errBootstrapped
+			}
+		}
 		headscaleURL, preauthKey, err := h.mint()
 		if err != nil {
 			return nil, err
@@ -89,6 +115,17 @@ func (h *handler) qrPayload() ([]byte, error) {
 	return json.Marshal(data)
 }
 
+// Answers a request whose payload could not be built. A closed bootstrap
+// window is 410 so clients stop retrying; anything else is 503 so a stale QR
+// is never served in place of a fresh credential.
+func writePayloadError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errBootstrapped) {
+		http.Error(w, "This library is already set up. Pair new devices from an existing device.", http.StatusGone)
+		return
+	}
+	http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+}
+
 func generateQRCode(payload []byte) ([]byte, error) {
 	qrCode, err := qrgen.GeneratePNG(string(payload), 256)
 	if err != nil {
@@ -101,7 +138,7 @@ func generateQRCode(payload []byte) ([]byte, error) {
 func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.qrPayload()
 	if err != nil {
-		http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+		writePayloadError(w, err)
 		return
 	}
 	qrCode, err := generateQRCode(payload)
@@ -255,7 +292,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (h *handler) handleQRCode(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.qrPayload()
 	if err != nil {
-		http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+		writePayloadError(w, err)
 		return
 	}
 	qrCode, err := generateQRCode(payload)
@@ -283,7 +320,7 @@ func (h *handler) handleConfigJSON(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := h.qrPayload()
 	if err != nil {
-		http.Error(w, "Failed to mint a join credential", http.StatusServiceUnavailable)
+		writePayloadError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -26,7 +26,7 @@ LAN-only and integration setups (no tsnet) still serve `{ca, url}` from the same
 
 ### Step-by-Step
 
-1. **Open the CA page** at `http://127.0.0.1:8080` on the machine running gitd. The page is bound to loopback, like hsproxy.
+1. **Open the CA page** at `http://<server>:8080`, either on the machine running gitd or from another machine on the LAN. Set `REPLYCANT_CA_BIND=127.0.0.1` to keep it on the host. The page hands out join keys only while the repository is empty. After that it answers `410 Gone`.
 2. **Scan the QR** (or fetch `/config.json` from the desktop app). On a tailnet deployment the payload is a one-time join: CA, headscale URL, and a preauth key. Clients already know gitd as `https://gitd.replycant.internal:8443`.
 3. **Join, then push**: the first device joins the tailnet, creates a local repository, commits its public key to `pubkeys/`, and pushes. The server accepts because the repository is empty.
 4. **Access control active**: subsequent connections require a certificate matching a key in `pubkeys/`
@@ -249,8 +249,9 @@ starts from a recovery bundle instead of a pairing QR from another device.
 2. App decrypts bundle and learns the deployment's CA from the bundle's
    locator, accepting it only if its hash matches the pinned `ca_sha256`:
    - LAN deployments: `discovery_url`, the CA page next to gitd.
-   - Tailnet deployments: `headscale_url`. The CA page is loopback-only and
-     gitd is tailnet-only, so hsproxy is the only reachable endpoint. The
+   - Tailnet deployments: `headscale_url`. The CA page closes once the
+     library exists and gitd is tailnet-only, so hsproxy is the only
+     reachable endpoint. The
      app joins the tailnet as the recovery identity, which hsproxy
      authorizes like any device. hsproxy sends the CA after its leaf, and
      the app takes the CA from that chain.

@@ -133,7 +133,9 @@ func (r *Reconciler) Run(ctx context.Context) {
 // Brings headscale in line with pubkeys/ once.
 //
 // Device nodes are deleted when any key from the last reconciled set is gone,
-// or when there is no usable record of that set. The new set is recorded only
+// when there is no usable record of that set, or at the first push. The first
+// push counts because, while the repository was empty, the CA page and hsproxy
+// let any visitor join without a key in pubkeys/. The new set is recorded only
 // after every deletion succeeded, so a failure is retried rather than
 // forgotten.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
@@ -146,6 +148,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	switch {
 	case !known:
 		r.logf("tailnet: no record of the last reconciled keys; dropping device nodes so only authorized devices re-enroll")
+	case len(previous) == 0 && len(current) > 0:
+		r.logf("tailnet: first keys reached pubkeys/; dropping device nodes that joined while the repository was empty")
 	case removedAny(previous, current):
 		r.logf("tailnet: a key left pubkeys/; dropping device nodes so the revoked device cannot stay on the tailnet")
 	default:

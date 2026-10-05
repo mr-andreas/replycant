@@ -151,6 +151,41 @@ func TestAddedKeyDeletesNothing(t *testing.T) {
 	}
 }
 
+// While the repository is empty, the CA page hands a join key to anyone who
+// can open it, and hsproxy admits any certificate. A host that joined in that
+// window without pushing was never authorized by pubkeys/, so the first push
+// must take it off the tailnet. The operator's own device is dropped too and
+// re-enrolls through hsproxy now that its key is in pubkeys/.
+func TestFirstKeyDropsDeviceNodesThatJoinedDuringBootstrap(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	reconciler := primedReconciler(t, store, keys)
+
+	keys.set("SHA256:phone")
+	if err := reconciler.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile after the bootstrap push: %v", err)
+	}
+
+	if got := store.deletedIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
+		t.Errorf("expected both device nodes and not gitd to be deleted, got %v", got)
+	}
+}
+
+// An empty repository is reconciled on every timer tick before the first push.
+// Those runs must not keep deleting the node the first device is joining with.
+func TestEmptyKeySetStaysEmptyDeletesNothing(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	reconciler := primedReconciler(t, store, keys)
+
+	if err := reconciler.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile of a still-empty repository: %v", err)
+	}
+	if got := store.deletedIDs(); len(got) != 0 {
+		t.Errorf("a still-empty key set must not delete any node, got %v", got)
+	}
+}
+
 // Reconciling the same authorized set twice is what happens on every push that
 // does not touch pubkeys/. It must be free of side effects.
 func TestUnchangedKeysDeleteNothing(t *testing.T) {

@@ -18,7 +18,8 @@ type provisionerConfig struct {
 	newIdentityJSON   string
 	bareRepo          string
 	qrURL             string
-	caConfigURL       string
+	caFile            string
+	headscaleURL      string
 	pairURL           string
 }
 
@@ -176,12 +177,16 @@ func provision(cfg provisionerConfig) error {
 	if cfg.qrURL == "" {
 		return nil
 	}
-	if cfg.caConfigURL == "" || cfg.pairURL == "" {
-		return fmt.Errorf("--ca-config-url and --pair-url are required with --qr-url")
+	if cfg.caFile == "" || cfg.headscaleURL == "" || cfg.pairURL == "" {
+		return fmt.Errorf("--ca-file, --headscale-url, and --pair-url are required with --qr-url")
+	}
+	caPEM, err := os.ReadFile(cfg.caFile)
+	if err != nil {
+		return fmt.Errorf("read deployment CA: %w", err)
 	}
 	// The new key is on main before this join, so hsproxy will accept the
 	// pairing device once gitd publishes the record and that device connects.
-	return approveTailnetPairing(context.Background(), cfg.seederIdentityDir, cfg.caConfigURL, cfg.pairURL, payload)
+	return approveTailnetPairing(context.Background(), cfg.seederIdentityDir, string(caPEM), cfg.headscaleURL, cfg.pairURL, payload)
 }
 
 func main() {
@@ -190,7 +195,8 @@ func main() {
 	flag.StringVar(&cfg.newIdentityJSON, "new-identity-json", "", "Path to new device identity.json")
 	flag.StringVar(&cfg.bareRepo, "bare-repo", "", "Path to bare repository")
 	flag.StringVar(&cfg.qrURL, "qr-url", "", "Clone QR payload URL; set to approve a tailnet pairing")
-	flag.StringVar(&cfg.caConfigURL, "ca-config-url", "", "gitd CA /config.json that mints a seeder pre-auth key")
+	flag.StringVar(&cfg.caFile, "ca-file", "", "Deployment CA PEM the seeder pins for hsproxy")
+	flag.StringVar(&cfg.headscaleURL, "headscale-url", "", "hsproxy URL the seeder mints its tailnet key from")
 	flag.StringVar(&cfg.pairURL, "pair-url", "", "gitd /pair URL inside the tailnet")
 	flag.Parse()
 

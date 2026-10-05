@@ -30,25 +30,12 @@ type qrPayload struct {
 	AgePublicKey  string `json:"age_pubkey"`
 }
 
-// tailnetJoinConfig is the caserver payload a first device uses to join.
-// The pre-auth key is single-use, so it is fetched immediately before join
-// and never written down.
-type tailnetJoinConfig struct {
-	CA           string `json:"ca"`
-	HeadscaleURL string `json:"headscale_url"`
-	PreauthKey   string `json:"preauth_key"`
-}
-
 // approveTailnetPairing is what an already-enrolled device does after it
 // has committed the new key: join the tailnet and ask gitd to publish the
 // discovery record. gitd's /pair handler is only reachable inside the
 // tailnet, and only by a certificate already in pubkeys/.
-func approveTailnetPairing(ctx context.Context, identityDir, caConfigURL, pairURL string, payload qrPayload) error {
-	joinCfg, err := fetchJoinConfig(ctx, caConfigURL)
-	if err != nil {
-		return err
-	}
-	client, cleanup, err := tailnetHTTPClient(ctx, identityDir, joinCfg)
+func approveTailnetPairing(ctx context.Context, identityDir, caPEM, headscaleURL, pairURL string, payload qrPayload) error {
+	client, cleanup, err := tailnetHTTPClient(ctx, identityDir, caPEM, headscaleURL)
 	if err != nil {
 		return err
 	}
@@ -96,33 +83,6 @@ func fetchQRPayload(ctx context.Context, qrURL string) (qrPayload, error) {
 	}
 }
 
-func fetchJoinConfig(ctx context.Context, caConfigURL string) (tailnetJoinConfig, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, caConfigURL, nil)
-	if err != nil {
-		return tailnetJoinConfig{}, err
-	}
-	response, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return tailnetJoinConfig{}, fmt.Errorf("fetch tailnet join config: %w", err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return tailnetJoinConfig{}, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return tailnetJoinConfig{}, fmt.Errorf("tailnet join config returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-	var cfg tailnetJoinConfig
-	if err := json.Unmarshal(body, &cfg); err != nil {
-		return tailnetJoinConfig{}, fmt.Errorf("decode tailnet join config: %w", err)
-	}
-	if cfg.CA == "" || cfg.HeadscaleURL == "" || cfg.PreauthKey == "" {
-		return tailnetJoinConfig{}, fmt.Errorf("tailnet join config is missing ca, headscale_url, or preauth_key")
-	}
-	return cfg, nil
-}
-
 func postPairingRecord(ctx context.Context, client *http.Client, pairURL, secret, ageKey string) error {
 	body, err := json.Marshal(map[string]string{
 		"pairing_secret": secret,
@@ -151,7 +111,11 @@ func postPairingRecord(ctx context.Context, client *http.Client, pairURL, secret
 // tailnetHTTPClient joins as the seeder and returns a client whose dials
 // stay inside that node. The caller closes the node when the POST returns;
 // the seeder does not need to remain on the tailnet.
-func tailnetHTTPClient(ctx context.Context, identityDir string, cfg tailnetJoinConfig) (*http.Client, func(), error) {
+//
+// The seeder is already in pubkeys/, so it mints its own key through hsproxy
+// like any paired device. The CA page cannot serve it: that page only hands
+// out keys while the repository is still empty.
+func tailnetHTTPClient(ctx context.Context, identityDir, caPEM, headscaleURL string) (*http.Client, func(), error) {
 	cert, err := tls.LoadX509KeyPair(
 		filepath.Join(identityDir, "client-cert.pem"),
 		filepath.Join(identityDir, "client-key.pem"),
@@ -159,14 +123,14 @@ func tailnetHTTPClient(ctx context.Context, identityDir string, cfg tailnetJoinC
 	if err != nil {
 		return nil, nil, fmt.Errorf("load seeder client certificate: %w", err)
 	}
-	addr, serverName, err := headscaleAddr(cfg.HeadscaleURL)
+	addr, serverName, err := headscaleAddr(headscaleURL)
 	if err != nil {
 		return nil, nil, err
 	}
 	shim, err := tailnetshim.New(tailnetshim.Config{
 		UpstreamAddr:       addr,
 		UpstreamServerName: serverName,
-		CAPEM:              []byte(cfg.CA),
+		CAPEM:              []byte(caPEM),
 		ClientCertificate:  cert,
 		Logf:               log.Printf,
 	})
@@ -178,6 +142,13 @@ func tailnetHTTPClient(ctx context.Context, identityDir string, cfg tailnetJoinC
 	}
 	shimCtx, cancelShim := context.WithCancel(ctx)
 	go shim.Serve(shimCtx)
+
+	preauthKey, err := shim.MintPreauthKey(ctx)
+	if err != nil {
+		cancelShim()
+		shim.Close()
+		return nil, nil, fmt.Errorf("seeder could not mint a tailnet key: %w", err)
+	}
 
 	host, err := randomHostname()
 	if err != nil {
@@ -195,7 +166,7 @@ func tailnetHTTPClient(ctx context.Context, identityDir string, cfg tailnetJoinC
 		Dir:        stateDir,
 		Hostname:   host,
 		ControlURL: shim.ControlURL(),
-		AuthKey:    cfg.PreauthKey,
+		AuthKey:    preauthKey,
 		UserLogf:   log.Printf,
 		Logf:       func(string, ...any) {},
 	}
@@ -211,7 +182,7 @@ func tailnetHTTPClient(ctx context.Context, identityDir string, cfg tailnetJoinC
 	}
 
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(cfg.CA)) {
+	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
 		cancelShim()
 		shim.Close()
 		_ = node.Close()

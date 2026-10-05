@@ -24,7 +24,8 @@ const (
 	e2eDiscoveryURL = "http://discovery.test:18082"
 	e2eQRAddr       = "127.0.0.1:18083"
 	e2eQRURL        = "http://127.0.0.1:18083/payload.json"
-	e2eCAConfigURL  = "http://127.0.0.1:18081/config.json"
+	e2eCAFile       = "/tmp/pki/ca.crt"
+	e2eHeadscaleURL = "https://localhost:18085"
 	e2ePairURL      = "https://gitd.replycant.internal:8443/pair"
 )
 
@@ -186,7 +187,8 @@ func provisionDevice(t *testing.T, containerID string, cloneDir string) {
 		"--new-identity-json="+cloneDir+"/.git/replycant/identity.json",
 		"--bare-repo=/tmp/repo.git",
 		"--qr-url="+e2eQRURL,
-		"--ca-config-url="+e2eCAConfigURL,
+		"--ca-file="+e2eCAFile,
+		"--headscale-url="+e2eHeadscaleURL,
 		"--pair-url="+e2ePairURL,
 	)
 }
@@ -234,7 +236,8 @@ func cloneAndProvisionBare(t *testing.T, containerID string, cloneDir string) {
 		"--new-identity-json="+cloneDir+"/replycant/identity.json",
 		"--bare-repo=/tmp/repo.git",
 		"--qr-url="+e2eQRURL,
-		"--ca-config-url="+e2eCAConfigURL,
+		"--ca-file="+e2eCAFile,
+		"--headscale-url="+e2eHeadscaleURL,
 		"--pair-url="+e2ePairURL,
 	)
 	select {

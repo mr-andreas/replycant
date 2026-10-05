@@ -39,12 +39,22 @@ uses that API key to mint its own key, tagged `tag:server`, each time it
 starts and whenever headscale forgets it, and joins headscale over the compose network
 (`http://headscale:8080`). That join does not cross the hosted relay.
 
-The first device gets its trust anchor from the CA page at
-`http://127.0.0.1:8080` on the machine running gitd. That listener is
-loopback-only, so the CA and the one-time pre-auth key never pass through
-the hosted relay or the discovery API. Every request to the page mints a
-fresh key: single-use, valid for 10 minutes. The QR shape is in
+The first device gets its trust anchor from the CA page on port 8080 of the
+machine running gitd. That listener is never routed through the hosted relay
+or the discovery API, so the CA and the one-time pre-auth key never pass
+through them. Every request to the page mints a fresh key: single-use, valid
+for 10 minutes. The QR shape is in
 [Device Onboarding](./device-onboarding.md#server-configuration-qr).
+
+The page listens on every interface by default, because a headless server has
+no browser to open it locally. `REPLYCANT_CA_BIND=127.0.0.1` keeps it on the
+host. LAN exposure is acceptable because the page mints keys only while the
+repository has no branch. After the first push it
+answers `410 Gone`, and later devices pair through an existing device. A
+LAN host that pushes first only locks the operator out of an empty library,
+which the operator sees and fixes by wiping it. A host that joins without
+pushing is removed at the first push (see
+[headscale holds only a cache](#headscale-holds-only-a-cache)).
 
 The device pins the CA before it can join, and it joins before it can
 push. `gitd.replycant.internal` does not resolve until the node is up.
@@ -136,7 +146,8 @@ certificate therefore carries both the tunnel hostname and
 
 hsproxy sends the deployment CA after its leaf. A phone restoring from a
 recovery key has only the CA's hash and no other way to fetch the CA: the CA
-page is loopback-only, and gitd is reachable only over the tailnet. The phone
+page is local to the server and closed once the library exists, and gitd is
+reachable only over the tailnet. The phone
 uses the CA in the chain only if its hash matches the recovery key. Sending
 the CA adds no trust for anyone else, because every other client anchors to
 the CA it was onboarded with.
@@ -157,6 +168,11 @@ Every node that git authorizes can ask for a fresh key, so nothing in
 headscale's database has to be kept. An operator can delete `headscale/lib`
 and run `docker compose up`, and every device comes back without being
 paired again.
+
+The same property lets gitd drop every device node at the first push. Any
+node that joined while the repository was empty did so without a key in
+`pubkeys/`, so it is removed. The first device then re-enrolls with its
+now-authorized certificate.
 
 ```mermaid
 sequenceDiagram
@@ -407,12 +423,14 @@ the mTLS gate, gitd being unpublished — is identical.
 
 ## What closing the ports changed
 
-gitd publishes no host port at all. There is no plain-LAN URL to point a client
-at any more; every device joins the tailnet first. Same-LAN peers still connect
+gitd publishes no Git port. There is no plain-LAN URL to point a client at any
+more; every device joins the tailnet first. Same-LAN peers still connect
 directly, so LFS and video throughput are unaffected in the common case.
 
-`hsproxy` is the only service with a `ports:` entry, and it binds to `127.0.0.1`
-by default — a plain `docker compose up` exposes nothing to the network.
+Only two ports are published. `hsproxy` binds to `127.0.0.1` by default
+(`REPLYCANT_HSPROXY_BIND`). gitd's first-device CA page binds to every
+interface (`REPLYCANT_CA_BIND`), so a headless server can be bootstrapped
+from the LAN; it serves join keys only until the first push.
 
 ## Related documentation
 

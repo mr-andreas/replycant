@@ -124,6 +124,92 @@ func TestTailnetConfigMintFailureIsUnavailable(t *testing.T) {
 	}
 }
 
+// The page may be published on the LAN, where anyone can open it. Once the
+// first device has pushed, a join key is of no use to a legitimate visitor, so
+// the page must stop minting rather than hand out tailnet credentials.
+func TestTailnetConfigIsGoneOnceBootstrapped(t *testing.T) {
+	minted := 0
+	handler, err := NewHandler(Config{
+		CA: "pem-ca",
+		Mint: func() (string, string, error) {
+			minted++
+			return "https://hs.example", "hskey", nil
+		},
+		Bootstrapped: func() (bool, error) { return true, nil },
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	for _, path := range []string{"/config.json", "/", "/qr.png"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != http.StatusGone {
+			t.Errorf("%s: got status %d, want 410", path, resp.Code)
+		}
+		if strings.Contains(resp.Body.String(), "hskey") {
+			t.Errorf("%s: a bootstrapped page must not leak a join key", path)
+		}
+	}
+	if minted != 0 {
+		t.Fatalf("a bootstrapped page must not mint, minted %d keys", minted)
+	}
+}
+
+// If the repository cannot be read, the page cannot tell whether the bootstrap
+// window is still open. It must fail closed instead of minting a key.
+func TestTailnetConfigBootstrapCheckFailureIsUnavailable(t *testing.T) {
+	minted := 0
+	handler, err := NewHandler(Config{
+		CA: "pem-ca",
+		Mint: func() (string, string, error) {
+			minted++
+			return "https://hs.example", "hskey", nil
+		},
+		Bootstrapped: func() (bool, error) { return false, errors.New("repository unreadable") },
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	for _, path := range []string{"/config.json", "/", "/qr.png"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s: got status %d, want 503", path, resp.Code)
+		}
+	}
+	if minted != 0 {
+		t.Fatalf("an unknown bootstrap state must not mint, minted %d keys", minted)
+	}
+}
+
+// While the repository is still empty the page is the first device's only way
+// onto the tailnet, so the gate must let every request through to the mint.
+func TestTailnetConfigMintsWhileNotBootstrapped(t *testing.T) {
+	minted := 0
+	handler, err := NewHandler(Config{
+		CA: "pem-ca",
+		Mint: func() (string, string, error) {
+			minted++
+			return "https://hs.example", "hskey", nil
+		},
+		Bootstrapped: func() (bool, error) { return false, nil },
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	if got := getConfig(t, handler)["preauth_key"]; got != "hskey" {
+		t.Fatalf("unexpected preauth_key %q", got)
+	}
+	if minted != 1 {
+		t.Fatalf("expected one mint, got %d", minted)
+	}
+}
+
 func getConfig(t *testing.T, handler http.Handler) map[string]string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/config.json", nil)
