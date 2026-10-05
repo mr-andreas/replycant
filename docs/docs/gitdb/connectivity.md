@@ -134,6 +134,13 @@ tsnet listener (`:8444`), which splices to this same `hsproxy`. The
 certificate therefore carries both the tunnel hostname and
 `gitd.replycant.internal`, so either path verifies.
 
+hsproxy sends the deployment CA after its leaf. A phone restoring from a
+recovery key has only the CA's hash and no other way to fetch the CA: the CA
+page is loopback-only, and gitd is reachable only over the tailnet. The phone
+uses the CA in the chain only if its hash matches the recovery key. Sending
+the CA adds no trust for anyone else, because every other client anchors to
+the CA it was onboarded with.
+
 ### Who can talk to whom
 
 The tailnet exists so devices can reach this household's server, not so they

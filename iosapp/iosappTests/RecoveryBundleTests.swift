@@ -171,12 +171,50 @@ struct RecoveryBundleTests {
 
     // Verifies envelope JSON stays within QR level-H capacity so long-term paper backups remain scannable.
     @Test func envelopeStaysUnderLevelHCapacity() throws {
+        for plaintext in [Self.samplePlaintext, Self.tailnetPlaintext] {
+            let envelope = try RecoveryBundle.encrypt(
+                plaintext: plaintext,
+                password: "correct horse battery staple"
+            )
+            let json = try RecoveryBundle.envelopeJSONString(envelope)
+            #expect(json.utf8.count < 1273)
+        }
+    }
+
+    // A tailnet deployment's discovery page is loopback-only, so its bundle
+    // names the control plane instead. Both shapes must survive the envelope.
+    private static let tailnetPlaintext = RecoveryBundle.Plaintext(
+        version: 1,
+        label: "Home safe",
+        uuid: "f2b0ef64-4d31-4bea-902f-5f1117de844c",
+        created: "2026-08-09T19:00:00Z",
+        discoveryURL: nil,
+        headscaleURL: "https://0123456789abcdef.s1.tunnel.example.com",
+        caSHA256: String(repeating: "a", count: 64),
+        p256PrivateKeyPEM: samplePEM,
+        agePrivateKey: sampleAgeSecret
+    )
+
+    @Test func roundTripsATailnetBundle() throws {
         let envelope = try RecoveryBundle.encrypt(
-            plaintext: Self.samplePlaintext,
+            plaintext: Self.tailnetPlaintext,
             password: "correct horse battery staple"
         )
-        let json = try RecoveryBundle.envelopeJSONString(envelope)
-        #expect(json.utf8.count < 1273)
+        let decrypted = try RecoveryBundle.decrypt(
+            envelope: envelope,
+            password: "correct horse battery staple"
+        )
+        #expect(decrypted == Self.tailnetPlaintext)
+    }
+
+    // The QR is close to level-H capacity, so the locator a deployment does
+    // not use is left out rather than written as null.
+    @Test func omitsTheUnusedLocator() throws {
+        let tailnet = String(decoding: try JSONEncoder().encode(Self.tailnetPlaintext), as: UTF8.self)
+        #expect(!tailnet.contains("discovery_url"))
+
+        let lan = String(decoding: try JSONEncoder().encode(Self.samplePlaintext), as: UTF8.self)
+        #expect(!lan.contains("headscale_url"))
     }
 
     // Pins a committed cross-language vector so Swift and Go decryption stay wire-compatible.

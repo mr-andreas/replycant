@@ -54,7 +54,11 @@ enum RecoveryBundle {
         let label: String
         let uuid: String
         let created: String
-        let discoveryURL: String
+        // Exactly one locator is set. LAN deployments serve a discovery page a
+        // fresh phone can fetch; tailnet deployments only expose the control
+        // plane, whose TLS chain carries the CA the hash below pins.
+        let discoveryURL: String?
+        var headscaleURL: String? = nil
         let caSHA256: String
         let p256PrivateKeyPEM: String
         let agePrivateKey: String
@@ -66,6 +70,7 @@ enum RecoveryBundle {
             case uuid
             case created
             case discoveryURL = "discovery_url"
+            case headscaleURL = "headscale_url"
             case caSHA256 = "ca_sha256"
             case p256PrivateKeyPEM = "p256_private_key"
             case agePrivateKey = "age_private_key"

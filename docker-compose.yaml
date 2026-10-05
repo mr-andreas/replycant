@@ -457,6 +457,7 @@ services:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.crt:/data/hsproxy.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.key:/data/hsproxy.key:ro
+      - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
     entrypoint: /usr/local/bin/hsproxy
     command:
       - --repo=/data/repo
@@ -464,6 +465,10 @@ services:
       - --upstream=headscale:8080
       - --cert=/data/hsproxy.crt
       - --key=/data/hsproxy.key
+      # Sent in the TLS chain so a phone restoring from a recovery key, which
+      # holds only the CA's hash, can obtain the CA from the one server it
+      # can reach.
+      - --ca=/data/ca.crt
       - --cache-ttl=5m
       - --health-addr=:8091
       # Lets any device in pubkeys/ mint its own tailnet key, which is what

@@ -382,6 +382,13 @@ final class ServerConfigurationManager {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    // Stores a CA that arrived as DER, from hsproxy's TLS chain during tailnet
+    // recovery, in the PEM form the rest of the configuration expects.
+    static func pemString(fromDER der: Data) -> String {
+        let body = der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
+        return "-----BEGIN CERTIFICATE-----\n\(body)\n-----END CERTIFICATE-----\n"
+    }
+
     // Normalizes operator-provided discovery URLs into a concrete config.json endpoint.
     // Recovery asks users for a discovery address when the original endpoint is unreachable.
     static func discoveryConfigURL(from discoveryURLString: String) -> URL? {

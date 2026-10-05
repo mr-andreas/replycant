@@ -143,7 +143,8 @@ struct GitdIntegrationTests {
             password: "correct horse battery staple",
             repository: repository,
             gitDB: gitDB,
-            serverConfiguration: config
+            serverConfiguration: config,
+            tailnetConfiguration: nil
         )
 
         let recloned = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
@@ -164,7 +165,8 @@ struct GitdIntegrationTests {
             password: "correct horse battery staple",
             repository: repository,
             gitDB: gitDB,
-            serverConfiguration: config
+            serverConfiguration: config,
+            tailnetConfiguration: nil
         )
 
         do {
@@ -207,7 +209,8 @@ struct GitdIntegrationTests {
             password: "correct horse battery staple",
             repository: repository,
             gitDB: gitDB,
-            serverConfiguration: config
+            serverConfiguration: config,
+            tailnetConfiguration: nil
         )
 
         let beforePubCount = try repository

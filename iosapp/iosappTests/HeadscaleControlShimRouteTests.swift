@@ -141,7 +141,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
         try await shim.start()
@@ -178,7 +178,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
         try await shim.start()
@@ -211,7 +211,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
         try await shim.start()
@@ -233,7 +233,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
         try await shim.start()
@@ -251,7 +251,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
 
@@ -270,7 +270,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
         try await shim.start()
@@ -294,7 +294,7 @@ struct HeadscaleControlShimRouteTests {
         let shim = HeadscaleControlShim(
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
-            pinnedCA: try Self.deploymentCA(),
+            trust: .pinned(try Self.deploymentCA()),
             clientIdentity: try Self.deviceIdentity()
         )
 

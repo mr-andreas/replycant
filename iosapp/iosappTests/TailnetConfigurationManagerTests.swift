@@ -72,6 +72,21 @@ struct TailnetConfigurationManagerTests {
         #expect(TailnetConfiguration.gitdURL.hasSuffix(":\(TailnetConfiguration.gitdPort)"))
     }
 
+    // A recovery key records where the control plane is so a fresh phone can
+    // rejoin. The URL has to parse back to the same host and port, or the
+    // restored phone would dial somewhere else.
+    @Test func rebuildsTheHeadscaleURLItWasDerivedFrom() throws {
+        let standard = try TailnetConfigurationManager.from(payload: Self.payload())
+        #expect(standard.headscaleURL == "https://abc123.tunnel.replycant.com")
+        #expect(try TailnetConfigurationManager.from(headscaleURL: standard.headscaleURL) == standard)
+
+        let forwarded = try TailnetConfigurationManager.from(
+            payload: Self.payload(headscaleURL: "https://headscale.example.com:8443")
+        )
+        #expect(forwarded.headscaleURL == "https://headscale.example.com:8443")
+        #expect(try TailnetConfigurationManager.from(headscaleURL: forwarded.headscaleURL) == forwarded)
+    }
+
     @Test func reportsNoConfigurationBeforePairing() {
         let (manager, _) = Self.manager()
         #expect(manager.load() == nil)

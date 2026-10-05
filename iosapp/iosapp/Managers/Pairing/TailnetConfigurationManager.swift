@@ -43,6 +43,15 @@ struct TailnetConfiguration: Codable, Equatable, Sendable {
     static var gitdURL: String {
         "https://\(gitdHost):\(gitdPort)"
     }
+
+    /// The control plane in the URL form `from(headscaleURL:)` parses, so a
+    /// recovery key can hand a fresh phone the same coordinates. Always
+    /// `https`: the shim only speaks TLS to hsproxy.
+    var headscaleURL: String {
+        headscalePort == 443
+            ? "https://\(headscaleHost)"
+            : "https://\(headscaleHost):\(headscalePort)"
+    }
 }
 
 /// Persists the tailnet configuration across launches.

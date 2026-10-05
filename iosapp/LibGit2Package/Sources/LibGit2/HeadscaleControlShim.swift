@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import Security
@@ -82,9 +83,22 @@ public final class HeadscaleControlShim {
         }
     }
 
+    /// What the shim knows about the deployment CA before it connects.
+    public enum Trust {
+        /// The CA from onboarding, the normal case for a joined device.
+        case pinned(SecCertificate)
+        /// Only the CA's SHA-256 (DER, hex), as on a phone restoring from a
+        /// recovery key. Such a phone cannot fetch the CA anywhere first: the
+        /// discovery page is loopback-only and gitd sits behind the tailnet.
+        /// hsproxy therefore sends the CA after its leaf, and the one whose
+        /// hash matches becomes the anchor.
+        case caSHA256(String)
+    }
+
     private let upstreamHost: String
     private let upstreamPort: UInt16
-    private let pinnedCA: SecCertificate
+    private let trust: Trust
+    private var verifiedCAStorage: SecCertificate?
     private let clientIdentity: SecIdentity
     private let queue: DispatchQueue
     private let logger: ((String) -> Void)?
@@ -99,21 +113,24 @@ public final class HeadscaleControlShim {
     ///   - upstreamHost: hsproxy's hostname. Also the name TLS is verified
     ///     against, so it must be the name the certificate was issued for and
     ///     not an address.
-    ///   - pinnedCA: the deployment CA from onboarding. The only anchor trusted
-    ///     for this connection; the system trust store is not consulted.
+    ///   - trust: the deployment CA, or its hash. The only anchor trusted for
+    ///     this connection; the system trust store is not consulted.
     ///   - clientIdentity: the device identity. hsproxy authorizes by public
     ///     key against the deployment's authorized-key list, so this is the
     ///     same identity used for gitd and revocation reaches both at once.
     public init(
         upstreamHost: String,
         upstreamPort: UInt16,
-        pinnedCA: SecCertificate,
+        trust: Trust,
         clientIdentity: SecIdentity,
         logger: ((String) -> Void)? = nil
     ) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
-        self.pinnedCA = pinnedCA
+        self.trust = trust
+        if case .pinned(let ca) = trust {
+            self.verifiedCAStorage = ca
+        }
         self.clientIdentity = clientIdentity
         self.queue = DispatchQueue(label: "com.replycant.headscale-shim")
         self.logger = logger
@@ -476,12 +493,22 @@ public final class HeadscaleControlShim {
             sec_protocol_options_set_local_identity(security, identity)
         }
 
-        let pinnedCA = self.pinnedCA
+        let configuredTrust = self.trust
         sec_protocol_options_set_verify_block(
             security,
-            { _, trustRef, complete in
+            { [weak self] _, trustRef, complete in
                 let trust = sec_trust_copy_ref(trustRef).takeRetainedValue()
-                complete(Self.evaluate(trust: trust, pinnedCA: pinnedCA))
+                switch configuredTrust {
+                case .pinned(let ca):
+                    complete(Self.evaluate(trust: trust, pinnedCA: ca))
+                case .caSHA256(let hash):
+                    guard let ca = Self.evaluate(trust: trust, caSHA256: hash) else {
+                        complete(false)
+                        return
+                    }
+                    self?.recordVerifiedCA(ca)
+                    complete(true)
+                }
             },
             queue
         )
@@ -538,5 +565,38 @@ public final class HeadscaleControlShim {
         }
         var error: CFError?
         return SecTrustEvaluateWithError(trust, &error)
+    }
+
+    /// Finds the CA a recovery key names in the presented chain and verifies
+    /// the leaf against it, returning that CA so the app can pin it from then
+    /// on. The hash is what makes this safe: anyone can send a CA in their
+    /// chain, but only the deployment's has this digest.
+    public static func evaluate(trust: SecTrust, caSHA256: String) -> SecCertificate? {
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let ca = chain.first(where: {
+                  sha256Hex(SecCertificateCopyData($0) as Data)
+                      .caseInsensitiveCompare(caSHA256) == .orderedSame
+              }) else {
+            return nil
+        }
+        return evaluate(trust: trust, pinnedCA: ca) ? ca : nil
+    }
+
+    /// The CA connections are anchored to: the pinned one, or once a
+    /// handshake has succeeded, the one picked from hsproxy's chain by hash.
+    public var verifiedCA: SecCertificate? {
+        lock.lock()
+        defer { lock.unlock() }
+        return verifiedCAStorage
+    }
+
+    private func recordVerifiedCA(_ ca: SecCertificate) {
+        lock.lock()
+        verifiedCAStorage = ca
+        lock.unlock()
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

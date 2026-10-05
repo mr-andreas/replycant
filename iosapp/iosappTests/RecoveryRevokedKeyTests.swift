@@ -66,6 +66,26 @@ struct RecoveryRevokedKeyTests {
         #expect(!(forbidden is RecoveryKeyManager.Error))
     }
 
+    // On a tailnet deployment a deleted recovery key is refused one step
+    // earlier, by hsproxy declining to mint a tailnet key. The chain was
+    // already verified against the bundle's CA hash by then, so a 403 there
+    // means the same thing as gitd's 401.
+    @Test func mapRecoveryAuthErrorRewritesARefusedTailnetKey() {
+        let refused = RecoveryKeyManager.mapRecoveryAuthError(
+            HeadscaleControlShim.ShimError.keyRefused(403)
+        )
+        if case RecoveryKeyManager.Error.recoveryKeyNotAuthorized = refused {
+            // Expected mapping.
+        } else {
+            Issue.record("expected recoveryKeyNotAuthorized, got \(refused)")
+        }
+
+        let unavailable = RecoveryKeyManager.mapRecoveryAuthError(
+            HeadscaleControlShim.ShimError.keyRefused(502)
+        )
+        #expect(!(unavailable is RecoveryKeyManager.Error))
+    }
+
     // Keeps the rejected-key screen title and explanation stable so users
     // see why retrying the same deleted key cannot succeed.
     @Test func recoveryWizardKeyRejectedCopy() {

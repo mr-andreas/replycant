@@ -12,7 +12,7 @@
 
 ### Features
 
-- reach your library from anywhere without forwarding a router port or running dynamic dns. devices join a private network with the server, can reach the server but not each other, media travels directly between them where possible, and the hosted services that make the introduction cannot read any of it. membership follows the device keys in the library: removing a device's key takes it off the network right away, and the server can lose its network database (delete `headscale/lib` and run `docker compose up`) without anyone pairing again
+- reach your library from anywhere without forwarding a router port or running dynamic dns. devices join a private network with the server, can reach the server but not each other, media travels directly between them where possible, and the hosted services that make the introduction cannot read any of it. membership follows the device keys in the library: removing a device's key takes it off the network right away, and the server can lose its network database (delete `headscale/lib` and run `docker compose up`) without anyone pairing again. a recovery key restores the library onto a fresh phone over the same network
 
 #### iOS app
 

@@ -71,53 +71,38 @@ struct TailnetReloginTests {
         #expect(!signal.consume())
     }
 
-    // A node without a key that headscale does not know sits in NeedsLogin and
-    // never finishes coming up. Winning that race is what triggers minting.
-    @Test func aNodeThatNeedsLoginIsAbandonedForAFreshKey() async throws {
-        let abandoned = Flag()
-        let outcome = try await TailnetManager.upOrNeedsLogin(
-            up: {
-                // Returns only once abandoned, like tailscale_up after close.
-                while !(await abandoned.isSet) {
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                throw CancellationError()
-            },
-            needsLogin: { true },
-            abandon: { await abandoned.set() },
-            pollInterval: .milliseconds(10)
-        )
-
-        #expect(outcome == .needsLogin)
-        #expect(await abandoned.isSet, "the stuck node must be closed so up() returns")
-    }
-
-    // A node headscale still knows comes up on its own, and must not cost a key.
-    @Test func aNodeThatComesUpIsKept() async throws {
-        let abandoned = Flag()
-        let outcome = try await TailnetManager.upOrNeedsLogin(
-            up: {},
-            needsLogin: { false },
-            abandon: { await abandoned.set() },
-            pollInterval: .milliseconds(10)
-        )
-
-        #expect(outcome == .running)
-        #expect(!(await abandoned.isSet))
-    }
-
-    // A genuine failure to come up is not a login problem and must reach the
-    // caller rather than being papered over with a key.
-    @Test func aFailedUpIsReported() async {
-        struct Broken: Error {}
-        await #expect(throws: Broken.self) {
-            _ = try await TailnetManager.upOrNeedsLogin(
-                up: { throw Broken() },
-                needsLogin: { false },
-                abandon: {},
-                pollInterval: .milliseconds(10)
-            )
+    private static func stateDirectory(_ state: String?) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailnet-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let state {
+            try Data(state.utf8).write(to: directory.appendingPathComponent("tailscaled.state"))
         }
+        return directory
+    }
+
+    // A node that has never logged in must be started with a key. Started
+    // without one it sits in NeedsLogin inside tailscale_up, which libtailscale
+    // can neither cancel nor close, so the join would hang for good.
+    @Test func aFreshStateDirectoryIsAFirstLogin() throws {
+        #expect(TailnetManager.isFirstLogin(stateDirectory: try Self.stateDirectory(nil)))
+    }
+
+    // An earlier attempt that never logged in leaves a machine key behind.
+    // That is still a first login; treating it as a rejoin is what made a
+    // retried join hang the same way.
+    @Test func aMachineKeyWithoutAProfileIsAFirstLogin() throws {
+        let directory = try Self.stateDirectory(#"{"_machinekey":"AAAA"}"#)
+        #expect(TailnetManager.isFirstLogin(stateDirectory: directory))
+    }
+
+    // A node that has logged in rejoins on its own, and must not cost a key
+    // on every launch.
+    @Test func aLoggedInNodeIsNotAFirstLogin() throws {
+        let directory = try Self.stateDirectory(
+            #"{"_machinekey":"AAAA","_current-profile":"BBBB","_profiles":"CCCC"}"#
+        )
+        #expect(!TailnetManager.isFirstLogin(stateDirectory: directory))
     }
 
     // NeedsLogin is read from the node's own status, which is the structured
@@ -135,10 +120,4 @@ struct TailnetReloginTests {
         )
         #expect(!running.needsLogin)
     }
-}
-
-// A one-way latch shared between the test and the closures it hands out.
-private actor Flag {
-    private(set) var isSet = false
-    func set() { isSet = true }
 }

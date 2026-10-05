@@ -137,6 +137,36 @@ actor TailnetBootstrap {
         }
     }
 
+    /// Joins a phone restoring from a recovery key, which knows the control
+    /// plane and the CA's hash but holds neither the CA nor an authorized
+    /// device identity yet.
+    ///
+    /// Joins as the recovery identity, which hsproxy authorizes like any
+    /// device, and returns the CA picked from hsproxy's chain so the caller
+    /// can pin it. Persists nothing: the caller rejoins with the device
+    /// identity once its key is in `pubkeys/`, because hsproxy checks the
+    /// identity on every control connection and the recovery key is usually
+    /// revoked straight after.
+    func joinForRecovery(
+        headscaleURL: String,
+        caSHA256: String,
+        clientIdentity: SecIdentity,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> SecCertificate {
+        let configuration = try TailnetConfigurationManager.from(headscaleURL: headscaleURL)
+        try await join(
+            configuration: configuration,
+            preauthKey: nil,
+            trust: .caSHA256(caSHA256),
+            identity: clientIdentity,
+            onProgress: onProgress
+        )
+        guard let ca = await manager?.verifiedCA else {
+            throw BootstrapError.missingPinnedCA
+        }
+        return ca
+    }
+
     private func join(
         configuration: TailnetConfiguration,
         preauthKey: String?,
@@ -148,7 +178,22 @@ actor TailnetBootstrap {
         guard let identity = ClientIdentityManager.shared.loadSecIdentity() else {
             throw BootstrapError.missingDeviceIdentity
         }
+        try await join(
+            configuration: configuration,
+            preauthKey: preauthKey,
+            trust: .pinned(pinnedCA),
+            identity: identity,
+            onProgress: onProgress
+        )
+    }
 
+    private func join(
+        configuration: TailnetConfiguration,
+        preauthKey: String?,
+        trust: HeadscaleControlShim.Trust,
+        identity: SecIdentity,
+        onProgress: (@Sendable (String) -> Void)?
+    ) async throws {
         let manager = self.manager ?? TailnetManager(
             stateDirectory: Self.stateDirectory,
             logger: { message in log(message, context: "Tailnet") }
@@ -165,7 +210,7 @@ actor TailnetBootstrap {
                 // rather than showing an unrelated second name.
                 hostName: DeviceIdentifierManager.shared.deviceSpaceIdentifier
             ),
-            pinnedCA: pinnedCA,
+            trust: trust,
             clientIdentity: identity,
             onProgress: onProgress
         )

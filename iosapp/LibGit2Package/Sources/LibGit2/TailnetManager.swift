@@ -113,6 +113,12 @@ public actor TailnetManager: TailnetNodeProviding {
 
     public private(set) var isJoined = false
 
+    /// The CA the control plane verified against. After a join that only knew
+    /// the CA's hash, this is how the caller learns the CA to pin.
+    public var verifiedCA: SecCertificate? {
+        shim?.verifiedCA
+    }
+
     /// Brings the tailnet up, replacing any node already running.
     ///
     /// Replacing rather than refusing matters because a user can re-pair a
@@ -123,7 +129,7 @@ public actor TailnetManager: TailnetNodeProviding {
     /// requests immediately afterwards instead of racing the join.
     public func join(
         _ request: TailnetJoinRequest,
-        pinnedCA: SecCertificate,
+        trust: HeadscaleControlShim.Trust,
         clientIdentity: SecIdentity,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws {
@@ -135,7 +141,7 @@ public actor TailnetManager: TailnetNodeProviding {
         let shim = HeadscaleControlShim(
             upstreamHost: request.headscaleHost,
             upstreamPort: request.headscalePort,
-            pinnedCA: pinnedCA,
+            trust: trust,
             clientIdentity: clientIdentity,
             logger: logger
         )
@@ -203,12 +209,14 @@ public actor TailnetManager: TailnetNodeProviding {
         return try TailscaleNode(config: configuration, logger: sink)
     }
 
-    /// Brings a node up, minting a key if headscale does not know it.
+    /// Brings a node up, minting a key first if it has never logged in.
     ///
-    /// A paired device starts with no key. If headscale still has its node,
-    /// that is enough. If headscale lost its state, or never saw this node,
-    /// `up()` would wait in NeedsLogin forever, so that state is watched for
-    /// and answered with a key from hsproxy.
+    /// A paired or recovering device starts with no key. The key has to be
+    /// in place before the node starts: started without one, the node waits
+    /// in NeedsLogin inside `tailscale_up`, which libtailscale can neither
+    /// cancel nor close, so the join would never return. A node that has
+    /// logged in before needs no key; if headscale has since forgotten it,
+    /// it keeps reporting Running and the relogin watch takes over.
     private func bringUp(
         _ request: TailnetJoinRequest,
         controlURL: String,
@@ -219,20 +227,21 @@ public actor TailnetManager: TailnetNodeProviding {
             return try await upWithKey(request, controlURL: controlURL, key: key)
         }
 
-        let node = try makeNode(request, controlURL: controlURL, authKey: nil)
-        let outcome = try await Self.upOrNeedsLogin(
-            up: { try await node.up() },
-            needsLogin: { await Self.needsLogin(node) },
-            abandon: { try? await node.close() }
-        )
-        if outcome == .running {
-            return node
+        if Self.isFirstLogin(stateDirectory: stateDirectory) {
+            logger?("tailnet: first login for this node; minting a key")
+            onProgress?("Asking your server to let this device in...")
+            let key = try await shim.mintPreauthKey()
+            return try await upWithKey(request, controlURL: controlURL, key: key)
         }
 
-        logger?("tailnet: headscale does not know this node; minting a key")
-        onProgress?("Asking your server to let this device in...")
-        let key = try await shim.mintPreauthKey()
-        return try await upWithKey(request, controlURL: controlURL, key: key)
+        let node = try makeNode(request, controlURL: controlURL, authKey: nil)
+        do {
+            try await node.up()
+        } catch {
+            try? await node.close()
+            throw error
+        }
+        return node
     }
 
     private func upWithKey(
@@ -250,60 +259,16 @@ public actor TailnetManager: TailnetNodeProviding {
         return node
     }
 
-    /// What became of a node started without a key.
-    enum UpOutcome: Equatable {
-        case running
-        case needsLogin
-    }
-
-    /// Waits for `up` unless the node turns out to need a login first.
-    ///
-    /// `tailscale_up` blocks until the node is Running and offers no way to
-    /// learn that it is stuck, so the node's status is polled alongside it.
-    /// On NeedsLogin the node is abandoned, which is what makes `up` return,
-    /// and the caller restarts it with a key. Any other failure of `up` is
-    /// passed on unchanged.
-    static func upOrNeedsLogin(
-        up: @escaping @Sendable () async throws -> Void,
-        needsLogin: @escaping @Sendable () async -> Bool,
-        abandon: @escaping @Sendable () async -> Void,
-        pollInterval: Duration = .seconds(1)
-    ) async throws -> UpOutcome {
-        try await withThrowingTaskGroup(of: UpOutcome?.self) { group in
-            group.addTask {
-                try await up()
-                return .running
-            }
-            group.addTask {
-                while !Task.isCancelled {
-                    if await needsLogin() {
-                        return .needsLogin
-                    }
-                    try? await Task.sleep(for: pollInterval)
-                }
-                return nil
-            }
-
-            switch try await group.next() ?? nil {
-            case .running:
-                group.cancelAll()
-                return .running
-            case .needsLogin:
-                await abandon()
-                group.cancelAll()
-                // The abandoned up() is expected to fail; only its return
-                // matters, so the node is fully closed before a new one opens
-                // the same state directory.
-                while true {
-                    do {
-                        guard try await group.next() != nil else { break }
-                    } catch {}
-                }
-                return .needsLogin
-            case nil:
-                throw CancellationError()
-            }
+    /// Whether the node in `stateDirectory` has never logged in, read from the
+    /// profile tsnet records once it has. Unreadable state counts as a first
+    /// login: an unneeded key is harmless, a missing one hangs the join.
+    static func isFirstLogin(stateDirectory: URL) -> Bool {
+        let url = stateDirectory.appendingPathComponent("tailscaled.state")
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return true
         }
+        return state["_current-profile"] == nil
     }
 
     private static func needsLogin(_ node: TailscaleNode) async -> Bool {

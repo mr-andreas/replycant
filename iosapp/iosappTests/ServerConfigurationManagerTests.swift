@@ -72,6 +72,20 @@ struct ServerConfigurationManagerTests {
         #expect(ServerConfigurationManager.certificateHash(fromPEM: spacedPem) == expected)
     }
 
+    // A phone restoring onto a tailnet learns the CA from hsproxy's TLS chain
+    // as DER and stores it as PEM. It has to hash back to what the recovery
+    // key pinned, or every later connection would be checked against a
+    // different CA than the one that was verified.
+    @Test func testPEMFromDERHashesToTheSameCertificate() {
+        let der = Data((0..<200).map { UInt8($0) })
+        let pem = ServerConfigurationManager.pemString(fromDER: der)
+
+        #expect(pem.hasPrefix("-----BEGIN CERTIFICATE-----\n"))
+        #expect(pem.split(separator: "\n").allSatisfy { $0.count <= 64 })
+        #expect(ServerConfigurationManager.certificateHash(fromPEM: pem)
+            == SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined())
+    }
+
     // Confirms LFS endpoint derivation always keeps git origin and rewrites path to /lfs.
     @Test func testDeriveLFSURLFromGitURL() {
         #expect(

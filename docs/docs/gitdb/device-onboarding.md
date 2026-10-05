@@ -246,13 +246,21 @@ starts from a recovery bundle instead of a pairing QR from another device.
 ### Recovery sequence
 
 1. User provides/scans recovery bundle and enters bundle password.
-2. App decrypts bundle and discovers server config from `discovery_url`.
-3. App verifies discovered CA hash against pinned `ca_sha256`.
-4. App authenticates once with temporary recovery identity.
-5. App clones repository, registers a new normal device key, and re-wraps KEK
+2. App decrypts bundle and learns the deployment's CA from the bundle's
+   locator, accepting it only if its hash matches the pinned `ca_sha256`:
+   - LAN deployments: `discovery_url`, the CA page next to gitd.
+   - Tailnet deployments: `headscale_url`. The CA page is loopback-only and
+     gitd is tailnet-only, so hsproxy is the only reachable endpoint. The
+     app joins the tailnet as the recovery identity, which hsproxy
+     authorizes like any device. hsproxy sends the CA after its leaf, and
+     the app takes the CA from that chain.
+3. App authenticates once with temporary recovery identity.
+4. App clones repository, registers a new normal device key, and re-wraps KEK
    epochs for the new device age key.
-6. App switches back to normal device identity and deletes temporary recovery
-   identity artifacts.
+5. App switches back to normal device identity and deletes temporary recovery
+   identity artifacts. On a tailnet, it rejoins as the device, because hsproxy
+   checks the identity on every control connection and the recovery key is
+   usually revoked next.
 
 Recovery is rejected if the app is already configured locally; users must
 reinstall first to avoid mixing recovery with an existing identity context.

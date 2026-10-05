@@ -197,6 +197,7 @@ EOF
     --upstream="127.0.0.1:${headscale_port}" \
     --cert=/tmp/pki/tailnet.crt \
     --key=/tmp/pki/tailnet.key \
+    --ca=/tmp/pki/ca.crt \
     --cache-ttl=1s \
     --health-addr=127.0.0.1:18086 \
     --headscale-api-url="http://127.0.0.1:${headscale_port}" \

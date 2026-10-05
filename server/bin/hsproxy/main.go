@@ -9,10 +9,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -32,6 +35,10 @@ type CLI struct {
 	Upstream string        `required:"" help:"Headscale plain-HTTP address to relay to (e.g. headscale:8080)"`
 	Cert     string        `required:"" help:"Path to the server TLS certificate issued by the replycant CA" type:"path"`
 	Key      string        `required:"" help:"Path to the server TLS private key" type:"path"`
+	// Sent after the leaf in every handshake. A phone restoring from a
+	// recovery key holds only the CA's hash and can reach nothing but
+	// hsproxy, so this is where it obtains the CA it checks against it.
+	CA       string        `required:"" help:"Path to the replycant CA certificate, sent in the TLS chain" type:"path"`
 	CacheTTL time.Duration `default:"5m" help:"Cache TTL for authorized keys"`
 
 	// Separate from Addr because readiness probes have no device identity to
@@ -77,6 +84,39 @@ func (c *CLI) minter() (hsproxy.Minter, error) {
 	})
 }
 
+// Loads hsproxy's certificate with the CA appended to its chain.
+//
+// Fails when the CA did not sign the leaf: a recovering phone would accept the
+// CA by its hash and then be unable to verify hsproxy, which looks like a
+// network fault rather than a misconfigured deployment.
+func loadServerCertificate(certPath, keyPath, caPath string) (tls.Certificate, error) {
+	serverCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("read the CA certificate: %w", err)
+	}
+	block, _ := pem.Decode(caPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return tls.Certificate{}, fmt.Errorf("%s holds no PEM certificate", caPath)
+	}
+	ca, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parse the CA certificate: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(serverCert.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parse the server certificate: %w", err)
+	}
+	if err := leaf.CheckSignatureFrom(ca); err != nil {
+		return tls.Certificate{}, fmt.Errorf("the server certificate was not issued by %s: %w", caPath, err)
+	}
+	serverCert.Certificate = append(serverCert.Certificate[:1], ca.Raw)
+	return serverCert, nil
+}
+
 func main() {
 	var cli CLI
 	ctx := kong.Parse(&cli,
@@ -87,7 +127,7 @@ func main() {
 
 	log.Printf("Loaded CLI configuration: %+v", cli)
 
-	serverCert, err := tls.LoadX509KeyPair(cli.Cert, cli.Key)
+	serverCert, err := loadServerCertificate(cli.Cert, cli.Key, cli.CA)
 	ctx.FatalIfErrorf(err)
 
 	minter, err := cli.minter()

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 import Testing
@@ -114,5 +115,57 @@ struct HeadscaleControlShimTrustTests {
         ])
 
         #expect(HeadscaleControlShim.evaluate(trust: trust, pinnedCA: ca))
+    }
+
+    private static func sha256Hex(_ base64DER: String) throws -> String {
+        let der = try #require(Data(base64Encoded: base64DER))
+        return SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+    }
+
+    // A phone restoring from a recovery key holds only the CA's hash, and
+    // hsproxy sends the CA after its leaf. The CA whose hash matches is the
+    // one to trust, and the shim reports it so the app can pin it.
+    @Test func picksTheCAMatchingTheRecoveryHashFromThePresentedChain() throws {
+        let ca = try Self.certificate(Self.deploymentCADER)
+        let trust = try Self.presentedTrust([
+            try Self.certificate(Self.hsproxyLeafTenYearDER),
+            ca,
+        ])
+
+        let verified = HeadscaleControlShim.evaluate(
+            trust: trust,
+            caSHA256: try Self.sha256Hex(Self.deploymentCADER).uppercased()
+        )
+
+        #expect(verified.map { SecCertificateCopyData($0) as Data }
+            == (SecCertificateCopyData(ca) as Data))
+    }
+
+    // An impostor can present any CA it likes in its chain. Only the one the
+    // recovery key names may be trusted, however valid the impostor's chain.
+    @Test func rejectsAChainWhoseCADoesNotMatchTheRecoveryHash() throws {
+        let trust = try Self.presentedTrust([
+            try Self.certificate(Self.foreignLeafDER),
+            try Self.certificate(Self.foreignCADER),
+        ])
+
+        #expect(HeadscaleControlShim.evaluate(
+            trust: trust,
+            caSHA256: try Self.sha256Hex(Self.deploymentCADER)
+        ) == nil)
+    }
+
+    // The deployment CA is public, so an impostor can include it too. A match
+    // by hash must still be followed by the leaf actually verifying against it.
+    @Test func rejectsTheMatchingCAAlongsideALeafItDidNotIssue() throws {
+        let trust = try Self.presentedTrust([
+            try Self.certificate(Self.foreignLeafDER),
+            try Self.certificate(Self.deploymentCADER),
+        ])
+
+        #expect(HeadscaleControlShim.evaluate(
+            trust: trust,
+            caSHA256: try Self.sha256Hex(Self.deploymentCADER)
+        ) == nil)
     }
 }

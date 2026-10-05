@@ -236,6 +236,18 @@ func TestHsproxyCanMintDeviceKeys(t *testing.T) {
 	}
 }
 
+// A phone restoring from a recovery key carries only the CA's hash and can
+// reach nothing but hsproxy, so hsproxy has to send the CA in its chain.
+func TestHsproxyServesTheCA(t *testing.T) {
+	body := composeService(t, "hsproxy")
+	if !regexp.MustCompile(`--ca=/data/ca\.crt`).MatchString(body) {
+		t.Error("hsproxy must be started with --ca=/data/ca.crt")
+	}
+	if !regexp.MustCompile(`gitd/ca\.crt:/data/ca\.crt:ro`).MatchString(body) {
+		t.Error("hsproxy must mount the deployment CA")
+	}
+}
+
 // The noise key is the control plane's identity, and every client pins it.
 // Keeping it out of the database directory is what lets an operator delete
 // that directory without every node rejecting the restarted headscale.
