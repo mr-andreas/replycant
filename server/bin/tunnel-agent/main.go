@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -27,7 +28,7 @@ type CLI struct {
 	Key  string `required:"" help:"Path to the hsproxy TLS private key" type:"path"`
 	CA   string `required:"" help:"Path to the deployment CA certificate; the relay derives the tunnel subdomain from it" type:"path"`
 
-	RelayCA         string `help:"Optional path to a CA pinning the relay's own certificate; defaults to the system roots. Required for the hosted relay, whose certificate names no shard host" type:"path"`
+	RelayCA         string `help:"Optional path to a certificate pinning a self-hosted relay; defaults to the hosted relay's certificate built into this binary" type:"path"`
 	RelayServerName string `help:"Overrides the SNI presented to the relay; defaults to the relay hostname"`
 
 	MinBackoff time.Duration `default:"1s" help:"Initial delay before retrying a failed registration"`
@@ -44,13 +45,20 @@ func main() {
 
 	log.Printf("Loaded CLI configuration: %+v", cli)
 
+	var relayCAPEM []byte
+	if cli.RelayCA != "" {
+		var err error
+		relayCAPEM, err = os.ReadFile(cli.RelayCA)
+		ctx.FatalIfErrorf(err)
+	}
+
 	agent, err := tunnelagent.New(tunnelagent.Config{
 		RelayAddr:       cli.RelayAddr,
 		UpstreamAddr:    cli.UpstreamAddr,
 		CertPath:        cli.Cert,
 		KeyPath:         cli.Key,
 		CAPath:          cli.CA,
-		RelayCAPath:     cli.RelayCA,
+		RelayCAPEM:      relayCAPEM,
 		RelayServerName: cli.RelayServerName,
 		MinBackoff:      cli.MinBackoff,
 		MaxBackoff:      cli.MaxBackoff,

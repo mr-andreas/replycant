@@ -193,12 +193,15 @@ func startFakeRelay(t *testing.T) *fakeRelay {
 	return relay
 }
 
+// Pins the fake relay's own certificate, the way a deployment pins the hosted
+// relay, so tests exercise the same verification path production uses.
 func (r *fakeRelay) agentConfig(credentials *testCredentials) Config {
 	return Config{
 		RelayAddr:       r.addr,
 		CertPath:        credentials.certPath,
 		KeyPath:         credentials.keyPath,
 		CAPath:          credentials.caPath,
+		RelayCAPEM:      r.certPEM,
 		RelayServerName: r.serverName,
 		MinBackoff:      10 * time.Millisecond,
 		MaxBackoff:      50 * time.Millisecond,
@@ -219,10 +222,6 @@ func TestAgentPresentsLeafAndCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// The fake relay uses a self-signed certificate; skip pinning here since
-	// TestAgentPinsRelayCA covers that path explicitly.
-	agent.tlsConfig.InsecureSkipVerify = true
-	agent.tlsConfig.RootCAs = nil
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -286,8 +285,6 @@ func TestAgentSplicesRelayedStreamToUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	agent.tlsConfig.InsecureSkipVerify = true
-	agent.tlsConfig.RootCAs = nil
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -343,8 +340,6 @@ func TestAgentReconnectsAfterTheRelayDropsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	agent.tlsConfig.InsecureSkipVerify = true
-	agent.tlsConfig.RootCAs = nil
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -419,12 +414,8 @@ func TestPinnedRelayIgnoresShardHostname(t *testing.T) {
 	credentials := newTestCredentials(t)
 	relay := startFakeRelay(t)
 
-	pinPath := filepath.Join(credentials.dir, "relay.crt")
-	writeFile(t, pinPath, relay.certPEM)
-
 	config := relay.agentConfig(credentials)
 	config.UpstreamAddr = "127.0.0.1:1"
-	config.RelayCAPath = pinPath
 	config.RelayServerName = "s01.tunnel.replycant.com"
 
 	agent, err := New(config)
@@ -446,20 +437,18 @@ func TestPinnedRelayIgnoresShardHostname(t *testing.T) {
 	}
 }
 
-// Pinning the relay is optional but must work when configured, so a
-// compromised public CA cannot redirect a deployment's registrations.
+// The pin is the only check on the relay's identity, so a relay presenting
+// any other certificate must never get a registration.
 func TestAgentPinsRelayCA(t *testing.T) {
 	credentials := newTestCredentials(t)
 
 	// Pin an unrelated CA, so the handshake with the real relay must fail.
 	unrelated := newTestCredentials(t)
-	relayCAPath := filepath.Join(credentials.dir, "relay-ca.crt")
-	writeFile(t, relayCAPath, unrelated.caPEM)
 
 	relay := startFakeRelay(t)
 	config := relay.agentConfig(credentials)
 	config.UpstreamAddr = "127.0.0.1:1"
-	config.RelayCAPath = relayCAPath
+	config.RelayCAPEM = unrelated.caPEM
 
 	agent, err := New(config)
 	if err != nil {
@@ -477,6 +466,43 @@ func TestAgentPinsRelayCA(t *testing.T) {
 	case chain := <-relay.chains:
 		t.Fatalf("the agent must not complete a handshake against an unpinned relay, got %d certs", len(chain))
 	default:
+	}
+}
+
+// The release compose file ships without the repository, so the hosted
+// relay's pin has to travel inside the binary. An agent configured with no
+// pin must trust exactly that certificate, not the system roots and not
+// whatever relay it happens to reach.
+func TestAgentPinsTheHostedRelayByDefault(t *testing.T) {
+	credentials := newTestCredentials(t)
+	relay := startFakeRelay(t)
+
+	config := relay.agentConfig(credentials)
+	config.UpstreamAddr = "127.0.0.1:1"
+	config.RelayCAPEM = nil
+	agent, err := New(config)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	verify := agent.tlsConfig.VerifyPeerCertificate
+	if verify == nil {
+		t.Fatal("an agent without an explicit pin must still pin the hosted relay")
+	}
+
+	hostedDER, err := firstCertificateDER(HostedRelayCertificate)
+	if err != nil {
+		t.Fatalf("parse the embedded hosted relay certificate: %v", err)
+	}
+	if err := verify([][]byte{hostedDER}, nil); err != nil {
+		t.Fatalf("the default pin must accept the hosted relay certificate: %v", err)
+	}
+
+	otherDER, err := firstCertificateDER(relay.certPEM)
+	if err != nil {
+		t.Fatalf("parse the fake relay certificate: %v", err)
+	}
+	if err := verify([][]byte{otherDER}, nil); err == nil {
+		t.Fatal("the default pin must reject a relay that is not the hosted one")
 	}
 }
 

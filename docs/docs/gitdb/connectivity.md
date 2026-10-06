@@ -243,7 +243,8 @@ secret to distribute.
 The registration listener presents a self-signed certificate that is not
 issued for any shard hostname. Agents pin that certificate rather than
 checking `sNN.tunnel.replycant.com` against the public PKI; the pin is what
-stops a random TLS endpoint from collecting registrations.
+stops a random TLS endpoint from collecting registrations. The pin is built
+into the `tunnel-agent` binary, so rotating it means shipping a new image.
 
 Device traffic arrives on a separate listener. The relay peeks the TLS
 ClientHello, reads the SNI, rejects anything that is not a handshake or whose

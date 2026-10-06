@@ -499,7 +499,6 @@ services:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.crt:/data/hsproxy.crt:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/hsproxy.key:/data/hsproxy.key:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/ca.crt:/data/ca.crt:ro
-      - ./server/tunnelagent/hosted-relay.crt:/data/relay-ca.crt:ro
     # Home routers often cache NXDOMAIN for names they looked up before the
     # shard records existed. Docker uses that resolver, so the agent would
     # never reach a relay that public DNS already knows.
@@ -520,8 +519,7 @@ services:
           --upstream-addr=hsproxy:8443 \
           --cert=/data/hsproxy.crt \
           --key=/data/hsproxy.key \
-          --ca=/data/ca.crt \
-          --relay-ca=/data/relay-ca.crt
+          --ca=/data/ca.crt
     restart: unless-stopped
 
   gitd:

@@ -193,14 +193,24 @@ jobs:
           set -euo pipefail
           mkdir -p release
           cp docker-compose.yaml release/docker-compose.yaml
+          # Matched by image rather than by service name, because several
+          # services (hsproxy, tunnel-agent) run the gitd image.
           yq eval '
-            .services.gitd.image = strenv(REPLYCANT_GITD_IMAGE) |
-            .services.decryptd.image = strenv(REPLYCANT_DECRYPTD_IMAGE) |
-            .services.transcoded.image = strenv(REPLYCANT_TRANSCODED_IMAGE) |
-            del(.services.gitd.build) |
-            del(.services.decryptd.build) |
-            del(.services.transcoded.build)
+            (.services[] | select(.image == "${REPLYCANT_GITD_IMAGE:-gitd:local}")).image = strenv(REPLYCANT_GITD_IMAGE) |
+            (.services[] | select(.image == "${REPLYCANT_DECRYPTD_IMAGE:-decryptd:local}")).image = strenv(REPLYCANT_DECRYPTD_IMAGE) |
+            (.services[] | select(.image == "${REPLYCANT_TRANSCODED_IMAGE:-transcoded:local}")).image = strenv(REPLYCANT_TRANSCODED_IMAGE) |
+            del(.services[].build)
           ' -i release/docker-compose.yaml
+
+      # The file ships without the repository, so anything that still points
+      # at a local build or a repository file would fail on a user's machine.
+      - name: Check release docker-compose is self-contained
+        run: |
+          set -euo pipefail
+          if grep -nE ':local\}|^[[:space:]]+build:|^[[:space:]]+- \./' release/docker-compose.yaml; then
+            echo "release/docker-compose.yaml still depends on the source tree" >&2
+            exit 1
+          fi
 
       - name: Upload server release asset
         uses: actions/upload-artifact@v4

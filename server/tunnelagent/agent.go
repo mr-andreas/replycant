@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,12 @@ import (
 
 	"github.com/hashicorp/yamux"
 )
+
+// The hosted relay's self-signed registration certificate. Rotating it means
+// shipping a new image, which is also how every deployment learns of it.
+//
+//go:embed hosted-relay.crt
+var HostedRelayCertificate []byte
 
 const (
 	defaultDialTimeout   = 30 * time.Second
@@ -58,11 +65,10 @@ type Config struct {
 	// derive the label, and it is not used to verify the relay.
 	CAPath string
 
-	// Pins the relay's own certificate. Empty falls back to the system roots,
-	// for a self-hosted relay that already has a publicly trusted name.
-	// The hosted listener is a self-signed certificate that names no shard
-	// host, so the compose stack always sets this.
-	RelayCAPath string
+	// PEM pinning the relay's own certificate. Empty pins the hosted relay,
+	// so a stack started from the release compose file alone needs no
+	// certificate on disk. A self-hosted relay passes its own.
+	RelayCAPEM []byte
 
 	// Overrides the SNI presented to the relay. Empty derives it from
 	// RelayAddr.
@@ -155,22 +161,20 @@ func New(config Config) (*Agent, error) {
 		ServerName:   config.RelayServerName,
 		MinVersion:   tls.VersionTLS12,
 	}
-	if config.RelayCAPath != "" {
-		relayCAPEM, err := os.ReadFile(config.RelayCAPath)
-		if err != nil {
-			return nil, fmt.Errorf("read relay CA certificate: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(relayCAPEM) {
-			return nil, fmt.Errorf("no certificates found in relay CA file %q", config.RelayCAPath)
-		}
-		// One certificate serves every shard hostname and does not name
-		// them. Go still requires a ServerName unless verification is
-		// skipped, so the pin is checked here without a hostname.
-		tlsConfig.RootCAs = pool
-		tlsConfig.InsecureSkipVerify = true
-		tlsConfig.VerifyPeerCertificate = pinRelayCertificate(pool)
+	relayCAPEM := config.RelayCAPEM
+	if len(relayCAPEM) == 0 {
+		relayCAPEM = HostedRelayCertificate
 	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(relayCAPEM) {
+		return nil, errors.New("tunnelagent: no certificates found in the relay pin")
+	}
+	// One certificate serves every shard hostname and does not name them.
+	// Go still requires a ServerName unless verification is skipped, so the
+	// pin is checked here without a hostname.
+	tlsConfig.RootCAs = pool
+	tlsConfig.InsecureSkipVerify = true
+	tlsConfig.VerifyPeerCertificate = pinRelayCertificate(pool)
 
 	return &Agent{config: config, tlsConfig: tlsConfig}, nil
 }

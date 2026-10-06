@@ -5,7 +5,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+const releaseWorkflowPath = "../../.github/workflows/release.yml"
 
 // hsproxy is reached by two different names: the tunnel hostname when a device
 // is bootstrapping, and gitd's MagicDNS name once it is on the tailnet and
@@ -90,20 +94,62 @@ func TestTunnelAgentRegistersWithTheDerivedShard(t *testing.T) {
 	}
 }
 
-// The hosted registration listener serves a self-signed certificate that
-// names no shard host. Without this pin the agent verifies sNN against
-// the system roots and every registration fails on the name check.
-func TestTunnelAgentPinsTheHostedRelayCertificate(t *testing.T) {
-	compose, err := os.ReadFile(composePath)
+// The services the release workflow can see, decoded rather than matched by
+// regex, because these tests reason about every service at once.
+type composeServices struct {
+	Services map[string]struct {
+		Image   string   `yaml:"image"`
+		Build   any      `yaml:"build"`
+		Volumes []string `yaml:"volumes"`
+	} `yaml:"services"`
+}
+
+func loadComposeServices(t *testing.T) composeServices {
+	t.Helper()
+	raw, err := os.ReadFile(composePath)
 	if err != nil {
 		t.Fatalf("read the compose file: %v", err)
 	}
-
-	if !regexp.MustCompile(`--relay-ca=/data/relay-ca\.crt`).Match(compose) {
-		t.Error("tunnel-agent must pin the hosted relay certificate")
+	var compose composeServices
+	if err := yaml.Unmarshal(raw, &compose); err != nil {
+		t.Fatalf("parse the compose file: %v", err)
 	}
-	if !regexp.MustCompile(`hosted-relay\.crt:/data/relay-ca\.crt`).Match(compose) {
-		t.Error("compose must mount the hosted relay pin into the agent")
+	return compose
+}
+
+// A release ships docker-compose.yaml on its own, without the repository.
+// A bind mount of a repository file resolves to nothing on a user's machine,
+// and Docker silently mounts an empty directory in its place, which is how
+// the tunnel agent once lost its relay pin.
+func TestComposeMountsNoRepositoryFiles(t *testing.T) {
+	for name, service := range loadComposeServices(t).Services {
+		for _, volume := range service.Volumes {
+			if strings.HasPrefix(volume, "./") {
+				t.Errorf("%s mounts %q from the repository, which a release does not ship", name, volume)
+			}
+		}
+	}
+}
+
+// The release workflow swaps each locally built image for its published one
+// by matching the image string. A built service whose image the workflow
+// does not name would keep its local tag and try to build from a source tree
+// the user does not have.
+func TestReleaseRewritesEveryBuiltImage(t *testing.T) {
+	workflow, err := os.ReadFile(releaseWorkflowPath)
+	if err != nil {
+		t.Fatalf("read the release workflow: %v", err)
+	}
+	for name, service := range loadComposeServices(t).Services {
+		if service.Build == nil {
+			continue
+		}
+		if !strings.Contains(string(workflow), `select(.image == "`+service.Image+`")`) {
+			t.Errorf("%s is built locally as %q, but the release workflow never rewrites that image", name, service.Image)
+		}
+	}
+	if !strings.Contains(string(workflow), "del(.services[].build)") {
+		t.Error("the release workflow must drop every build section")
 	}
 }
 
