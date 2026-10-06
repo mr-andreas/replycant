@@ -61,15 +61,14 @@ flowchart TD
 
 ## Setup and Identity Lifecycle
 
-The webapp now owns mTLS device identity in the browser instead of reading `device.key` and `device.crt` from server disk:
+The webapp owns mTLS device identity in the renderer instead of reading `device.key` and `device.crt` from server disk. gitd is reachable only over the tailnet, and only the Electron desktop app runs a tailnet node, so a plain browser tab shows a "desktop app required" screen instead of onboarding.
 
-1. On first visit, the app asks for the CA server URL.
-2. The browser discovers `/config.json` from the CA page (`http://127.0.0.1:8080`). Only a LAN `{ca, url}` payload is accepted. A tailnet server is refused, because the desktop cannot create a library: it pairs from a phone over the tailnet instead, and its proxy is then pointed at `https://gitd.replycant.internal:8443`.
-3. The browser configures the local proxy with that discovered CA and upstream URL. The proxy derives every backend service from the git origin: `{origin(url)}/lfs`, `/decryptd`, and `/transcoded`, since gitd fronts them all.
-4. The app asks for a device name. Plain browser tabs also require a password; the Electron desktop app does not when OS keyring encryption is available.
-5. The app generates a P-256 key pair, self-signed certificate, and age X25519 key in-browser.
-6. Private identity material is always AES-GCM encrypted before `localStorage` persistence. Electron wraps with an OS-keyring-protected device key (`safeStorage`); browsers wrap with a PBKDF2-derived key from the user password.
-7. On later launches, Electron auto-unlocks via the OS keyring. Browser tabs prompt for the password, decrypt into RAM, and start sync.
+1. The app asks for a device name, plus a password when OS keyring encryption is unavailable.
+2. The app generates a P-256 key pair, self-signed certificate, and age X25519 key, and mints a pairing secret.
+3. A paired iOS device scans the QR and authorizes the new device; the sealed pairing record arrives through [Tailnet Pairing](../gitdb/device-onboarding.md#tailnet-pairing).
+4. The app opens the record, joins the tailnet, and configures the local proxy with the CA and `https://gitd.replycant.internal:8443`. The proxy derives every backend service from the git origin: `{origin(url)}/lfs`, `/decryptd`, and `/transcoded`, since gitd fronts them all.
+5. Private identity material is always AES-GCM encrypted before `localStorage` persistence, wrapped with an OS-keyring-protected device key (`safeStorage`) or, without a keyring, a PBKDF2-derived key from the password.
+6. On later launches the app unlocks the identity, rejoins the tailnet, and starts sync.
 
 Existing cleartext identity records are rejected and force a fresh onboarding flow.
 
@@ -83,11 +82,11 @@ After key generation the app shows a QR payload containing device-linking identi
 - `age_pubkey`: age X25519 public key
 - `name`: user-provided device name
 - `uuid`: generated device identifier
-- `ca_hash`: SHA256 hash of CA certificate DER bytes (hex)
+- `pairing_secret`: authenticates the pairing record and addresses its discovery slot
 
-- iOS scans the QR, verifies `ca_hash` against its configured CA, and commits the key to `pubkeys/` in the GitDB repository.
-- While QR is visible, the webapp periodically probes Git connectivity.
-- Once authorized, the app proceeds into clone/sync and shows transfer progress.
+- iOS scans the QR, commits the key to `pubkeys/` in the GitDB repository, and asks gitd to publish the pairing record.
+- While the QR is visible, the webapp polls the discovery slot for that record.
+- Once the record arrives, the app joins the tailnet and proceeds into clone/sync with transfer progress.
 
 ## Request-Time mTLS Forwarding
 

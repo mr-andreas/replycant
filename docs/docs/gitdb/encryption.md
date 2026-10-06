@@ -296,8 +296,7 @@ Recovery private material is exported as an encrypted JSON envelope:
 - KDF: `PBKDF2-HMAC-SHA256` (600k iterations)
 - Cipher: `AES-256-GCM`
 - Plaintext includes: recovery P-256 PEM key, recovery age private key,
-  pinned CA SHA-256 hash, and one locator: `discovery_url` for LAN
-  deployments or `headscale_url` for tailnet deployments.
+  pinned CA SHA-256 hash, and the deployment's `headscale_url`.
 
 The app exports:
 
@@ -319,8 +318,8 @@ by scanning the recovery QR (or pasting backup text). The flow:
 
 1. Decrypt bundle with user password
 2. Build temporary mTLS identity from recovery P-256 key
-3. Obtain the CA and verify its hash: from discovery on a LAN, or from
-   hsproxy's TLS chain while joining the tailnet as the recovery identity
+3. Obtain the CA from hsproxy's TLS chain while joining the tailnet as the
+   recovery identity, and verify its hash
 4. Clone repo
 5. Re-wrap KEK epochs for the new device age key
 6. Commit/push a new normal device key
@@ -333,9 +332,8 @@ If app automation is unavailable, the bundle can be processed manually:
 1. Decode envelope JSON from the QR or from deep-link `d` parameter.
 2. Derive AES key using bundle KDF parameters (`PBKDF2-HMAC-SHA256`).
 3. Decrypt envelope ciphertext (`AES-256-GCM`) to recover plaintext JSON.
-4. Obtain the CA and verify its hash matches `ca_sha256`: fetch
-   `discovery_url/config.json`, or connect to `headscale_url` and take the
-   CA from the certificate chain hsproxy presents.
+4. Connect to `headscale_url`, take the CA from the certificate chain hsproxy
+   presents, and verify its hash matches `ca_sha256`.
 5. Use `p256_private_key` for temporary mTLS git access.
 6. Use `age_private_key` to decrypt/re-wrap KEK epoch files and add a new
    device key pair in `pubkeys/`.
