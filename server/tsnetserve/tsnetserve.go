@@ -16,14 +16,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/mr-andreas/replycant/pkg/tailnetlogin"
-	"tailscale.com/tsnet"
+	"github.com/mr-andreas/replycant/pkg/tailnetnode"
 )
 
 // Describes how this process should appear on the tailnet.
@@ -86,17 +84,15 @@ func (c Config) Validate() error {
 // A started tailnet node plus the listeners opened on it. Close tears down the
 // node and every listener derived from it.
 type Node struct {
-	server      *tsnet.Server
-	stopKeeping context.CancelFunc
+	server *tailnetnode.Node
 }
 
 // Brings the node up and blocks until it has joined the tailnet, so callers can
 // report a clear startup failure rather than serving on a listener that will
 // never receive traffic.
 //
-// The context bounds the join. Registration traffic crosses the reverse tunnel
-// and a relay that may not be up yet, so an unbounded wait here would present
-// as gitd hanging at startup with no explanation.
+// The context bounds minting the key. The join itself is bounded by
+// tailnetnode, because registration crosses a relay that may not be up yet.
 func Start(ctx context.Context, config Config) (*Node, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -110,15 +106,6 @@ func Start(ctx context.Context, config Config) (*Node, error) {
 		return nil, errors.New("tsnetserve: a key minter is required")
 	}
 
-	logf := config.Logf
-	if logf == nil {
-		logf = log.Printf
-	}
-
-	if err := os.MkdirAll(config.Dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create tsnet state directory %q: %w", config.Dir, err)
-	}
-
 	// gitd is the first node on every tailnet and can always reach the
 	// headscale API, so it takes a key on every start rather than working
 	// out whether it has logged in before. A node that has ignores the key,
@@ -128,33 +115,20 @@ func Start(ctx context.Context, config Config) (*Node, error) {
 		return nil, fmt.Errorf("mint a tailnet key for %q: %w", config.Hostname, err)
 	}
 
-	server := &tsnet.Server{
+	// The node lives as long as gitd, not as long as the caller's context;
+	// Close ends it.
+	node, err := tailnetnode.Start(context.Background(), tailnetnode.Config{
 		Dir:        config.Dir,
 		Hostname:   config.Hostname,
 		ControlURL: config.ControlURL,
+		Mint:       config.Mint,
 		AuthKey:    authKey,
-		UserLogf:   logf,
-		// Verbose backend logs are dropped; magicsock and netcheck output
-		// would otherwise dominate gitd's logs.
-		Logf: func(string, ...any) {},
-	}
-
-	// The keeper outlives the join, so it gets its own context rather than
-	// the caller's join deadline; Close stops it.
-	keepCtx, stopKeeping := context.WithCancel(context.Background())
-	if err := tailnetlogin.Keep(keepCtx, server, config.Mint, logf); err != nil {
-		stopKeeping()
-		_ = server.Close()
+		Logf:       config.Logf,
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	if _, err := server.Up(ctx); err != nil {
-		stopKeeping()
-		_ = server.Close()
-		return nil, fmt.Errorf("join tailnet at %s as %q: %w", config.ControlURL, config.Hostname, err)
-	}
-
-	return &Node{server: server, stopKeeping: stopKeeping}, nil
+	return &Node{server: node}, nil
 }
 
 // Opens a listener reachable only from the tailnet.
@@ -200,6 +174,5 @@ func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (string, error) {
 
 // Shuts the node down, closing every listener opened on it.
 func (n *Node) Close() error {
-	n.stopKeeping()
 	return n.server.Close()
 }

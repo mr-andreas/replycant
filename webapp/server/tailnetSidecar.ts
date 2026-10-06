@@ -12,14 +12,6 @@ export interface TailnetSidecarConfig {
   headscaleAddr: string;
   headscaleServerName?: string;
 
-  // Where the control plane can be reached from inside the tailnet, so the
-  // sidecar can stop routing control traffic through the hosted relay once the
-  // node is up. Optional: without it the relay stays the only path, which is
-  // exactly the behaviour a deployment that turned the in-tailnet relay off
-  // should get.
-  gitdControlAddr?: string;
-  gitdControlServerName?: string;
-
   caPem: string;
   clientCertPem: string;
   clientKeyPem: string;
@@ -182,8 +174,6 @@ const toTailnetStatus = (event: { type?: unknown }): TailnetStatus => {
 const toSidecarInput = (config: TailnetSidecarConfig): Record<string, string> => ({
   headscale_addr: config.headscaleAddr,
   headscale_server_name: config.headscaleServerName ?? "",
-  gitd_control_addr: config.gitdControlAddr ?? "",
-  gitd_control_server_name: config.gitdControlServerName ?? "",
   ca_pem: config.caPem,
   client_cert_pem: config.clientCertPem,
   client_key_pem: config.clientKeyPem,

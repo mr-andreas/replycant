@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"net"
 	"strings"
 	"testing"
 )
@@ -47,70 +45,6 @@ func TestReadInputAcceptsACompleteConfiguration(t *testing.T) {
 	}
 	if config.StateDir != "/tmp/replycant/tsnet" {
 		t.Errorf("unexpected state directory %q", config.StateDir)
-	}
-}
-
-// The in-tailnet control path is what stops a paired device from depending on
-// the hosted relay for every session, so the address Electron sends has to
-// reach the shim unchanged.
-func TestTailnetControlRouteUsesTheConfiguredAddress(t *testing.T) {
-	raw := validInput()
-	raw["gitd_control_addr"] = "gitd.replycant.internal:8444"
-	raw["gitd_control_server_name"] = "gitd.replycant.internal"
-	config, err := readInput(encode(t, raw))
-	if err != nil {
-		t.Fatalf("read input: %v", err)
-	}
-
-	route, ok := tailnetControlRoute(config, func(context.Context, string, string) (net.Conn, error) {
-		return nil, nil
-	})
-	if !ok {
-		t.Fatal("a configured control address must produce a route")
-	}
-	if route.Addr != "gitd.replycant.internal:8444" {
-		t.Errorf("route.Addr = %q", route.Addr)
-	}
-	if route.ServerName != "gitd.replycant.internal" {
-		t.Errorf("route.ServerName = %q", route.ServerName)
-	}
-	if route.Dial == nil {
-		t.Error("the route must carry the tailnet dialer; the host stack cannot reach tailnet addresses")
-	}
-}
-
-// The address is a MagicDNS name, so its host is the name hsproxy's
-// certificate carries on that path. Defaulting it means one fewer field
-// Electron can get wrong, and skipping verification is never an option.
-func TestTailnetControlRouteDefaultsTheServerNameToTheHost(t *testing.T) {
-	raw := validInput()
-	raw["gitd_control_addr"] = "gitd.replycant.internal:8444"
-	config, err := readInput(encode(t, raw))
-	if err != nil {
-		t.Fatalf("read input: %v", err)
-	}
-
-	route, ok := tailnetControlRoute(config, func(context.Context, string, string) (net.Conn, error) {
-		return nil, nil
-	})
-	if !ok {
-		t.Fatal("a configured control address must produce a route")
-	}
-	if route.ServerName != "gitd.replycant.internal" {
-		t.Errorf("route.ServerName = %q, want the host from the address", route.ServerName)
-	}
-}
-
-// A deployment that turned gitd's in-tailnet relay off has no second path, and
-// must keep working through the relay rather than failing to start.
-func TestNoControlAddressMeansNoTailnetRoute(t *testing.T) {
-	config, err := readInput(encode(t, validInput()))
-	if err != nil {
-		t.Fatalf("read input: %v", err)
-	}
-
-	if _, ok := tailnetControlRoute(config, nil); ok {
-		t.Error("an unset control address must not produce a route")
 	}
 }
 

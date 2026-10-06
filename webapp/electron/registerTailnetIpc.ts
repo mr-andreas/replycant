@@ -9,8 +9,6 @@ import { TailnetSupervisor } from "./tailnetSupervisor";
 export interface TailnetJoinRequest {
   headscaleAddr: string;
   headscaleServerName?: string;
-  gitdControlAddr?: string;
-  gitdControlServerName?: string;
   caPem: string;
   clientCertPem: string;
   clientKeyPem: string;
@@ -49,10 +47,6 @@ export const parseJoinRequest = (raw: unknown): TailnetSidecarConfig => {
   return {
     headscaleAddr: readString(source, "headscaleAddr")!,
     headscaleServerName: readString(source, "headscaleServerName"),
-    // Optional: a deployment whose in-tailnet control relay is turned off has
-    // no second path, and the sidecar keeps using the relay.
-    gitdControlAddr: readString(source, "gitdControlAddr"),
-    gitdControlServerName: readString(source, "gitdControlServerName"),
     caPem: readString(source, "caPem")!,
     clientCertPem: readString(source, "clientCertPem")!,
     clientKeyPem: readString(source, "clientKeyPem")!,

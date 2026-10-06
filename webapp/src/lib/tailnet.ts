@@ -66,23 +66,6 @@ export const GITD_TAILNET_HOST = "gitd.replycant.internal";
 export const gitdTailnetUrl = (): string =>
   `https://${GITD_TAILNET_HOST}:${GITD_TAILNET_PORT}`;
 
-// The port gitd relays control-plane traffic on inside the tailnet.
-//
-// Pinned here rather than delivered in the pairing record because it is a
-// property of the gitd build, not of the deployment, and a device only ever
-// talks to a gitd from the same release. Must match --tailnet-control-addr.
-export const GITD_CONTROL_PORT = 8444;
-
-// Where to reach the control plane from inside the tailnet.
-//
-// This is the path that lets a paired device stop depending on the hosted
-// relay: gitd splices it through to the same hsproxy the relay leads to, so the
-// device's TLS session is unchanged apart from the name it verifies.
-export const gitdControlAddr = (): { addr: string; serverName: string } => ({
-  addr: `${GITD_TAILNET_HOST}:${GITD_CONTROL_PORT}`,
-  serverName: GITD_TAILNET_HOST,
-});
-
 export const toTailnetConfigRecord = (payload: PairingPayload): TailnetConfigRecord => {
   const { addr, serverName } = toHeadscaleAddr(payload.headscaleUrl);
   return {
@@ -157,14 +140,9 @@ export const joinTailnet = async ({
   if (!desktop?.joinTailnet) {
     throw new Error("This build cannot join a tailnet. Use the desktop app to pair over a tailnet.");
   }
-  const control = gitdControlAddr();
   await desktop.joinTailnet({
     headscaleAddr: record.headscaleAddr,
     headscaleServerName: record.headscaleServerName,
-    // Where the sidecar should look for the control plane once the node is up,
-    // so later reconnects stop crossing the hosted relay.
-    gitdControlAddr: control.addr,
-    gitdControlServerName: control.serverName,
     caPem,
     clientCertPem: identity.certificatePem,
     clientKeyPem: identity.privateKeyPem,

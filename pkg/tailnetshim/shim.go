@@ -26,12 +26,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mr-andreas/replycant/pkg/netsplice"
 )
 
 // How long to wait for the control plane before giving up on one connection.
@@ -292,30 +293,7 @@ func (s *Shim) relay(ctx context.Context, local net.Conn) {
 	// Bytes are copied verbatim in both directions. The Tailscale control
 	// protocol upgrades a POST into a long-lived bidirectional stream, so
 	// anything that tried to parse or buffer HTTP here would break it.
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(upstream, local)
-		// Half-close so the control plane sees the end of the request rather
-		// than waiting on a stream the client has finished with.
-		if closer, ok := upstream.(interface{ CloseWrite() error }); ok {
-			_ = closer.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(local, upstream)
-		if closer, ok := local.(interface{ CloseWrite() error }); ok {
-			_ = closer.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-
-	// One direction finishing is enough: the deferred closes tear down the
-	// other, which is what unblocks a peer that stopped reading.
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	netsplice.Splice(ctx, local, upstream, netsplice.Options{})
 }
 
 // Establishes a mTLS session to the control plane, preferring the tailnet.

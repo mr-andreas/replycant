@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
+	"github.com/mr-andreas/replycant/pkg/netsplice"
 )
 
 // The hosted relay's self-signed registration certificate. Rotating it means
@@ -310,16 +311,7 @@ func (a *Agent) handleStream(stream net.Conn) {
 	}
 	defer upstream.Close()
 
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(upstream, stream)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(stream, upstream)
-		done <- struct{}{}
-	}()
-	<-done
+	netsplice.Splice(context.Background(), stream, upstream, netsplice.Options{})
 }
 
 // Spreads reconnect attempts so a relay restart does not bring every

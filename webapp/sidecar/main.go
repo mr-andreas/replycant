@@ -6,9 +6,9 @@
 // so this sidecar provides one and hands back a SOCKS5 proxy that Node's
 // existing mTLS agents can dial through.
 //
-// It does two things. It runs the loopback shim from pkg/tailnetshim, which gives the
-// Tailscale client a control-plane endpoint it will accept, and it runs a tsnet
-// node whose built-in SOCKS5 proxy is published on loopback.
+// It starts a device node through pkg/tailnetnode, which fronts the control
+// plane with a loopback shim the Tailscale client will accept, and publishes
+// the node's built-in SOCKS5 proxy on loopback.
 //
 // Configuration arrives as JSON on stdin rather than as flags, because it
 // contains the device's private key. Flags are visible in the process list on
@@ -23,24 +23,14 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/mr-andreas/replycant/pkg/tailnetlogin"
-	"github.com/mr-andreas/replycant/pkg/tailnetshim"
-	"tailscale.com/tsnet"
+	"github.com/mr-andreas/replycant/pkg/tailnetnode"
 )
-
-// Bounds the tailnet join. The path runs through the hosted relay and the
-// user's own machine, neither of which the sidecar controls, so an unbounded
-// wait would present as the desktop app hanging on startup with no
-// explanation. Electron restarts the sidecar, so failing is recoverable.
-const joinTimeout = 2 * time.Minute
 
 // Everything the sidecar needs, as delivered by Electron on stdin.
 //
@@ -54,15 +44,6 @@ type input struct {
 	// Name verified against the control plane's certificate and sent as SNI,
 	// which is what the reverse tunnel routes on.
 	HeadscaleServerName string `json:"headscale_server_name"`
-
-	// Where gitd relays control-plane traffic inside the tailnet, and the name
-	// its certificate carries there. Installed on the shim once the node is up
-	// so later control sessions stop crossing the hosted relay.
-	//
-	// Optional. Empty leaves the relay as the only path, which is what a
-	// deployment that turned the in-tailnet relay off wants.
-	GitdControlAddr       string `json:"gitd_control_addr"`
-	GitdControlServerName string `json:"gitd_control_server_name"`
 
 	// The deployment's CA. The only root the control-plane connection trusts.
 	CAPEM string `json:"ca_pem"`
@@ -98,10 +79,6 @@ type ready struct {
 // credential returned by Loopback as the password.
 const socksUsername = "tsnet"
 
-// Matches tsnet.Server.Dial. Named so the route derivation can be tested
-// without standing up a real WireGuard node.
-type dialFunc func(ctx context.Context, network, address string) (net.Conn, error)
-
 func main() {
 	// Logs go to stderr so stdout carries only the readiness line. Electron
 	// parses stdout, and an interleaved log would break that.
@@ -125,50 +102,26 @@ func run() error {
 		return fmt.Errorf("the device certificate and key do not form a usable pair: %w", err)
 	}
 
-	controlPlane, err := tailnetshim.New(tailnetshim.Config{
-		UpstreamAddr:       config.HeadscaleAddr,
-		UpstreamServerName: config.HeadscaleServerName,
-		CAPEM:              []byte(config.CAPEM),
-		ClientCertificate:  clientCert,
-		Logf:               log.Printf,
-	})
-	if err != nil {
-		return err
-	}
-	if err := controlPlane.Start(); err != nil {
-		return err
-	}
-	defer controlPlane.Close()
-
 	// Signals rather than stdin closure, because Electron's child-process
 	// teardown sends a signal and closing stdin is not reliable across
 	// platforms.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go controlPlane.Serve(ctx)
-	log.Printf("control plane %s fronted at %s", controlPlane.UpstreamServerName(), controlPlane.Addr())
-
-	node, err := startNode(ctx, config, controlPlane)
+	device, err := tailnetnode.StartDevice(ctx, tailnetnode.DeviceConfig{
+		HeadscaleAddr:       config.HeadscaleAddr,
+		HeadscaleServerName: config.HeadscaleServerName,
+		CAPEM:               []byte(config.CAPEM),
+		ClientCertificate:   clientCert,
+		Dir:                 config.StateDir,
+		Hostname:            config.Hostname,
+		Logf:                log.Printf,
+	})
 	if err != nil {
 		return err
 	}
-	defer node.Close()
-
-	// Only now, because the node had to reach the control plane through the
-	// relay before it could route anything at all. From here on the shim
-	// prefers the in-tailnet path, so the relay is a bootstrap dependency
-	// rather than something every session holds open.
-	//
-	// A failure here is logged rather than fatal: the relay path still works,
-	// so a malformed address degrades to the previous behaviour.
-	if route, ok := tailnetControlRoute(config, node.Dial); !ok {
-		log.Printf("no in-tailnet control address configured; control traffic stays on the relay")
-	} else if err := controlPlane.SetTailnetRoute(route); err != nil {
-		log.Printf("in-tailnet control path unavailable, staying on the relay: %v", err)
-	} else {
-		log.Printf("control traffic will prefer %s over %s", route.Addr, config.HeadscaleAddr)
-	}
+	defer device.Close()
+	node, controlPlane := device.Node, device.ControlPlane
 
 	socksAddr, socksPassword, _, err := node.Loopback()
 	if err != nil {
@@ -204,65 +157,6 @@ func run() error {
 	<-ctx.Done()
 	log.Printf("shutting down")
 	return nil
-}
-
-// Derives the shim's in-tailnet route, reporting false when the deployment has
-// not configured one.
-//
-// dial is tsnet's own dialer, because a tailnet name resolves only through the
-// node's MagicDNS resolver and the address is only routable through its
-// userspace WireGuard stack.
-func tailnetControlRoute(config input, dial dialFunc) (tailnetshim.TailnetRoute, bool) {
-	addr := strings.TrimSpace(config.GitdControlAddr)
-	if addr == "" {
-		return tailnetshim.TailnetRoute{}, false
-	}
-
-	serverName := strings.TrimSpace(config.GitdControlServerName)
-	if serverName == "" {
-		// The address is a MagicDNS name, so its host is also the name
-		// hsproxy's certificate carries on this path.
-		if host, _, err := net.SplitHostPort(addr); err == nil {
-			serverName = host
-		}
-	}
-
-	return tailnetshim.TailnetRoute{Addr: addr, ServerName: serverName, Dial: dial}, true
-}
-
-// Brings the tailnet node up, blocking until it has joined so a failure is
-// reported here rather than surfacing later as unreachable hosts.
-//
-// The node is kept logged in for the sidecar's lifetime: whenever headscale
-// does not know it, on first join or after headscale lost its state, it mints
-// a key from hsproxy with the device certificate and logs in again.
-func startNode(ctx context.Context, config input, controlPlane *tailnetshim.Shim) (*tsnet.Server, error) {
-	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create tailnet state directory %q: %w", config.StateDir, err)
-	}
-
-	node := &tsnet.Server{
-		Dir:        config.StateDir,
-		Hostname:   config.Hostname,
-		ControlURL: controlPlane.ControlURL(),
-		UserLogf:   log.Printf,
-		// Backend logs are dropped. magicsock and netcheck output would
-		// otherwise dominate the desktop app's logs.
-		Logf: func(string, ...any) {},
-	}
-	if err := tailnetlogin.Keep(ctx, node, controlPlane.MintPreauthKey, log.Printf); err != nil {
-		_ = node.Close()
-		return nil, err
-	}
-
-	joinCtx, cancel := context.WithTimeout(ctx, joinTimeout)
-	defer cancel()
-
-	if _, err := node.Up(joinCtx); err != nil {
-		_ = node.Close()
-		return nil, fmt.Errorf("join the tailnet as %q: %w", config.Hostname, err)
-	}
-	return node, nil
 }
 
 // Reads and validates the configuration, so a missing field is named rather
@@ -314,7 +208,7 @@ func announce(writer io.Writer, message ready) error {
 }
 
 // Reports the addresses the node was assigned, for the desktop app's logs.
-func tailnetIPs(node *tsnet.Server) []string {
+func tailnetIPs(node *tailnetnode.Node) []string {
 	ip4, ip6 := node.TailscaleIPs()
 	var addrs []string
 	if ip4.IsValid() {

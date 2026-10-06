@@ -14,11 +14,6 @@ export interface TailnetJoinRequest {
   headscaleAddr: string;
   headscaleServerName?: string;
 
-  // Where the control plane sits inside the tailnet, so the sidecar can stop
-  // routing control traffic through the hosted relay once the node is up.
-  gitdControlAddr?: string;
-  gitdControlServerName?: string;
-
   caPem: string;
   clientCertPem: string;
   clientKeyPem: string;

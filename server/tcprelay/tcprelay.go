@@ -16,13 +16,15 @@
 package tcprelay
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/mr-andreas/replycant/pkg/netsplice"
 )
 
 // Bounds the upstream dial so a wedged hsproxy surfaces as a closed client
@@ -86,36 +88,5 @@ func handle(client net.Conn, upstreamAddr string, dialTimeout time.Duration, log
 	}
 	defer upstream.Close()
 
-	splice(client, upstream)
-}
-
-// Copies bytes in both directions until either side finishes.
-//
-// Half-closing on the sending side matters for the control protocol: it
-// upgrades a POST into a long-lived stream, and the upstream needs to see the
-// end of what the client sent rather than waiting on a request body that is
-// already complete.
-func splice(client net.Conn, upstream net.Conn) {
-	done := make(chan struct{}, 2)
-
-	go func() {
-		_, _ = io.Copy(upstream, client)
-		closeWrite(upstream)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(client, upstream)
-		closeWrite(client)
-		done <- struct{}{}
-	}()
-
-	// One direction finishing is enough: the deferred closes in handle tear
-	// down the other, which unblocks a peer that stopped reading.
-	<-done
-}
-
-func closeWrite(conn net.Conn) {
-	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = closer.CloseWrite()
-	}
+	netsplice.Splice(context.Background(), client, upstream, netsplice.Options{})
 }

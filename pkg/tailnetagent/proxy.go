@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mr-andreas/replycant/pkg/netsplice"
 )
 
 // DialFunc opens a TCP connection the way the tailnet node would.
@@ -108,7 +110,7 @@ func (p *Proxy) handler() http.Handler {
 		if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 			return
 		}
-		splice(client, dest)
+		netsplice.Splice(context.Background(), client, dest, netsplice.Options{})
 	})
 }
 
@@ -183,24 +185,4 @@ func proxyBasicAuth(header string) (string, string, bool) {
 		return "", "", false
 	}
 	return user, password, true
-}
-
-// splice copies until either side finishes.
-//
-// Closing both sides unblocks the opposite copy, so one finished request
-// does not leave a goroutine parked on the tailnet connection.
-func splice(left, right net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(right, left)
-		_ = right.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(left, right)
-		_ = left.Close()
-	}()
-	wg.Wait()
 }

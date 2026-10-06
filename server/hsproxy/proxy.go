@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mr-andreas/replycant/pkg/netsplice"
 	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
 	"github.com/mr-andreas/replycant/server/gitd/auth"
 	"github.com/mr-andreas/replycant/server/tailnet"
@@ -246,7 +247,7 @@ func (p *Proxy) handle(rawConn net.Conn) {
 	}
 	defer upstream.Close()
 
-	relay(reader, tlsConn, upstream)
+	netsplice.Splice(context.Background(), tlsConn, upstream, netsplice.Options{AReader: reader})
 }
 
 // Reports whether the session opens with a key request, without consuming
@@ -339,27 +340,6 @@ func writeResponse(conn net.Conn, status int, contentType string, body []byte) {
 		Close:         true,
 	}
 	_ = response.Write(conn)
-}
-
-// Copies bytes in both directions until either side finishes, then tears both
-// down. Closing both ends on the first completed direction is what stops a
-// half-open session from lingering after headscale or the device goes away.
-//
-// The device side is read through clientReader so bytes already buffered while
-// peeking the request line go upstream first.
-func relay(clientReader io.Reader, client net.Conn, upstream net.Conn) {
-	done := make(chan struct{}, 2)
-
-	go func() {
-		_, _ = io.Copy(upstream, clientReader)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(client, upstream)
-		done <- struct{}{}
-	}()
-
-	<-done
 }
 
 // Serves an unauthenticated readiness endpoint. It is deliberately separate
