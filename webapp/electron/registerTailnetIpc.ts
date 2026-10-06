@@ -86,8 +86,15 @@ export const registerTailnetIpc = (
     supervisor: TailnetSupervisor;
     stateDir: string;
     broadcast?: (channel: string, payload: TailnetIpcStatus) => void;
+    // Where the renderer polls for its pairing record, when not the hosted
+    // discovery service. Only the integration suite sets it, from
+    // REPLYCANT_DISCOVERY_BASE_URL; a record it serves still has to open
+    // under this attempt's secret and match its CA label.
+    discoveryBaseUrl?: string;
   },
 ): void => {
+  ipcMain.handle("tailnet:discoveryBaseUrl", () => deps.discoveryBaseUrl ?? null);
+
   ipcMain.handle("tailnet:join", async (_event, raw: unknown) => {
     const config = parseJoinRequest(raw);
     await deps.supervisor.start({ ...config, stateDir: deps.stateDir });

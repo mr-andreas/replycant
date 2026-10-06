@@ -247,7 +247,6 @@ export const createGitdbWorker = (options: CreateGitdbOptions = {}): GitdbWorker
     forwardToRemoteHeadAndResumePolling: () => callRpc("forwardToRemoteHeadAndResumePolling"),
     listRecentLocalCommits: (limit) => callRpc("listRecentLocalCommits", limit),
     readTrackedRemoteHeadCommitHashOrNull: () => callRpc("readTrackedRemoteHeadCommitHashOrNull"),
-    probeOnboardingAuthorization: () => callRpc("probeOnboardingAuthorization"),
     registerManifestKind<T>(_registration: ManifestKindRegistration<T>) {
       // Registration must happen independently on each side of the worker boundary.
       // The worker-side registry is populated via the init message; the main-thread side

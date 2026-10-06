@@ -39,6 +39,9 @@ declare global {
       clearIdentityKey?: () => Promise<void>;
       joinTailnet?: (request: TailnetJoinRequest) => Promise<void>;
       leaveTailnet?: () => Promise<void>;
+      // Set only by the integration suite, which pairs through a fake
+      // discovery host; null means the hosted service.
+      discoveryBaseUrl?: () => Promise<string | null>;
       tailnetStatus?: () => Promise<unknown>;
       // Status changes every few seconds, so the connection panel subscribes
       // rather than polling. Returns an unsubscribe function.

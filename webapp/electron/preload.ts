@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("replycantDesktop", {
   // itself lives in the main process so the renderer never sees the proxy.
   joinTailnet: (request: unknown) => ipcRenderer.invoke("tailnet:join", request) as Promise<void>,
   leaveTailnet: () => ipcRenderer.invoke("tailnet:leave") as Promise<void>,
+  discoveryBaseUrl: () => ipcRenderer.invoke("tailnet:discoveryBaseUrl") as Promise<string | null>,
   tailnetStatus: () => ipcRenderer.invoke("tailnet:status") as Promise<unknown>,
   // Status changes every few seconds, so the connection panel subscribes
   // instead of polling. The listener is wrapped rather than passed through so

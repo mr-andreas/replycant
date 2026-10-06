@@ -1,4 +1,3 @@
-import { Agent } from "node:https";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { Writable } from "node:stream";
@@ -14,6 +13,7 @@ import {
   filterProxyResponseHeaders,
   isGitSmartHttpContentType,
   resolveRequestMtlsMaterial,
+  TailnetUnavailableError,
 } from "./proxy";
 import { SocksProxyAgent } from "socks-proxy-agent";
 
@@ -67,6 +67,13 @@ class StreamingResponseMock extends Writable {
   }
 }
 
+const stableProxy = {
+  socksAddr: "127.0.0.1:41234",
+  socksUsername: "tsnet",
+  socksPassword: "deadbeef",
+};
+const withTailnet = { getTailnetProxy: () => stableProxy };
+
 describe("createMtlsAgentPool", () => {
   const materialA = {
     keyPem: "-----BEGIN PRIVATE KEY-----\nkey-a\n-----END PRIVATE KEY-----\n",
@@ -79,11 +86,11 @@ describe("createMtlsAgentPool", () => {
 
   // Reusing agents by identity avoids repeated TLS handshakes for bursty media traffic.
   it("reuses the same agent for identical CA and certificate material", () => {
-    const pool = createMtlsAgentPool();
+    const pool = createMtlsAgentPool(withTailnet);
     try {
       const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
       const second = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
-      expect(first).toBeInstanceOf(Agent);
+      expect(first).toBeInstanceOf(SocksProxyAgent);
       expect(second).toBe(first);
     } finally {
       pool.destroy();
@@ -92,7 +99,7 @@ describe("createMtlsAgentPool", () => {
 
   // Distinct upstream trust roots must never share sockets to avoid cross-target confusion.
   it("creates different agents when the CA differs", () => {
-    const pool = createMtlsAgentPool();
+    const pool = createMtlsAgentPool(withTailnet);
     try {
       const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
       const second = pool.acquire({ upstreamCa: "ca-b", mtlsMaterial: materialA });
@@ -104,7 +111,7 @@ describe("createMtlsAgentPool", () => {
 
   // Different client certs represent different identities and must remain isolated.
   it("creates different agents when mTLS material differs", () => {
-    const pool = createMtlsAgentPool();
+    const pool = createMtlsAgentPool(withTailnet);
     try {
       const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
       const second = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialB });
@@ -155,9 +162,9 @@ describe("createMtlsAgentPool", () => {
     }
   });
 
-  // The mTLS identity and CA pinning from ADR-0011/0013 must survive the move
-  // onto the tailnet. The proxy carries ciphertext it cannot read, so the TLS
-  // parameters have to be identical to the direct case.
+  // The mTLS identity and CA pinning from ADR-0011/0013 must hold through the
+  // tailnet. The proxy carries ciphertext it cannot read, so TLS still runs
+  // end to end with the device certificate and the deployment CA.
   it("keeps the mTLS identity and CA pinning when proxied", () => {
     const pool = createMtlsAgentPool({
       getTailnetProxy: () => ({
@@ -179,14 +186,15 @@ describe("createMtlsAgentPool", () => {
     }
   });
 
-  // LAN-only deployments and the dev server have no sidecar, so the pool must
-  // still produce a plain agent rather than failing or waiting for a proxy.
-  it("dials directly when no tailnet proxy is available", () => {
+  // gitd is reachable only through the tailnet, so dialling directly while
+  // the sidecar is down would only fail later with a confusing DNS error, or
+  // worse, reach whatever answers that name on the local network.
+  it("refuses to dial while the tailnet is down", () => {
     const pool = createMtlsAgentPool({ getTailnetProxy: () => undefined });
     try {
-      const agent = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
-      expect(agent).toBeInstanceOf(Agent);
-      expect(agent).not.toBeInstanceOf(SocksProxyAgent);
+      expect(() => pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA })).toThrow(
+        TailnetUnavailableError,
+      );
     } finally {
       pool.destroy();
     }
@@ -213,12 +221,14 @@ describe("createMtlsAgentPool", () => {
   });
 
   // The sidecar comes up after the server does, so the proxy is read on each
-  // acquire. Capturing it once would leave the app permanently dialling direct.
+  // acquire. Capturing it once would leave the app permanently refusing.
   it("picks up a tailnet proxy that appears after startup", () => {
     let proxy: { socksAddr: string; socksUsername: string; socksPassword: string } | undefined;
     const pool = createMtlsAgentPool({ getTailnetProxy: () => proxy });
     try {
-      expect(pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA })).toBeInstanceOf(Agent);
+      expect(() => pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA })).toThrow(
+        TailnetUnavailableError,
+      );
       proxy = { socksAddr: "127.0.0.1:41234", socksUsername: "tsnet", socksPassword: "later" };
       expect(pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA })).toBeInstanceOf(
         SocksProxyAgent,
@@ -248,7 +258,7 @@ describe("createMtlsAgentPool", () => {
 
   // Bounded keep-alive settings prevent socket spikes while still enabling reuse.
   it("builds agents with bounded keep-alive configuration", () => {
-    const pool = createMtlsAgentPool();
+    const pool = createMtlsAgentPool(withTailnet);
     try {
       const agent = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
       expect(agent.keepAlive).toBe(true);
@@ -261,7 +271,7 @@ describe("createMtlsAgentPool", () => {
 
   // LRU eviction keeps the cache finite so stale identities do not retain resources forever.
   it("evicts and destroys the least-recently-used entry when over capacity", () => {
-    const pool = createMtlsAgentPool({ maxEntries: 2 });
+    const pool = createMtlsAgentPool({ ...withTailnet, maxEntries: 2 });
     const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
     const firstDestroySpy = vi.spyOn(first, "destroy");
     pool.acquire({ upstreamCa: "ca-b", mtlsMaterial: materialA });
@@ -271,7 +281,7 @@ describe("createMtlsAgentPool", () => {
 
   // Explicit destroy lets app shutdown release idle keep-alive sockets immediately.
   it("destroys all cached agents when destroy is called", () => {
-    const pool = createMtlsAgentPool();
+    const pool = createMtlsAgentPool(withTailnet);
     const first = pool.acquire({ upstreamCa: "ca-a", mtlsMaterial: materialA });
     const second = pool.acquire({ upstreamCa: "ca-b", mtlsMaterial: materialB });
     const firstDestroySpy = vi.spyOn(first, "destroy");
@@ -317,6 +327,21 @@ describe("createForwarder", () => {
     const res = makeResponse();
     await forward(req, res, "https://localhost:8443", { requiresMtlsMaterial: true });
     expect(res.status).not.toHaveBeenCalledWith(401);
+  });
+
+  // Mirrors the iOS router's "not connected yet": a request made while the
+  // sidecar is still joining gets a clear, retryable answer instead of a
+  // generic upstream failure.
+  it("answers 503 while the tailnet is down", async () => {
+    const forward = createForwarder({ ...forwarderConfig, getTailnetProxy: () => undefined });
+    const req = makeRequest({
+      [CLIENT_KEY_HEADER]: Buffer.from("-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n").toString("base64"),
+      [CLIENT_CERT_HEADER]: Buffer.from("-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----\n").toString("base64"),
+    });
+    const res = makeResponse();
+    await forward(req, res, "https://gitd.replycant.internal:8443", { requiresMtlsMaterial: true });
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({ error: "Not connected to your library's network yet." });
   });
 
   it("rejects header-less requests when no session material is registered", async () => {

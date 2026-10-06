@@ -22,28 +22,20 @@ const snapshot: SyncSnapshot = {
 describe("OnboardingGate", () => {
   // Builds a complete flow object so mode-specific tests can override only relevant values.
   const buildFlow = (overrides: Partial<OnboardingFlowState>): OnboardingFlowState => ({
-    setupMode: "serverUrl",
+    setupMode: "create",
     setupError: null,
     rehydrationKey: 0,
     passwordInput: "",
     deviceNameInput: "",
-    serverUrlInput: "",
     passwordRequired: true,
     identityRecord: null,
     identity: null,
     mtlsHeaders: null,
-    setupConfig: null,
-    caHash: null,
-    isDiscovering: false,
-    tailnetAvailable: false,
     pairingSecret: null,
     setSetupMode: vi.fn(),
     setSetupError: vi.fn(),
     setPasswordInput: vi.fn(),
     setDeviceNameInput: vi.fn(),
-    setServerUrlInput: vi.fn(),
-    handleDiscoverServer: vi.fn().mockResolvedValue(undefined),
-    handleBeginTailnetPairing: vi.fn(),
     handleCreateIdentity: vi.fn().mockResolvedValue(undefined),
     handleUnlockIdentity: vi.fn().mockResolvedValue(undefined),
     handleStartOver: vi.fn(),
@@ -51,19 +43,42 @@ describe("OnboardingGate", () => {
     ...overrides,
   });
 
-  it("submits server URL step when Enter is pressed", async () => {
-    const user = userEvent.setup();
-    const handleDiscoverServer = vi.fn().mockResolvedValue(undefined);
-    const flow = buildFlow({
-      setupMode: "serverUrl",
-      serverUrlInput: "http://localhost:18080",
-      handleDiscoverServer,
-    });
-
+  // The browser build cannot join a tailnet, so it must say what to use
+  // instead rather than show a setup flow that can never finish.
+  it("tells browser users the desktop app is required", () => {
+    const flow = buildFlow({ setupMode: "desktopRequired" });
     render(<OnboardingGate flow={flow} snapshot={snapshot}><div>app</div></OnboardingGate>);
-    await user.click(screen.getByPlaceholderText("http://127.0.0.1:8080"));
-    await user.keyboard("{Enter}");
-    expect(handleDiscoverServer).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: "Desktop app required" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Start over" })).not.toBeInTheDocument();
+  });
+
+  // Scripted approval (the desktop integration suite) reads the same payload
+  // the QR encodes, so it must be exactly what a scanning phone would see.
+  it("exposes the pairing QR payload on the QR container", () => {
+    const flow = buildFlow({
+      setupMode: "tailnetPairing",
+      identityRecord: {
+        version: 2,
+        wrap: "device",
+        publicKeySsh: "ssh-ed25519 AAAA test",
+        agePublicKey: "age1test",
+        deviceName: "desk",
+        deviceUUID: "uuid-1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        encryptedPayloadBase64: "AAAA",
+        ivBase64: "AAAA",
+      },
+      pairingSecret: { encoded: "secret-1", slot: "slot-1" } as OnboardingFlowState["pairingSecret"],
+    });
+    render(<OnboardingGate flow={flow} snapshot={snapshot}><div>app</div></OnboardingGate>);
+    const payload = JSON.parse(screen.getByTestId("pairing-qr").getAttribute("data-payload") ?? "{}");
+    expect(payload).toEqual({
+      pubkey: "ssh-ed25519 AAAA test",
+      age_pubkey: "age1test",
+      name: "desk",
+      uuid: "uuid-1",
+      pairing_secret: "secret-1",
+    });
   });
 
   it("submits create identity step when Enter is pressed", async () => {
@@ -81,7 +96,7 @@ describe("OnboardingGate", () => {
     expect(handleCreateIdentity).toHaveBeenCalledTimes(1);
   });
 
-  // Browser mode must collect a password because there is no OS keyring wrap.
+  // Without an OS keyring the identity is password-wrapped, so a password is collected.
   it("shows the password field when passwordRequired is true", () => {
     const flow = buildFlow({ setupMode: "create", passwordRequired: true });
     render(<OnboardingGate flow={flow} snapshot={snapshot}><div>app</div></OnboardingGate>);
@@ -109,29 +124,11 @@ describe("OnboardingGate", () => {
     expect(handleUnlockIdentity).toHaveBeenCalledTimes(1);
   });
 
-  // Verifies the serverUrl form disables input and hides button text while
-  // discovery is in progress so users get visual feedback.
-  it("disables input and shows spinner on Continue button while discovering", () => {
-    const flow = buildFlow({
-      setupMode: "serverUrl",
-      serverUrlInput: "http://replycant.local:8080",
-      isDiscovering: true,
-    });
-
-    render(<OnboardingGate flow={flow} snapshot={snapshot}><div>app</div></OnboardingGate>);
-    const input = screen.getByPlaceholderText("http://127.0.0.1:8080") as HTMLInputElement;
-    expect(input.disabled).toBe(true);
-    const button = screen.getByRole("button", { name: "" });
-    expect(button).toBeDisabled();
-    expect(button.querySelector(".button-spinner")).toBeTruthy();
-  });
-
-  it("shows start over action on setup steps after server discovery", () => {
+  it("shows start over action on every setup step", () => {
     const createFlow = buildFlow({ setupMode: "create" });
     const unlockFlow = buildFlow({ setupMode: "unlock" });
-    const qrFlow = buildFlow({ setupMode: "qr" });
+    const pairingFlow = buildFlow({ setupMode: "tailnetPairing" });
     const rehydratingFlow = buildFlow({ setupMode: "rehydrating" });
-    const serverUrlFlow = buildFlow({ setupMode: "serverUrl" });
 
     const { rerender } = render(<OnboardingGate flow={createFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
     expect(screen.getByRole("button", { name: "Start over" })).toBeVisible();
@@ -139,14 +136,11 @@ describe("OnboardingGate", () => {
     rerender(<OnboardingGate flow={unlockFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
     expect(screen.getByRole("button", { name: "Start over" })).toBeVisible();
 
-    rerender(<OnboardingGate flow={qrFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
+    rerender(<OnboardingGate flow={pairingFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
     expect(screen.getByRole("button", { name: "Start over" })).toBeVisible();
 
     rerender(<OnboardingGate flow={rehydratingFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
     expect(screen.getByRole("button", { name: "Start over" })).toBeVisible();
-
-    rerender(<OnboardingGate flow={serverUrlFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
-    expect(screen.queryByRole("button", { name: "Start over" })).not.toBeInTheDocument();
   });
 
   it("calls handleStartOver when start over action is clicked", async () => {

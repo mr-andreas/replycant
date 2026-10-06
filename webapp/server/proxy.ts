@@ -21,7 +21,8 @@ export interface ForwarderRuntimeConfig {
   agentPool?: MtlsAgentPool;
 
   // Only used when no agentPool is supplied. The desktop app owns a shared
-  // pool and wires the tailnet there instead.
+  // pool and wires the tailnet there instead; without either, every upstream
+  // request is refused as not connected.
   getTailnetProxy?: () => TailnetProxy | undefined;
 }
 
@@ -73,8 +74,18 @@ interface CreateMtlsAgentPoolOptions {
 
   // Read on each acquire rather than captured once, because the sidecar comes
   // up after the server does and can be restarted underneath it. Returning
-  // undefined means "no tailnet", which is the LAN and dev-server case.
-  getTailnetProxy?: () => TailnetProxy | undefined;
+  // undefined means the node is not up yet.
+  getTailnetProxy: () => TailnetProxy | undefined;
+}
+
+// Thrown when an upstream connection is requested before the sidecar's node
+// is up. There is no direct route to fall back on: gitd is only reachable
+// through the tailnet, and its name only resolves there.
+export class TailnetUnavailableError extends Error {
+  constructor() {
+    super("Not connected to your library's network yet.");
+    this.name = "TailnetUnavailableError";
+  }
 }
 
 // Generates a stable cache key without retaining additional plaintext PEM copies in map keys.
@@ -112,7 +123,7 @@ const buildSocksUrl = ({ socksAddr, socksUsername, socksPassword }: TailnetProxy
 export const createMtlsAgentPool = ({
   maxEntries = DEFAULT_AGENT_POOL_MAX_ENTRIES,
   getTailnetProxy,
-}: CreateMtlsAgentPoolOptions = {}): MtlsAgentPool => {
+}: CreateMtlsAgentPoolOptions): MtlsAgentPool => {
   const entries = new Map<string, Agent>();
 
   const evictLeastRecentlyUsed = () => {
@@ -132,7 +143,10 @@ export const createMtlsAgentPool = ({
 
   return {
     acquire: (identity) => {
-      const tailnetProxy = getTailnetProxy?.();
+      const tailnetProxy = getTailnetProxy();
+      if (!tailnetProxy) {
+        throw new TailnetUnavailableError();
+      }
       const key = buildMtlsAgentKey(identity, tailnetProxy);
       const existing = entries.get(key);
       if (existing) {
@@ -141,9 +155,6 @@ export const createMtlsAgentPool = ({
         return existing;
       }
 
-      // Identical TLS parameters in both branches. Only the transport under
-      // them differs, so the mTLS identity and CA pinning that ADR-0011 and
-      // ADR-0013 rely on are unchanged by going through the tailnet.
       const tlsOptions = {
         ca: identity.upstreamCa,
         key: identity.mtlsMaterial?.keyPem,
@@ -159,9 +170,7 @@ export const createMtlsAgentPool = ({
       // server certificate is still verified against the deployment CA and the
       // client certificate is still presented end to end. The proxy carries
       // ciphertext it cannot read.
-      const created = tailnetProxy
-        ? (new SocksProxyAgent(buildSocksUrl(tailnetProxy), tlsOptions) as unknown as Agent)
-        : new Agent(tlsOptions);
+      const created = new SocksProxyAgent(buildSocksUrl(tailnetProxy), tlsOptions) as unknown as Agent;
 
       entries.set(key, created);
       evictLeastRecentlyUsed();
@@ -276,7 +285,8 @@ export interface Forwarder {
 
 // Enforces mTLS for git calls while sharing one path for all upstream forwarding.
 export const createForwarder = (config: ForwarderRuntimeConfig) => {
-  const pool = config.agentPool ?? createMtlsAgentPool({ getTailnetProxy: config.getTailnetProxy });
+  const pool =
+    config.agentPool ?? createMtlsAgentPool({ getTailnetProxy: config.getTailnetProxy ?? (() => undefined) });
   const ownedPool = config.agentPool ? null : pool;
 
   // Streams request/response bodies to preserve large media and git payload semantics.
@@ -330,7 +340,15 @@ export const createForwarder = (config: ForwarderRuntimeConfig) => {
                 }
                 return undefined;
               }
-              return pool.acquire({ upstreamCa, mtlsMaterial });
+              try {
+                return pool.acquire({ upstreamCa, mtlsMaterial });
+              } catch (error) {
+                if (!(error instanceof TailnetUnavailableError)) throw error;
+                if (!res.headersSent) {
+                  res.status(503).json({ error: error.message });
+                }
+                return undefined;
+              }
             })()
           : undefined;
       if (upstreamUrl.protocol === "https:" && !httpsAgent) {

@@ -184,89 +184,12 @@ describe("createApp", () => {
     expect(forward).not.toHaveBeenCalled();
   });
 
-  it("discovers config from caserver endpoint", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ ca: "ca", url: "https://git.example" }),
-      }),
-    );
+  // Every deployment is reached over the tailnet, and its CA arrives in the
+  // sealed pairing record, so there is no server URL to fetch a CA from.
+  it("has no server discovery endpoint", async () => {
     const app = createApp(proxyConfig, createForwarderMock());
-    const res = await request(app).post("/api/setup/discover").send({ serverUrl: "http://replycant.local:8080" });
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ca: "ca", url: "https://git.example" });
-  });
-
-  // The desktop cannot create a library, so a tailnet CA page is never for
-  // it: the join key it serves belongs to the phone that will create the
-  // library. Discovery refuses and steers to phone pairing, and the key never
-  // reaches the browser.
-  it("refuses a tailnet CA page without passing its join key on", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          ca: "ca",
-          headscale_url: "https://hs.example",
-          preauth_key: "hskey-1",
-        }),
-      }),
-    );
-    const app = createApp(proxyConfig, createForwarderMock());
-    const res = await request(app).post("/api/setup/discover").send({
-      serverUrl: "http://127.0.0.1:8080",
-    });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/private network/);
-    expect(JSON.stringify(res.body)).not.toContain("hskey-1");
-  });
-
-  // Once the library exists the CA page answers 410. That is the same
-  // tailnet deployment, so it gets the same guidance rather than a bare
-  // status code.
-  it("refuses a bootstrapped tailnet CA page the same way", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 410 }));
-    const app = createApp(proxyConfig, createForwarderMock());
-    const res = await request(app).post("/api/setup/discover").send({
-      serverUrl: "http://127.0.0.1:8080",
-    });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/private network/);
-  });
-
-  // Verifies that Node fetch's opaque "fetch failed" gets unwrapped to the
-  // underlying cause (e.g. ENOTFOUND, ECONNREFUSED) so the client can show
-  // an actionable error.
-  it("returns root cause in discover detail when fetch throws with cause", async () => {
-    const cause = new Error("getaddrinfo ENOTFOUND replycant.local");
-    const fetchError = new Error("fetch failed");
-    fetchError.cause = cause;
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(fetchError));
-    const app = createApp(proxyConfig, createForwarderMock());
-    const res = await request(app).post("/api/setup/discover").send({ serverUrl: "http://replycant.local:8080" });
-    expect(res.status).toBe(502);
-    expect(res.body.detail).toBe("getaddrinfo ENOTFOUND replycant.local");
-  });
-
-  it("rejects invalid discover request payloads", async () => {
-    const app = createApp(proxyConfig, createForwarderMock());
-    const res = await request(app).post("/api/setup/discover").send({ serverUrl: "not-a-url" });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 502 when discover response payload is invalid", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ wrong: "shape" }),
-      }),
-    );
-    const app = createApp(proxyConfig, createForwarderMock());
-    const res = await request(app).post("/api/setup/discover").send({ serverUrl: "http://replycant.local:8080" });
-    expect(res.status).toBe(502);
+    const res = await request(app).post("/api/setup/discover").send({ serverUrl: "http://127.0.0.1:8080" });
+    expect(res.status).toBe(404);
   });
 
   it("configures runtime setup and forwards git route", async () => {

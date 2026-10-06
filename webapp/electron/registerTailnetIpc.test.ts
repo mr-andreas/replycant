@@ -137,10 +137,15 @@ describe("parseJoinRequest", () => {
 });
 
 describe("registerTailnetIpc", () => {
-  it("registers the join, leave, and status channels", () => {
+  it("registers the join, leave, status, and discovery channels", () => {
     const { ipcMain, handlers } = fakeIpcMain();
     registerTailnetIpc(ipcMain, { supervisor: fakeSupervisor(), stateDir: "/data/tsnet" });
-    expect([...handlers.keys()].sort()).toEqual(["tailnet:join", "tailnet:leave", "tailnet:status"]);
+    expect([...handlers.keys()].sort()).toEqual([
+      "tailnet:discoveryBaseUrl",
+      "tailnet:join",
+      "tailnet:leave",
+      "tailnet:status",
+    ]);
   });
 
   // Letting the renderer name a filesystem path would hand a compromised page
@@ -251,5 +256,21 @@ describe("registerTailnetIpc", () => {
 
     await expect(invoke("tailnet:join", { hostname: "desktop" })).rejects.toThrow(/missing/);
     expect(supervisor.start).not.toHaveBeenCalled();
+  });
+
+  // Only the integration suite sets this: production pairs through the hosted
+  // discovery service, so the renderer must see no override at all.
+  it("hands the renderer the discovery override only when one is set", async () => {
+    const withOverride = fakeIpcMain();
+    registerTailnetIpc(withOverride.ipcMain, {
+      supervisor: fakeSupervisor(),
+      stateDir: "/tmp/tsnet",
+      discoveryBaseUrl: "http://discovery.test:18082",
+    });
+    expect(await withOverride.invoke("tailnet:discoveryBaseUrl")).toBe("http://discovery.test:18082");
+
+    const without = fakeIpcMain();
+    registerTailnetIpc(without.ipcMain, { supervisor: fakeSupervisor(), stateDir: "/tmp/tsnet" });
+    expect(await without.invoke("tailnet:discoveryBaseUrl")).toBeNull();
   });
 });

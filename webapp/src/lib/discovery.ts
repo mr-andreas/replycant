@@ -8,10 +8,10 @@
 // Polling is deliberately plain: the record is opaque and single-use, so a
 // wasted read costs nothing and a missed one just means another attempt.
 
-// Parent domain records are published under. The slot goes in front of this as
+// Origin records are published under. The slot goes in front of its host as
 // a subdomain, so a record's address never appears in a request path or query
 // where it could be logged by an intermediary.
-export const DEFAULT_DISCOVERY_HOST = "discovery.replycant.com";
+export const DEFAULT_DISCOVERY_BASE = "https://discovery.replycant.com";
 
 // How often to ask. gitd publishes as soon as the operator approves the device,
 // which is a human action, so a tight interval buys nothing but load.
@@ -26,7 +26,9 @@ export interface PollForPairingRecordOptions {
   // never has to be transmitted.
   slot: string;
 
-  discoveryHost?: string;
+  // A whole origin rather than a host, so a test can point at a plain-HTTP
+  // fake on its own port.
+  discoveryBase?: string;
   intervalMs?: number;
   timeoutMs?: number;
 
@@ -54,8 +56,10 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
-export const pairingRecordUrl = (slot: string, discoveryHost = DEFAULT_DISCOVERY_HOST): string =>
-  `https://${slot}.${discoveryHost}/`;
+export const pairingRecordUrl = (slot: string, discoveryBase = DEFAULT_DISCOVERY_BASE): string => {
+  const base = new URL(discoveryBase);
+  return `${base.protocol}//${slot}.${base.host}/`;
+};
 
 /**
  * Waits for the sealed pairing record to appear in a slot.
@@ -70,14 +74,14 @@ export const pairingRecordUrl = (slot: string, discoveryHost = DEFAULT_DISCOVERY
  */
 export const pollForPairingRecord = async ({
   slot,
-  discoveryHost = DEFAULT_DISCOVERY_HOST,
+  discoveryBase = DEFAULT_DISCOVERY_BASE,
   intervalMs = DEFAULT_INTERVAL_MS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   signal,
   fetchImpl = fetch,
   sleep = defaultSleep,
 }: PollForPairingRecordOptions): Promise<Uint8Array> => {
-  const url = pairingRecordUrl(slot, discoveryHost);
+  const url = pairingRecordUrl(slot, discoveryBase);
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {

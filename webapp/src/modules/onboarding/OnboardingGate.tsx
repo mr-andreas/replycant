@@ -26,49 +26,18 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
     );
   }
 
-  if (flow.setupMode === "serverUrl") {
+  if (flow.setupMode === "desktopRequired") {
     return (
       <div className="setup-shell">
         <div className="setup-titlebar"><WindowControls /></div>
-        <form
-          className="setup-card"
-          noValidate
-          onSubmit={(event) => {
-            event.preventDefault();
-            void flow.handleDiscoverServer();
-          }}
-        >
-          <h1>Replycant setup</h1>
+        <div className="setup-card">
+          <h1>Desktop app required</h1>
           <p>
-            Welcome to Replycant! Enter the URL to your Replycant server to get started.
+            Your library is reached over a private network that only the
+            Replycant desktop app can join. Install the desktop app to set up
+            this computer.
           </p>
-          <label>
-            Server URL
-            <input
-              type="url"
-              value={flow.serverUrlInput}
-              onChange={(event) => flow.setServerUrlInput(event.target.value)}
-              placeholder="http://127.0.0.1:8080"
-              disabled={flow.isDiscovering}
-            />
-          </label>
-          {flow.setupError ? <p className="setup-error">{flow.setupError}</p> : null}
-          <button type="submit" disabled={flow.isDiscovering}>
-            {flow.isDiscovering
-              ? <span className="button-spinner" />
-              : "Continue"}
-          </button>
-          {flow.tailnetAvailable ? (
-            <button
-              type="button"
-              className="setup-secondary-action"
-              disabled={flow.isDiscovering}
-              onClick={flow.handleBeginTailnetPairing}
-            >
-              My server is not on this network
-            </button>
-          ) : null}
-        </form>
+        </div>
       </div>
     );
   }
@@ -152,47 +121,17 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
     );
   }
 
-  if (flow.setupMode === "qr") {
-    const qrPayload = flow.identityRecord && flow.caHash
-      ? buildPublicKeyQrPayload({
-          publicKeySsh: flow.identityRecord.publicKeySsh,
-          agePublicKey: flow.identityRecord.agePublicKey,
-          deviceName: flow.identityRecord.deviceName,
-          deviceUUID: flow.identityRecord.deviceUUID,
-        }, flow.caHash)
-      : JSON.stringify({ pubkey: "", age_pubkey: "", name: "", uuid: "", ca_hash: "" });
-    return (
-      <div className="setup-shell">
-        <div className="setup-titlebar"><WindowControls /></div>
-        <div className="setup-card">
-          <h1>Authorize this device</h1>
-          <p>
-            Scan this QR code from your iOS Replycant app by going to settings and selecting "Link a new device".
-          </p>
-          <div className="qr-code-container" style={{ textAlign: "center" }}>
-            <QRCodeSVG value={qrPayload} size={256} />
-          </div>
-          {flow.setupError ? <p className="setup-error">{flow.setupError}</p> : null}
-          <button type="button" className="setup-secondary-action" onClick={flow.handleStartOver}>
-            Start over
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   if (flow.setupMode === "tailnetPairing") {
-    // The QR carries the pairing secret instead of a CA fingerprint: this
-    // device has never reached the server, so it has no CA to fingerprint yet.
-    // Scanning it is what tells the authorizing device where to publish the
-    // record this screen is waiting for.
+    // Scanning this is what tells the authorizing device where to publish
+    // the record this screen is waiting for. The payload is also on the
+    // container so scripted approval reads exactly what a phone would scan.
     const qrPayload = flow.identityRecord && flow.pairingSecret
       ? buildPublicKeyQrPayload({
           publicKeySsh: flow.identityRecord.publicKeySsh,
           agePublicKey: flow.identityRecord.agePublicKey,
           deviceName: flow.identityRecord.deviceName,
           deviceUUID: flow.identityRecord.deviceUUID,
-        }, undefined, flow.pairingSecret.encoded)
+        }, flow.pairingSecret.encoded)
       : null;
 
     return (
@@ -206,7 +145,12 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
             as soon as your server approves it.
           </p>
           {qrPayload ? (
-            <div className="qr-code-container" style={{ textAlign: "center" }}>
+            <div
+              className="qr-code-container"
+              style={{ textAlign: "center" }}
+              data-testid="pairing-qr"
+              data-payload={qrPayload}
+            >
               <QRCodeSVG value={qrPayload} size={256} />
             </div>
           ) : null}

@@ -20,7 +20,6 @@ import {
   buildPublicKeyQrPayload,
   buildMtlsHeaders,
   clearIdentityRecord,
-  computeCaHash,
   createIdentity,
   createDeviceUuid,
   getDefaultDeviceName,
@@ -163,63 +162,23 @@ describe("identity lifecycle", () => {
     expect(localStorage.getItem(IDENTITY_STORAGE_KEY)).toBe(raw);
   });
 
-  it("builds iOS-compatible public key QR payload", async () => {
+  // The QR is the only thing an approving phone learns about this device:
+  // its keys, its name, and the secret the sealed record is published under.
+  it("builds the pairing QR payload", async () => {
     const record = await createIdentity({
       keySource: { wrap: "password", password: "secret" },
       deviceName: "my-device",
       deviceUUID: "uuid-1",
     });
     const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
-    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, "abc123")) as Record<string, string>;
-    expect(payload.pubkey).toBe(unlocked.publicKeySsh);
-    expect(payload.age_pubkey).toBe(unlocked.agePublicKey);
-    expect(payload.name).toBe("my-device");
-    expect(payload.uuid).toBe("uuid-1");
-    expect(payload.ca_hash).toBe("abc123");
-  });
-
-  it("carries a pairing secret when the CA is not known yet", async () => {
-    const record = await createIdentity({
-      keySource: { wrap: "password", password: "secret" },
-      deviceName: "my-device",
-      deviceUUID: "uuid-1",
+    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, " cGFpcmluZy1zZWNyZXQ ")) as Record<string, string>;
+    expect(payload).toEqual({
+      pubkey: unlocked.publicKeySsh,
+      age_pubkey: unlocked.agePublicKey,
+      name: "my-device",
+      uuid: "uuid-1",
+      pairing_secret: "cGFpcmluZy1zZWNyZXQ",
     });
-    const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
-
-    const payload = JSON.parse(
-      buildPublicKeyQrPayload(unlocked, undefined, "cGFpcmluZy1zZWNyZXQ"),
-    ) as Record<string, string>;
-
-    expect(payload.pairing_secret).toBe("cGFpcmluZy1zZWNyZXQ");
-    // Omitted rather than empty, so a scanner routes this to the tailnet
-    // onboarding path instead of enforcing a trust root we never saw.
-    expect("ca_hash" in payload).toBe(false);
-  });
-
-  it("omits blank onboarding fields so the scanner can tell the paths apart", async () => {
-    const record = await createIdentity({
-      keySource: { wrap: "password", password: "secret" },
-      deviceName: "my-device",
-      deviceUUID: "uuid-1",
-    });
-    const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
-
-    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, "   ", "")) as Record<
-      string,
-      string
-    >;
-
-    expect("ca_hash" in payload).toBe(false);
-    expect("pairing_secret" in payload).toBe(false);
-  });
-
-  it("hashes canonical certificate bytes independent of PEM formatting", async () => {
-    const compactPem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----";
-    const spacedPem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\r\n-----END CERTIFICATE-----\n";
-    const compactHash = await computeCaHash(compactPem);
-    const spacedHash = await computeCaHash(spacedPem);
-    expect(compactHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(compactHash).toBe(spacedHash);
   });
 
   it("normalizes empty device names and generated metadata helpers", () => {

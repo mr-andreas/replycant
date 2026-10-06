@@ -116,6 +116,7 @@ declare global {
       clearIdentityKey?: () => Promise<void>;
       joinTailnet?: (request: TailnetJoinRequest) => Promise<void>;
       leaveTailnet?: () => Promise<void>;
+      discoveryBaseUrl?: () => Promise<string | null>;
       tailnetStatus?: () => Promise<unknown>;
       onTailnetStatus?: (listener: (status: unknown) => void) => () => void;
     };

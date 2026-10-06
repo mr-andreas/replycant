@@ -24,8 +24,10 @@ export default async function globalSetup() {
     stdio: "inherit",
   });
 
+  // gitd is not published: the app reaches it through its tailnet node, after
+  // pairing through hsproxy and the fake discovery host.
   const containerID = execSync(
-    `docker run --rm -d --label replycant-integration=true -p 18080:8080 -p 18443:18443 -p 18444:18444 ${IMAGE}`,
+    `docker run --rm -d --label replycant-integration=true -p 18080:8080 -p 18082:18082 -p 18085:18085 ${IMAGE}`,
   )
     .toString()
     .trim();

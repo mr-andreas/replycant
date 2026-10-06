@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_DISCOVERY_HOST, pairingRecordUrl, pollForPairingRecord } from "./discovery";
+import { DEFAULT_DISCOVERY_BASE, pairingRecordUrl, pollForPairingRecord } from "./discovery";
 
 const slot = "74994ef1ffba0150998d4495f5b97dec";
 
@@ -17,12 +17,15 @@ describe("pairingRecordUrl", () => {
   // The slot is a subdomain rather than a path so a record's address never
   // lands in a request line an intermediary might log.
   it("addresses the record by subdomain", () => {
-    expect(pairingRecordUrl(slot)).toBe(`https://${slot}.${DEFAULT_DISCOVERY_HOST}/`);
+    expect(pairingRecordUrl(slot)).toBe(`https://${slot}.discovery.replycant.com/`);
+    expect(DEFAULT_DISCOVERY_BASE).toBe("https://discovery.replycant.com");
   });
 
-  it("honours an overridden discovery host", () => {
-    expect(pairingRecordUrl(slot, "discovery.example.com")).toBe(
-      `https://${slot}.discovery.example.com/`,
+  // The desktop integration suite points this at a plain-HTTP fake on a
+  // non-default port, so the override is a whole origin, not just a host.
+  it("honours an overridden discovery origin, scheme and port included", () => {
+    expect(pairingRecordUrl(slot, "http://discovery.test:18082")).toBe(
+      `http://${slot}.discovery.test:18082/`,
     );
   });
 });

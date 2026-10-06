@@ -47,6 +47,7 @@ describe("startDesktopServer", () => {
     const server = await startDesktopServer({
       config: proxyConfig,
       staticDir: createStaticDir(),
+      getTailnetProxy: () => undefined,
     });
     activeServers.push(server);
     expect(server.url.startsWith("http://127.0.0.1:")).toBe(true);
@@ -59,6 +60,7 @@ describe("startDesktopServer", () => {
     const server = await startDesktopServer({
       config: proxyConfig,
       staticDir: createStaticDir(),
+      getTailnetProxy: () => undefined,
     });
     activeServers.push(server);
     const res = await request(server.server).get("/timeline");

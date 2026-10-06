@@ -26,7 +26,6 @@ const mockEngine = {
   updateVisibility: vi.fn(),
   shutdown: vi.fn(),
   onVisibilityRegained: vi.fn(),
-  probeOnboardingAuthorization: vi.fn(),
   syncNow: vi.fn(),
   setUserPeriodicSyncPaused: vi.fn(),
   setSyncIntervalMs: vi.fn(),
@@ -259,7 +258,6 @@ describe("useLibraryRuntime", () => {
     mockEngine.setUserPeriodicSyncPaused.mockResolvedValue(undefined);
     mockEngine.setSyncIntervalMs.mockResolvedValue(undefined);
     mockEngine.listRecentLocalCommits.mockResolvedValue([]);
-    mockEngine.probeOnboardingAuthorization.mockResolvedValue({ status: "pending_authorization" });
     mockEngine.queryDerived.mockResolvedValue([]);
     // Returns complete encryption metadata so timeline URLs never fall back to plaintext sha256.
     mockEngine.queryPointers.mockImplementation(async (paths: string[]) => {
@@ -363,7 +361,7 @@ describe("useLibraryRuntime", () => {
   });
 
   it("clears persisted setup config when wipe is called with wipeServerConfig option", async () => {
-    localStorage.setItem(SETUP_CONFIG_STORAGE_KEY, "{\"serverUrl\":\"http://replycant.local:8080\"}");
+    localStorage.setItem(SETUP_CONFIG_STORAGE_KEY, "{\"ca\":\"pem\",\"url\":\"https://gitd.replycant.internal:8443\"}");
     render(<RuntimeHarness initialMode="create" />);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "wipe-server-config" }));

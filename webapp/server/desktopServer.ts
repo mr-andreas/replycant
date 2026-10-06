@@ -21,11 +21,9 @@ export interface StartDesktopServerOptions {
   // Supplies the tailnet SOCKS5 proxy the upstream agents must dial through.
   //
   // A getter rather than a value because the tsnet sidecar comes up after this
-  // server does, and can be restarted underneath it. Omitting it keeps the
-  // server dialling directly, which is what browser `npm run dev` and LAN-only
-  // deployments need. desktop:dev and the packaged app both pass this so
-  // gitd.replycant.internal is reached through the sidecar.
-  getTailnetProxy?: () => TailnetProxy | undefined;
+  // server does, and can be restarted underneath it. Until it returns a proxy,
+  // upstream requests are refused as not connected.
+  getTailnetProxy: () => TailnetProxy | undefined;
 }
 
 // Starts a loopback-only server so the Electron renderer can use the same HTTP origin contract as the web app.
@@ -35,7 +33,7 @@ export const startDesktopServer = async ({
   port = 0,
   staticDir = resolve(process.cwd(), "dist"),
   getTailnetProxy,
-}: StartDesktopServerOptions = {}): Promise<DesktopServer> => {
+}: StartDesktopServerOptions): Promise<DesktopServer> => {
   // Owns the upstream keep-alive pool so desktop shutdown can release sockets deterministically.
   const agentPool = createMtlsAgentPool({ getTailnetProxy });
   const app = createApp(config, undefined, undefined, agentPool);

@@ -12,9 +12,8 @@ const SETUP_CONFIG_STORAGE_KEY = "replycant.setup.config";
 export const E2E_IDENTITY_PASSWORD = "e2e-password";
 
 const FAKE_SETUP_CONFIG = {
-  serverUrl: "http://localhost:18080",
   ca: "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
-  url: "https://localhost:18443",
+  url: "https://gitd.replycant.internal:8443",
 };
 
 // Builds a v2 password-wrapped identity so bypass tests never seed cleartext secrets.
@@ -109,8 +108,18 @@ async function resetBrowserState(page: Page): Promise<void> {
 }
 
 // Seeds encrypted localStorage and mocks API endpoints so shell tests can unlock into the main app.
-export async function setupOnboardingBypass(page: Page): Promise<void> {
+//
+// Only the desktop app can reach a library, so a plain browser page also gets
+// a stand-in desktop bridge; without it the app stops at "desktop app
+// required". Real Electron pages already have the bridge and must keep it.
+export async function setupOnboardingBypass(
+  page: Page,
+  { stubDesktopBridge = true }: { stubDesktopBridge?: boolean } = {},
+): Promise<void> {
   const identityValue = await getFakeEncryptedIdentity();
+  if (stubDesktopBridge) {
+    await stubDesktopBridgeOn(page);
+  }
   await page.addInitScript(
     ({ configKey, configValue, identityKey, identityRecord }) => {
       localStorage.setItem(configKey, JSON.stringify(configValue));
@@ -147,6 +156,29 @@ export async function setupOnboardingBypass(page: Page): Promise<void> {
   await page.route("**/api/git/git-upload-pack", (route: Route) =>
     route.fulfill({ status: 200, contentType: "application/x-git-upload-pack-result", body: "0000" }),
   );
+}
+
+// Makes a browser page look like the desktop shell, so mocked tests reach the
+// screens only the desktop app shows.
+//
+// There is no OS keyring, so identities stay password-wrapped, and tailnet
+// calls succeed without doing anything because the tests mock the server.
+export async function stubDesktopBridgeOn(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const noop = async () => {};
+    (window as unknown as { replycantDesktop: unknown }).replycantDesktop = {
+      platform: "e2e",
+      minimize: () => {},
+      maximize: () => {},
+      close: () => {},
+      persistedLastPage: null,
+      persistLastPage: () => true,
+      identityKeyAvailable: async () => false,
+      joinTailnet: noop,
+      leaveTailnet: noop,
+      discoveryBaseUrl: async () => null,
+    };
+  });
 }
 
 // Unlocks a seeded password-wrapped identity so bypassed tests reach the main shell.
@@ -195,8 +227,10 @@ function mapWebappIdentityToGoFormat(webappIdentity: Record<string, unknown>): s
   });
 }
 
-// Authorizes a webapp identity inside the integration container using the provisioner tool.
-function provisionWebappIdentity(webappIdentity: Record<string, unknown>): void {
+// Approves a desktop identity the way a paired phone would: the provisioner
+// commits its key, joins the tailnet as the seeder, and hands gitd the pairing
+// secret so the record the app is polling for gets published.
+function provisionWebappIdentity(webappIdentity: Record<string, unknown>, pairingSecret: string): void {
   const goIdentityJSON = mapWebappIdentityToGoFormat(webappIdentity);
   containerWriteFile("/tmp/webapp-identity.json", goIdentityJSON);
   containerExec(
@@ -204,6 +238,10 @@ function provisionWebappIdentity(webappIdentity: Record<string, unknown>): void 
     "--seeder-identity-dir=/tmp/identity",
     "--new-identity-json=/tmp/webapp-identity.json",
     "--bare-repo=/tmp/repo.git",
+    `--pairing-secret=${pairingSecret}`,
+    "--ca-file=/tmp/pki/ca.crt",
+    "--headscale-url=https://localhost:18085",
+    "--pair-url=https://gitd.replycant.internal:8443/pair",
   );
 }
 
@@ -212,7 +250,7 @@ export const test = base.extend<{
   bypassOnboarding: void;
   mockApi: (overrides?: Record<string, (route: Route) => Promise<void> | void>) => Promise<void>;
   containerExec: (...args: string[]) => string;
-  provisionWebappIdentity: (identity: Record<string, unknown>) => void;
+  provisionWebappIdentity: (identity: Record<string, unknown>, pairingSecret: string) => void;
 }>({
   resetState: [
     async ({ page }, use) => {

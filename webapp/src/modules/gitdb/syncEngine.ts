@@ -11,7 +11,6 @@ import type {
   SyncEngineConfig,
   SyncListener,
   SyncSnapshot,
-  OnboardingAuthorizationProbe,
   MtlsHeadersProvider,
   AgePrivateKeyProvider,
 } from "./syncTypes";
@@ -1149,10 +1148,6 @@ export class SyncEngine {
       isOffHead: this.isRewindPaused,
     };
     this.listener(this.snapshot);
-  }
-
-  async probeOnboardingAuthorization(): Promise<OnboardingAuthorizationProbe> {
-    return this.transport.probeOnboardingAuthorization();
   }
 
   // Reports tree traversal progress so repository scanning contributes to the

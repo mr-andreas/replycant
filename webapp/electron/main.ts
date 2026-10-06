@@ -137,6 +137,7 @@ app.whenReady().then(async () => {
   registerTailnetIpc(ipcMain, {
     supervisor: tailnet,
     stateDir: tailnetStateDir,
+    discoveryBaseUrl: process.env.REPLYCANT_DISCOVERY_BASE_URL || undefined,
     // Every window, not just the focused one: the connection panel is part of
     // the app chrome and a background window showing a stale tailnet state
     // would be worse than showing none.

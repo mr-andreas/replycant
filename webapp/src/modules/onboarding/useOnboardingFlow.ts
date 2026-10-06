@@ -15,7 +15,6 @@ import {
 import {
   buildMtlsHeaders,
   clearIdentityRecord,
-  computeCaHash,
   createIdentity,
   DecryptedIdentity,
   getDefaultDeviceName,
@@ -27,27 +26,21 @@ import {
 } from "../gitdb";
 
 // Defines setup phases so onboarding can keep identity creation and unlock behavior deterministic.
+//
+// desktopRequired is terminal: gitd is only reachable over the tailnet, and
+// joining one needs the desktop app's native sidecar.
 export type SetupMode =
   | "checking"
-  | "serverUrl"
+  | "desktopRequired"
   | "create"
   | "unlock"
-  | "qr"
   | "tailnetPairing"
   | "rehydrating"
   | "ready";
 
-// How this device expects to reach the deployment.
-//
-// The two paths diverge at the very first screen because they need opposite
-// things: the LAN path asks for a server URL and fetches the CA from it, while
-// the tailnet path has no reachable server at all and must instead publish a
-// pairing secret and wait to be handed the CA.
-export type ConnectionMode = "lan" | "tailnet";
-
-// Captures browser-owned setup fields that must survive proxy restarts and page reloads.
+// Captures the trust root and gitd origin a completed pairing produced, so
+// the proxy can be reconfigured after restarts without pairing again.
 interface SetupConfigRecord {
-  serverUrl: string;
   ca: string;
   url: string;
 }
@@ -58,18 +51,10 @@ const loadSetupConfigRecord = (): SetupConfigRecord | null => {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<SetupConfigRecord>;
-    if (
-      typeof parsed.serverUrl !== "string" ||
-      typeof parsed.ca !== "string" ||
-      typeof parsed.url !== "string"
-    ) {
+    if (typeof parsed.ca !== "string" || typeof parsed.url !== "string") {
       return null;
     }
-    return {
-      serverUrl: parsed.serverUrl,
-      ca: parsed.ca,
-      url: parsed.url,
-    };
+    return { ca: parsed.ca, url: parsed.url };
   } catch {
     return null;
   }
@@ -80,7 +65,7 @@ const saveSetupConfigRecord = (record: SetupConfigRecord): void => {
   localStorage.setItem(SETUP_CONFIG_STORAGE_KEY, JSON.stringify(record));
 };
 
-// Clears stored setup config when discovery/configuration fails irrecoverably.
+// Clears stored setup config when the proxy refuses it or the user starts over.
 const clearSetupConfigRecord = (): void => {
   localStorage.removeItem(SETUP_CONFIG_STORAGE_KEY);
 };
@@ -118,30 +103,19 @@ export interface OnboardingFlowState {
   rehydrationKey: number;
   passwordInput: string;
   deviceNameInput: string;
-  serverUrlInput: string;
   passwordRequired: boolean;
   identityRecord: ReturnType<typeof loadIdentityRecord>;
   identity: DecryptedIdentity | null;
   mtlsHeaders: Record<string, string> | null;
-  setupConfig: SetupConfigRecord | null;
-  caHash: string | null;
-  isDiscovering: boolean;
-
-  // Whether this build can join a tailnet at all. The browser build cannot, so
-  // it must not offer the choice.
-  tailnetAvailable: boolean;
 
   // The pairing secret for the attempt in progress. Present only while the
-  // tailnet QR is on screen, because a secret must never outlive its attempt.
+  // pairing QR is on screen, because a secret must never outlive its attempt.
   pairingSecret: PairingSecret | null;
 
   setSetupMode: (mode: SetupMode) => void;
   setSetupError: (message: string | null) => void;
   setPasswordInput: (value: string) => void;
   setDeviceNameInput: (value: string) => void;
-  setServerUrlInput: (value: string) => void;
-  handleDiscoverServer: () => Promise<void>;
-  handleBeginTailnetPairing: () => void;
   handleCreateIdentity: () => Promise<void>;
   handleUnlockIdentity: () => Promise<void>;
   handleStartOver: () => void;
@@ -149,20 +123,20 @@ export interface OnboardingFlowState {
 }
 
 // Owns first-run identity bootstrap so additional library views can share one setup flow.
+//
+// A new device has no server to talk to until it is paired: it creates its
+// keys, shows a QR with its public key and a pairing secret, and waits for an
+// already-paired device to approve it. Everything else arrives in the sealed
+// pairing record.
 export const useOnboardingFlow = (): OnboardingFlowState => {
   const [setupMode, setSetupMode] = useState<SetupMode>("checking");
   const [setupError, setSetupError] = useState<string | null>(null);
   const [rehydrationKey, setRehydrationKey] = useState(0);
   const [passwordInput, setPasswordInput] = useState("");
   const [deviceNameInput, setDeviceNameInput] = useState(() => getDefaultDeviceName());
-  const [serverUrlInput, setServerUrlInput] = useState("");
   const [passwordRequired, setPasswordRequired] = useState(true);
   const [identityRecord, setIdentityRecord] = useState<ReturnType<typeof loadIdentityRecord>>(null);
   const [identity, setIdentity] = useState<DecryptedIdentity | null>(null);
-  const [setupConfig, setSetupConfig] = useState<SetupConfigRecord | null>(null);
-  const [caHash, setCaHash] = useState<string | null>(null);
-  const [isDiscovering, setIsDiscovering] = useState(false);
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("lan");
   const [pairingSecret, setPairingSecret] = useState<PairingSecret | null>(null);
 
   // Abandons an in-flight discovery poll when the user starts over or the
@@ -183,7 +157,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
   const ensureTailnetJoined = useCallback(
     async (unlocked: DecryptedIdentity, ca: string | undefined): Promise<void> => {
       const record = loadTailnetConfigRecord();
-      if (!record || !tailnetSupported() || !ca) {
+      if (!record || !ca) {
         return;
       }
       await joinTailnet({ record, caPem: ca, identity: unlocked });
@@ -241,25 +215,28 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     }
   }, []);
 
-  // Rehydrates setup config on startup so onboarding resumes without requiring repeated server URL entry.
+  // Restores a paired device on startup, or starts a new one at identity
+  // creation. A device that never finished pairing has no setup config, and
+  // its pairing secret did not survive the restart, so it starts over.
   useEffect(() => {
     void (async () => {
+      if (!tailnetSupported()) {
+        setSetupMode("desktopRequired");
+        return;
+      }
       const deviceKeyAvailable = await probeDeviceKeyAvailable();
       setPasswordRequired(!deviceKeyAvailable);
       const storedConfig = loadSetupConfigRecord();
       if (!storedConfig) {
-        setSetupMode("serverUrl");
+        setSetupMode("create");
         return;
       }
-      setSetupConfig(storedConfig);
-      setServerUrlInput(storedConfig.serverUrl);
       try {
         await configureProxy(storedConfig);
       } catch (error) {
         clearSetupConfigRecord();
-        setSetupConfig(null);
         setSetupError(error instanceof Error ? error.message : "Failed to configure server setup.");
-        setSetupMode("serverUrl");
+        setSetupMode("create");
         return;
       }
       await resolveIdentitySetup();
@@ -274,89 +251,10 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     });
   }, [mtlsHeaders]);
 
-  // Computes deterministic CA hash once setup config is available so QR payload can be iOS-verifiable.
-  useEffect(() => {
-    if (!setupConfig?.ca) {
-      setCaHash(null);
-      return;
-    }
-    void (async () => {
-      try {
-        setCaHash(await computeCaHash(setupConfig.ca));
-      } catch (error) {
-        setCaHash(null);
-        setSetupError(error instanceof Error ? error.message : "Failed to compute CA hash.");
-      }
-    })();
-  }, [setupConfig?.ca]);
-
-  // Discovers setup config from caserver URL and persists it before identity creation starts.
-  const handleDiscoverServer = useCallback(async () => {
-    try {
-      setSetupError(null);
-      const serverUrl = serverUrlInput.trim();
-      if (!serverUrl) {
-        setSetupError("Server URL is required.");
-        return;
-      }
-      try {
-        // Uses URL parsing to fail fast on malformed inputs before network discovery.
-        // eslint-disable-next-line no-new
-        new URL(serverUrl);
-      } catch {
-        setSetupError("Server URL must be a valid URL.");
-        return;
-      }
-      setIsDiscovering(true);
-      const response = await fetch("/api/setup/discover", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ serverUrl }),
-      });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as {
-          error?: string;
-          detail?: string;
-        };
-        const message = payload.error ?? "Failed to discover server configuration.";
-        const detail = payload.detail ? ` ${payload.detail}` : "";
-        throw new Error(`${message}${detail}`);
-      }
-      const discovered = (await response.json()) as Partial<SetupConfigRecord>;
-      if (
-        typeof discovered.ca !== "string" ||
-        typeof discovered.url !== "string"
-      ) {
-        throw new Error("Server configuration payload is invalid.");
-      }
-      const record: SetupConfigRecord = {
-        serverUrl,
-        ca: discovered.ca,
-        url: discovered.url,
-      };
-      await configureProxy(record);
-      saveSetupConfigRecord(record);
-      setSetupConfig(record);
-      setSetupMode("create");
-    } catch (error) {
-      setSetupError(error instanceof Error ? error.message : "Failed to discover server configuration.");
-    } finally {
-      setIsDiscovering(false);
-    }
-  }, [configureProxy, serverUrlInput]);
-
-  // Starts the tailnet path from the first screen.
-  //
-  // There is no server to contact yet, so this only records the choice and
-  // moves on to identity creation. The pairing secret is minted later, once
-  // there is an age key to seal a record to, because the QR has to carry both.
-  const handleBeginTailnetPairing = useCallback(() => {
-    setSetupError(null);
-    setConnectionMode("tailnet");
-    setSetupMode("create");
-  }, []);
-
-  // Creates browser-held credentials always encrypted at rest before persistence.
+  // Creates credentials that are always encrypted at rest, then moves on to
+  // pairing. The secret is minted here rather than earlier so its lifetime
+  // matches the QR that carries it, and because the QR has to carry the age
+  // key the record will be sealed to.
   const handleCreateIdentity = useCallback(async () => {
     try {
       setSetupError(null);
@@ -376,7 +274,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
       } else {
         const deviceKey = await loadDesktopDeviceKey();
         if (!deviceKey) {
-          setSetupError("OS keyring is unavailable. Restart the desktop app or set a browser password flow.");
+          setSetupError("OS keyring is unavailable. Restart the desktop app and try again.");
           return;
         }
         keySource = { wrap: "device", deviceKey };
@@ -386,21 +284,14 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
       setIdentityRecord(created);
       const unlocked = await unlockIdentity(created, keySource);
       setIdentity(unlocked);
-      if (connectionMode === "tailnet") {
-        // Minted here rather than at the first screen so the secret's lifetime
-        // matches the QR that carries it: one secret per attempt, discarded
-        // when the attempt ends.
-        setPairingSecret(await createPairingSecret());
-        setSetupMode("tailnetPairing");
-      } else {
-        setSetupMode("qr");
-      }
+      setPairingSecret(await createPairingSecret());
+      setSetupMode("tailnetPairing");
       setPasswordInput("");
       setDeviceNameInput(created.deviceName);
     } catch (error) {
       setSetupError(error instanceof Error ? error.message : "Failed to create identity.");
     }
-  }, [connectionMode, deviceNameInput, passwordInput, passwordRequired]);
+  }, [deviceNameInput, passwordInput, passwordRequired]);
 
   // Decrypts password-wrapped credentials so setup can continue without recreating identity.
   const handleUnlockIdentity = useCallback(async () => {
@@ -425,10 +316,9 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
 
   // Waits for the deployment to authorize this device, then joins its tailnet.
   //
-  // Everything the device needs arrives in one sealed record: the CA to trust,
-  // where headscale is, and a single-use tailnet credential. Until that record
-  // appears the device has no way to reach anything, which is why this is a
-  // poll rather than a request.
+  // Everything the device needs arrives in one sealed record: the CA to trust
+  // and where headscale is. Until that record appears the device has no way to
+  // reach anything, which is why this is a poll rather than a request.
   //
   // The CA is checked against the fingerprint in the headscale hostname before
   // it is installed. That check is independent of the record's encryption, so a
@@ -443,8 +333,10 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
 
     void (async () => {
       try {
+        const discoveryBase = (await window.replycantDesktop?.discoveryBaseUrl?.()) ?? undefined;
         const sealed = await pollForPairingRecord({
           slot: pairingSecret.slot,
+          discoveryBase,
           signal: controller.signal,
         });
         const payload = await openPairingRecord(
@@ -463,11 +355,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
           identity,
         });
 
-        const config: SetupConfigRecord = {
-          serverUrl: gitdTailnetUrl(),
-          ca: payload.caPem,
-          url: gitdTailnetUrl(),
-        };
+        const config: SetupConfigRecord = { ca: payload.caPem, url: gitdTailnetUrl() };
         await configureProxy(config);
 
         // Persisted only after the tailnet is actually up and the proxy has
@@ -479,8 +367,6 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
         if (controller.signal.aborted) {
           return;
         }
-        setSetupConfig(config);
-        setServerUrlInput(config.serverUrl);
         setPairingSecret(null);
         setSetupMode("rehydrating");
       } catch (error) {
@@ -501,7 +387,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     };
   }, [configureProxy, identity, pairingSecret, setupMode]);
 
-  // Provides an explicit escape hatch when users need to restart setup against a different server.
+  // Discards this device's identity and pairing so it can be paired afresh.
   const handleStartOver = useCallback(() => {
     pairingAbort.current?.abort();
     clearSetupConfigRecord();
@@ -516,15 +402,11 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     void window.replycantDesktop?.leaveTailnet?.().catch(() => {
       // Best-effort; the node also goes down when the app quits.
     });
-    setSetupMode("serverUrl");
+    setSetupMode("create");
     setSetupError(null);
-    setSetupConfig(null);
-    setCaHash(null);
     setIdentityRecord(null);
     setIdentity(null);
     setPasswordInput("");
-    setServerUrlInput("");
-    setConnectionMode("lan");
     setPairingSecret(null);
   }, []);
 
@@ -540,23 +422,15 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
     rehydrationKey,
     passwordInput,
     deviceNameInput,
-    serverUrlInput,
     passwordRequired,
     identityRecord,
     identity,
     mtlsHeaders,
-    setupConfig,
-    caHash,
-    isDiscovering,
-    tailnetAvailable: tailnetSupported(),
     pairingSecret,
     setSetupMode,
     setSetupError,
     setPasswordInput,
     setDeviceNameInput,
-    setServerUrlInput,
-    handleDiscoverServer,
-    handleBeginTailnetPairing,
     handleCreateIdentity,
     handleUnlockIdentity,
     handleStartOver,
