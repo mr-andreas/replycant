@@ -172,7 +172,9 @@ paired again.
 The same property lets gitd drop every device node at the first push. Any
 node that joined while the repository was empty did so without a key in
 `pubkeys/`, so it is removed. The first device then re-enrolls with its
-now-authorized certificate.
+now-authorized certificate. Its onboarding waits for that re-enrollment
+before finishing, so the first sync does not start while it is off the
+tailnet.
 
 ```mermaid
 sequenceDiagram

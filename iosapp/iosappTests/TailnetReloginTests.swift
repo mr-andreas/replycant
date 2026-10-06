@@ -198,4 +198,135 @@ struct TailnetReloginTests {
         )
         #expect(!running.needsLogin)
     }
+
+    // MARK: - Re-enrollment after the first push
+
+    // gitd expires every device node at the first push, including the one
+    // that just pushed. Onboarding waits for that expiry and the relogin that
+    // follows, so sync never starts while the node cannot reach gitd. These
+    // drive the wait with scripted backend states, because no unit test can
+    // run a real node.
+
+    /// Replays backend states in order and then repeats the last one, the
+    /// way a node settles into a state between polls.
+    private final class StateScript: @unchecked Sendable {
+        private let lock = NSLock()
+        private var states: [String?]
+
+        init(_ states: [String?]) {
+            self.states = states
+        }
+
+        func next() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return states.count > 1 ? states.removeFirst() : states.first ?? nil
+        }
+    }
+
+    /// Counts relogins, so a test can tell one key from two.
+    private final class ReloginCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func increment() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    private struct MintFailed: Error {}
+
+    private static func awaitReenrollment(
+        _ script: StateScript,
+        relogin: @escaping @Sendable () async throws -> Void,
+        expiryTimeout: Duration = .seconds(2),
+        runningTimeout: Duration = .seconds(2)
+    ) async throws -> TailnetManager.ReenrollmentOutcome {
+        try await TailnetManager.awaitReenrollment(
+            backendState: { script.next() },
+            relogin: relogin,
+            expiryTimeout: expiryTimeout,
+            runningTimeout: runningTimeout,
+            pollInterval: .milliseconds(5)
+        )
+    }
+
+    // The expected path: the node is Running when the push lands, gitd
+    // expires it, and one fresh key brings it back. tsnet keeps reporting
+    // NeedsLogin while that login is in flight, and seeing it again must not
+    // cost a second key.
+    @Test func anExpiredNodeIsLoggedInOnceAndAwaitedUntilRunning() async throws {
+        let script = StateScript(["Running", "Running", "NeedsLogin", "NeedsLogin", "Starting", "Running"])
+        let relogins = ReloginCounter()
+
+        let outcome = try await Self.awaitReenrollment(script) { relogins.increment() }
+
+        #expect(outcome == .reenrolled)
+        #expect(relogins.count == 1)
+    }
+
+    // If gitd never expires the node, for example because its reconcile
+    // failed and will retry later, onboarding must still finish. The relogin
+    // watch covers a sweep that arrives after the wait.
+    @Test func aNodeThatIsNeverExpiredIsLeftAlone() async throws {
+        let script = StateScript(["Running"])
+        let relogins = ReloginCounter()
+
+        let outcome = try await Self.awaitReenrollment(
+            script,
+            relogin: { relogins.increment() },
+            expiryTimeout: .milliseconds(50)
+        )
+
+        #expect(outcome == .notExpired)
+        #expect(relogins.count == 0)
+    }
+
+    // A status read that fails says nothing about the login. Treating it as
+    // an expiry would spend a key on a node headscale still accepts.
+    @Test func anUnreadableStatusIsNotAnExpiry() async throws {
+        let script = StateScript([nil])
+        let relogins = ReloginCounter()
+
+        let outcome = try await Self.awaitReenrollment(
+            script,
+            relogin: { relogins.increment() },
+            expiryTimeout: .milliseconds(50)
+        )
+
+        #expect(outcome == .notExpired)
+        #expect(relogins.count == 0)
+    }
+
+    // A refused or failed mint has to reach the caller, which logs it.
+    // Waiting for Running after it would only burn the whole timeout.
+    @Test func aFailedReloginIsReported() async {
+        let script = StateScript(["NeedsLogin"])
+
+        await #expect(throws: MintFailed.self) {
+            _ = try await Self.awaitReenrollment(script) { throw MintFailed() }
+        }
+    }
+
+    // A login that never completes must end the wait, or onboarding would
+    // hang on a control plane that stopped answering.
+    @Test func aLoginThatNeverCompletesTimesOut() async {
+        let script = StateScript(["NeedsLogin"])
+
+        await #expect(throws: TailnetManager.TailnetError.reenrollmentTimedOut) {
+            _ = try await Self.awaitReenrollment(
+                script,
+                relogin: {},
+                runningTimeout: .milliseconds(50)
+            )
+        }
+    }
 }

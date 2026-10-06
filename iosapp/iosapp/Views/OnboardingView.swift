@@ -768,6 +768,11 @@ struct OnboardingView: View {
         
         try await gitDB.push()
 
+        // gitd takes this device off the tailnet at the first push and lets it
+        // straight back in; syncing before that finishes fails.
+        updateProgress(91, message: "Reconnecting to your library's network...")
+        await TailnetBootstrap.shared.awaitReenrollmentAfterFirstPush()
+
         updateProgress(92, message: "Building media index...")
         try await gitDB.syncToHead { phase, loaded, total in
             let fraction = total > 0 ? Double(loaded) / Double(total) : 0

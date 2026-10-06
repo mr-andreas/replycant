@@ -81,6 +81,9 @@ public actor TailnetManager: TailnetNodeProviding {
         /// Join reached a live node that still could not hand out SOCKS
         /// settings, so later sessions would have no way to reach gitd.
         case missingProxy
+        /// A node expired by the first push was logged in again but never
+        /// got back to Running, so it still cannot reach gitd.
+        case reenrollmentTimedOut
     }
 
     private let stateDirectory: URL
@@ -362,11 +365,16 @@ public actor TailnetManager: TailnetNodeProviding {
     }
 
     private static func needsLogin(_ node: TailscaleNode) async -> Bool {
+        await backendState(node) == "NeedsLogin"
+    }
+
+    /// The node's backend state, or nil when its status cannot be read.
+    private static func backendState(_ node: TailscaleNode) async -> String? {
         guard let data = try? await node.statusJSON(),
               let report = try? TailnetStatusReport.decode(data, controlRoute: nil) else {
-            return false
+            return nil
         }
-        return report.needsLogin
+        return report.backendState
     }
 
     /// Keeps a running node on the tailnet when headscale stops accepting it.
@@ -396,8 +404,8 @@ public actor TailnetManager: TailnetNodeProviding {
     // tailscale_up for good. Keeping the node also keeps its SOCKS proxy and
     // the shim's tailnet route valid, so nothing else has to be redone.
     private func reloginIfForgotten() async {
-        guard let node, let shim else { return }
-        if let lastRelogin, Date().timeIntervalSince(lastRelogin) < Self.reloginCooldown {
+        guard let node, shim != nil else { return }
+        guard Self.shouldMint(needsLogin: true, lastAttempt: lastRelogin, now: Date()) else {
             return
         }
         var forgotten = forgottenNode.consume()
@@ -405,16 +413,114 @@ public actor TailnetManager: TailnetNodeProviding {
             forgotten = await Self.needsLogin(node)
         }
         guard forgotten else { return }
-        lastRelogin = Date()
 
-        logger?("tailnet: headscale forgot this node; minting a key")
         do {
-            let key = try await shim.mintPreauthKey()
-            try await Self.logIn(node: node, key: key)
-            logger?("tailnet: logged in again with a new key")
+            try await relogin(reason: "headscale forgot this node")
         } catch {
             logger?("tailnet: could not log this node back in: \(error)")
         }
+    }
+
+    /// Mints a key and logs the running node in with it, at most once per
+    /// cooldown.
+    ///
+    /// Shared by the relogin watch and the post-push wait, which can both see
+    /// the same expiry. `lastRelogin` is claimed before the first suspension,
+    /// so whichever gets here second skips instead of spending another key
+    /// and restarting the backend mid-login.
+    private func relogin(reason: String) async throws {
+        guard let node, let shim else { throw TailnetError.notJoined }
+        guard Self.shouldMint(needsLogin: true, lastAttempt: lastRelogin, now: Date()) else {
+            return
+        }
+        lastRelogin = Date()
+
+        logger?("tailnet: \(reason); minting a key")
+        let key = try await shim.mintPreauthKey()
+        try await Self.logIn(node: node, key: key)
+        logger?("tailnet: logged in again with a new key")
+    }
+
+    /// What waiting for re-enrollment found, so the caller can tell a node
+    /// that came back from one that was never sent away.
+    public enum ReenrollmentOutcome: Equatable, Sendable {
+        case notExpired
+        case reenrolled
+    }
+
+    /// How long to wait for gitd's first-push sweep to expire this node. The
+    /// sweep usually lands within a couple of seconds of the push; past this,
+    /// onboarding moves on and the relogin watch covers a late one.
+    static let reenrollmentExpiryTimeout: Duration = .seconds(15)
+
+    /// How long an expired node may take to get back to Running. A key mint
+    /// and control registration through the hosted relay take several
+    /// seconds.
+    static let reenrollmentRunningTimeout: Duration = .seconds(60)
+
+    /// Short, because onboarding is on screen waiting for this.
+    static let reenrollmentPollInterval: Duration = .milliseconds(250)
+
+    /// Holds the caller until the node is back on the tailnet after the
+    /// bootstrap push.
+    ///
+    /// gitd expires every device node at the first push, the pushing device
+    /// included, because anything that joined while the repository was empty
+    /// did so without a key in `pubkeys/`. Left alone, the node only notices
+    /// on the relogin watch's next tick, and every request made until it is
+    /// Running again fails through the SOCKS proxy. Waiting here instead keeps
+    /// the first sync and photo upload from starting into that outage.
+    ///
+    /// Returns `.notExpired` if no expiry shows up in time; throws if the
+    /// relogin fails or the node does not get back to Running.
+    public func awaitReenrollment() async throws -> ReenrollmentOutcome {
+        guard let node else { throw TailnetError.notJoined }
+        let outcome = try await Self.awaitReenrollment(
+            backendState: { await Self.backendState(node) },
+            relogin: { try await self.relogin(reason: "the first push expired this node") },
+            expiryTimeout: Self.reenrollmentExpiryTimeout,
+            runningTimeout: Self.reenrollmentRunningTimeout,
+            pollInterval: Self.reenrollmentPollInterval
+        )
+        switch outcome {
+        case .notExpired:
+            logger?("tailnet: the first push did not expire this node; continuing")
+        case .reenrolled:
+            logger?("tailnet: back on the tailnet after the first push")
+        }
+        return outcome
+    }
+
+    /// The decision behind `awaitReenrollment`, with the node reduced to its
+    /// backend state so it can be tested without a real tailnet.
+    ///
+    /// Waits for NeedsLogin, logs in once, then waits for Running. It never
+    /// logs in a second time: tsnet keeps reporting NeedsLogin while a key
+    /// login is in flight. A nil state is an unreadable status, which says
+    /// nothing about the login and is never taken as an expiry.
+    static func awaitReenrollment(
+        backendState: @Sendable () async -> String?,
+        relogin: @Sendable () async throws -> Void,
+        expiryTimeout: Duration,
+        runningTimeout: Duration,
+        pollInterval: Duration
+    ) async throws -> ReenrollmentOutcome {
+        let clock = ContinuousClock()
+
+        let expiryDeadline = clock.now.advanced(by: expiryTimeout)
+        while await backendState() != "NeedsLogin" {
+            guard clock.now < expiryDeadline else { return .notExpired }
+            try await Task.sleep(for: pollInterval)
+        }
+
+        try await relogin()
+
+        let runningDeadline = clock.now.advanced(by: runningTimeout)
+        while await backendState() != TailnetStatusReport.runningState {
+            guard clock.now < runningDeadline else { throw TailnetError.reenrollmentTimedOut }
+            try await Task.sleep(for: pollInterval)
+        }
+        return .reenrolled
     }
 
     /// Points the shim at gitd's in-tailnet control relay.
