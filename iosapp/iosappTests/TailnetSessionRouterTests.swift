@@ -216,3 +216,165 @@ struct TailnetSessionRouterTests {
         #expect(try await TailnetSessionRouter.shared.apply(to: configuration) == false)
     }
 }
+
+/// Covers the window between launch and the node coming up.
+///
+/// Launch no longer waits indefinitely for the join, so requests can be
+/// issued while it is still in flight. Each test uses its own router so the
+/// pending state never leaks into suites running in parallel against the
+/// shared one.
+@Suite(.serialized)
+struct TailnetSessionRouterPendingTests {
+    // A paired device that has not joined yet must not dial gitd directly:
+    // the name does not resolve off the tailnet, and on a LAN that resolves
+    // it the request could reach a host the user never authorized.
+    @Test func pendingRefusesInsteadOfDiallingDirectly() async throws {
+        let router = TailnetSessionRouter()
+        router.expectTailnet()
+
+        #expect(router.isActive == true)
+        await #expect(throws: TailnetSessionRouter.RoutingError.notConnectedYet) {
+            _ = try await router.apply(to: URLSessionConfiguration.ephemeral)
+        }
+        let configuration = URLSessionConfiguration.default
+        #expect(router.applySynchronously(to: configuration) == false)
+        #expect(configuration.connectionProxyDictionary == nil)
+    }
+
+    // The node arriving ends the pending state, so requests issued after the
+    // background join finishes go through it.
+    @Test func installingANodeEndsThePendingState() async throws {
+        let router = TailnetSessionRouter()
+        router.expectTailnet()
+        router.use(FakeNode(proxyHost: "127.0.0.1"))
+
+        let configuration = URLSessionConfiguration.ephemeral
+        #expect(try await router.apply(to: configuration) == true)
+        #expect(configuration.connectionProxyDictionary?["stubProxyHost"] as? String == "127.0.0.1")
+    }
+
+    // Long-lived sessions compare generations to notice that the node they
+    // were built for is gone or has arrived, so every change must bump it.
+    @Test func everyRoutingChangeBumpsTheGeneration() {
+        let router = TailnetSessionRouter()
+        let initial = router.generation
+
+        router.expectTailnet()
+        let pending = router.generation
+        router.use(FakeNode())
+        let joined = router.generation
+        router.use(nil)
+
+        #expect(pending > initial)
+        #expect(joined > pending)
+        #expect(router.generation > joined)
+    }
+}
+
+/// Covers how a long-lived LFS client follows the router.
+///
+/// The timeline and upload screens each keep one GitLFS client for the life
+/// of the screen. Built during a background join, a client that captured the
+/// proxy at init would stay unproxied for good, so it must pick the routing
+/// up when it issues requests instead.
+@Suite(.serialized)
+struct GitLFSTailnetRoutingTests {
+    private static let host = "tailnet-routing-lfs.local"
+
+    private func makeClient(router: TailnetSessionRouter) -> GitLFS {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TailnetRoutingLFSURLProtocol.self]
+        return GitLFS(
+            serverURL: "https://\(Self.host)/lfs",
+            sessionConfiguration: configuration,
+            router: router
+        )
+    }
+
+    // A client created before the node is up fails fast with a clear error,
+    // then works once the node arrives without being recreated.
+    @Test func clientCreatedWhilePendingWorksOnceTheNodeArrives() async throws {
+        let router = TailnetSessionRouter()
+        router.expectTailnet()
+        let client = makeClient(router: router)
+        TailnetRoutingLFSURLProtocol.reset()
+
+        await #expect(throws: LFSError.self) {
+            _ = try await client.downloadData(oid: "missing", size: 1)
+        }
+        #expect(TailnetRoutingLFSURLProtocol.requestCount == 0)
+
+        let node = FakeNode()
+        router.use(node)
+        await #expect(throws: LFSError.self) {
+            // The stub answers 404 for every object; reaching it is the point.
+            _ = try await client.downloadData(oid: "missing", size: 1)
+        }
+        #expect(TailnetRoutingLFSURLProtocol.requestCount > 0)
+        #expect(node.cachedApplyCount == 1)
+    }
+
+    // Re-pairing replaces the node, and a session still pointed at the old
+    // node's proxy would reach nothing.
+    @Test func clientRebuildsItsSessionWhenTheNodeChanges() async throws {
+        let router = TailnetSessionRouter()
+        let first = FakeNode(proxyHost: "127.0.0.1")
+        router.use(first)
+        let client = makeClient(router: router)
+        TailnetRoutingLFSURLProtocol.reset()
+
+        _ = try? await client.downloadData(oid: "missing", size: 1)
+        _ = try? await client.downloadData(oid: "missing", size: 1)
+        #expect(first.cachedApplyCount == 1)
+
+        let second = FakeNode(proxyHost: "127.0.0.2")
+        router.use(second)
+        _ = try? await client.downloadData(oid: "missing", size: 1)
+        #expect(second.cachedApplyCount == 1)
+        #expect(first.cachedApplyCount == 1)
+    }
+}
+
+/// Answers every request with a 404, and counts requests so a test can tell
+/// whether a client reached the network at all.
+private final class TailnetRoutingLFSURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var count = 0
+
+    static var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    static func reset() {
+        lock.lock()
+        count = 0
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "tailnet-routing-lfs.local"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.count += 1
+        Self.lock.unlock()
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 404,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/vnd.git-lfs+json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}

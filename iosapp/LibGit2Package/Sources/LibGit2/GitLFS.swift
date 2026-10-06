@@ -103,8 +103,15 @@ public final class GitLFS: NSObject {
     // delegate until invalidation; using `self` would leak the client.
     private let authDelegate: MTLSURLSessionAuthDelegate
     // One long-lived session per client so concurrent timeline downloads
-    // do not create/invalidate sessions that CFNetwork still holds.
-    private let session: URLSession
+    // do not create/invalidate sessions that CFNetwork still holds. Built
+    // on first use rather than at init, and rebuilt when the tailnet node
+    // changes: launch does not wait for the join to finish, so a client
+    // created during it would otherwise stay unproxied for good.
+    private let baseConfiguration: URLSessionConfiguration
+    private let router: TailnetSessionRouter
+    private let sessionLock = NSLock()
+    private var cachedSession: URLSession?
+    private var cachedSessionGeneration: UInt64 = 0
     private let uploadTaskLock = NSLock()
     private var activeUploadTasks: [ObjectIdentifier: URLSessionTask] = [:]
     
@@ -114,7 +121,8 @@ public final class GitLFS: NSObject {
         authToken: String? = nil,
         clientIdentity: SecIdentity? = nil,
         pinnedCA: SecCertificate? = nil,
-        sessionConfiguration: URLSessionConfiguration = .default
+        sessionConfiguration: URLSessionConfiguration = .default,
+        router: TailnetSessionRouter = .shared
     ) {
         var cleanURL = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
         var extractedUsername: String?
@@ -149,23 +157,9 @@ public final class GitLFS: NSObject {
         // ImageDiskCacheManager and cache writes raced session teardown.
         let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
         configuration.urlCache = nil
-        // gitd is only reachable over the tailnet once a deployment uses one,
-        // so this has to happen before the session is built. Synchronous
-        // because init cannot await, and the node is already running.
-        //
-        // A failure is logged rather than thrown: this initialiser is not
-        // throwing, and every request the session goes on to make will fail on
-        // an unresolvable name anyway. The log is what makes that legible.
-        if TailnetSessionRouter.shared.isActive,
-           !TailnetSessionRouter.shared.applySynchronously(to: configuration) {
-            logError("Tailnet proxy could not be installed for LFS", context: "GitLFS")
-        }
-        self.session = URLSession(
-            configuration: configuration,
-            delegate: self.authDelegate,
-            delegateQueue: nil
-        )
-        
+        self.baseConfiguration = configuration
+        self.router = router
+
         super.init()
         
         if username != nil {
@@ -176,7 +170,37 @@ public final class GitLFS: NSObject {
     // Releases the shared session when the client is discarded so the
     // auth delegate is not retained for the rest of the process lifetime.
     deinit {
-        session.finishTasksAndInvalidate()
+        cachedSession?.finishTasksAndInvalidate()
+    }
+
+    /// The session for the next request, routed the way the router says now.
+    ///
+    /// Throws rather than dialling directly while the tailnet is expected but
+    /// not up: gitd's name does not resolve off the tailnet, and on a LAN
+    /// that does resolve it the request could reach an unintended host. A
+    /// replaced session is finished rather than cancelled, so transfers
+    /// already running on it complete.
+    private func currentSession() throws -> URLSession {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+
+        let generation = router.generation
+        if let cachedSession, cachedSessionGeneration == generation {
+            return cachedSession
+        }
+        let configuration = baseConfiguration.copy() as! URLSessionConfiguration
+        if router.isActive, !router.applySynchronously(to: configuration) {
+            throw LFSError.networkError("Not connected to your library's network yet")
+        }
+        cachedSession?.finishTasksAndInvalidate()
+        let session = URLSession(
+            configuration: configuration,
+            delegate: authDelegate,
+            delegateQueue: nil
+        )
+        cachedSession = session
+        cachedSessionGeneration = generation
+        return session
     }
 
     // Cancels in-flight PUT tasks so sync abort stops uploads without
@@ -330,6 +354,7 @@ public final class GitLFS: NSObject {
             }
         }
 
+        let session = try currentSession()
         let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Swift.Error>) in
             delegate.completion = { error, response in
                 if let error {
@@ -343,7 +368,7 @@ public final class GitLFS: NSObject {
                 continuation.resume(returning: response)
             }
 
-            let task = self.session.uploadTask(withStreamedRequest: request)
+            let task = session.uploadTask(withStreamedRequest: request)
             task.delegate = delegate
             uploadTask = task
             self.trackUpload(task)
@@ -420,8 +445,9 @@ public final class GitLFS: NSObject {
             }
         }
         
+        let session = try currentSession()
         let (_, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
-            let task = self.session.uploadTask(with: request, from: data) { data, response, error in
+            let task = session.uploadTask(with: request, from: data) { data, response, error in
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
@@ -499,12 +525,13 @@ public final class GitLFS: NSObject {
             pinnedCA: pinnedCA
         )
 
+        let session = try currentSession()
         let requestStart = DispatchTime.now()
 
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
                 delegate.whenFinished(continuation)
-                let task = self.session.dataTask(with: request) {
+                let task = session.dataTask(with: request) {
                     data, response, error in
                     delegate.completeTask(
                         data: data,
@@ -607,9 +634,10 @@ public final class GitLFS: NSObject {
         let encoder = JSONEncoder()
         request.httpBody = try encoder.encode(batchRequest)
 
+        let session = try currentSession()
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
-                let task = self.session.dataTask(with: request) {
+                let task = session.dataTask(with: request) {
                     data, response, error in
                     if let error = error {
                         continuation.resume(throwing: error)
@@ -688,8 +716,9 @@ public final class GitLFS: NSObject {
         request.httpBody = try encoder.encode(batchRequest)
         
         print("LFS: Sending batch request...")
+        let session = try currentSession()
         let (data, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
-            let task = self.session.dataTask(with: request) { data, response, error in
+            let task = session.dataTask(with: request) { data, response, error in
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {

@@ -14,34 +14,73 @@ import Foundation
 public final class TailnetSessionRouter: @unchecked Sendable {
     public static let shared = TailnetSessionRouter()
 
+    /// Why a session could not be routed.
+    public enum RoutingError: LocalizedError, Equatable {
+        /// The device belongs to a tailnet whose node is not up yet. Launch
+        /// does not wait indefinitely for the join, so requests can arrive in
+        /// this window and must be refused rather than dialled directly.
+        case notConnectedYet
+
+        public var errorDescription: String? {
+            "Not connected to your library's network yet."
+        }
+    }
+
     private let lock = NSLock()
     private var node: TailnetNodeProviding?
+    private var expectsTailnet = false
+    private var currentGeneration: UInt64 = 0
 
-    private init() {}
+    /// Public so tests can use a private router instead of the shared one,
+    /// which suites running in parallel also depend on.
+    public init() {}
 
     /// Reports whether traffic should be going through a tailnet at all.
     ///
-    /// False for LAN deployments, which keep dialling the server directly.
+    /// True while a join is still pending, so call sites refuse rather than
+    /// dial directly. False only for devices with no tailnet configured.
     public var isActive: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return node != nil
+        return node != nil || expectsTailnet
     }
 
-    /// Installs the node every later session will be proxied through.
-    ///
-    /// Sessions created before this are not retroactively proxied, which is why
-    /// callers must join the tailnet before issuing their first request.
-    public func use(_ node: TailnetNodeProviding?) {
+    /// Changes whenever routing does. A long-lived session records the
+    /// generation it was built under and rebuilds once it differs, which is
+    /// how a session created during a background join picks up the node.
+    public var generation: UInt64 {
         lock.lock()
-        self.node = node
+        defer { lock.unlock() }
+        return currentGeneration
+    }
+
+    /// Marks this device as reached over a tailnet whose node is not up yet.
+    ///
+    /// Called before a join starts, so requests issued while it runs fail
+    /// fast with `RoutingError.notConnectedYet` instead of escaping the
+    /// tailnet. Drops any installed node, because the join replaces it.
+    public func expectTailnet() {
+        lock.lock()
+        node = nil
+        expectsTailnet = true
+        currentGeneration += 1
         lock.unlock()
     }
 
-    private var currentNode: TailnetNodeProviding? {
+    /// Installs the node every later session will be proxied through, or
+    /// clears routing entirely when the device leaves its tailnet.
+    public func use(_ node: TailnetNodeProviding?) {
+        lock.lock()
+        self.node = node
+        expectsTailnet = false
+        currentGeneration += 1
+        lock.unlock()
+    }
+
+    private var currentState: (node: TailnetNodeProviding?, pending: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        return node
+        return (node, expectsTailnet)
     }
 
     /// Applies the tailnet proxy to a configuration, or leaves it untouched
@@ -52,7 +91,11 @@ public final class TailnetSessionRouter: @unchecked Sendable {
     /// LAN that happens to resolve the name, could reach an unintended host.
     @discardableResult
     public func apply(to configuration: URLSessionConfiguration) async throws -> Bool {
-        guard let node = currentNode else {
+        let state = currentState
+        guard let node = state.node else {
+            if state.pending {
+                throw RoutingError.notConnectedYet
+            }
             return false
         }
         try await node.apply(to: configuration)
@@ -79,11 +122,11 @@ public final class TailnetSessionRouter: @unchecked Sendable {
     /// a hop onto the node actor — waiting on that hop from a User-initiated
     /// or User-interactive thread is a priority inversion.
     ///
-    /// Returns whether a proxy was installed, so the caller can log a bypass
-    /// rather than discovering it as an unresolvable hostname.
+    /// Returns whether a proxy was installed. While a join is pending this is
+    /// false with `isActive` true, which callers already treat as a refusal.
     @discardableResult
     public func applySynchronously(to configuration: URLSessionConfiguration) -> Bool {
-        guard let node = currentNode else {
+        guard let node = currentState.node else {
             return false
         }
         return node.applyCachedProxy(to: configuration)

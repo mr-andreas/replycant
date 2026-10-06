@@ -9,17 +9,19 @@ import Security
 /// gitd publishes no host ports, so on a tailnet deployment every request the
 /// app makes depends on membership. A userspace node only runs while the app
 /// does, which means joining is part of startup rather than a one-time setup
-/// step, and anything that issues requests has to wait for it.
+/// step, and requests issued before the node is up are refused.
 ///
-/// Deployments that were onboarded over the LAN have no tailnet configuration
-/// and must keep working untouched, so every entry point here is a no-op when
-/// nothing is stored.
+/// A device that has not paired yet has no tailnet configuration, so every
+/// entry point here is a no-op when nothing is stored.
 actor TailnetBootstrap {
     static let shared = TailnetBootstrap()
 
-    enum BootstrapError: LocalizedError {
+    enum BootstrapError: LocalizedError, Equatable {
         case missingPinnedCA
         case missingDeviceIdentity
+        /// The launch join did not finish in time. Not a failure: it keeps
+        /// running and the node is installed when it comes up.
+        case stillConnecting
 
         var errorDescription: String? {
             switch self {
@@ -27,20 +29,38 @@ actor TailnetBootstrap {
                 return "This device has no pinned CA, so it cannot verify the tailnet control plane."
             case .missingDeviceIdentity:
                 return "This device has no identity, so the tailnet control plane would reject it."
+            case .stillConnecting:
+                return "Still connecting to your library's network."
             }
         }
     }
 
     private static let statusPollInterval: Duration = .seconds(10)
 
+    /// How long launch waits for the node. Long enough that an online launch
+    /// comes up before the first request, short enough that an offline one
+    /// still reaches the local library promptly.
+    static let launchJoinTimeout: Duration = .seconds(10)
+
     private let configurations: TailnetConfigurationManager
+    private let router: TailnetSessionRouter
+    private let rejoinOverride: (@Sendable (TailnetConfiguration) async throws -> Void)?
     private var manager: TailnetManager?
+    private var launchJoin: Task<Void, Error>?
     private var statusWatch: Task<Void, Never>?
     private var lastLoggedStatus: TailnetStatusReport?
     private var lastStatusError: String?
 
-    init(configurations: TailnetConfigurationManager = .shared) {
+    /// - Parameter rejoin: replaces the real rejoin, so tests can stand in
+    ///   for a node that never comes up.
+    init(
+        configurations: TailnetConfigurationManager = .shared,
+        router: TailnetSessionRouter = .shared,
+        rejoin: (@Sendable (TailnetConfiguration) async throws -> Void)? = nil
+    ) {
         self.configurations = configurations
+        self.router = router
+        self.rejoinOverride = rejoin
     }
 
     /// Where tsnet persists the node's machine key and peer state.
@@ -59,15 +79,61 @@ actor TailnetBootstrap {
     /// Brings the tailnet up if this device is paired to one, and does nothing
     /// otherwise.
     ///
-    /// Idempotent, because it runs at launch and again before any flow that
-    /// must not proceed without connectivity. A rejoin carries no pre-auth key:
-    /// the node re-authenticates from the state directory, and mints a fresh
-    /// key through hsproxy if headscale has lost track of it.
-    func ensureJoinedIfConfigured() async throws {
+    /// Waits at most `timeout`, then throws `stillConnecting` while the join
+    /// carries on: libtailscale cannot cancel a node that is coming up, so an
+    /// offline launch would otherwise never reach the local library. Until
+    /// the node is up the router refuses requests rather than dialling
+    /// directly, and concurrent callers share the one join in flight.
+    ///
+    /// A rejoin carries no pre-auth key: the node re-authenticates from the
+    /// state directory, and mints a fresh key through hsproxy if headscale has
+    /// lost track of it.
+    func ensureJoinedIfConfigured(timeout: Duration = launchJoinTimeout) async throws {
         guard let configuration = configurations.load() else { return }
         if let manager, await manager.isJoined { return }
 
+        let join: Task<Void, Error>
+        if let launchJoin {
+            join = launchJoin
+        } else {
+            router.expectTailnet()
+            // Inherits this actor, so it cannot start before `launchJoin` is
+            // set, and clearing it afterwards lets a failed join be retried.
+            join = Task {
+                defer { launchJoin = nil }
+                try await rejoin(configuration)
+            }
+            launchJoin = join
+        }
+        try await Self.wait(for: join, timeout: timeout)
+    }
+
+    private func rejoin(_ configuration: TailnetConfiguration) async throws {
+        if let rejoinOverride {
+            try await rejoinOverride(configuration)
+            return
+        }
         try await join(configuration: configuration, preauthKey: nil, onProgress: nil)
+    }
+
+    /// Waits for a join without being held by it. Awaiting the task's value
+    /// directly cannot be abandoned, which is exactly the hang this avoids.
+    private static func wait(for join: Task<Void, Error>, timeout: Duration) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let outcome = JoinOutcome(continuation)
+            Task {
+                do {
+                    try await join.value
+                    outcome.resolve(.success(()))
+                } catch {
+                    outcome.resolve(.failure(error))
+                }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                outcome.resolve(.failure(BootstrapError.stillConnecting))
+            }
+        }
     }
 
     /// Joins for the first time, from a freshly opened pairing record.
@@ -136,7 +202,7 @@ actor TailnetBootstrap {
         lastStatusError = nil
         await manager?.shutDown()
         manager = nil
-        TailnetSessionRouter.shared.use(nil)
+        router.use(nil)
         configurations.clear()
     }
 
@@ -239,7 +305,7 @@ actor TailnetBootstrap {
         // the router refuses to hand out a configuration until a node is
         // registered. Registering here rather than at each call site is what
         // keeps a request from silently escaping the tailnet.
-        TailnetSessionRouter.shared.use(manager)
+        router.use(manager)
         startStatusWatch()
     }
 
@@ -285,5 +351,24 @@ actor TailnetBootstrap {
                 context: "Tailnet"
             )
         }
+    }
+}
+
+/// Resumes a waiter with whichever of the join and the timeout finishes
+/// first, exactly once.
+private final class JoinOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ result: Result<Void, Error>) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
     }
 }

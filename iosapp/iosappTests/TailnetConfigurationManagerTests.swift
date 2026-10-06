@@ -1,4 +1,5 @@
 import Foundation
+import LibGit2
 import Testing
 @testable import iosapp
 
@@ -140,5 +141,106 @@ struct TailnetBootstrapTests {
         // status here would be indistinguishable from a joined device
         // whose local API failed.
         #expect(await bootstrap.status() == nil)
+    }
+
+    private static func configuredStore() throws -> TailnetConfigurationManager {
+        let defaults = UserDefaults(suiteName: "replycant.tests.tailnet.\(UUID().uuidString)")!
+        let store = TailnetConfigurationManager(defaults: defaults)
+        store.save(try TailnetConfigurationManager.from(headscaleURL: "https://abc123.tunnel.example.com"))
+        return store
+    }
+
+    // libtailscale cannot cancel a node that is coming up, so offline, or
+    // with the server or relay down, the join never returns. Launch must
+    // still reach the local library, and the join keeps going so the device
+    // gets back on once the network does.
+    @Test func launchContinuesWhenTheJoinCannotFinish() async throws {
+        let probe = JoinProbe()
+        let router = TailnetSessionRouter()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: router,
+            rejoin: { _ in
+                await probe.begin()
+                await probe.waitForRelease()
+            }
+        )
+
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+        // Requests made meanwhile are refused rather than dialled directly.
+        #expect(router.isActive == true)
+        #expect(router.applySynchronously(to: .ephemeral) == false)
+
+        // A second caller shares the join in flight. Starting another would
+        // put two nodes on one state directory.
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+        #expect(await probe.attempts == 1)
+
+        await probe.release()
+    }
+
+    // An online launch waits for the node, so the first sync and image loads
+    // never start into a burst of refused requests.
+    @Test func aJoinThatFinishesInTimeReturnsNormally() async throws {
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in await probe.begin() }
+        )
+
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        #expect(await probe.attempts == 1)
+    }
+
+    // A join that failed outright is over, so the next call has to try
+    // again rather than keep reporting the old failure.
+    @Test func aFailedJoinIsRetriedByTheNextCall() async throws {
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in
+                await probe.begin()
+                if await probe.attempts == 1 {
+                    throw TailnetManager.TailnetError.notJoined
+                }
+            }
+        )
+
+        await #expect(throws: TailnetManager.TailnetError.notJoined) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        }
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        #expect(await probe.attempts == 2)
+    }
+}
+
+/// Counts join attempts and can hold one open until released, standing in
+/// for a node whose `up()` cannot finish while the device is offline.
+private actor JoinProbe {
+    private(set) var attempts = 0
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func begin() {
+        attempts += 1
+    }
+
+    func waitForRelease() async {
+        if released { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
     }
 }
