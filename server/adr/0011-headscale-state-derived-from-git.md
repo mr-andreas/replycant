@@ -56,18 +56,29 @@ mint a fresh single-use key whenever headscale does not know it.
 - **The pairing record drops `preauth_key`.** By the time the record is
   published, the authorizing device has already committed the new device's
   key, so the new device mints its own key. The first device still gets a
-  key from the loopback CA page, because nothing is in `pubkeys/` yet.
-- **Revocation is reconciled from git.** gitd keeps a marker file with the
+  key from the CA page, because nothing is in `pubkeys/` yet.
+- **Revocation is reconciled from git.** gitd keeps a state file with the
   `pubkeys/` set it last reconciled. It compares that set with `main` at
-  startup and after every successful push. If any key was removed, or the
-  marker is missing, it expires every `tag:device` node. Expiring rather
-  than deleting matters: headscale 0.29 deletes a node without closing its
-  live map session, so a running device would never notice, while an
-  expiry is pushed to it and moves it to `NeedsLogin`. Authorized devices
-  log the same node back in with a minted key; the revoked one is refused
-  and its node stays listed as expired. Expiring only the revoked device's
-  node would need a node-to-key mapping that headscale cannot store: tags
-  are fixed by the policy, and hostnames do not match key filenames.
+  startup and after every successful push. If any key was removed, the
+  first keys arrived, or the state is missing, it expires device nodes.
+  Expiring rather than deleting matters: headscale 0.29 deletes a node
+  without closing its live map session, so a running device would never
+  notice, while an expiry is pushed to it and moves it to `NeedsLogin`.
+- **gitd knows which node is whose.** headscale cannot store a node-to-key
+  mapping: tags are fixed by the policy, and hostnames do not match key
+  filenames. gitd learns it instead. Every authenticated request arrives
+  over its tsnet listener, so gitd asks tsnet which node the peer address
+  belongs to and records that node's machine key against the request's key
+  fingerprint in the same state file. A revocation then expires only the
+  device nodes not bound to a key still in `pubkeys/`: the revoked
+  device's, and any gitd has not seen yet. Authorized devices among the
+  latter log the same node back in with a minted key; the revoked one is
+  refused and its node stays listed as expired. Machine keys rather than
+  node IDs, because headscale's IDs restart after its database is wiped,
+  and a stale ID could protect a node it no longer names. At the first
+  push this spares the device that created the library, which has just
+  authenticated with the key it pushed, and drops anything else that
+  joined while the repository was empty.
 - **Only the noise key is durable.** It is the control plane's identity, and
   every node pins it, so it moves to its own mount (`headscale/noise`).
   `headscale-init` replaces the API key whenever `headscale apikeys list` no
@@ -83,8 +94,9 @@ mint a fresh single-use key whenever headscale does not know it.
 - No tailnet credential is stored anywhere or carried in a pairing record.
 
 ### Negative
-- Any revocation makes every other device rejoin, which costs each one a
-  mint and a brief reconnect.
+- A revocation also expires device nodes gitd has never seen authenticate,
+  and losing gitd's state file makes the next reconcile treat every device
+  that way. Each of those costs a mint and a brief reconnect.
 - `hsproxy` is no longer a pure splicer. It parses one request line per
   connection, and it holds a headscale API key.
 - A running node notices it was forgotten only through a log line, which

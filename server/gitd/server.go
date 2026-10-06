@@ -1,6 +1,7 @@
 package gitd
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -43,6 +44,19 @@ type ServerConfig struct {
 	// way pubkeys/ changes, so tailnet revocation can run as soon as a push
 	// lands. Must not block: it runs on the push's request goroutine.
 	OnPush func()
+
+	// Optional. Told which key each authenticated request came from, so
+	// tailnet revocation can expire only the nodes of devices that lost
+	// access instead of every device's.
+	NodeBinder NodeBinder
+}
+
+// Links the tailnet node a request arrived from to the key it authenticated
+// with. Called before the request is handled, so a push is bound before the
+// reconcile it triggers runs. Failures are the binder's to log: an unbound
+// node costs at most one re-enrollment, never a refused request.
+type NodeBinder interface {
+	BindNode(ctx context.Context, remoteAddr, fingerprint string)
 }
 
 // Implements http.Handler for Git Smart HTTP protocol with mTLS authentication.
@@ -61,6 +75,9 @@ type Server struct {
 
 	// Nil when nothing needs to know about pushes; see ServerConfig.
 	onPush func()
+
+	// Nil when no tailnet reconciler runs; see ServerConfig.
+	nodeBinder NodeBinder
 
 	bootstrapMu sync.Mutex // Prevents race condition during initial repository bootstrap
 }
@@ -100,6 +117,7 @@ func NewServer(a Authenticator, cfg ServerConfig) (*Server, error) {
 
 		pairingPublisher: cfg.PairingPublisher,
 		onPush:           cfg.OnPush,
+		nodeBinder:       cfg.NodeBinder,
 	}
 
 	if err := server.installPreReceiveHook(); err != nil {
@@ -215,6 +233,7 @@ func (s *Server) handleAuthenticatedRequest(w http.ResponseWriter, r *http.Reque
 	}
 
 	log.Printf("Authenticated user: %s, path: %s", username, r.URL.Path)
+	s.bindNode(r)
 
 	// Ahead of the git backend and the service proxies because pairing is
 	// gitd's own endpoint rather than something it fronts.
@@ -250,6 +269,21 @@ func (s *Server) handleAuthenticatedRequest(w http.ResponseWriter, r *http.Reque
 	if s.onPush != nil && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
 		s.onPush()
 	}
+}
+
+// Reports the caller's node and key to the binder. Only reached for
+// authorized and bootstrap requests, so a rejected caller is never mistaken
+// for a member.
+func (s *Server) bindNode(r *http.Request) {
+	if s.nodeBinder == nil {
+		return
+	}
+	fingerprint, err := auth.CertFingerprint(r.TLS.PeerCertificates[0])
+	if err != nil {
+		log.Printf("Cannot fingerprint the client certificate for tailnet binding: %v", err)
+		return
+	}
+	s.nodeBinder.BindNode(r.Context(), r.RemoteAddr, fingerprint)
 }
 
 // Invokes git-http-backend as a CGI process to handle the Git protocol.

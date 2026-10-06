@@ -2,6 +2,7 @@ package tailnet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -48,12 +49,18 @@ func (s *fakeNodeStore) expiredIDs() []string {
 	return ids
 }
 
+func (s *fakeNodeStore) resetExpired() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expired = nil
+}
+
 // A tailnet as it looks in production: gitd's own node plus two devices.
 func newHouseholdStore() *fakeNodeStore {
 	return &fakeNodeStore{nodes: []Node{
-		{ID: "1", Name: "gitd", Tags: []string{ServerTag}},
-		{ID: "2", Name: "phone", Tags: []string{DeviceTag}},
-		{ID: "3", Name: "laptop", Tags: []string{DeviceTag}},
+		{ID: "1", MachineKey: "mkey:gitd", Name: "gitd", Tags: []string{ServerTag}},
+		{ID: "2", MachineKey: "mkey:phone", Name: "phone", Tags: []string{DeviceTag}},
+		{ID: "3", MachineKey: "mkey:laptop", Name: "laptop", Tags: []string{DeviceTag}},
 	}}
 }
 
@@ -95,7 +102,7 @@ func newTestReconciler(t *testing.T, store NodeStore, keys *keySource, markerPat
 // focus on what one subsequent push does.
 func primedReconciler(t *testing.T, store *fakeNodeStore, keys *keySource) *Reconciler {
 	t.Helper()
-	reconciler := newTestReconciler(t, store, keys, filepath.Join(t.TempDir(), "reconciled-keys.json"))
+	reconciler := newTestReconciler(t, store, keys, filepath.Join(t.TempDir(), "reconcile-state.json"))
 	if err := reconciler.Reconcile(context.Background()); err != nil {
 		t.Fatalf("priming reconcile: %v", err)
 	}
@@ -106,24 +113,101 @@ func primedReconciler(t *testing.T, store *fakeNodeStore, keys *keySource) *Reco
 	return reconciler
 }
 
-// Removing a key from pubkeys/ is how a device is revoked. headscale cannot
-// say which node belongs to which key, so every device node is expired and the
-// still-authorized devices re-enroll through hsproxy; the revoked one cannot.
-// gitd's own node must survive, or no device could reach the server at all.
-func TestRemovedKeyExpiresEveryDeviceNodeButNotTheServer(t *testing.T) {
+func bind(t *testing.T, reconciler *Reconciler, machineKey, fingerprint string) {
+	t.Helper()
+	if err := reconciler.Bind(machineKey, fingerprint); err != nil {
+		t.Fatalf("bind %s to %s: %v", machineKey, fingerprint, err)
+	}
+}
+
+func reconcile(t *testing.T, reconciler *Reconciler) {
+	t.Helper()
+	if err := reconciler.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+}
+
+func assertExpired(t *testing.T, store *fakeNodeStore, want ...string) {
+	t.Helper()
+	got := store.expiredIDs()
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("expected nodes %v to be expired, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected nodes %v to be expired, got %v", want, got)
+		}
+	}
+}
+
+// Removing a key from pubkeys/ is how a device is revoked. gitd has seen which
+// node each device authenticates from, so only the revoked device's node is
+// expired; the rest of the household keeps its connection. gitd's own node
+// must survive, or no device could reach the server at all.
+func TestRemovedKeyExpiresOnlyTheRevokedDevicesNode(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone", "SHA256:laptop")
 	reconciler := primedReconciler(t, store, keys)
+	bind(t, reconciler, "mkey:phone", "SHA256:phone")
+	bind(t, reconciler, "mkey:laptop", "SHA256:laptop")
 
 	keys.set("SHA256:laptop")
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile after a revocation: %v", err)
-	}
+	reconcile(t, reconciler)
 
-	if got := store.expiredIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
-		t.Errorf("expected both device nodes to be expired, got %v", got)
-	}
+	assertExpired(t, store, "2")
+}
+
+// A node gitd has never seen authenticate could belong to anyone holding a
+// key, including the device just revoked. When a revocation happens it is
+// expired too; if it belongs to an authorized device, that device re-enrolls
+// through hsproxy and is bound on its next request.
+func TestRemovedKeyExpiresNodesGitdHasNotSeen(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	keys.set("SHA256:phone", "SHA256:laptop")
+	reconciler := primedReconciler(t, store, keys)
+	bind(t, reconciler, "mkey:laptop", "SHA256:laptop")
+
+	keys.set("SHA256:laptop")
+	reconcile(t, reconciler)
+
+	assertExpired(t, store, "2")
+}
+
+// A key can come and go without gitd ever recording it, for instance when
+// both pushes land while gitd is down. A node gitd saw authenticate with a
+// key that is no longer authorized is still the revoked device's node.
+func TestBoundNodeExpiresWhenItsKeyIsGoneEvenIfNeverRecorded(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	keys.set("SHA256:phone")
+	reconciler := primedReconciler(t, store, keys)
+	bind(t, reconciler, "mkey:phone", "SHA256:phone")
+	bind(t, reconciler, "mkey:laptop", "SHA256:laptop")
+
+	reconcile(t, reconciler)
+
+	assertExpired(t, store, "3")
+}
+
+// An expired node stays listed in headscale. Once its device is revoked,
+// later pushes must not expire it again on every reconcile.
+func TestRevokedNodeIsExpiredOnlyOnce(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	keys.set("SHA256:phone", "SHA256:laptop")
+	reconciler := primedReconciler(t, store, keys)
+	bind(t, reconciler, "mkey:phone", "SHA256:phone")
+	bind(t, reconciler, "mkey:laptop", "SHA256:laptop")
+	keys.set("SHA256:phone")
+	reconcile(t, reconciler)
+	store.resetExpired()
+
+	reconcile(t, reconciler)
+
+	assertExpired(t, store)
 }
 
 // Pairing adds a key on every new device. Expiring nodes then would knock the
@@ -135,33 +219,27 @@ func TestAddedKeyExpiresNothing(t *testing.T) {
 	reconciler := primedReconciler(t, store, keys)
 
 	keys.set("SHA256:phone", "SHA256:laptop")
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile after a pairing: %v", err)
-	}
+	reconcile(t, reconciler)
 
-	if got := store.expiredIDs(); len(got) != 0 {
-		t.Errorf("adding a key must not expire any node, got %v", got)
-	}
+	assertExpired(t, store)
 }
 
 // While the repository is empty, the CA page hands a join key to anyone who
 // can open it, and hsproxy admits any certificate. A host that joined in that
-// window without pushing was never authorized by pubkeys/, so the first push
-// must take it off the tailnet. The operator's own device is dropped too and
-// re-enrolls through hsproxy now that its key is in pubkeys/.
-func TestFirstKeyDropsDeviceNodesThatJoinedDuringBootstrap(t *testing.T) {
+// window was never authorized by pubkeys/, so the first push must take it off
+// the tailnet. The device that made the push has just authenticated with the
+// key it pushed, so it keeps its node and its first sync is not interrupted.
+func TestFirstKeyDropsBootstrapJoinersButNotThePusher(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	reconciler := primedReconciler(t, store, keys)
+	bind(t, reconciler, "mkey:phone", "SHA256:phone")
+	bind(t, reconciler, "mkey:laptop", "SHA256:stranger")
 
 	keys.set("SHA256:phone")
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile after the bootstrap push: %v", err)
-	}
+	reconcile(t, reconciler)
 
-	if got := store.expiredIDs(); len(got) != 2 || got[0] != "2" || got[1] != "3" {
-		t.Errorf("expected both device nodes and not gitd to be expired, got %v", got)
-	}
+	assertExpired(t, store, "3")
 }
 
 // An empty repository is reconciled on every timer tick before the first push.
@@ -171,86 +249,149 @@ func TestEmptyKeySetStaysEmptyExpiresNothing(t *testing.T) {
 	keys := &keySource{}
 	reconciler := primedReconciler(t, store, keys)
 
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile of a still-empty repository: %v", err)
-	}
-	if got := store.expiredIDs(); len(got) != 0 {
-		t.Errorf("a still-empty key set must not expire any node, got %v", got)
-	}
+	reconcile(t, reconciler)
+
+	assertExpired(t, store)
 }
 
 // Reconciling the same authorized set twice is what happens on every push that
-// does not touch pubkeys/. It must be free of side effects.
+// does not touch pubkeys/. It must be free of side effects, including for
+// nodes gitd has not seen yet.
 func TestUnchangedKeysExpireNothing(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone", "SHA256:laptop")
 	reconciler := primedReconciler(t, store, keys)
 
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile with nothing changed: %v", err)
-	}
-	if got := store.expiredIDs(); len(got) != 0 {
-		t.Errorf("an unchanged key set must not expire any node, got %v", got)
-	}
+	reconcile(t, reconciler)
+
+	assertExpired(t, store)
 }
 
-// Without a marker gitd cannot know whether a key was removed while it was not
-// watching, for instance in a crash between a push landing and reconciling it.
-// Dropping device nodes once is the safe answer: authorized devices re-enroll
-// on their own, so the cost is a brief reconnect rather than a missed
-// revocation.
-func TestMissingMarkerDropsDeviceNodesOnce(t *testing.T) {
+// Without a state file gitd cannot know whether a key was removed while it was
+// not watching, for instance in a crash between a push landing and reconciling
+// it. With no record of which node is whose either, dropping every device node
+// once is the safe answer: authorized devices re-enroll on their own, so the
+// cost is a brief reconnect rather than a missed revocation.
+func TestMissingStateDropsDeviceNodesOnce(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone", "SHA256:laptop")
-	marker := filepath.Join(t.TempDir(), "reconciled-keys.json")
+	marker := filepath.Join(t.TempDir(), "reconcile-state.json")
 	reconciler := newTestReconciler(t, store, keys, marker)
 
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("first reconcile: %v", err)
-	}
-	if got := store.expiredIDs(); len(got) != 2 {
-		t.Fatalf("a missing marker must drop both device nodes, got %v", got)
-	}
+	reconcile(t, reconciler)
+	assertExpired(t, store, "2", "3")
 	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("the marker must be written after reconciling: %v", err)
+		t.Fatalf("the state must be written after reconciling: %v", err)
 	}
 
-	store.mu.Lock()
-	store.expired = nil
-	store.nodes = newHouseholdStore().nodes
-	store.mu.Unlock()
-
-	if err := newTestReconciler(t, store, keys, marker).Reconcile(context.Background()); err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-	if got := store.expiredIDs(); len(got) != 0 {
-		t.Errorf("once the marker exists, a restart must not drop nodes again, got %v", got)
-	}
+	store.resetExpired()
+	reconcile(t, newTestReconciler(t, store, keys, marker))
+	assertExpired(t, store)
 }
 
-// A marker that cannot be parsed is as uninformative as a missing one, and must
-// be treated the same way rather than as an empty set that hides a removal.
-func TestCorruptMarkerIsTreatedAsMissing(t *testing.T) {
+// A state file that cannot be parsed is as uninformative as a missing one, and
+// must be treated the same way rather than as an empty set that hides a removal
+// or as bindings that protect nodes they should not.
+func TestCorruptStateIsTreatedAsMissing(t *testing.T) {
 	store := newHouseholdStore()
 	keys := &keySource{}
 	keys.set("SHA256:phone")
-	marker := filepath.Join(t.TempDir(), "reconciled-keys.json")
+	marker := filepath.Join(t.TempDir(), "reconcile-state.json")
 	if err := os.WriteFile(marker, []byte("{not json"), 0o600); err != nil {
-		t.Fatalf("write corrupt marker: %v", err)
+		t.Fatalf("write corrupt state: %v", err)
 	}
 
-	if err := newTestReconciler(t, store, keys, marker).Reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile with a corrupt marker: %v", err)
+	reconcile(t, newTestReconciler(t, store, keys, marker))
+
+	assertExpired(t, store, "2", "3")
+}
+
+// gitd restarts on every deploy. Which node belongs to which key has to
+// survive that, or the first revocation after a restart would log the whole
+// household out again.
+func TestBindingsSurviveARestart(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	keys.set("SHA256:phone", "SHA256:laptop")
+	marker := filepath.Join(t.TempDir(), "reconcile-state.json")
+	first := newTestReconciler(t, store, keys, marker)
+	reconcile(t, first)
+	bind(t, first, "mkey:phone", "SHA256:phone")
+	bind(t, first, "mkey:laptop", "SHA256:laptop")
+	store.resetExpired()
+
+	restarted := newTestReconciler(t, store, keys, marker)
+	keys.set("SHA256:laptop")
+	reconcile(t, restarted)
+
+	assertExpired(t, store, "2")
+}
+
+// A node seen authenticating since startup proved it holds that key, whatever
+// the state file said. Losing the file must not discard what gitd learned
+// since, or a crash during a push would drop the pusher as well.
+func TestBindingsMadeBeforeTheFirstReconcileAreHonoured(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	keys.set("SHA256:phone", "SHA256:laptop")
+	reconciler := newTestReconciler(t, store, keys, filepath.Join(t.TempDir(), "reconcile-state.json"))
+	bind(t, reconciler, "mkey:phone", "SHA256:phone")
+
+	reconcile(t, reconciler)
+
+	assertExpired(t, store, "3")
+}
+
+// headscale forgets nodes when its database is wiped. Bindings for machine
+// keys it no longer lists are dropped so the state does not grow forever.
+func TestBindingsForUnlistedNodesArePruned(t *testing.T) {
+	store := newHouseholdStore()
+	keys := &keySource{}
+	keys.set("SHA256:phone", "SHA256:laptop")
+	marker := filepath.Join(t.TempDir(), "reconcile-state.json")
+	reconciler := newTestReconciler(t, store, keys, marker)
+	reconcile(t, reconciler)
+	bind(t, reconciler, "mkey:phone", "SHA256:phone")
+	bind(t, reconciler, "mkey:gone", "SHA256:laptop")
+
+	keys.set("SHA256:phone")
+	reconcile(t, reconciler)
+
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
 	}
-	if got := store.expiredIDs(); len(got) != 2 {
-		t.Errorf("a corrupt marker must drop device nodes, got %v", got)
+	var state struct {
+		Nodes map[string]string `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if _, ok := state.Nodes["mkey:gone"]; ok {
+		t.Errorf("a binding for a node headscale no longer lists must be pruned, got %v", state.Nodes)
+	}
+	if state.Nodes["mkey:phone"] != "SHA256:phone" {
+		t.Errorf("a binding for a listed node must be kept, got %v", state.Nodes)
+	}
+}
+
+// A binding is only useful if it is valid. An empty machine key or fingerprint
+// means gitd could not identify the peer, and must not be recorded.
+func TestBindRejectsIncompleteBindings(t *testing.T) {
+	keys := &keySource{}
+	reconciler := newTestReconciler(t, newHouseholdStore(), keys, filepath.Join(t.TempDir(), "state.json"))
+	if err := reconciler.Bind("", "SHA256:phone"); err == nil {
+		t.Error("a binding without a machine key must be rejected")
+	}
+	if err := reconciler.Bind("mkey:phone", " "); err == nil {
+		t.Error("a binding without a fingerprint must be rejected")
 	}
 }
 
 // If headscale refuses to expire a node, the revocation has not happened. The
-// marker must keep the old set so the next reconcile sees the removal again
+// state must keep the old set so the next reconcile sees the removal again
 // and retries, instead of recording the revocation as done.
 func TestFailedExpiryIsRetriedNextTime(t *testing.T) {
 	store := newHouseholdStore()
@@ -269,12 +410,8 @@ func TestFailedExpiryIsRetriedNextTime(t *testing.T) {
 	store.mu.Lock()
 	store.expireErr = nil
 	store.mu.Unlock()
-	if err := reconciler.Reconcile(context.Background()); err != nil {
-		t.Fatalf("retry after headscale recovers: %v", err)
-	}
-	if got := store.expiredIDs(); len(got) != 2 {
-		t.Errorf("the retry must expire the device nodes, got %v", got)
-	}
+	reconcile(t, reconciler)
+	assertExpired(t, store, "2", "3")
 }
 
 // If git cannot be read, nothing is known about who is authorized. Expiring
@@ -291,9 +428,7 @@ func TestUnreadableKeysExpireNothing(t *testing.T) {
 	if err := reconciler.Reconcile(context.Background()); err == nil {
 		t.Fatal("an unreadable key set must be reported")
 	}
-	if got := store.expiredIDs(); len(got) != 0 {
-		t.Errorf("nothing may be expired when git cannot be read, got %v", got)
-	}
+	assertExpired(t, store)
 }
 
 // gitd triggers a reconcile after every receive-pack, and pushes can arrive

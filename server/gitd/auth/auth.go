@@ -196,6 +196,17 @@ func KeyFingerprint(key *ecdsa.PublicKey) string {
 	return "SHA256:" + hex.EncodeToString(digest[:])
 }
 
+// Fingerprints the key a client certificate carries, in the same form as
+// KeyFingerprint, so a tailnet node seen authenticating with it can be
+// compared against pubkeys/ on main.
+func CertFingerprint(cert *x509.Certificate) (string, error) {
+	key, err := extractP256PublicKey(cert)
+	if err != nil {
+		return "", err
+	}
+	return KeyFingerprint(key), nil
+}
+
 // Reads all .pub files from the pubkeys/ tree of a specific main commit.
 func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecdsa.PublicKey, error) {
 	repo, err := git.PlainOpen(a.repoPath)

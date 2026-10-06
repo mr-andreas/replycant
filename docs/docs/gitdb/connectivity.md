@@ -169,12 +169,11 @@ headscale's database has to be kept. An operator can delete `headscale/lib`
 and run `docker compose up`, and every device comes back without being
 paired again.
 
-The same property lets gitd drop every device node at the first push. Any
-node that joined while the repository was empty did so without a key in
-`pubkeys/`, so it is removed. The first device then re-enrolls with its
-now-authorized certificate. Its onboarding waits for that re-enrollment
-before finishing, so the first sync does not start while it is off the
-tailnet.
+The same property lets gitd drop device nodes at the first push. Any node
+that joined while the repository was empty did so without a key in
+`pubkeys/`, so it is removed, unless gitd has just seen it authenticate with
+a key the push authorized. That exception is what keeps the device that
+created the library connected through its first sync.
 
 ```mermaid
 sequenceDiagram
@@ -209,14 +208,19 @@ sequenceDiagram
   replaces the API key when the wiped database no longer lists it, and gitd
   and hsproxy re-read that key file on every call.
 
-Revocation runs the other way. gitd records the `pubkeys/` set it last
-reconciled, and compares it with `main` at startup and after every
-successful push. If any key was removed, it expires every `tag:device` node.
-Expiry, unlike deletion, reaches a device that is online at that moment.
-Devices that are still authorized notice and mint their way back in. The
+Revocation runs the other way. headscale cannot record which key a node
+belongs to, so gitd learns it: every request reaches gitd over its tailnet
+listener, and gitd binds the calling node's machine key to the fingerprint
+of the key the request authenticated with. gitd records the `pubkeys/` set
+it last reconciled, and compares it with `main` at startup and after every
+successful push. If any key was removed, it expires every `tag:device` node
+that is not bound to a key still in `pubkeys/`. That is the revoked
+device's node, plus any node gitd has not seen yet. Expiry, unlike
+deletion, reaches a device that is online at that moment. An authorized
+device whose node was expired notices and mints its way back in. The
 revoked one is refused at hsproxy, and its node stays listed as expired.
-Expiring only the revoked node would need a node-to-key mapping that
-headscale cannot store.
+If gitd loses its state file, nothing is bound, and the next reconcile
+expires every device node once.
 
 ### The loopback shim
 

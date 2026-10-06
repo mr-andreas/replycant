@@ -180,6 +180,24 @@ func (n *Node) Addrs() []string {
 	return addrs
 }
 
+// Resolves a tailnet peer address to the machine key of the node behind it,
+// in headscale's "mkey:" form, so gitd can tell revocation which node a
+// device's requests come from.
+func (n *Node) WhoIs(ctx context.Context, remoteAddr string) (string, error) {
+	client, err := n.server.LocalClient()
+	if err != nil {
+		return "", fmt.Errorf("tailnet local API: %w", err)
+	}
+	who, err := client.WhoIs(ctx, remoteAddr)
+	if err != nil {
+		return "", err
+	}
+	if who.Node == nil || who.Node.Machine.IsZero() {
+		return "", fmt.Errorf("tailnet has no machine key for %s", remoteAddr)
+	}
+	return who.Node.Machine.String(), nil
+}
+
 // Shuts the node down, closing every listener opened on it.
 func (n *Node) Close() error {
 	n.stopKeeping()

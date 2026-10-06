@@ -88,7 +88,7 @@ type CLI struct {
 	// mode, where the authorizing device shows the sealed record as a QR and
 	// no record is ever published.
 	DiscoveryURL        string `help:"Base URL of the discovery API; the pairing slot is prepended as a subdomain. Leave unset for manual-exposure mode"`
-	HeadscaleAPIURL     string `name:"headscale-api-url" help:"Headscale API base URL used to mint keys for gitd and the first device, and to delete revoked device nodes (e.g. http://headscale:8080)"`
+	HeadscaleAPIURL     string `name:"headscale-api-url" help:"Headscale API base URL used to mint keys for gitd and the first device, and to expire revoked device nodes (e.g. http://headscale:8080)"`
 	HeadscaleAPIKeyFile string `help:"File containing the headscale API key; read from a file so it stays out of logs and the process list" type:"path"`
 	HeadscaleUser       string `default:"replycant" help:"Headscale user that paired devices are registered under"`
 
@@ -100,9 +100,11 @@ type CLI struct {
 
 	// Records which keys were authorized the last time headscale was
 	// reconciled with pubkeys/, so a removal can be told apart from a
-	// restart. Lives in gitd's own writable state, not in the read-only
-	// tailnet directory headscale-init writes.
-	TailnetReconcileMarker string `help:"File recording the pubkeys/ set last reconciled with headscale; losing it only costs one device re-enrollment" type:"path"`
+	// restart, and which key each device node authenticates with, so a
+	// revocation only expires the nodes it has to. Lives in gitd's own
+	// writable state, not in the read-only tailnet directory headscale-init
+	// writes.
+	TailnetReconcileMarker string `help:"File recording the pubkeys/ set last reconciled with headscale and the key each device node uses; losing it only costs one device re-enrollment" type:"path"`
 }
 
 // Validate implements kong.Validatable to enforce constraints beyond struct tags.
@@ -348,39 +350,6 @@ func main() {
 
 	reconciler, err := cli.buildReconciler(headscale)
 	ctx.FatalIfErrorf(err)
-	var onPush func()
-	if reconciler != nil {
-		onPush = reconciler.Trigger
-	}
-
-	handler, err := gitd.NewServer(auth, gitd.ServerConfig{
-		RepoPath:         cli.Repo,
-		LfsDir:           cli.LfsDir,
-		DecryptdURL:      cli.DecryptdURL,
-		TranscodedURL:    cli.TranscodedURL,
-		PairingPublisher: pairingPublisher,
-		OnPush:           onPush,
-	})
-	ctx.FatalIfErrorf(err)
-
-	// Reconciled once at startup as well as after each push, because a push
-	// may have landed just before gitd last stopped.
-	reconcileCtx, stopReconciling := context.WithCancel(context.Background())
-	defer stopReconciling()
-	if reconciler != nil {
-		reconciler.Trigger()
-		go reconciler.Run(reconcileCtx)
-	}
-
-	// Start HTTPS server with mTLS enabled
-	gitServer := &http.Server{
-		Addr:    cli.Addr,
-		Handler: handler,
-		TLSConfig: &tls.Config{
-			ClientAuth: tls.RequireAnyClientCert,
-			MinVersion: tls.VersionTLS13,
-		},
-	}
 
 	// On a tailnet the Git listener is bound to the tsnet node, which is what
 	// lets the compose stack publish no host ports at all. Without tsnet the
@@ -408,6 +377,45 @@ func main() {
 		gitListener, err = net.Listen("tcp", cli.Addr)
 	}
 	ctx.FatalIfErrorf(err)
+
+	var onPush func()
+	var nodeBinder gitd.NodeBinder
+	if reconciler != nil {
+		onPush = reconciler.Trigger
+		if tsnetNode != nil {
+			nodeBinder = tailnet.NewNodeBinder(tsnetNode.WhoIs, reconciler.Bind, log.Printf)
+		}
+	}
+
+	handler, err := gitd.NewServer(auth, gitd.ServerConfig{
+		RepoPath:         cli.Repo,
+		LfsDir:           cli.LfsDir,
+		DecryptdURL:      cli.DecryptdURL,
+		TranscodedURL:    cli.TranscodedURL,
+		PairingPublisher: pairingPublisher,
+		OnPush:           onPush,
+		NodeBinder:       nodeBinder,
+	})
+	ctx.FatalIfErrorf(err)
+
+	// Reconciled once at startup as well as after each push, because a push
+	// may have landed just before gitd last stopped.
+	reconcileCtx, stopReconciling := context.WithCancel(context.Background())
+	defer stopReconciling()
+	if reconciler != nil {
+		reconciler.Trigger()
+		go reconciler.Run(reconcileCtx)
+	}
+
+	// Start HTTPS server with mTLS enabled
+	gitServer := &http.Server{
+		Addr:    cli.Addr,
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			ClientAuth: tls.RequireAnyClientCert,
+			MinVersion: tls.VersionTLS13,
+		},
+	}
 
 	go func() {
 		log.Printf("Starting gitd server on %s (tailnet=%t) for repository %s",

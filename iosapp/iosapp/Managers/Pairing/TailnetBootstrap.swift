@@ -173,26 +173,6 @@ actor TailnetBootstrap {
         configurations.save(configuration)
     }
 
-    /// Waits for this device to get back onto the tailnet after it created the
-    /// library, and does nothing on a LAN deployment.
-    ///
-    /// gitd expires every device node at the first push, this one included,
-    /// so the first sync and photo upload would otherwise start into an
-    /// outage and fail. Failures are logged rather than thrown: the library is
-    /// already pushed, so onboarding cannot usefully be retried, and the
-    /// relogin watch keeps trying to bring the node back.
-    func awaitReenrollmentAfterFirstPush() async {
-        guard isConfigured, let manager else { return }
-        do {
-            _ = try await manager.awaitReenrollment()
-        } catch {
-            logError(
-                "Could not rejoin the tailnet after the first push: \(error)",
-                context: "Tailnet"
-            )
-        }
-    }
-
     /// Takes the node down and forgets the deployment. Used when a device is
     /// unpaired or its state is wiped.
     func leave() async {

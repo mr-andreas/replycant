@@ -1,6 +1,7 @@
 package gitd
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -203,6 +204,68 @@ func TestServer_OnPushRunsOnlyAfterReceivePack(t *testing.T) {
 
 	send(http.MethodPost, "/git-receive-pack", "application/x-git-receive-pack-request")
 	assert.Equal(t, 1, pushes, "a receive-pack request must trigger reconciliation")
+}
+
+// Records what gitd reports to the tailnet reconciler, so the tests can check
+// which requests link a node to a key.
+type recordingBinder struct {
+	calls []boundNode
+}
+
+type boundNode struct {
+	remoteAddr  string
+	fingerprint string
+}
+
+func (b *recordingBinder) BindNode(_ context.Context, remoteAddr, fingerprint string) {
+	b.calls = append(b.calls, boundNode{remoteAddr: remoteAddr, fingerprint: fingerprint})
+}
+
+// Revocation spares a device's tailnet node only if gitd has seen that node
+// authenticate with a key still in pubkeys/. Every authenticated request,
+// including the bootstrap push that creates the library, must therefore
+// report its peer address and key; a rejected one must not, or an
+// unauthorized caller could be mistaken for a member.
+func TestServer_BindsTheCallingNodeToItsKey(t *testing.T) {
+	setupHookBinaryForTests(t)
+
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	cert := testCtx.CreateTestCertificate(t, &privKey.PublicKey, privKey)
+	fingerprint := auth.KeyFingerprint(&privKey.PublicKey)
+
+	for _, testCase := range []struct {
+		name      string
+		authErr   error
+		wantBound bool
+	}{
+		{"authorized", nil, true},
+		{"bootstrap", auth.ErrUnauthorizedBootstrap, true},
+		{"unauthorized", auth.ErrUnauthorized, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			binder := &recordingBinder{}
+			cfg := testServerConfig(t, testRepo.BareRepo)
+			cfg.NodeBinder = binder
+			server, err := NewServer(&mockAuthenticator{AuthUsername: "device-1", AuthErr: testCase.authErr}, cfg)
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodGet, "/info/refs?service=git-upload-pack", nil)
+			req.RemoteAddr = "100.64.0.7:41234"
+			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+			server.handleAuthenticatedRequest(httptest.NewRecorder(), req)
+
+			if !testCase.wantBound {
+				assert.Empty(t, binder.calls)
+				return
+			}
+			assert.Equal(t, []boundNode{{remoteAddr: "100.64.0.7:41234", fingerprint: fingerprint}}, binder.calls)
+		})
+	}
 }
 
 // Tests HTTP request handler without client certificate.

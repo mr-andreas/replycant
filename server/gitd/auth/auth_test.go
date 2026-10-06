@@ -488,6 +488,22 @@ func TestKeyFingerprintDependsOnlyOnTheKey(t *testing.T) {
 	assert.Regexp(t, `^SHA256:[0-9a-f]{64}$`, KeyFingerprint(&first.PublicKey))
 }
 
+// gitd links a tailnet node to the key its requests authenticate with, and
+// revocation compares that link against pubkeys/. Both sides must therefore
+// produce the same fingerprint for the same key, whichever form it came in.
+func TestCertFingerprintMatchesTheKeyFingerprint(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	cert := createTestCertificate(t, &privKey.PublicKey, privKey)
+
+	fingerprint, err := CertFingerprint(cert)
+	require.NoError(t, err)
+	assert.Equal(t, KeyFingerprint(&privKey.PublicKey), fingerprint)
+
+	_, err = CertFingerprint(&x509.Certificate{PublicKey: "not-an-ecdsa-key"})
+	assert.Error(t, err, "a certificate gitd would never authenticate has no fingerprint")
+}
+
 // Tests that empty repositories return ErrUnauthorizedBootstrap for any valid P-256 certificate.
 func TestAuthenticator_EmptyRepository_AllowsAnyValidCert(t *testing.T) {
 	testCtx := gittest.NewContext(t)

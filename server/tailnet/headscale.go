@@ -204,9 +204,15 @@ func (c *Client) MintPreauthKey(ctx context.Context, tag string, validFor time.D
 }
 
 // A registered tailnet node, reduced to what revocation needs to decide whether
-// to delete it.
+// to expire it.
 type Node struct {
-	ID   string   `json:"id"`
+	ID string `json:"id"`
+
+	// Stable for the life of a device's tailnet state, and never reused,
+	// which is why revocation identifies nodes by it rather than by ID:
+	// headscale's IDs restart after its database is wiped.
+	MachineKey string `json:"machineKey"`
+
 	Name string   `json:"name"`
 	Tags []string `json:"tags"`
 }

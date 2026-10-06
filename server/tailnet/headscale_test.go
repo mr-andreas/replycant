@@ -257,17 +257,19 @@ func TestMintedKeysCarryTheRequestedTag(t *testing.T) {
 	}
 }
 
-// Revocation expires device nodes by tag, so listing has to return every
-// node with its id and tags. The list is not filtered by user because a
-// tagged node loses its user association in headscale, so a user filter
-// would hide exactly the nodes revocation is looking for.
-func TestListNodesReturnsIDsAndTags(t *testing.T) {
+// Revocation expires device nodes by tag, and spares the ones gitd has seen
+// authenticate with a current key, which it knows by machine key. Listing has
+// to return every node with its id, tags and machine key. The list is not
+// filtered by user because a tagged node loses its user association in
+// headscale, so a user filter would hide exactly the nodes revocation is
+// looking for.
+func TestListNodesReturnsIDsTagsAndMachineKeys(t *testing.T) {
 	fake := newFakeHeadscale(t)
 	// Shape from headscale 0.29.3's ListNodesResponse: uint64 ids are encoded
 	// as strings by grpc-gateway, and tags replaced forcedTags/validTags.
 	fake.setNodesResponse(`{"nodes":[` +
-		`{"id":"1","name":"gitd","givenName":"gitd","tags":["tag:server"],"online":true},` +
-		`{"id":"2","name":"phone","givenName":"phone","tags":["tag:device"],"online":false}]}`)
+		`{"id":"1","machineKey":"mkey:aa","name":"gitd","givenName":"gitd","tags":["tag:server"],"online":true},` +
+		`{"id":"2","machineKey":"mkey:bb","name":"phone","givenName":"phone","tags":["tag:device"],"online":false}]}`)
 	client := newTestClient(t, fake)
 
 	nodes, err := client.ListNodes(context.Background())
@@ -282,6 +284,9 @@ func TestListNodesReturnsIDsAndTags(t *testing.T) {
 	}
 	if nodes[1].ID != "2" || !nodes[1].HasTag(DeviceTag) {
 		t.Errorf("second node must be the device tagged tag:device, got %+v", nodes[1])
+	}
+	if nodes[0].MachineKey != "mkey:aa" || nodes[1].MachineKey != "mkey:bb" {
+		t.Errorf("machine keys must be decoded, got %+v", nodes)
 	}
 
 	fake.mu.Lock()
