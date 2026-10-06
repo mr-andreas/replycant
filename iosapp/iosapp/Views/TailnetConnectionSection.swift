@@ -3,10 +3,10 @@ import SwiftUI
 
 /// What Settings should put in the Connection slot.
 ///
-/// Hidden until Settings has asked, so a LAN device never flashes a
+/// Hidden until Settings has asked, so an unpaired device never flashes a
 /// section that does not apply. After that: the live report, a plain
 /// unavailable row when this device is on a tailnet but status could not
-/// be read, or nothing on LAN.
+/// be read, or nothing when it has no tailnet configuration.
 enum TailnetConnectionPresentation: Equatable {
     case hidden
     case unavailable

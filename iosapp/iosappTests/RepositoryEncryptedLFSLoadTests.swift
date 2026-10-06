@@ -173,7 +173,7 @@ struct RepositoryEncryptedLFSLoadTests {
 
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockLFSURLProtocol.self] + (sessionConfiguration.protocolClasses ?? [])
-        let lfsClient = GitLFS(serverURL: "https://test-lfs.local/lfs", sessionConfiguration: sessionConfiguration)
+        let lfsClient = GitLFS(serverURL: "https://test-lfs.local/lfs", sessionConfiguration: sessionConfiguration, router: .passthroughForTests())
         let loaded = try await EncryptedLFS.loadEncryptedLFSData(
             from: pointerPath,
             repository: repository,

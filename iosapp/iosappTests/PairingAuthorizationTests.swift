@@ -130,22 +130,6 @@ struct PairingAuthorizationTests {
         #expect(StubServer.lastRequest?.url?.absoluteString == "https://gitd.example.com:8443/pair")
     }
 
-    // A LAN-only deployment cannot mint a tailnet credential, so it answers
-    // 404. That is not a failure of this device and has to be told apart from
-    // one, since the scanned device simply falls back to the config-QR path.
-    @Test func reportsADeploymentWithNoTailnetSeparately() async throws {
-        StubServer.install(status: 404)
-
-        await #expect(throws: PairingAuthorization.AuthorizationError.tailnetNotEnabled) {
-            try await PairingAuthorization.publish(
-                pairingSecret: "secret",
-                agePublicKey: "age1example",
-                serverURL: "https://gitd.example.com:8443",
-                session: StubServer.session()
-            )
-        }
-    }
-
     // gitd holds the request open until the record is stored, so a failure
     // here means the other device will never see a record. Surfacing it lets
     // the operator retry instead of both devices waiting on each other.

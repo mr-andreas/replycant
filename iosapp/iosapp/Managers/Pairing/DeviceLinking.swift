@@ -40,8 +40,8 @@ enum DeviceLinking {
         ) async throws -> Void
     }
 
-    /// Commits the scanned keys, pushes them, then authorizes tailnet
-    /// pairing when the QR asked for a sealed record.
+    /// Commits the scanned keys, pushes them, then asks gitd to seal the new
+    /// device's join record under the secret from its QR.
     ///
     /// Add-keys is the freeze: it is synchronous libgit2, including the
     /// tailnet session hop. It always runs in a detached task so a
@@ -51,7 +51,7 @@ enum DeviceLinking {
         agePubkey: String,
         name: String,
         uuid: String,
-        pairingSecret: String?,
+        pairingSecret: String,
         operations: Operations = .live,
         onProgress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws {
@@ -65,13 +65,11 @@ enum DeviceLinking {
             )
         }.value
 
-        if let pairingSecret {
-            try await operations.authorize(
-                pairingSecret,
-                agePubkey,
-                onProgress
-            )
-        }
+        try await operations.authorize(
+            pairingSecret,
+            agePubkey,
+            onProgress
+        )
     }
 
     /// Adds both identity keys and re-wraps KEK epochs so the new device

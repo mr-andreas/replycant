@@ -1,13 +1,11 @@
 import SwiftUI
 
-// Handles the Device A side of device linking: scan new device's public key, grant it access, and display connection QR.
-// This allows an existing configured device to authorize a new device by adding its public key to the pubkeys/ directory.
+// Handles the Device A side of device linking: scan the new device's QR and
+// grant it access. Granting commits its keys to pubkeys/ and asks gitd to seal
+// the new device's join record, which it picks up on its own.
 struct DeviceLinkingView: View {
     @Environment(\.dismiss) private var dismiss
     static let scanPublicKeyHeading = "Scan the new device's QR code"
-    static let shareConfigSuccessLabel = "Access granted!"
-    static let shareConfigHeading = "Now let the new device scan this"
-    static let shareConfigBody = "On the new device, tap Next and point its camera at this code"
     
     @State private var currentStep: LinkingStep
     @State private var isProcessing: Bool
@@ -20,7 +18,6 @@ struct DeviceLinkingView: View {
     @State private var showScanner: Bool
     @State private var showInvalidQRCodeAlert: Bool
     @State private var invalidQRCodeMessage: String
-    private let previewConfigJSON: String?
 
     init() {
         _currentStep = State(initialValue: .scanPublicKey)
@@ -32,8 +29,7 @@ struct DeviceLinkingView: View {
         _scannedAgePublicKey = State(initialValue: "")
         _showScanner = State(initialValue: false)
         _showInvalidQRCodeAlert = State(initialValue: false)
-        _invalidQRCodeMessage = State(initialValue: "Unsupported QR code format. Expected a device-link QR with pubkey, age_pubkey, name, and uuid.")
-        self.previewConfigJSON = nil
+        _invalidQRCodeMessage = State(initialValue: "Unsupported QR code format. Expected a device-link QR with pubkey, age_pubkey, name, uuid, and pairing_secret.")
     }
 
     /// Preview-only initializer that parks the view at a specific step
@@ -43,8 +39,7 @@ struct DeviceLinkingView: View {
         isProcessing: Bool = false,
         progressMessage: String = "",
         errorMessage: String? = nil,
-        scannedDeviceName: String = "preview-iphone",
-        configJSON: String? = nil
+        scannedDeviceName: String = "preview-iphone"
     ) {
         _currentStep = State(initialValue: step)
         _isProcessing = State(initialValue: isProcessing)
@@ -57,7 +52,6 @@ struct DeviceLinkingView: View {
         _showScanner = State(initialValue: false)
         _showInvalidQRCodeAlert = State(initialValue: false)
         _invalidQRCodeMessage = State(initialValue: "")
-        self.previewConfigJSON = configJSON
     }
     
     var body: some View {
@@ -67,15 +61,12 @@ struct DeviceLinkingView: View {
                 scanPublicKeyView
             case .processing:
                 processingView
-            case .showConfig:
-                showConfigView
             case .error:
                 errorView
             }
         }
         .navigationTitle(currentStep.title)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(currentStep == .showConfig)
         .alert("Invalid QR Code", isPresented: $showInvalidQRCodeAlert) {
             Button("OK") {
                 dismiss()
@@ -140,56 +131,6 @@ struct DeviceLinkingView: View {
         )
     }
     
-    // MARK: - Show Config View
-
-    // Hands the new device the connection QR after access is granted,
-    // completing the old-device side of pairing.
-    private var showConfigView: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                PairingStepIndicator(step: 2, of: 2, phase: .shareConfig)
-                    .padding(.top, 16)
-
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                    Text(Self.shareConfigSuccessLabel)
-                        .fontWeight(.semibold)
-                }
-                .font(.title3)
-                .foregroundStyle(Color.brandGreen)
-
-                Text(Self.shareConfigHeading)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .multilineTextAlignment(.center)
-
-                Text(Self.shareConfigBody)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-
-                if let configJSON = previewConfigJSON ?? buildConfigQRCode() {
-                    QRCodeDisplayView(
-                        data: configJSON,
-                        title: "",
-                        borderColor: .brandGreen
-                    )
-                } else {
-                    Text("Failed to generate configuration QR code")
-                        .foregroundColor(.red)
-                }
-
-                Button(action: { dismiss() }) {
-                    Text("Done")
-                }
-                .buttonStyle(PairingTertiaryButtonStyle())
-                .padding(.horizontal)
-                .padding(.bottom, 40)
-            }
-        }
-    }
-    
     // MARK: - Error View
     
     private var errorView: some View {
@@ -210,21 +151,10 @@ struct DeviceLinkingView: View {
     // Starts linking immediately from scanner-validated fields to avoid redundant JSON parsing.
     private func handlePublicKeyScanned(_ payload: QRCodeScannerView.DevicePublicKeyPayload) {
         showScanner = false
-        let configuredCAHash = ServerConfigurationManager.shared.caCertificateHash()
-        if !Self.isMatchingWebappCAHash(scannedCAHash: payload.caHash, configuredCAHash: configuredCAHash) {
-            invalidQRCodeMessage = "You're attempting to connect to a different server than the one this app is registered with."
-            showInvalidQRCodeAlert = true
-            return
-        }
         currentStep = .processing
         isProcessing = true
         progressMessage = "Granting access..."
-        // A device that sent a pairing secret is waiting on a sealed record,
-        // not on a QR: it cannot reach the server to use a config QR in the
-        // first place. Showing one would leave it staring at a code it has no
-        // use for while its poll times out.
-        let shouldShowConfigAfterSuccess = payload.caHash == nil && payload.pairingSecret == nil
-        
+
         Task {
             do {
                 await MainActor.run {
@@ -251,11 +181,7 @@ struct DeviceLinkingView: View {
                 await MainActor.run {
                     isProcessing = false
                     progressMessage = "Access granted!"
-                    if shouldShowConfigAfterSuccess {
-                        currentStep = .showConfig
-                    } else {
-                        dismiss()
-                    }
+                    dismiss()
                 }
 
             } catch {
@@ -266,27 +192,6 @@ struct DeviceLinkingView: View {
                 }
             }
         }
-    }
-
-    // Builds the configuration QR code JSON containing server URL and CA certificate.
-    private func buildConfigQRCode() -> String? {
-        guard let config = ServerConfigurationManager.shared.loadConfiguration() else {
-            logError("No server configuration found", context: "DeviceLinking")
-            return nil
-        }
-        
-        let json: [String: String] = [
-            "url": config.url,
-            "ca": config.caCertificate
-        ]
-        
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: json),
-              let jsonString = String(data: jsonData, encoding: .utf8) else {
-            logError("Failed to serialize config JSON", context: "DeviceLinking")
-            return nil
-        }
-        
-        return jsonString
     }
 
     // Presents an invalid-QR alert and exits scanner flow to prevent ambiguous retry states.
@@ -304,29 +209,14 @@ struct DeviceLinkingView: View {
 enum LinkingStep {
     case scanPublicKey
     case processing
-    case showConfig
     case error
     
     var title: String {
         switch self {
         case .scanPublicKey: return "Link Device"
         case .processing: return "Granting Access"
-        case .showConfig: return ""
         case .error: return "Error"
         }
-    }
-}
-
-extension DeviceLinkingView {
-    // Compares optional scanned and configured hashes so webapp linking only succeeds for the same trusted server.
-    static func isMatchingWebappCAHash(scannedCAHash: String?, configuredCAHash: String?) -> Bool {
-        guard let scannedCAHash else {
-            return true
-        }
-        guard let configuredCAHash else {
-            return false
-        }
-        return configuredCAHash.caseInsensitiveCompare(scannedCAHash) == .orderedSame
     }
 }
 
@@ -342,16 +232,6 @@ extension DeviceLinkingView {
             preview: .processing,
             isProcessing: true,
             progressMessage: "Adding device key..."
-        )
-    }
-}
-
-#Preview("Show Config") {
-    NavigationStack {
-        DeviceLinkingView(
-            preview: .showConfig,
-            scannedDeviceName: "preview-iphone",
-            configJSON: "{\"url\":\"https://git.example.com\",\"ca\":\"-----BEGIN CERTIFICATE-----\\nMIIB...\\n-----END CERTIFICATE-----\"}"
         )
     }
 }

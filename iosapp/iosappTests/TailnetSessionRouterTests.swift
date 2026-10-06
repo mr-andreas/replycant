@@ -69,23 +69,17 @@ struct TailnetSessionRouterTests {
         try await body()
     }
 
-    // LAN deployments never join a tailnet, and their sessions must be left
-    // exactly as the call site built them.
-    @Test func inactiveWithoutANode() async throws {
+    // gitd is reachable only over the tailnet, so without a node there is
+    // nowhere safe to send a request: dialling directly would put it on
+    // whatever network the device happens to be on.
+    @Test func refusesWithoutANode() async throws {
         try await withRouter(nil) {
-            #expect(TailnetSessionRouter.shared.isActive == false)
-
             let configuration = URLSessionConfiguration.ephemeral
-            let applied = try await TailnetSessionRouter.shared.apply(to: configuration)
 
-            #expect(applied == false)
+            await #expect(throws: TailnetSessionRouter.RoutingError.notConnectedYet) {
+                try await TailnetSessionRouter.shared.apply(to: configuration)
+            }
             #expect(configuration.connectionProxyDictionary == nil)
-        }
-    }
-
-    @Test func activeOnceANodeIsInstalled() async throws {
-        try await withRouter(FakeNode()) {
-            #expect(TailnetSessionRouter.shared.isActive == true)
         }
     }
 
@@ -95,16 +89,15 @@ struct TailnetSessionRouterTests {
         let node = FakeNode(proxyHost: "127.0.0.1")
         try await withRouter(node) {
             let configuration = URLSessionConfiguration.ephemeral
-            let applied = try await TailnetSessionRouter.shared.apply(to: configuration)
+            try await TailnetSessionRouter.shared.apply(to: configuration)
 
-            #expect(applied == true)
             #expect(node.applyCount == 1)
             #expect(configuration.connectionProxyDictionary?["stubProxyHost"] as? String == "127.0.0.1")
         }
     }
 
     // Dialling directly on failure would leak the request onto whatever
-    // network the device is on, and on a LAN that resolves the name could
+    // network the device is on, and one that resolves the name could
     // reach a host the user never authorized.
     @Test func propagatesAFailureInsteadOfDiallingDirectly() async throws {
         let node = FakeNode(shouldFail: true)
@@ -112,7 +105,7 @@ struct TailnetSessionRouterTests {
         defer { TailnetSessionRouter.shared.use(nil) }
 
         await #expect(throws: TailnetManager.TailnetError.notJoined) {
-            _ = try await TailnetSessionRouter.shared.apply(to: URLSessionConfiguration.ephemeral)
+            try await TailnetSessionRouter.shared.apply(to: URLSessionConfiguration.ephemeral)
         }
     }
 
@@ -153,8 +146,9 @@ struct TailnetSessionRouterTests {
         }
     }
 
-    // A LAN deployment must not pay for a blocking hop that cannot help it.
-    @Test func synchronousPathIsANoOpWithoutANode() async throws {
+    // The libgit2 transport refuses on this answer, so it must report the
+    // missing node rather than hand back an unproxied configuration.
+    @Test func synchronousPathRefusesWithoutANode() async throws {
         try await withRouter(nil) {
             let configuration = URLSessionConfiguration.default
             #expect(TailnetSessionRouter.shared.applySynchronously(to: configuration) == false)
@@ -199,7 +193,7 @@ struct TailnetSessionRouterTests {
         defer { TailnetSessionRouter.shared.use(nil) }
 
         let configuration = URLSessionConfiguration.ephemeral
-        _ = try await TailnetSessionRouter.shared.apply(to: configuration)
+        try await TailnetSessionRouter.shared.apply(to: configuration)
 
         #expect(first.applyCount == 0)
         #expect(second.applyCount == 1)
@@ -211,9 +205,11 @@ struct TailnetSessionRouterTests {
         TailnetSessionRouter.shared.use(FakeNode())
         TailnetSessionRouter.shared.use(nil)
 
-        #expect(TailnetSessionRouter.shared.isActive == false)
         let configuration = URLSessionConfiguration.ephemeral
-        #expect(try await TailnetSessionRouter.shared.apply(to: configuration) == false)
+        await #expect(throws: TailnetSessionRouter.RoutingError.notConnectedYet) {
+            try await TailnetSessionRouter.shared.apply(to: configuration)
+        }
+        #expect(configuration.connectionProxyDictionary == nil)
     }
 }
 
@@ -221,35 +217,19 @@ struct TailnetSessionRouterTests {
 ///
 /// Launch no longer waits indefinitely for the join, so requests can be
 /// issued while it is still in flight. Each test uses its own router so the
-/// pending state never leaks into suites running in parallel against the
-/// shared one.
+/// missing node never leaks into suites running against the shared one.
 @Suite(.serialized)
 struct TailnetSessionRouterPendingTests {
-    // A paired device that has not joined yet must not dial gitd directly:
-    // the name does not resolve off the tailnet, and on a LAN that resolves
-    // it the request could reach a host the user never authorized.
-    @Test func pendingRefusesInsteadOfDiallingDirectly() async throws {
+    // Requests issued during the background join must start working as soon
+    // as the node arrives, without the caller having to retry differently.
+    @Test func installingANodeEndsTheRefusal() async throws {
         let router = TailnetSessionRouter()
-        router.expectTailnet()
+        #expect(router.applySynchronously(to: .default) == false)
 
-        #expect(router.isActive == true)
-        await #expect(throws: TailnetSessionRouter.RoutingError.notConnectedYet) {
-            _ = try await router.apply(to: URLSessionConfiguration.ephemeral)
-        }
-        let configuration = URLSessionConfiguration.default
-        #expect(router.applySynchronously(to: configuration) == false)
-        #expect(configuration.connectionProxyDictionary == nil)
-    }
-
-    // The node arriving ends the pending state, so requests issued after the
-    // background join finishes go through it.
-    @Test func installingANodeEndsThePendingState() async throws {
-        let router = TailnetSessionRouter()
-        router.expectTailnet()
         router.use(FakeNode(proxyHost: "127.0.0.1"))
 
         let configuration = URLSessionConfiguration.ephemeral
-        #expect(try await router.apply(to: configuration) == true)
+        try await router.apply(to: configuration)
         #expect(configuration.connectionProxyDictionary?["stubProxyHost"] as? String == "127.0.0.1")
     }
 
@@ -259,14 +239,14 @@ struct TailnetSessionRouterPendingTests {
         let router = TailnetSessionRouter()
         let initial = router.generation
 
-        router.expectTailnet()
-        let pending = router.generation
+        router.use(nil)
+        let cleared = router.generation
         router.use(FakeNode())
         let joined = router.generation
         router.use(nil)
 
-        #expect(pending > initial)
-        #expect(joined > pending)
+        #expect(cleared > initial)
+        #expect(joined > cleared)
         #expect(router.generation > joined)
     }
 }
@@ -295,7 +275,6 @@ struct GitLFSTailnetRoutingTests {
     // then works once the node arrives without being recreated.
     @Test func clientCreatedWhilePendingWorksOnceTheNodeArrives() async throws {
         let router = TailnetSessionRouter()
-        router.expectTailnet()
         let client = makeClient(router: router)
         TailnetRoutingLFSURLProtocol.reset()
 

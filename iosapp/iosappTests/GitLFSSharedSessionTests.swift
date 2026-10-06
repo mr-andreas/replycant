@@ -192,7 +192,8 @@ struct GitLFSSharedSessionTests {
         config.protocolClasses = [SharedSessionLFSURLProtocol.self]
         return GitLFS(
             serverURL: "https://\(SharedSessionLFSURLProtocol.host)/lfs",
-            sessionConfiguration: config
+            sessionConfiguration: config,
+            router: .passthroughForTests()
         )
     }
 

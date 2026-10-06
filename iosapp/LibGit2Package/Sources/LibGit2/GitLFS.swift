@@ -175,9 +175,9 @@ public final class GitLFS: NSObject {
 
     /// The session for the next request, routed the way the router says now.
     ///
-    /// Throws rather than dialling directly while the tailnet is expected but
-    /// not up: gitd's name does not resolve off the tailnet, and on a LAN
-    /// that does resolve it the request could reach an unintended host. A
+    /// Throws rather than dialling directly while the node is not up: gitd's
+    /// name does not resolve off the tailnet, and on a network that does
+    /// resolve it the request could reach an unintended host. A
     /// replaced session is finished rather than cancelled, so transfers
     /// already running on it complete.
     private func currentSession() throws -> URLSession {
@@ -189,7 +189,7 @@ public final class GitLFS: NSObject {
             return cachedSession
         }
         let configuration = baseConfiguration.copy() as! URLSessionConfiguration
-        if router.isActive, !router.applySynchronously(to: configuration) {
+        if !router.applySynchronously(to: configuration) {
             throw LFSError.networkError("Not connected to your library's network yet")
         }
         cachedSession?.finishTasksAndInvalidate()

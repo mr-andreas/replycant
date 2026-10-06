@@ -258,21 +258,4 @@ struct PairingQRPayloadTests {
 
         #expect(json.contains("pairing_secret"))
     }
-
-    // Omitted rather than sent empty, so a scanner can tell that this device
-    // is asking for the LAN path instead of publishing a record for it.
-    @Test func omitsTheSecretWhenThereIsNoTailnetAttempt() throws {
-        let json = try TailnetPairing.deviceQRPayload(
-            publicKeySSH: "ssh-ed25519 AAAA example",
-            agePublicKey: "age1example",
-            deviceName: "example-device",
-            deviceUUID: "uuid",
-            pairingSecret: nil
-        )
-
-        let decoded = try #require(
-            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: String]
-        )
-        #expect(decoded["pairing_secret"] == nil)
-    }
 }

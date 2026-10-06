@@ -69,13 +69,13 @@ struct DeviceLinkingGrantTests {
             agePubkey: "age1example",
             name: "iphone",
             uuid: "device-uuid",
-            pairingSecret: nil,
+            pairingSecret: "pairing-secret",
             operations: operations(recorder: recorder)
         )
 
         let snapshot = recorder.snapshot()
         #expect(snapshot.addDeviceKeyOnMainThread == false)
-        #expect(snapshot.events == ["add"])
+        #expect(snapshot.events == ["add", "authorize"])
     }
 
     // Tailnet onboarding is waiting on a sealed record. Skipping authorize
@@ -93,23 +93,6 @@ struct DeviceLinkingGrantTests {
         )
 
         #expect(recorder.snapshot().events == ["add", "authorize"])
-    }
-
-    // LAN pairing answers with a config QR, not a discovery record. Authorizing
-    // would hit gitd for a slot nobody is polling.
-    @Test
-    func missingPairingSecretSkipsAuthorize() async throws {
-        let recorder = Recorder()
-        try await DeviceLinking.grantAccess(
-            pubkey: "ssh-ed25519 AAAA",
-            agePubkey: "age1example",
-            name: "iphone",
-            uuid: "device-uuid",
-            pairingSecret: nil,
-            operations: operations(recorder: recorder)
-        )
-
-        #expect(recorder.snapshot().events == ["add"])
     }
 
     // The new device is still unknown to gitd until the key is pushed.

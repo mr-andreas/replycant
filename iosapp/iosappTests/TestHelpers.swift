@@ -1,6 +1,41 @@
 import Foundation
+import LibGit2
 import Testing
 @testable import iosapp
+
+/// Stands in for a joined node in tests that answer LFS requests from a
+/// URLProtocol stub. The router refuses every request without a node, so
+/// these clients need one, but the stub must still see the requests.
+private final class PassthroughTailnetNode: TailnetNodeProviding {
+    func apply(to configuration: URLSessionConfiguration) async throws {}
+
+    func applyCachedProxy(to configuration: URLSessionConfiguration) -> Bool {
+        true
+    }
+
+    func addresses() async throws -> (ip4: String?, ip6: String?) {
+        (nil, nil)
+    }
+
+    func status() async throws -> TailnetStatusReport {
+        try TailnetStatusReport.decode(
+            Data(#"{"BackendState":"Running"}"#.utf8),
+            controlRoute: .tailnet
+        )
+    }
+
+    func shutDown() async {}
+}
+
+extension TailnetSessionRouter {
+    /// A private router that lets requests through unproxied. Private so
+    /// it never touches the shared router the tailnet suites drive.
+    static func passthroughForTests() -> TailnetSessionRouter {
+        let router = TailnetSessionRouter()
+        router.use(PassthroughTailnetNode())
+        return router
+    }
+}
 
 // Sets up a reusable repository fixture for manifest persistence tests.
 @MainActor

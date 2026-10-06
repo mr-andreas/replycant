@@ -6,9 +6,9 @@ import Testing
 // Covers what Settings decides to show for the Connection section.
 //
 // The section used to load itself from an empty List child, which never
-// appeared, so a joined device looked like a LAN install. These cases are
-// the only thing that keeps that from happening again: hide until the load
-// finishes, hide LAN installs, and still show something when the node is
+// appeared, so a joined device looked unpaired. These cases are the only
+// thing that keeps that from happening again: hide until the load
+// finishes, hide unpaired devices, and still show something when the node is
 // configured but status cannot be read.
 struct TailnetConnectionSectionTests {
     private static func report() throws -> TailnetStatusReport {
@@ -18,8 +18,8 @@ struct TailnetConnectionSectionTests {
         )
     }
 
-    // A LAN device must not flash a Connection section while Settings asks
-    // whether there is a tailnet at all.
+    // An unpaired device must not flash a Connection section while Settings
+    // asks whether there is a tailnet at all.
     @Test func hidesUntilTheLoadFinishes() {
         #expect(
             TailnetConnectionSection.presentation(
@@ -37,9 +37,10 @@ struct TailnetConnectionSectionTests {
         )
     }
 
-    // LAN deployments have no tailnet to describe. A section reporting a
-    // broken connection would send the user chasing a problem they do not have.
-    @Test func hidesALanDeploymentAfterLoad() {
+    // A device with no tailnet configuration has nothing to describe. A
+    // section reporting a broken connection would send the user chasing a
+    // problem they do not have.
+    @Test func hidesAnUnpairedDeviceAfterLoad() {
         #expect(
             TailnetConnectionSection.presentation(
                 hasLoaded: true,
@@ -61,8 +62,8 @@ struct TailnetConnectionSectionTests {
         )
     }
 
-    // A configured device whose node is up but status failed is not a LAN
-    // install. Hiding the section is what made a successful join look like
+    // A configured device whose node is up but status failed is not
+    // unpaired. Hiding the section is what made a successful join look like
     // the feature was missing.
     @Test func showsUnavailableWhenConfiguredButStatusIsMissing() {
         #expect(

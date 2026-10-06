@@ -5,7 +5,7 @@ import LibGit2
 
 /// The device's side of tailnet pairing.
 ///
-/// On a tailnet deployment a new device can reach nothing: it has no CA to
+/// A new device can reach nothing: it has no CA to
 /// trust, no tailnet credential, and no route to gitd. So instead of asking the
 /// server for anything, it publishes a pairing secret in its QR code and waits
 /// for the operator's device to seal a record under that secret and publish it
@@ -18,27 +18,24 @@ import LibGit2
 enum TailnetPairing {
     /// Builds the QR the operator scans.
     ///
-    /// `pairing_secret` is what marks this as a tailnet request. It is omitted
-    /// rather than sent empty on the LAN path, so the scanner can tell which
-    /// way this device expects to be onboarded. The field names match
-    /// `buildPublicKeyQrPayload` in the webapp and `QRScanValidation` here,
-    /// since all three have to agree for a scan to be understood.
+    /// `pairing_secret` names the slot this device polls for its record. The
+    /// field names match `buildPublicKeyQrPayload` in the webapp and
+    /// `QRScanValidation` here, since all three have to agree for a scan to
+    /// be understood.
     static func deviceQRPayload(
         publicKeySSH: String,
         agePublicKey: String,
         deviceName: String,
         deviceUUID: String,
-        pairingSecret: String?
+        pairingSecret: String
     ) throws -> String {
-        var fields = [
+        let fields = [
             "pubkey": publicKeySSH,
             "age_pubkey": agePublicKey,
             "name": deviceName,
-            "uuid": deviceUUID
+            "uuid": deviceUUID,
+            "pairing_secret": pairingSecret
         ]
-        if let pairingSecret, !pairingSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            fields["pairing_secret"] = pairingSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
 
         let data = try JSONSerialization.data(withJSONObject: fields)
         return String(decoding: data, as: UTF8.self)

@@ -189,7 +189,8 @@ struct LFSDownloadLogTests {
         config.protocolClasses = [LogTestLFSURLProtocol.self]
         let client = GitLFS(
             serverURL: "https://test-lfs.local/lfs",
-            sessionConfiguration: config
+            sessionConfiguration: config,
+            router: .passthroughForTests()
         )
 
         let output = try await captureStdout {
@@ -244,7 +245,8 @@ struct LFSDownloadLogTests {
         config.protocolClasses = [LogTestLFSURLProtocol.self]
         let client = GitLFS(
             serverURL: "https://test-lfs.local/lfs",
-            sessionConfiguration: config
+            sessionConfiguration: config,
+            router: .passthroughForTests()
         )
 
         let missingOID = sha256Hex(Data("does-not-exist".utf8))
@@ -286,7 +288,8 @@ struct LFSDownloadLogTests {
         config.protocolClasses = [LogTestLFSURLProtocol.self]
         let client = GitLFS(
             serverURL: "https://test-lfs.local/lfs",
-            sessionConfiguration: config
+            sessionConfiguration: config,
+            router: .passthroughForTests()
         )
 
         let output = try await captureStdout {

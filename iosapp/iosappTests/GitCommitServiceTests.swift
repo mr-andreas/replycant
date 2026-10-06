@@ -61,7 +61,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -110,7 +110,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let originalManifest = OriginalManifest(
@@ -172,7 +172,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -221,7 +221,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest1 = OriginalManifest(
@@ -300,7 +300,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -354,7 +354,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "my-device-space", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -393,7 +393,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "my-device-space", lfsClient: lfs)
         
         let manifest = ThumbnailSetManifest(
@@ -421,7 +421,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "my-device-space", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -465,7 +465,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "my-device-space", lfsClient: lfs)
         
         let pointer = encryptedPointer(oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", size: 1500)
@@ -496,7 +496,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service1 = DefaultGitCommitService(repository: repo, deviceSpace: "device-1", lfsClient: lfs)
         let service2 = DefaultGitCommitService(repository: repo, deviceSpace: "device-2", lfsClient: lfs)
         
@@ -570,7 +570,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -610,7 +610,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -668,7 +668,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -706,7 +706,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest1 = OriginalManifest(
@@ -799,7 +799,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "accumulation-test", lfsClient: lfs)
         
         for i in 1...5 {
@@ -851,7 +851,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         try await service.createCommit(message: "Empty commit", items: [])
@@ -866,7 +866,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let longDeviceSpace = "very-long-device-space-name-with-many-characters-for-testing-edge-cases"
         let service = DefaultGitCommitService(repository: repo, deviceSpace: longDeviceSpace, lfsClient: lfs)
         
@@ -906,7 +906,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let specialIDs = [
@@ -978,7 +978,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         for testCase in testCases {
@@ -1018,7 +1018,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let manifest = OriginalManifest(
@@ -1054,7 +1054,7 @@ struct GitCommitServiceTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let lfs = GitLFS(serverURL: "http://test.com")
+        let lfs = GitLFS(serverURL: "http://test.com", router: .passthroughForTests())
         let service = DefaultGitCommitService(repository: repo, deviceSpace: "test-device", lfsClient: lfs)
         
         let validManifest = OriginalManifest(

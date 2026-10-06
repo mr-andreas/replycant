@@ -4,7 +4,8 @@ import LibGit2
 @testable import GitDB
 @testable import iosapp
 
-// Verifies iOS git/LFS/GitDB workflows against the real dockerized gitd integration stack.
+// Verifies iOS git/LFS/GitDB workflows against the real dockerized gitd
+// integration stack, reached over the tailnet the way the app reaches it.
 @MainActor
 @Suite(.serialized, .enabled(if: IntegrationEnvironment.isEnabled))
 struct GitdIntegrationTests {
@@ -103,31 +104,25 @@ struct GitdIntegrationTests {
         #expect(downloaded == payload)
     }
 
-    // Confirms seeded repos reject push attempts from identities that were never provisioned.
+    // Confirms a device whose key is not in pubkeys/ is kept off the tailnet.
+    // gitd is only reachable from inside it, so hsproxy refusing to mint a
+    // key is what stands in for gitd rejecting the push.
     @Test
-    func unauthorizedPushRejected() async throws {
-        let context = try await IntegrationHarness.prepareSeededWithoutProvisioning()
-        let repoPath = IntegrationHarness.makeTemporaryRepositoryPath(prefix: "ios-unauthorized-push")
-        defer { try? FileManager.default.removeItem(atPath: repoPath) }
-        let repository = try Repository.create(at: repoPath, bare: false)
-        try repository.createCommit(
-            message: "unauthorized push attempt",
-            files: [(path: "unauthorized.txt", content: "blocked")]
-        )
-        try repository.addRemote(name: "origin", url: context.mtlsRemoteURL)
+    func unprovisionedDeviceCannotJoinTheTailnet() async throws {
+        _ = try await IntegrationHarness.prepareSeededWithoutProvisioning()
 
         do {
-            try repository.push(remoteName: "origin", branchName: "main")
-            Issue.record("push unexpectedly succeeded without provisioning")
+            try await TailnetBootstrap.shared.joinAndPersist(
+                headscaleURL: IntegrationEnvironment.headscaleURL,
+                preauthKey: nil
+            )
+            Issue.record("an unprovisioned device joined the tailnet")
+        } catch HeadscaleControlShim.ShimError.keyRefused(let status) {
+            #expect(status == 403)
         } catch {
-            let message = String(describing: error).lowercased()
-            let expectedAuthFailure =
-                message.contains("unauthorized") ||
-                message.contains("public key not authorized") ||
-                message.contains("auth") ||
-                message.contains("401")
-            #expect(expectedAuthFailure)
+            Issue.record("expected hsproxy to refuse the key, got \(error)")
         }
+        #expect(TailnetConfigurationManager.shared.load() == nil)
     }
 
     // Confirms creating a recovery key writes marked key files to the integration remote.
@@ -143,8 +138,7 @@ struct GitdIntegrationTests {
             password: "correct horse battery staple",
             repository: repository,
             gitDB: gitDB,
-            serverConfiguration: config,
-            tailnetConfiguration: nil
+            serverConfiguration: config
         )
 
         let recloned = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
@@ -165,8 +159,7 @@ struct GitdIntegrationTests {
             password: "correct horse battery staple",
             repository: repository,
             gitDB: gitDB,
-            serverConfiguration: config,
-            tailnetConfiguration: nil
+            serverConfiguration: config
         )
 
         do {
@@ -209,8 +202,7 @@ struct GitdIntegrationTests {
             password: "correct horse battery staple",
             repository: repository,
             gitDB: gitDB,
-            serverConfiguration: config,
-            tailnetConfiguration: nil
+            serverConfiguration: config
         )
 
         let beforePubCount = try repository

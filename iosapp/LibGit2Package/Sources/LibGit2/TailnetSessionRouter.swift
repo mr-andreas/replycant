@@ -2,11 +2,11 @@ import Foundation
 
 /// Routes every URLSession that talks to gitd through the tailnet.
 ///
-/// The app has five places that build a session for the server (the libgit2
-/// transport, LFS, HLS playback, direct playback, and recovery discovery), and
+/// The app has several places that build a session for the server (the
+/// libgit2 transport, LFS, HLS playback, direct playback, and pairing), and
 /// each one constructs its own configuration. Installing the proxy at each site
-/// would mean five chances for a new call site to silently bypass the tailnet
-/// and fail with a name it cannot resolve, so they all route through here.
+/// would mean one more chance per call site to silently bypass the tailnet and
+/// fail with a name it cannot resolve, so they all route through here.
 ///
 /// This is deliberately a global. The alternative is threading a node handle
 /// through the libgit2 subtransport, which is reached through C callbacks with
@@ -16,9 +16,10 @@ public final class TailnetSessionRouter: @unchecked Sendable {
 
     /// Why a session could not be routed.
     public enum RoutingError: LocalizedError, Equatable {
-        /// The device belongs to a tailnet whose node is not up yet. Launch
-        /// does not wait indefinitely for the join, so requests can arrive in
-        /// this window and must be refused rather than dialled directly.
+        /// The device's node is not up. gitd is reachable only over the
+        /// tailnet, and launch does not wait for the join, so requests
+        /// issued before it finishes are refused rather than dialled
+        /// directly.
         case notConnectedYet
 
         public var errorDescription: String? {
@@ -28,22 +29,11 @@ public final class TailnetSessionRouter: @unchecked Sendable {
 
     private let lock = NSLock()
     private var node: TailnetNodeProviding?
-    private var expectsTailnet = false
     private var currentGeneration: UInt64 = 0
 
     /// Public so tests can use a private router instead of the shared one,
     /// which suites running in parallel also depend on.
     public init() {}
-
-    /// Reports whether traffic should be going through a tailnet at all.
-    ///
-    /// True while a join is still pending, so call sites refuse rather than
-    /// dial directly. False only for devices with no tailnet configured.
-    public var isActive: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return node != nil || expectsTailnet
-    }
 
     /// Changes whenever routing does. A long-lived session records the
     /// generation it was built under and rebuilds once it differs, which is
@@ -54,52 +44,33 @@ public final class TailnetSessionRouter: @unchecked Sendable {
         return currentGeneration
     }
 
-    /// Marks this device as reached over a tailnet whose node is not up yet.
-    ///
-    /// Called before a join starts, so requests issued while it runs fail
-    /// fast with `RoutingError.notConnectedYet` instead of escaping the
-    /// tailnet. Drops any installed node, because the join replaces it.
-    public func expectTailnet() {
-        lock.lock()
-        node = nil
-        expectsTailnet = true
-        currentGeneration += 1
-        lock.unlock()
-    }
-
     /// Installs the node every later session will be proxied through, or
-    /// clears routing entirely when the device leaves its tailnet.
+    /// clears it while a join is replacing it or the device leaves its
+    /// tailnet. Requests fail fast with `RoutingError.notConnectedYet` until
+    /// a node is installed again.
     public func use(_ node: TailnetNodeProviding?) {
         lock.lock()
         self.node = node
-        expectsTailnet = false
         currentGeneration += 1
         lock.unlock()
     }
 
-    private var currentState: (node: TailnetNodeProviding?, pending: Bool) {
+    private var currentNode: TailnetNodeProviding? {
         lock.lock()
         defer { lock.unlock() }
-        return (node, expectsTailnet)
+        return node
     }
 
-    /// Applies the tailnet proxy to a configuration, or leaves it untouched
-    /// when no tailnet is in use.
+    /// Applies the tailnet proxy to a configuration.
     ///
     /// A failure here is not swallowed: dialling directly instead would leak
-    /// the request onto whatever network the device happens to be on and, on a
-    /// LAN that happens to resolve the name, could reach an unintended host.
-    @discardableResult
-    public func apply(to configuration: URLSessionConfiguration) async throws -> Bool {
-        let state = currentState
-        guard let node = state.node else {
-            if state.pending {
-                throw RoutingError.notConnectedYet
-            }
-            return false
+    /// the request onto whatever network the device happens to be on, where
+    /// a resolver that answers for gitd's name could reach an unintended host.
+    public func apply(to configuration: URLSessionConfiguration) async throws {
+        guard let node = currentNode else {
+            throw RoutingError.notConnectedYet
         }
         try await node.apply(to: configuration)
-        return true
     }
 
     /// Builds a session configuration already routed through the tailnet.
@@ -122,11 +93,11 @@ public final class TailnetSessionRouter: @unchecked Sendable {
     /// a hop onto the node actor — waiting on that hop from a User-initiated
     /// or User-interactive thread is a priority inversion.
     ///
-    /// Returns whether a proxy was installed. While a join is pending this is
-    /// false with `isActive` true, which callers already treat as a refusal.
+    /// Returns whether a proxy was installed. Callers refuse the request when
+    /// it was not, for the same reason `apply` throws.
     @discardableResult
     public func applySynchronously(to configuration: URLSessionConfiguration) -> Bool {
-        guard let node = currentState.node else {
+        guard let node = currentNode else {
             return false
         }
         return node.applyCachedProxy(to: configuration)

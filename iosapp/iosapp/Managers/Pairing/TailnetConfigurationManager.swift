@@ -34,8 +34,7 @@ struct TailnetConfiguration: Codable, Equatable, Sendable {
     /// The URL gitd is reachable at once the device is on the tailnet.
     ///
     /// Plain `https` because that is the form the rest of the app stores and
-    /// `MTLSTransport.convertToMTLSScheme` expects; the LAN path stores the
-    /// same shape from its QR code.
+    /// `MTLSTransport.convertToMTLSScheme` expects.
     ///
     /// The port is explicit because gitd's tailnet listener is not on 443, and
     /// an implied 443 would leave every request hanging against a port nothing

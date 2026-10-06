@@ -95,7 +95,7 @@ struct ManifestManagerIntegrationTests {
         DefaultGitCommitService(
             repository: repository,
             deviceSpace: "test-device",
-            lfsClient: GitLFS(serverURL: "http://test.invalid")
+            lfsClient: GitLFS(serverURL: "http://test.invalid", router: .passthroughForTests())
         )
     }
 

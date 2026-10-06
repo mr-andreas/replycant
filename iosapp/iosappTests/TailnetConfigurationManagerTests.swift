@@ -93,8 +93,8 @@ struct TailnetConfigurationManagerTests {
         #expect(manager.load() == nil)
     }
 
-    // A corrupted entry must degrade to "not on a tailnet" rather than
-    // blocking startup, since a LAN deployment would still work.
+    // A corrupted entry must degrade to "not paired" rather than blocking
+    // startup, so the local library stays usable and the device can re-pair.
     @Test func treatsUnreadableStorageAsNoConfiguration() {
         let (manager, defaults) = Self.manager()
         defaults.set(Data("not json".utf8), forKey: "replycant.tailnet.config")
@@ -126,8 +126,8 @@ struct TailnetConfigurationManagerTests {
 // Covers the decision to join, which is the part that can be tested without a
 // real WireGuard node.
 struct TailnetBootstrapTests {
-    // LAN deployments were onboarded without a tailnet and must keep working
-    // untouched, so a device with nothing stored has nothing to join.
+    // Every launch before pairing reaches this, and a device with nothing
+    // stored has nothing to join.
     @Test func doesNothingWhenTheDeviceIsNotPairedToATailnet() async throws {
         let defaults = UserDefaults(suiteName: "replycant.tests.tailnet.\(UUID().uuidString)")!
         let bootstrap = TailnetBootstrap(
@@ -135,7 +135,7 @@ struct TailnetBootstrapTests {
         )
 
         #expect(await bootstrap.isConfigured == false)
-        // Must not throw: a LAN device reaches this on every launch.
+        // Must not throw, or launch would fail before onboarding.
         try await bootstrap.ensureJoinedIfConfigured()
         // Settings hides Connection when there is no node; a thrown
         // status here would be indistinguishable from a joined device
@@ -170,7 +170,6 @@ struct TailnetBootstrapTests {
             try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
         }
         // Requests made meanwhile are refused rather than dialled directly.
-        #expect(router.isActive == true)
         #expect(router.applySynchronously(to: .ephemeral) == false)
 
         // A second caller shares the join in flight. Starting another would

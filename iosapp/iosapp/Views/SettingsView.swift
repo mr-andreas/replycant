@@ -49,7 +49,7 @@ struct SettingsView: View {
 
                 // Loaded here, not inside the section, because a zero-height
                 // List child never runs `.task` and a joined device then
-                // looks like a LAN install. Above Advanced because "can
+                // looks unpaired. Above Advanced because "can
                 // this device reach the library at all" is what a user
                 // checks first when a sync fails.
                 connectionSection

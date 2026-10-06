@@ -6,8 +6,8 @@ import Security
 /// Owns the app's single tailnet node and brings it up when there is one to
 /// bring up.
 ///
-/// gitd publishes no host ports, so on a tailnet deployment every request the
-/// app makes depends on membership. A userspace node only runs while the app
+/// gitd publishes no host ports, so every request the app makes to it depends
+/// on membership. A userspace node only runs while the app
 /// does, which means joining is part of startup rather than a one-time setup
 /// step, and requests issued before the node is up are refused.
 ///
@@ -96,7 +96,7 @@ actor TailnetBootstrap {
         if let launchJoin {
             join = launchJoin
         } else {
-            router.expectTailnet()
+            router.use(nil)
             // Inherits this actor, so it cannot start before `launchJoin` is
             // set, and clearing it afterwards lets a failed join be retried.
             join = Task {
@@ -186,10 +186,9 @@ actor TailnetBootstrap {
         configurations.clear()
     }
 
-    /// How this device is connected, or nil when there is no tailnet to
-    /// describe - a LAN deployment, or a paired device whose node has not come
-    /// up yet. Failures are logged rather than thrown so Settings can still
-    /// tell a configured device from a LAN install.
+    /// How this device is connected, or nil when there is no node to
+    /// describe yet. Failures are logged rather than thrown so Settings still
+    /// renders while the node is unreachable.
     func status() async -> TailnetStatusReport? {
         guard let manager else { return nil }
         do {

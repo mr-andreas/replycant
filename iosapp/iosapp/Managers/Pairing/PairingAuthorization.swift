@@ -16,7 +16,6 @@ enum PairingAuthorization {
     enum AuthorizationError: LocalizedError, Equatable {
         case invalidServerURL
         case missingCredentials
-        case tailnetNotEnabled
         case publishFailed(Int)
 
         var errorDescription: String? {
@@ -25,8 +24,6 @@ enum PairingAuthorization {
                 return "This device has no usable server address to authorize pairing through."
             case .missingCredentials:
                 return "This device has no server credentials, so it cannot authorize another device."
-            case .tailnetNotEnabled:
-                return "This library's server has no tailnet, so the new device should scan the connection QR instead."
             case .publishFailed(let status):
                 return "The server could not publish the pairing record (HTTP \(status)). The new device is still waiting, so try again."
             }
@@ -73,19 +70,14 @@ enum PairingAuthorization {
         guard let http = response as? HTTPURLResponse else {
             throw AuthorizationError.publishFailed(0)
         }
-        // A LAN-only deployment genuinely has no such endpoint, which is a
-        // different situation from one that tried and failed.
-        if http.statusCode == 404 {
-            throw AuthorizationError.tailnetNotEnabled
-        }
         guard (200..<300).contains(http.statusCode) else {
             throw AuthorizationError.publishFailed(http.statusCode)
         }
         return data
     }
 
-    /// Builds a session that can reach gitd: mTLS credentials, and the tailnet
-    /// proxy when this device is itself a tailnet member.
+    /// Builds a session that can reach gitd: mTLS credentials and the tailnet
+    /// proxy.
     ///
     /// Both are required together. Without the identity gitd rejects the
     /// handshake, and without the proxy a tailnet deployment's MagicDNS name

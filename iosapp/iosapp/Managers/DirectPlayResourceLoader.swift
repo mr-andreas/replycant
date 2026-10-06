@@ -52,7 +52,7 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
 
     // AVFoundation drives these loaders synchronously from its own queues, so
     // the proxy is installed as the session is built rather than awaited. gitd
-    // is unreachable without it once a deployment uses a tailnet.
+    // is reachable only through it.
     private static func tailnetRoutedConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         TailnetSessionRouter.shared.applySynchronously(to: configuration)

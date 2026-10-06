@@ -47,9 +47,7 @@ struct GalleryScreen: Identifiable {
 // against the whole app at once instead of one file's previews.
 enum AppScreenGallery {
     private static let sampleDevicePublicKeyQR =
-        "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\"}"
-    private static let sampleConfigJSON =
-        "{\"url\":\"https://git.example.com\",\"ca\":\"-----BEGIN CERTIFICATE-----\\nMIIB...\\n-----END CERTIFICATE-----\"}"
+        "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\",\"pairing_secret\":\"preview\"}"
 
     static let all: [GalleryScreen] =
         onboarding + linking + recoveryKeys + createRecoveryKey
@@ -140,8 +138,8 @@ enum AppScreenGallery {
                 deviceName: "preview-iphone"
             )
         },
-        tile("Onboarding / scanConfig", section: .onboarding) {
-            OnboardingView(preview: .scanConfig)
+        tile("Onboarding / scanRecovery", section: .onboarding) {
+            OnboardingView(preview: .scanRecovery)
         },
         tile("Onboarding / processing", section: .onboarding) {
             OnboardingView(
@@ -168,13 +166,6 @@ enum AppScreenGallery {
                 preview: .processing,
                 isProcessing: true,
                 progressMessage: "Adding device key..."
-            )
-        },
-        stacked("Link a new device / showConfig", section: .linking) {
-            DeviceLinkingView(
-                preview: .showConfig,
-                scannedDeviceName: "preview-iphone",
-                configJSON: sampleConfigJSON
             )
         },
         stacked("Link a new device / error", section: .linking) {
@@ -244,14 +235,6 @@ enum AppScreenGallery {
                 onCompleted: {},
                 onCancel: {},
                 previewStep: .processing
-            )
-        },
-        stacked("Recover access / serverUnreachable", section: .recovery) {
-            RecoveryView(
-                initialInput: nil,
-                onCompleted: {},
-                onCancel: {},
-                previewStep: .serverUnreachable
             )
         },
         stacked("Recover access / blocked", section: .recovery) {
