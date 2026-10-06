@@ -40,26 +40,15 @@ This will use the directory where you have placed docker-compose.yaml for both m
 cat > .env << EOF
 REPLYCANT_DATA_DIR=/var/lib/replycant/data
 REPLYCANT_LFS_DIR=/var/lib/replycant/lfs
-REPLYCANT_GIT_PORT=8443
 REPLYCANT_CA_PORT=8080
 EOF
 ```
 
-The Git server listens on port `8443` (HTTPS) by default, and the
-discovery server on port `8080`. On the LAN the stack advertises as
-`<hostname>.local`. Set `REPLYCANT_HOSTNAME` to override that name, and
-`REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT` when those defaults are
-already in use. Already-linked devices need re-onboarding after a
-hostname or port change.
-
-> **Note:** On Mac and Windows, Docker runs in a VM, so hostname
-> auto-detection does not work. Set the name this computer uses on the
-> LAN before starting the stack:
->
-> ```bash
-> echo REPLYCANT_HOSTNAME=$(hostname) >> .env
-> docker compose up
-> ```
+The first-device join page listens on port `8080` by default; set
+`REPLYCANT_CA_PORT` if that port is already in use. The Git server is not
+published on the host at all: devices reach it over the library's private
+network, which works the same at home and away, so there is no hostname
+or Git port to configure.
 
 **2. Install the iOS client**
 

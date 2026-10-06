@@ -1,0 +1,70 @@
+# Written by headscale-config on every start. Edit server/tailnet instead.
+server_url: {{.ServerURL}}
+listen_addr: {{.ListenAddr}}
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+
+# Left empty on purpose. hsproxy splices raw TCP and adds no X-Forwarded-For,
+# so trusting a proxy here would only let clients spoof their own logged
+# source address.
+trusted_proxies: []
+
+# Kept apart from the database so the database can be deleted at any time: it
+# is only a cache of pubkeys/, but this key is the control plane's identity
+# and every node has it pinned.
+noise:
+  private_key_path: /var/lib/headscale-noise/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+derp:
+  server:
+    # The embedded DERP server needs publicly reachable UDP for STUN and an
+    # https server_url it terminates itself. Neither survives a reverse TCP
+    # tunnel, so Tailscale's public DERP mesh is used instead. Relayed traffic
+    # stays WireGuard-encrypted end to end.
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 24h
+
+disable_check_updates: true
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+
+# TLS is terminated by hsproxy, which also authenticates the device.
+# headscale itself only ever sees plaintext from inside the deployment.
+tls_cert_path: ""
+tls_key_path: ""
+
+log:
+  level: info
+  format: text
+
+policy:
+  # File mode rather than database mode because the policy is a fixed property
+  # of the deployment, not something an operator edits. With no policy loaded
+  # headscale allows every node to reach every other node.
+  mode: file
+  path: {{.PolicyPath}}
+
+dns:
+  magic_dns: true
+  # Must differ from the server_url domain.
+  base_domain: {{.BaseDomain}}
+  # Devices keep their own resolvers; replycant only needs name resolution
+  # for its own tailnet hosts.
+  override_local_dns: false
+  nameservers:
+    global: []
+  search_domains: []

@@ -10,17 +10,6 @@ import (
 	"time"
 )
 
-// An unset state directory is how operators opt out of the tailnet, so it must
-// read as "disabled" rather than as a misconfiguration.
-func TestConfigEnabled(t *testing.T) {
-	if (Config{}).Enabled() {
-		t.Fatal("an empty config must be disabled")
-	}
-	if !(Config{Dir: "/var/lib/replycant/tsnet"}).Enabled() {
-		t.Fatal("a config with a state directory must be enabled")
-	}
-}
-
 // Tailnet misconfiguration has to fail at startup. If it surfaced later, gitd
 // would be running with no reachable listener and look like a client problem.
 func TestConfigValidate(t *testing.T) {
@@ -30,16 +19,17 @@ func TestConfigValidate(t *testing.T) {
 		wantErrHas string
 	}{
 		{
-			name:   "disabled config needs nothing",
-			config: Config{},
+			name:       "config requires a state directory",
+			config:     Config{Hostname: "gitd", ControlURL: "https://hs.example"},
+			wantErrHas: "state directory",
 		},
 		{
-			name:       "enabled config requires a control url",
+			name:       "config requires a control url",
 			config:     Config{Dir: "/state", Hostname: "gitd"},
 			wantErrHas: "control URL",
 		},
 		{
-			name:       "enabled config requires a hostname",
+			name:       "config requires a hostname",
 			config:     Config{Dir: "/state", ControlURL: "https://hs.example"},
 			wantErrHas: "hostname",
 		},

@@ -42,8 +42,7 @@ type RecoveryPlaintext struct {
 	Label             string `json:"label"`
 	UUID              string `json:"uuid"`
 	Created           string `json:"created"`
-	DiscoveryURL      string `json:"discovery_url,omitempty"`
-	HeadscaleURL      string `json:"headscale_url,omitempty"`
+	HeadscaleURL      string `json:"headscale_url"`
 	CASHA256          string `json:"ca_sha256"`
 	P256PrivateKeyPEM string `json:"p256_private_key"`
 	AgePrivateKey     string `json:"age_private_key"`

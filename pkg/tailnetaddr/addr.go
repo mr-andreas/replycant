@@ -10,17 +10,22 @@ package tailnetaddr
 import "fmt"
 
 const (
-	// MagicDNS name gitd registers on the tailnet. Must match the SAN on
-	// gitd's certificate and the hostname compose passes to tsnet.
-	GitdHost = "gitd.replycant.internal"
+	// MagicDNS base domain headscale serves. It must differ from the
+	// control plane's own domain, which is why it is .internal.
+	Domain = "replycant.internal"
 
-	// Port gitd serves Git and LFS on inside the tailnet. Must stay in
-	// step with the headscale policy; a device dialling anything else is
-	// refused before gitd sees it.
+	// The node name gitd registers on the tailnet.
+	GitdHostname = "gitd"
+
+	// MagicDNS name gitd is reached at. Must match the SAN on gitd's
+	// certificate.
+	GitdHost = GitdHostname + "." + Domain
+
+	// Port gitd serves Git and LFS on inside the tailnet. The headscale
+	// policy opens exactly this port and ControlPort to devices.
 	GitdPort = 8443
 
-	// Port gitd relays control-plane traffic on inside the tailnet. Must
-	// match --tailnet-control-addr.
+	// Port gitd relays control-plane traffic on inside the tailnet.
 	ControlPort = 8444
 
 	// Path on the control-plane host (hsproxy) where a device whose key is

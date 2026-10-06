@@ -33,7 +33,8 @@ var (
 	wrapInfo = []byte("replycant-age-wrap-info")
 )
 
-// ComputeCAHash keeps QR ca_hash values aligned with iOS/webapp certificate matching.
+// ComputeCAHash keeps CA fingerprints (the recovery bundle's ca_sha256 and the
+// CA DNS label) aligned with how iOS hashes the same certificate.
 func ComputeCAHash(certificatePEM string) (string, error) {
 	normalized := strings.ReplaceAll(certificatePEM, "-----BEGIN CERTIFICATE-----", "")
 	normalized = strings.ReplaceAll(normalized, "-----END CERTIFICATE-----", "")

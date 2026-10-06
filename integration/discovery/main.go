@@ -64,6 +64,9 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodGet:
+		// Records are sealed, so letting any origin read them exposes nothing,
+		// and the desktop renderer cannot see a 404 without it.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		s.mu.Lock()
 		body, ok := s.records[slot]
 		if ok {

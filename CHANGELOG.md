@@ -5,6 +5,7 @@
 ### Breaking changes
 
 - all client-to-server traffic now runs over a private tailnet, so every device must be re-onboarded. The first device must be the iOS app: open `http://<server>:8080` from the server or anywhere on the LAN and scan a one-time join QR. The page stops handing out join codes once the first device has joined; set `REPLYCANT_CA_BIND=127.0.0.1` to keep it on the server host. Later devices, including every desktop, show a pairing QR to an already-paired device; the browser build cannot reach a tailnet deployment. The CA page and pairing record no longer carry a gitd URL or tailnet name — clients always use `https://gitd.replycant.internal:8443`. Wipe existing pairings; the QR shape and pairing payload both changed. The control-plane hostname includes a shard label (`{ca-hash}.s{NN}.tunnel.replycant.com`). A plain `docker compose up` publishes the control plane through the hosted relay. Set `REPLYCANT_HEADSCALE_URL` and `REPLYCANT_HSPROXY_BIND=0.0.0.0` and start with `--scale tunnel-agent=0` to expose it through your own router instead
+- LAN-only servers are gone: the server always runs the tailnet and no longer publishes a Git port, so `REPLYCANT_GIT_PORT` and `REPLYCANT_HOSTNAME` have no effect. Wipe state and pair every device over the tailnet. Recovery keys created before this change no longer open; create a new one once the phone is paired
 
 #### git-replycant
 

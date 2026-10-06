@@ -70,9 +70,8 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Deployments with no tailnet at all - LAN-only, and the integration
-	// harness - have no control plane to describe, so the endpoint genuinely
-	// does not exist there.
+	// gitd always installs a publisher; a server built without one, as in
+	// handler tests, has no control plane to describe.
 	if s.pairingPublisher == nil {
 		http.Error(w, "Tailnet pairing is not enabled on this deployment", http.StatusNotFound)
 		return

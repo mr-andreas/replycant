@@ -13,6 +13,7 @@ COPY . .
 
 RUN go build -o /usr/local/bin/gitd ./server/bin/gitd
 RUN go build -o /usr/local/bin/hsproxy ./server/bin/hsproxy
+RUN go build -o /usr/local/bin/headscale-config ./server/bin/headscale-config
 RUN go build -o /usr/local/bin/lfs-prereceive ./server/bin/lfs-prereceive
 RUN go build -o /usr/local/bin/git-replycant ./git-replycant
 RUN ln -s git-replycant /usr/local/bin/git-remote-replycant

@@ -9,44 +9,18 @@ import (
 	"testing"
 )
 
-func lanHandler(t *testing.T) http.Handler {
-	t.Helper()
-	handler, err := NewHandler(Config{CA: "pem-ca", ServerURL: "https://git.example"})
-	if err != nil {
-		t.Fatalf("NewHandler() error = %v", err)
-	}
-	return handler
-}
+func notBootstrapped() (bool, error) { return false, nil }
 
-// Verifies config endpoint stays machine-readable for webapp setup discovery.
-func TestConfigJSONEndpoint(t *testing.T) {
-	handler := lanHandler(t)
-
-	req := httptest.NewRequest(http.MethodGet, "/config.json", nil)
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, req)
-
-	if resp.Code != http.StatusOK {
-		t.Fatalf("unexpected status code: got %d want %d", resp.Code, http.StatusOK)
+// The page exists only to put the first device on the tailnet. Without a
+// minter it has nothing to offer, and without the bootstrap check it would
+// keep handing out join keys after the first push.
+func TestNewHandlerRequiresAMinterAndABootstrapCheck(t *testing.T) {
+	mint := func() (string, string, error) { return "https://hs.example", "hskey", nil }
+	if _, err := NewHandler(Config{CA: "pem-ca", Bootstrapped: notBootstrapped}); err == nil {
+		t.Error("a page without a minter must be rejected")
 	}
-	if got := resp.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("unexpected content-type: got %q want %q", got, "application/json")
-	}
-	// The tailnet variant of this payload carries a live join key, so no
-	// other origin may read it. The desktop fetches it from its own server.
-	if got := resp.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Fatalf("config.json must not allow cross-origin reads, got %q", got)
-	}
-
-	var payload map[string]string
-	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("response is not valid JSON: %v", err)
-	}
-	if payload["ca"] != "pem-ca" {
-		t.Fatalf("unexpected ca: got %q want %q", payload["ca"], "pem-ca")
-	}
-	if payload["url"] != "https://git.example" {
-		t.Fatalf("unexpected url: got %q want %q", payload["url"], "https://git.example")
+	if _, err := NewHandler(Config{CA: "pem-ca", Mint: mint}); err == nil {
+		t.Error("a page without a bootstrap check must be rejected")
 	}
 }
 
@@ -61,6 +35,7 @@ func TestConfigJSONRefusesCrossOriginPreflight(t *testing.T) {
 			calls++
 			return "https://hs.example", "hskey-x", nil
 		},
+		Bootstrapped: notBootstrapped,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -93,6 +68,7 @@ func TestTailnetConfigMintsAKeyPerRequest(t *testing.T) {
 			calls++
 			return "https://hs.example", "hskey-" + strings.Repeat("x", calls), nil
 		},
+		Bootstrapped: notBootstrapped,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -118,6 +94,27 @@ func TestTailnetConfigMintsAKeyPerRequest(t *testing.T) {
 	}
 }
 
+// The payload carries a live join key, so no other origin may read it.
+func TestConfigJSONIsSameOriginJSON(t *testing.T) {
+	handler, err := NewHandler(Config{
+		CA:           "pem-ca",
+		Mint:         func() (string, string, error) { return "https://hs.example", "hskey", nil },
+		Bootstrapped: notBootstrapped,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/config.json", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if got := resp.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("unexpected content-type: got %q want %q", got, "application/json")
+	}
+	if got := resp.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("config.json must not allow cross-origin reads, got %q", got)
+	}
+}
+
 // A mint failure must not serve a stale QR from an earlier successful request.
 func TestTailnetConfigMintFailureIsUnavailable(t *testing.T) {
 	handler, err := NewHandler(Config{
@@ -125,6 +122,7 @@ func TestTailnetConfigMintFailureIsUnavailable(t *testing.T) {
 		Mint: func() (string, string, error) {
 			return "", "", errors.New("headscale is down")
 		},
+		Bootstrapped: notBootstrapped,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)

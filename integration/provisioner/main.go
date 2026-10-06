@@ -18,6 +18,7 @@ type provisionerConfig struct {
 	newIdentityJSON   string
 	bareRepo          string
 	qrURL             string
+	pairingSecret     string
 	caFile            string
 	headscaleURL      string
 	pairURL           string
@@ -84,16 +85,28 @@ func collectRecipients(workDir string, newIdentity gitcrypt.Identity) ([][]byte,
 	return recipients, nil
 }
 
-func provision(cfg provisionerConfig) error {
-	var payload qrPayload
-	if cfg.qrURL != "" {
-		var err error
-		payload, err = fetchQRPayload(context.Background(), cfg.qrURL)
-		if err != nil {
-			return err
-		}
+// resolvePairing decides whether this run also approves a tailnet pairing.
+// The CLI suite scrapes the clone's loopback QR page; host-side suites only
+// have the secret, and the age key is then the new identity's own. It runs
+// before anything is committed so a missing payload leaves the repo alone.
+func resolvePairing(ctx context.Context, cfg provisionerConfig, newAgePublicKey string) (qrPayload, bool, error) {
+	switch {
+	case cfg.qrURL != "" && cfg.pairingSecret != "":
+		return qrPayload{}, false, fmt.Errorf("--qr-url and --pairing-secret are mutually exclusive")
+	case cfg.qrURL != "":
+		payload, err := fetchQRPayload(ctx, cfg.qrURL)
+		return payload, err == nil, err
+	case cfg.pairingSecret != "":
+		return qrPayload{
+			PairingSecret: strings.TrimSpace(cfg.pairingSecret),
+			AgePublicKey:  strings.TrimSpace(newAgePublicKey),
+		}, true, nil
+	default:
+		return qrPayload{}, false, nil
 	}
+}
 
+func provision(cfg provisionerConfig) error {
 	seederIdentity, err := readIdentity(filepath.Join(cfg.seederIdentityDir, "identity.json"))
 	if err != nil {
 		return fmt.Errorf("read seeder identity: %w", err)
@@ -101,6 +114,10 @@ func provision(cfg provisionerConfig) error {
 	newIdentity, err := readIdentity(cfg.newIdentityJSON)
 	if err != nil {
 		return fmt.Errorf("read new identity: %w", err)
+	}
+	payload, pairing, err := resolvePairing(context.Background(), cfg, newIdentity.AgePublicKey)
+	if err != nil {
+		return err
 	}
 
 	workDir, err := os.MkdirTemp("", "replycant-provisioner-*")
@@ -174,11 +191,11 @@ func provision(cfg provisionerConfig) error {
 	if err := runGit(workDir, "push", "origin", "main"); err != nil {
 		return err
 	}
-	if cfg.qrURL == "" {
+	if !pairing {
 		return nil
 	}
 	if cfg.caFile == "" || cfg.headscaleURL == "" || cfg.pairURL == "" {
-		return fmt.Errorf("--ca-file, --headscale-url, and --pair-url are required with --qr-url")
+		return fmt.Errorf("--ca-file, --headscale-url, and --pair-url are required to approve a pairing")
 	}
 	caPEM, err := os.ReadFile(cfg.caFile)
 	if err != nil {
@@ -195,6 +212,7 @@ func main() {
 	flag.StringVar(&cfg.newIdentityJSON, "new-identity-json", "", "Path to new device identity.json")
 	flag.StringVar(&cfg.bareRepo, "bare-repo", "", "Path to bare repository")
 	flag.StringVar(&cfg.qrURL, "qr-url", "", "Clone QR payload URL; set to approve a tailnet pairing")
+	flag.StringVar(&cfg.pairingSecret, "pairing-secret", "", "Pairing secret from the new device's QR; approves a tailnet pairing for --new-identity-json")
 	flag.StringVar(&cfg.caFile, "ca-file", "", "Deployment CA PEM the seeder pins for hsproxy")
 	flag.StringVar(&cfg.headscaleURL, "headscale-url", "", "hsproxy URL the seeder mints its tailnet key from")
 	flag.StringVar(&cfg.pairURL, "pair-url", "", "gitd /pair URL inside the tailnet")

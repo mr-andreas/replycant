@@ -6,10 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
 	"gopkg.in/yaml.v3"
 )
 
-const releaseWorkflowPath = "../../.github/workflows/release.yml"
+const (
+	composePath         = "../../docker-compose.yaml"
+	releaseWorkflowPath = "../../.github/workflows/release.yml"
+)
 
 // hsproxy is reached by two different names: the tunnel hostname when a device
 // is bootstrapping, and gitd's MagicDNS name once it is on the tailnet and
@@ -308,13 +312,6 @@ func TestHsproxyServesTheCA(t *testing.T) {
 // Keeping it out of the database directory is what lets an operator delete
 // that directory without every node rejecting the restarted headscale.
 func TestNoiseKeySurvivesADatabaseWipe(t *testing.T) {
-	compose, err := os.ReadFile(composePath)
-	if err != nil {
-		t.Fatalf("read the compose file: %v", err)
-	}
-	if !regexp.MustCompile(`private_key_path: /var/lib/headscale-noise/noise_private\.key`).Match(compose) {
-		t.Error("headscale's noise key must live outside /var/lib/headscale")
-	}
 	if !regexp.MustCompile(`headscale/noise:/var/lib/headscale-noise`).MatchString(composeService(t, "headscale")) {
 		t.Error("headscale must mount the noise key directory separately")
 	}
@@ -328,6 +325,41 @@ func TestLongRunningServicesRestart(t *testing.T) {
 		if !regexp.MustCompile(`\n    restart: unless-stopped\n`).MatchString(composeService(t, name)) {
 			t.Errorf("%s must declare restart: unless-stopped", name)
 		}
+	}
+}
+
+// Clients dial gitd by a name compiled into them, so the certificates must
+// carry exactly that name. A LAN hostname would only matter to a direct
+// connection, which no client makes.
+func TestCertificatesNameGitdByItsTailnetHost(t *testing.T) {
+	body := composeService(t, "server-key")
+	if !strings.Contains(body, `GITD_TAILNET_NAME="`+tailnetaddr.GitdHost+`"`) {
+		t.Errorf("server-key must issue certificates for %s", tailnetaddr.GitdHost)
+	}
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	for _, stale := range []string{"REPLYCANT_HOSTNAME", ".local", "REPLYCANT_TAILNET_DOMAIN", "REPLYCANT_GIT_PORT"} {
+		if strings.Contains(string(compose), stale) {
+			t.Errorf("compose must not mention %q; gitd is reached only on the tailnet", stale)
+		}
+	}
+}
+
+// headscale's config and policy are rendered by the Go code their tests
+// cover, so a hand-written copy in compose would be untested and could
+// drift from the tags and ports gitd and hsproxy use.
+func TestHeadscaleConfigIsRenderedByGitdsImage(t *testing.T) {
+	body := composeService(t, "headscale-config")
+	if !strings.Contains(body, "image: ${REPLYCANT_GITD_IMAGE:-gitd:local}") {
+		t.Error("headscale-config must run the gitd image, which ships the renderer")
+	}
+	if !regexp.MustCompile(`exec headscale-config `).MatchString(body) {
+		t.Error("headscale-config must run the headscale-config command")
+	}
+	if strings.Contains(body, "HSEOF") || strings.Contains(body, "POLEOF") {
+		t.Error("headscale-config must not write the config by hand")
 	}
 }
 

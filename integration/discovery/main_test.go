@@ -57,6 +57,28 @@ func TestOtherMethodsAreNotFound(t *testing.T) {
 	}
 }
 
+// The desktop app polls from its renderer, which is a cross-origin fetch.
+// Without the header the browser hides even the 404, and the poll can never
+// tell "not approved yet" from a network failure.
+func TestReadsAreOpenToOtherOrigins(t *testing.T) {
+	handler := newStore()
+	for _, published := range []bool{false, true} {
+		if published {
+			put := httptest.NewRequest(http.MethodPut, "/", strings.NewReader("sealed"))
+			put.Host = "abc.discovery.test"
+			handler.ServeHTTP(httptest.NewRecorder(), put)
+		}
+		get := httptest.NewRequest(http.MethodGet, "/", nil)
+		get.Host = "abc.discovery.test"
+		get.Header.Set("Origin", "http://127.0.0.1:5173")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, get)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("published=%v: Access-Control-Allow-Origin = %q, want *", published, got)
+		}
+	}
+}
+
 func getSlot(t *testing.T, handler http.Handler, host string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

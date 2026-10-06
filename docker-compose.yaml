@@ -1,37 +1,4 @@
 services:
-  # Write the advertised hostname, preferring REPLYCANT_HOSTNAME over
-  # the host's <hostname>.local so TLS SANs and gitd stay in sync.
-  # Docker VMs report names like docker-desktop; refuse those so Mac
-  # users set REPLYCANT_HOSTNAME to the computer's Bonjour name.
-  hostname-detect:
-    image: alpine:3.23
-    environment:
-      - REPLYCANT_HOSTNAME
-    volumes:
-      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname
-    entrypoint: /bin/sh
-    command:
-      - -ec
-      - |
-        if [ -z "$${REPLYCANT_HOSTNAME}" ]; then
-          detected=$$(hostname)
-          short=$${detected%%.*}
-          case "$${short}" in
-            docker-desktop|colima|lima|rancher-desktop)
-              echo "hostname-detect: '$${short}' is a Docker VM hostname, not this computer." >&2
-              echo "Set REPLYCANT_HOSTNAME to this machine's .local name, then retry:" >&2
-              echo >&2
-              echo '  echo REPLYCANT_HOSTNAME=$$(hostname) >> .env' >&2
-              echo "  docker compose up" >&2
-              exit 1
-              ;;
-          esac
-          REPLYCANT_HOSTNAME="$${detected}.local"
-        fi
-        printf 'REPLYCANT_HOSTNAME=%s\n' "$${REPLYCANT_HOSTNAME}" \
-          > /data/hostname/hostname.env
-    network_mode: host
-
   init-repo:
     image: alpine/git:latest
     volumes:
@@ -51,22 +18,15 @@ services:
   server-key:
     image: alpine/openssl:3.5.4
     environment:
-      - REPLYCANT_TAILNET_DOMAIN=${REPLYCANT_TAILNET_DOMAIN:-replycant.internal}
       - REPLYCANT_TUNNEL_DOMAIN=${REPLYCANT_TUNNEL_DOMAIN:-tunnel.replycant.com}
       - REPLYCANT_HEADSCALE_URL
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/:/data/
-      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet
-    depends_on:
-      hostname-detect:
-        condition: service_completed_successfully
     entrypoint: /bin/sh
     command:
       - -ec
       - |
-        . /data/hostname/hostname.env
-
         cd /data/
         if [ ! -f ca.key ]; then
           # Create OpenSSL config for CA extensions
@@ -77,7 +37,7 @@ services:
         prompt = no
 
         [req_dn]
-        CN = $$REPLYCANT_HOSTNAME
+        CN = Replycant CA
 
         [v3_ca]
         basicConstraints = critical, CA:TRUE
@@ -110,10 +70,9 @@ services:
         CA_SHARD_BYTE=$$(echo "$${CA_DIGEST}" | cut -c33-34)
         CA_SHARD=$$(printf 's%02d' $$(( 0x$${CA_SHARD_BYTE} % 64 )))
 
-        # Devices reach gitd by its MagicDNS name once everything is on the
-        # tailnet; the .local name is kept as a SAN so LAN-only deployments and
-        # integration tests keep working.
-        GITD_TAILNET_NAME="gitd.$${REPLYCANT_TAILNET_DOMAIN}"
+        # Devices reach gitd only by its MagicDNS name. Fixed, because clients
+        # pin it: must match tailnetaddr.GitdHost.
+        GITD_TAILNET_NAME="gitd.replycant.internal"
 
         # Manual mode wins when the operator published headscale themselves,
         # because then the certificate has to match their own DNS name.
@@ -143,8 +102,6 @@ services:
         REPLYCANT_HEADSCALE_HOST=$${HEADSCALE_HOST}
         REPLYCANT_HEADSCALE_URL=$${HEADSCALE_URL}
         REPLYCANT_TUNNEL_RELAY_ADDR=$${TUNNEL_RELAY_ADDR}
-        REPLYCANT_TAILNET_DOMAIN=$${REPLYCANT_TAILNET_DOMAIN}
-        REPLYCANT_GITD_TAILNET_NAME=$${GITD_TAILNET_NAME}
         ENVEOF
 
         # Issues a leaf certificate from the existing CA. Kept as one function
@@ -177,12 +134,11 @@ services:
           return 0
         }
 
-        if cert_covers server.crt "$${REPLYCANT_HOSTNAME}" "$${GITD_TAILNET_NAME}"; then
-          echo "Server certificate already covers $${REPLYCANT_HOSTNAME} and $${GITD_TAILNET_NAME}"
+        if cert_covers server.crt "$${GITD_TAILNET_NAME}"; then
+          echo "Server certificate already covers $${GITD_TAILNET_NAME}"
         else
-          echo "Issuing gitd certificate for $${REPLYCANT_HOSTNAME} and $${GITD_TAILNET_NAME}"
-          issue_cert server "$${REPLYCANT_HOSTNAME}" \
-            "DNS:$${REPLYCANT_HOSTNAME},DNS:$${GITD_TAILNET_NAME}"
+          echo "Issuing gitd certificate for $${GITD_TAILNET_NAME}"
+          issue_cert server "$${GITD_TAILNET_NAME}" "DNS:$${GITD_TAILNET_NAME}"
         fi
 
         # hsproxy terminates TLS for headscale, so its certificate has to match
@@ -193,19 +149,23 @@ services:
         # tailnet member reaches hsproxy through gitd's in-tailnet control
         # relay instead of through the tunnel. Both paths end at this same
         # certificate, so one missing SAN would pin every device to the relay.
-        if cert_covers hsproxy.crt "$${HEADSCALE_HOST}" "$${REPLYCANT_HOSTNAME}" "$${GITD_TAILNET_NAME}"; then
+        if cert_covers hsproxy.crt "$${HEADSCALE_HOST}" "$${GITD_TAILNET_NAME}"; then
           echo "hsproxy certificate already covers $${HEADSCALE_HOST}"
         else
           echo "Issuing hsproxy certificate for $${HEADSCALE_HOST}"
           issue_cert hsproxy "$${HEADSCALE_HOST}" \
-            "DNS:$${HEADSCALE_HOST},DNS:$${REPLYCANT_HOSTNAME},DNS:$${GITD_TAILNET_NAME}"
+            "DNS:$${HEADSCALE_HOST},DNS:$${GITD_TAILNET_NAME}"
         fi
 
-  # Render the headscale config from the names server-key derived. Kept as its
-  # own step because headscale's image is distroless and cannot template its
-  # own config, and because server_url must not be guessed twice.
+  # Render the headscale config and policy from the names server-key derived.
+  # headscale's image is distroless and cannot template its own config, so
+  # gitd's image does it with the same tags and ports gitd and hsproxy use.
   headscale-config:
-    image: alpine:3.23
+    image: ${REPLYCANT_GITD_IMAGE:-gitd:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gitd
     depends_on:
       server-key:
         condition: service_completed_successfully
@@ -217,113 +177,7 @@ services:
       - -ec
       - |
         . /data/tailnet/tailnet.env
-
-        # base_domain must differ from the server_url domain, which is why the
-        # tailnet uses .internal while the control plane uses the tunnel name.
-        cat > /data/config/config.yaml << HSEOF
-        server_url: $${REPLYCANT_HEADSCALE_URL}
-        listen_addr: 0.0.0.0:8080
-        metrics_listen_addr: 127.0.0.1:9090
-        grpc_listen_addr: 127.0.0.1:50443
-        grpc_allow_insecure: false
-
-        # Left empty on purpose. hsproxy splices raw TCP and adds no
-        # X-Forwarded-For, so trusting a proxy here would only let clients
-        # spoof their own logged source address.
-        trusted_proxies: []
-
-        # Kept apart from the database so the database can be deleted at
-        # any time: it is only a cache of pubkeys/, but this key is the
-        # control plane's identity and every node has it pinned.
-        noise:
-          private_key_path: /var/lib/headscale-noise/noise_private.key
-
-        prefixes:
-          v4: 100.64.0.0/10
-          v6: fd7a:115c:a1e0::/48
-          allocation: sequential
-
-        derp:
-          server:
-            # The embedded DERP server needs publicly reachable UDP for STUN
-            # and an https server_url it terminates itself. Neither survives a
-            # reverse TCP tunnel, so Tailscale's public DERP mesh is used
-            # instead. Relayed traffic stays WireGuard-encrypted end to end.
-            enabled: false
-          urls:
-            - https://controlplane.tailscale.com/derpmap/default
-          paths: []
-          auto_update_enabled: true
-          update_frequency: 24h
-
-        disable_check_updates: true
-
-        database:
-          type: sqlite
-          sqlite:
-            path: /var/lib/headscale/db.sqlite
-            write_ahead_log: true
-
-        # TLS is terminated by hsproxy, which also authenticates the device.
-        # headscale itself only ever sees plaintext from the compose network.
-        tls_cert_path: ""
-        tls_key_path: ""
-
-        log:
-          level: info
-          format: text
-
-        policy:
-          # File mode rather than database mode because the policy is a fixed
-          # property of the deployment, not something an operator edits. With
-          # no policy loaded at all headscale allows every node to reach every
-          # other node, which would let one compromised device reach the rest
-          # of the household.
-          mode: file
-          path: /etc/headscale/policy.json
-
-        dns:
-          magic_dns: true
-          base_domain: $${REPLYCANT_TAILNET_DOMAIN}
-          # Devices keep their own resolvers; replycant only needs name
-          # resolution for its own tailnet hosts.
-          override_local_dns: false
-          nameservers:
-            global: []
-          search_domains: []
-        HSEOF
-        echo "Wrote headscale config for $${REPLYCANT_HEADSCALE_URL}"
-
-        # The tailnet exists so devices can reach this household's server, not
-        # so they can reach each other. Naming only tag:server as a destination
-        # leaves everything else to headscale's default deny, so a stolen or
-        # compromised phone cannot enumerate or attack the other devices.
-        #
-        # Ports are pinned to what gitd actually serves on the tailnet: the
-        # mTLS Git listener, and the relay that carries control-plane traffic
-        # once a device is on the tailnet. Nothing here grants the server
-        # access to devices, because it never needs to initiate.
-        #
-        # Users carry a trailing @ because headscale's policy v2 requires it.
-        # Plain JSON rather than huJSON with comments so the policy stays
-        # machine-checkable; the reasoning lives here instead.
-        cat > /data/config/policy.json << POLEOF
-        {
-          "tagOwners": {
-            "tag:server": ["replycant@"],
-            "tag:device": ["replycant@"]
-          },
-          "acls": [
-            {
-              "action": "accept",
-              "proto": "tcp",
-              "src": ["tag:device"],
-              "dst": ["tag:server:8443", "tag:server:8444"]
-            }
-          ]
-        }
-        POLEOF
-        echo "Wrote headscale policy denying device-to-device traffic"
+        exec headscale-config --server-url="$$REPLYCANT_HEADSCALE_URL" --listen-addr=0.0.0.0:8080 --out-dir=/data/config
 
   # The tailnet control plane. Never publishes a host port: devices reach it
   # through hsproxy, which authenticates them against the repository's pubkeys.
@@ -526,8 +380,6 @@ services:
     depends_on:
       server-key:
         condition: service_completed_successfully
-      hostname-detect:
-        condition: service_completed_successfully
       init-repo:
         condition: service_completed_successfully
       headscale-init:
@@ -549,13 +401,11 @@ services:
     ports:
       - "${REPLYCANT_CA_BIND:-0.0.0.0}:${REPLYCANT_CA_PORT:-8080}:8080"
     environment:
-      REPLYCANT_GIT_PORT: ${REPLYCANT_GIT_PORT:-8443}
       # Empty selects manual-exposure delivery: gitd still seals a pairing
       # record, but hands it back to the authorizing device to display as a
       # QR instead of publishing it to the hosted API.
       REPLYCANT_DISCOVERY_URL: ${REPLYCANT_DISCOVERY_URL-https://discovery.replycant.com}
     volumes:
-      - ${REPLYCANT_DATA_DIR:-./replycant-data}/hostname:/data/hostname:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/server.crt:/data/server.crt:ro
@@ -570,9 +420,8 @@ services:
     command:
       - -xec
       - |
-        . /data/hostname/hostname.env
         . /data/tailnet/tailnet.env
-        exec gitd --repo=/data/repo --addr=:${REPLYCANT_GIT_PORT:-8443} --ca-addr=:8080 --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --hostname=$$REPLYCANT_HOSTNAME --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082 --tsnet-dir=/data/tsnet --tsnet-control-url=http://headscale:8080 --tsnet-hostname=gitd --tailnet-domain=$$REPLYCANT_TAILNET_DOMAIN --headscale-api-url=http://headscale:8080 --headscale-api-key-file=/data/tailnet/headscale.apikey --headscale-client-url=$$REPLYCANT_HEADSCALE_URL --tailnet-reconcile-marker=/data/tailnet-state/reconciled-pubkeys.json --discovery-url="$$REPLYCANT_DISCOVERY_URL"
+        exec gitd --repo=/data/repo --ca-addr=:8080 --ca=/data/ca.crt --cert=/data/server.crt --key=/data/server.key --cache-ttl=5m --lfs-dir=/data/lfs --lfs-internal-addr=:8085 --decryptd-url=http://decryptd:8084 --transcoded-url=http://transcoded:8082 --tsnet-dir=/data/tsnet --tsnet-control-url=http://headscale:8080 --headscale-api-url=http://headscale:8080 --headscale-api-key-file=/data/tailnet/headscale.apikey --headscale-client-url=$$REPLYCANT_HEADSCALE_URL --tailnet-reconcile-marker=/data/tailnet-state/reconciled-pubkeys.json --discovery-url="$$REPLYCANT_DISCOVERY_URL"
     restart: unless-stopped
 
   # Decrypts encrypted LFS objects on the fly. Reachable only through gitd's

@@ -1,11 +1,9 @@
 // Package tsnetserve joins a server process to the replycant tailnet and hands
 // back listeners that only tailnet peers can reach.
 //
-// This exists so gitd can stop publishing a host port. Previously the mTLS Git
-// listener had to be reachable on the LAN or through a forwarded router port,
-// which forced users to expose a service to the internet to sync from outside
-// their home. Binding the listener to a tsnet node instead means the only
-// publicly reachable surface is the headscale control plane.
+// gitd publishes no host port for Git: its listener is bound to a tsnet node,
+// so users never forward a router port to sync from outside their home, and
+// the only publicly reachable surface is the headscale control plane.
 //
 // tsnet is used in preference to a `tailscale` sidecar container because the
 // sidecar approach needs NET_ADMIN and /dev/net/tun, and would make the whole
@@ -26,10 +24,8 @@ import (
 
 // Describes how this process should appear on the tailnet.
 //
-// Dir doubles as the on/off switch: an empty Dir means "no tailnet", which is
-// what integration tests and LAN-only deployments use. tsnet would otherwise
-// pick a state directory under the user config dir, which is never what a
-// containerised server wants.
+// Dir is required: tsnet would otherwise pick a state directory under the
+// user config dir, which is never what a containerised server wants.
 type Config struct {
 	Dir        string
 	ControlURL string
@@ -45,25 +41,20 @@ type Config struct {
 	Logf func(format string, args ...any)
 }
 
-// Reports whether a tailnet node should be started for this process.
-func (c Config) Enabled() bool {
-	return strings.TrimSpace(c.Dir) != ""
-}
-
 // Checks that an enabled config is complete and internally consistent, so a
 // deployment mistake fails immediately instead of leaving gitd running with no
 // listener anyone can reach.
 func (c Config) Validate() error {
-	if !c.Enabled() {
-		return nil
+	if strings.TrimSpace(c.Dir) == "" {
+		return errors.New("tsnet state directory is required")
 	}
 	if strings.TrimSpace(c.Hostname) == "" {
-		return errors.New("tsnet hostname is required when a tsnet state directory is set")
+		return errors.New("tsnet hostname is required")
 	}
 
 	rawControlURL := strings.TrimSpace(c.ControlURL)
 	if rawControlURL == "" {
-		return errors.New("tsnet control URL is required when a tsnet state directory is set")
+		return errors.New("tsnet control URL is required")
 	}
 	parsed, err := url.Parse(rawControlURL)
 	if err != nil {
@@ -96,9 +87,6 @@ type Node struct {
 func Start(ctx context.Context, config Config) (*Node, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
-	}
-	if !config.Enabled() {
-		return nil, errors.New("tsnetserve: cannot start a disabled config")
 	}
 	// Without one the node would wait for an interactive login no one is
 	// watching for, which looks like a hang rather than a misconfiguration.

@@ -21,9 +21,9 @@ RUN go install ./...
 
 # Run gitd on debian, as the git binary bundled with alpine does not contain git-http-backend.
 #
-# hsproxy and tunnel-agent ship in the same image because they read the same
-# repository and certificates as gitd, and keeping one image means an operator
-# cannot end up running mismatched versions of services that share an auth model.
+# hsproxy, tunnel-agent and headscale-config ship in the same image because they
+# share gitd's repository, certificates or tailnet constants, and keeping one
+# image means an operator cannot end up running mismatched versions of them.
 FROM debian:trixie AS gitd
 RUN apt-get update && apt-get install -y git \
     && rm -rf /var/lib/apt/lists/*
@@ -31,6 +31,7 @@ COPY --from=debian-builder /go/bin/gitd /usr/local/bin/gitd
 COPY --from=debian-builder /go/bin/lfs-prereceive /usr/local/bin/lfs-prereceive
 COPY --from=debian-builder /go/bin/hsproxy /usr/local/bin/hsproxy
 COPY --from=debian-builder /go/bin/tunnel-agent /usr/local/bin/tunnel-agent
+COPY --from=debian-builder /go/bin/headscale-config /usr/local/bin/headscale-config
 ENTRYPOINT ["/usr/local/bin/gitd"]
 EXPOSE 8443
 EXPOSE 8080

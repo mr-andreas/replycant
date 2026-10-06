@@ -53,6 +53,34 @@ func TestPostPairingRecordSendsTheQRFields(t *testing.T) {
 	}
 }
 
+// A host-side harness drives approval through the control service rather
+// than a loopback QR page, so it hands over only the secret. The age key
+// must still be the new device's, or the record would not open there.
+func TestPairingSecretFlagPairsTheNewIdentity(t *testing.T) {
+	cfg := provisionerConfig{pairingSecret: "sekrit"}
+	payload, pairing, err := resolvePairing(context.Background(), cfg, "age1newdevice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pairing || payload.PairingSecret != "sekrit" || payload.AgePublicKey != "age1newdevice" {
+		t.Fatalf("payload = %+v, pairing = %v", payload, pairing)
+	}
+}
+
+func TestProvisioningWithoutAPairingSourceOnlyCommitsTheKey(t *testing.T) {
+	_, pairing, err := resolvePairing(context.Background(), provisionerConfig{}, "age1newdevice")
+	if err != nil || pairing {
+		t.Fatalf("pairing = %v, err = %v", pairing, err)
+	}
+}
+
+func TestPairingSourcesAreExclusive(t *testing.T) {
+	cfg := provisionerConfig{pairingSecret: "sekrit", qrURL: "http://127.0.0.1:1/payload.json"}
+	if _, _, err := resolvePairing(context.Background(), cfg, "age1newdevice"); err == nil {
+		t.Fatal("expected an error when both --qr-url and --pairing-secret are set")
+	}
+}
+
 func containsAll(s string, parts ...string) bool {
 	for _, part := range parts {
 		if !contains(s, part) {

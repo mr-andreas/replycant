@@ -72,8 +72,6 @@ func startContainer(t *testing.T) string {
 		"-d",
 		"--label",
 		"replycant-integration=true",
-		"-e",
-		"REPLYCANT_INTEGRATION_TAILNET=1",
 		testImage,
 	)
 	out, err := run.CombinedOutput()
@@ -642,7 +640,7 @@ func TestE2ETailnetSurvivesAHeadscaleWipe(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			gitdLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd-tailnet.log")
+			gitdLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd.log")
 			hsproxyLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/hsproxy.log")
 			t.Fatalf("gitd and the device did not rejoin the wiped headscale\nnodes: %s\ngitd:\n%s\nhsproxy:\n%s",
 				nodes, gitdLog, hsproxyLog)
@@ -764,7 +762,7 @@ func TestE2ETailnetRevocationExpiresOnlyTheRevokedDevice(t *testing.T) {
 	expiredLine := func(id string) string { return "expired device node " + id + " (" }
 	deadline := time.Now().Add(time.Minute)
 	for {
-		log, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd-tailnet.log")
+		log, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd.log")
 		if strings.Contains(log, expiredLine(gonesID)) {
 			assert.NotContains(t, log, expiredLine(keepID), "the device that stays authorized must keep its node")
 			break

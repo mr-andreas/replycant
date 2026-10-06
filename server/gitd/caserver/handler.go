@@ -26,16 +26,12 @@ type MintFunc func() (headscaleURL, preauthKey string, err error)
 // out join keys the moment the first-device window closes.
 type BootstrappedFunc func() (bool, error)
 
-// Configures the CA distribution page.
-//
-// LAN-only deployments (no Mint) serve {ca, url} so integration tests and
-// host-port gitd keep working. Tailnet deployments mint a join credential
-// instead: there is no reachable gitd URL until the device is on the tailnet.
-// With Bootstrapped set, a tailnet page answers 410 Gone once the repository
-// has a branch, since later devices pair through an existing device.
+// Configures the CA distribution page, which puts a deployment's first
+// device on the tailnet: the CA to trust, where to register, and a join key.
+// It answers 410 Gone once the repository has a branch, since later devices
+// pair through an existing device. Both functions are required.
 type Config struct {
 	CA           string
-	ServerURL    string
 	Mint         MintFunc
 	Bootstrapped BootstrappedFunc
 }
@@ -44,20 +40,13 @@ type Config struct {
 // get a permanent answer rather than a retry prompt.
 var errBootstrapped = errors.New("repository is already bootstrapped")
 
-// Provides HTTP endpoints for distributing CA certificate and server URL via QR code.
-// Enables mobile clients to scan and configure trust, while CLI clients can copy text directly.
+// Provides HTTP endpoints for distributing the first-device join payload via
+// QR code. Mobile clients scan it, while CLI clients can copy text directly.
 type handler struct {
 	ca           string
-	serverURL    string
 	mint         MintFunc
 	bootstrapped BootstrappedFunc
 	logoBase64   string
-}
-
-// Encodes CA and upstream URLs into a stable JSON shape for non-QR setup clients.
-type lanConfig struct {
-	CA  string `json:"ca"`
-	URL string `json:"url"`
 }
 
 // First-device join on a tailnet: the CA to trust, where to register, and a
@@ -70,9 +59,15 @@ type tailnetConfig struct {
 
 // Creates an HTTP handler serving CA certificate distribution endpoints.
 func NewHandler(cfg Config) (http.Handler, error) {
+	if cfg.Mint == nil {
+		return nil, errors.New("caserver: a join key minter is required")
+	}
+	if cfg.Bootstrapped == nil {
+		return nil, errors.New("caserver: a bootstrap check is required, " +
+			"or the page would hand out join keys after the first push")
+	}
 	h := &handler{
 		ca:           cfg.CA,
-		serverURL:    cfg.ServerURL,
 		mint:         cfg.Mint,
 		bootstrapped: cfg.Bootstrapped,
 		logoBase64:   base64.StdEncoding.EncodeToString(logoPNG),
@@ -89,30 +84,22 @@ func NewHandler(cfg Config) (http.Handler, error) {
 // Builds the QR/JSON payload. Returns errBootstrapped instead of minting once
 // the repository has a branch, and fails closed if that cannot be determined.
 func (h *handler) qrPayload() ([]byte, error) {
-	var data any
-	if h.mint != nil {
-		if h.bootstrapped != nil {
-			done, err := h.bootstrapped()
-			if err != nil {
-				return nil, err
-			}
-			if done {
-				return nil, errBootstrapped
-			}
-		}
-		headscaleURL, preauthKey, err := h.mint()
-		if err != nil {
-			return nil, err
-		}
-		data = tailnetConfig{
-			CA:           h.ca,
-			HeadscaleURL: headscaleURL,
-			PreauthKey:   preauthKey,
-		}
-	} else {
-		data = lanConfig{CA: h.ca, URL: h.serverURL}
+	done, err := h.bootstrapped()
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(data)
+	if done {
+		return nil, errBootstrapped
+	}
+	headscaleURL, preauthKey, err := h.mint()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(tailnetConfig{
+		CA:           h.ca,
+		HeadscaleURL: headscaleURL,
+		PreauthKey:   preauthKey,
+	})
 }
 
 // Answers a request whose payload could not be built. A closed bootstrap
@@ -145,20 +132,6 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
 		return
-	}
-
-	serverDetails := ""
-	if h.mint == nil {
-		serverDetails = fmt.Sprintf(`
-    <details>
-        <summary>Server URL</summary>
-        <div class="details-body">
-            <pre id="url">%s</pre>
-            <button class="copy-btn" onclick="copyToClipboard('url')">
-                Copy URL
-            </button>
-        </div>
-    </details>`, h.serverURL)
 	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -257,7 +230,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
         <p>Scan the QR code from the app to bootstrap your library.</p>
         <img src="data:image/png;base64,%s" alt="QR Code" />
     </div>
-%s
+
     <details>
         <summary>CA Certificate</summary>
         <div class="details-body">
@@ -282,7 +255,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
         }
     </script>
 </body>
-</html>`, h.logoBase64, base64.StdEncoding.EncodeToString(qrCode), serverDetails, h.ca)
+</html>`, h.logoBase64, base64.StdEncoding.EncodeToString(qrCode), h.ca)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
@@ -304,12 +277,10 @@ func (h *handler) handleQRCode(w http.ResponseWriter, r *http.Request) {
 	w.Write(qrCode)
 }
 
-// Serves setup configuration JSON for clients that discover the server
-// rather than scan its QR. Deliberately same-origin only: on a tailnet
-// deployment the payload carries a live join key, and the page listens on the
-// whole LAN, so any website the operator visited could otherwise read one.
-// The desktop app fetches it from its own local server, which CORS does not
-// govern.
+// Serves the join payload as JSON for clients that cannot scan the QR.
+// Deliberately same-origin only: the payload carries a live join key, and the
+// page listens on the whole LAN, so any website the operator visited could
+// otherwise read one.
 func (h *handler) handleConfigJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

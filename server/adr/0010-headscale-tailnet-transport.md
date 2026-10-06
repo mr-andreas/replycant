@@ -3,7 +3,9 @@
 ## Status
 Accepted. Where tailnet keys come from, hsproxy's pure splicing, and init-time
 key capture are superseded by
-[ADR-0011](0011-headscale-state-derived-from-git.md).
+[ADR-0011](0011-headscale-state-derived-from-git.md). Retaining the `.local`
+SAN for LAN-only deployments is superseded: LAN-only mode was removed, and
+the integration harness runs on the tailnet like a real deployment.
 
 ## Context
 gitd published its mTLS Git port and its CA port on the host. Reaching a home
@@ -85,7 +87,8 @@ their own logged source address.
 - Devices reach gitd by a stable MagicDNS name instead of a per-network address,
   so the client no longer needs to be reconfigured when the network changes.
 - The `.local` SAN is retained, so LAN-only deployments and the integration
-  harness keep working without a tailnet.
+  harness keep working without a tailnet. *(Superseded: LAN-only mode and the
+  `.local` SAN were removed.)*
 
 ### Negative
 - Two more services in compose (`headscale`, `hsproxy`) plus two init jobs
