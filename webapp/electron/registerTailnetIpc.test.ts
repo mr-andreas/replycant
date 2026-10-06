@@ -98,23 +98,27 @@ describe("parseJoinRequest", () => {
     expect(() => parseJoinRequest({ ...validRequest, hostname: "   " })).toThrow(/hostname/);
   });
 
-  // Manual-exposure deployments reach headscale under their own DNS name, and
-  // registration can reuse an existing node, so these two are genuinely
-  // optional rather than merely unset in tests.
+  // Manual-exposure deployments reach headscale under their own DNS name, so
+  // this is genuinely optional rather than merely unset in tests.
   it("leaves the optional fields unset when absent", () => {
     const config = parseJoinRequest(validRequest);
     expect(config.headscaleServerName).toBeUndefined();
-    expect(config.preauthKey).toBeUndefined();
   });
 
   it("carries the optional fields when present", () => {
     const config = parseJoinRequest({
       ...validRequest,
       headscaleServerName: "headscale.example.com",
-      preauthKey: "nodekey-test",
     });
     expect(config.headscaleServerName).toBe("headscale.example.com");
-    expect(config.preauthKey).toBe("nodekey-test");
+  });
+
+  // The desktop is never a deployment's first device, so it never has a join
+  // key; the sidecar mints its own. A key the renderer slips in must not
+  // reach the sidecar.
+  it("drops a join key the renderer sends", () => {
+    const config = parseJoinRequest({ ...validRequest, preauthKey: "nodekey-test" });
+    expect(config).not.toHaveProperty("preauthKey");
   });
 
   // The renderer sends this over IPC, so anything at all can arrive. Failing on

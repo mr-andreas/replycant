@@ -72,11 +72,6 @@ type input struct {
 	ClientCertPEM string `json:"client_cert_pem"`
 	ClientKeyPEM  string `json:"client_key_pem"`
 
-	// Single-use credential from the CA page, which only the first device of
-	// a deployment has: its key is not in pubkeys/ yet, so hsproxy will not
-	// mint one for it. Every other join mints its own key.
-	PreauthKey string `json:"preauth_key"`
-
 	// Where tsnet keeps its node identity. Persisted so a restart rejoins as
 	// the same node instead of registering a new one each launch.
 	StateDir string `json:"state_dir"`
@@ -250,7 +245,6 @@ func startNode(ctx context.Context, config input, controlPlane *tailnetshim.Shim
 		Dir:        config.StateDir,
 		Hostname:   config.Hostname,
 		ControlURL: controlPlane.ControlURL(),
-		AuthKey:    config.PreauthKey,
 		UserLogf:   log.Printf,
 		// Backend logs are dropped. magicsock and netcheck output would
 		// otherwise dominate the desktop app's logs.

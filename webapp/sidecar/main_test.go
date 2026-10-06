@@ -17,7 +17,6 @@ func validInput() map[string]string {
 		"ca_pem":                "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----",
 		"client_cert_pem":       "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----",
 		"client_key_pem":        "-----BEGIN EC PRIVATE KEY-----\nZmFrZQ==\n-----END EC PRIVATE KEY-----",
-		"preauth_key":           "hskey-auth-example",
 		"state_dir":             "/tmp/replycant/tsnet",
 		"hostname":              "desktop",
 	}
@@ -149,22 +148,6 @@ func TestReadInputRejectsBlankFields(t *testing.T) {
 
 	if _, err := readInput(encode(t, config)); err == nil {
 		t.Fatal("a blank CA must be rejected")
-	}
-}
-
-// Only the first device of a deployment arrives with a key, from the CA page.
-// Every paired device, and every restart, joins without one and mints its own,
-// so requiring it would make all of those fail.
-func TestReadInputAcceptsAMissingPreauthKey(t *testing.T) {
-	config := validInput()
-	delete(config, "preauth_key")
-
-	parsed, err := readInput(encode(t, config))
-	if err != nil {
-		t.Fatalf("a paired or rejoining node has no pre-auth key: %v", err)
-	}
-	if parsed.PreauthKey != "" {
-		t.Errorf("expected no pre-auth key, got one")
 	}
 }
 

@@ -198,10 +198,11 @@ describe("createApp", () => {
     expect(res.body).toEqual({ ca: "ca", url: "https://git.example" });
   });
 
-  // The first-device CA page on a tailnet has no gitd URL. Discovery must
-  // pass the join credential through so the desktop app can join before
-  // pointing the proxy at the hardcoded address.
-  it("discovers a tailnet first-device join from caserver", async () => {
+  // The desktop cannot create a library, so a tailnet CA page is never for
+  // it: the join key it serves belongs to the phone that will create the
+  // library. Discovery refuses and steers to phone pairing, and the key never
+  // reaches the browser.
+  it("refuses a tailnet CA page without passing its join key on", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -217,12 +218,22 @@ describe("createApp", () => {
     const res = await request(app).post("/api/setup/discover").send({
       serverUrl: "http://127.0.0.1:8080",
     });
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      ca: "ca",
-      headscale_url: "https://hs.example",
-      preauth_key: "hskey-1",
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/private network/);
+    expect(JSON.stringify(res.body)).not.toContain("hskey-1");
+  });
+
+  // Once the library exists the CA page answers 410. That is the same
+  // tailnet deployment, so it gets the same guidance rather than a bare
+  // status code.
+  it("refuses a bootstrapped tailnet CA page the same way", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 410 }));
+    const app = createApp(proxyConfig, createForwarderMock());
+    const res = await request(app).post("/api/setup/discover").send({
+      serverUrl: "http://127.0.0.1:8080",
     });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/private network/);
   });
 
   // Verifies that Node fetch's opaque "fetch failed" gets unwrapped to the

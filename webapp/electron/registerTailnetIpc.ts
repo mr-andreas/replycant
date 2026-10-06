@@ -14,7 +14,6 @@ export interface TailnetJoinRequest {
   caPem: string;
   clientCertPem: string;
   clientKeyPem: string;
-  preauthKey?: string;
   hostname: string;
 }
 
@@ -57,7 +56,6 @@ export const parseJoinRequest = (raw: unknown): TailnetSidecarConfig => {
     caPem: readString(source, "caPem")!,
     clientCertPem: readString(source, "clientCertPem")!,
     clientKeyPem: readString(source, "clientKeyPem")!,
-    preauthKey: readString(source, "preauthKey"),
     hostname: readString(source, "hostname")!,
     // Filled in by the caller, which owns the app's data directory.
     stateDir: "",

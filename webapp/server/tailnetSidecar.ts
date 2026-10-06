@@ -23,7 +23,6 @@ export interface TailnetSidecarConfig {
   caPem: string;
   clientCertPem: string;
   clientKeyPem: string;
-  preauthKey?: string;
   stateDir: string;
   hostname: string;
 }
@@ -188,7 +187,6 @@ const toSidecarInput = (config: TailnetSidecarConfig): Record<string, string> =>
   ca_pem: config.caPem,
   client_cert_pem: config.clientCertPem,
   client_key_pem: config.clientKeyPem,
-  preauth_key: config.preauthKey ?? "",
   state_dir: config.stateDir,
   hostname: config.hostname,
 });

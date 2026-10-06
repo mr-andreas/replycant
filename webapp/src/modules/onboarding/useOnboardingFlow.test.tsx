@@ -640,41 +640,21 @@ describe("useOnboardingFlow", () => {
     expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).toBeNull();
   });
 
-  // Fetching the CA page on a tailnet deployment is first-device setup: the
-  // payload is a live join, not a gitd URL. The existing wait-for-another-
-  // device path stays for a second phone.
-  it("treats a tailnet CA page as first-device join", async () => {
+  // The desktop cannot create a library, so it is never a deployment's first
+  // device: joining from the CA page would put it on the tailnet with nothing
+  // to sync. Discovery refuses a tailnet server, and the user has to pair
+  // from a phone instead.
+  it("refuses a tailnet server at discovery instead of joining it", async () => {
     const { joinTailnet } = installTailnetBridge();
     gitdbMocks.mockLoadIdentityRecord.mockReturnValue(null);
-    gitdbMocks.mockCreateIdentity.mockResolvedValue({
-      deviceName: "Test Device",
-      publicKeySsh: "ssh",
-      agePublicKey: pairingFixture.agePublicKeyBase64,
-      deviceUUID: "uuid",
-      wrap: "device",
-    });
-    gitdbMocks.mockUnlockIdentity.mockResolvedValue({
-      privateKeyPem: "key",
-      certificatePem: "cert",
-      deviceName: "Test Device",
-      agePrivateKeyBase64: pairingFixture.agePrivateKeyBase64,
-    });
+    const refusal =
+      'This library is on a private network. Choose "My server is not on this network" and approve this computer from your phone.';
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({
-            ca: pairingFixture.payload.ca_pem,
-            headscale_url: pairingFixture.payload.headscale_url,
-            preauth_key: "hskey-auth-first-device",
-          }),
-        })
-        .mockResolvedValue({
-          ok: true,
-          json: async () => ({}),
-        }),
+      vi.fn().mockResolvedValue({
+        ok: false,
+        json: async () => ({ error: refusal }),
+      }),
     );
 
     render(<OnboardingHarness />);
@@ -683,31 +663,11 @@ describe("useOnboardingFlow", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "discover-server" }));
     });
-    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("create"));
 
-    fireEvent.click(screen.getByRole("button", { name: "set-device" }));
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "create" }));
-    });
-
-    await waitFor(() => expect(screen.getByTestId("mode")).toHaveTextContent("rehydrating"));
-    expect(joinTailnet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        headscaleAddr: `${pairingFixture.caLabel}.tunnel.replycant.com:443`,
-        caPem: pairingFixture.payload.ca_pem,
-        preauthKey: "hskey-auth-first-device",
-        gitdControlAddr: "gitd.replycant.internal:8444",
-      }),
-    );
-    const stored = JSON.parse(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY) ?? "{}") as {
-      url?: string;
-    };
-    expect(stored.url).toBe("https://gitd.replycant.internal:8443");
-    const tailnet = JSON.parse(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY) ?? "{}") as {
-      gitdTailnetName?: string;
-      baseDomain?: string;
-    };
-    expect(tailnet.gitdTailnetName).toBeUndefined();
-    expect(tailnet.baseDomain).toBeUndefined();
+    await waitFor(() => expect(screen.getByTestId("error")).toHaveTextContent(refusal));
+    expect(screen.getByTestId("mode")).toHaveTextContent("serverUrl");
+    expect(joinTailnet).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).toBeNull();
   });
 });

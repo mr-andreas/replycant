@@ -132,11 +132,6 @@ export interface JoinTailnetOptions {
   record: TailnetConfigRecord;
   caPem: string;
   identity: Pick<DecryptedIdentity, "privateKeyPem" | "certificatePem" | "deviceName">;
-
-  // Only the first device of a deployment has one, from the CA page. Every
-  // other join, and every rejoin, lets the sidecar mint its own key from
-  // hsproxy with the device certificate.
-  preauthKey?: string;
 }
 
 /**
@@ -149,12 +144,14 @@ export interface JoinTailnetOptions {
  *
  * The CA is pinned for the other direction: it is what proves the control plane
  * on the far side of the tunnel is really this deployment's.
+ *
+ * No join key is passed: the desktop is never a deployment's first device, so
+ * its key is already in `pubkeys/` and the sidecar mints its own from hsproxy.
  */
 export const joinTailnet = async ({
   record,
   caPem,
   identity,
-  preauthKey,
 }: JoinTailnetOptions): Promise<void> => {
   const desktop = window.replycantDesktop;
   if (!desktop?.joinTailnet) {
@@ -171,7 +168,6 @@ export const joinTailnet = async ({
     caPem,
     clientCertPem: identity.certificatePem,
     clientKeyPem: identity.privateKeyPem,
-    ...(preauthKey ? { preauthKey } : {}),
     hostname: identity.deviceName,
   });
 };

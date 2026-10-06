@@ -27,7 +27,7 @@ LAN-only and integration setups (no tsnet) still serve `{ca, url}` from the same
 ### Step-by-Step
 
 1. **Open the CA page** at `http://<server>:8080`, either on the machine running gitd or from another machine on the LAN. Set `REPLYCANT_CA_BIND=127.0.0.1` to keep it on the host. The page hands out join keys only while the repository is empty. After that it answers `410 Gone`.
-2. **Scan the QR** (or fetch `/config.json` from the desktop app). On a tailnet deployment the payload is a one-time join: CA, headscale URL, and a preauth key. Clients already know gitd as `https://gitd.replycant.internal:8443`.
+2. **Scan the QR** with the iOS app, the only client that can create a library. On a tailnet deployment the payload is a one-time join: CA, headscale URL, and a preauth key. Clients already know gitd as `https://gitd.replycant.internal:8443`.
 3. **Join, then push**: the first device joins the tailnet, creates a local repository, commits its public key to `pubkeys/`, and pushes. The server accepts because the repository is empty.
 4. **Access control active**: subsequent connections require a certificate matching a key in `pubkeys/`
 
@@ -217,13 +217,12 @@ The webapp onboarding flow mirrors device linking trust semantics but begins wit
 ![Webapp-first onboarding](./device-onboarding/webapp-onboarding.drawio.svg)
 
 1. User opens an uninitialized webapp and enters `http://127.0.0.1:8080`.
-2. Webapp discovery fetches `/config.json`. A tailnet payload is first-device join; `{ca, url}` is LAN-only.
-3. User creates a device identity. The join waits for this because hsproxy authorizes the same certificate gitd will later see.
-4. Desktop joins the tailnet with the payload's key when it is a first-device join, then points the proxy at `https://gitd.replycant.internal:8443`.
-5. Webapp generates a P-256 key pair and computes `ca_hash` from CA DER bytes (SHA256 hex).
-6. Webapp displays QR payload `{pubkey, age_pubkey, name, uuid, ca_hash}`.
-7. iOS scans the QR, verifies `ca_hash` against its configured CA, then commits the key.
-8. Webapp polls for authorization and proceeds to clone/sync once the key is accepted.
+2. Webapp discovery fetches `/config.json`. Only a LAN `{ca, url}` payload is accepted. A tailnet CA page, or its `410` once the library exists, is refused: the desktop cannot create a library, so it is never a deployment's first device and joins through [Tailnet Pairing](#tailnet-pairing) instead.
+3. User creates a device identity.
+4. Webapp generates a P-256 key pair and computes `ca_hash` from CA DER bytes (SHA256 hex).
+5. Webapp displays QR payload `{pubkey, age_pubkey, name, uuid, ca_hash}`.
+6. iOS scans the QR, verifies `ca_hash` against its configured CA, then commits the key.
+7. Webapp polls for authorization and proceeds to clone/sync once the key is accepted.
 
 `ca_hash` is optional across the full protocol: iOS-to-iOS public key QR codes omit it, while webapp-generated QR codes include it and trigger CA verification before key commit.
 

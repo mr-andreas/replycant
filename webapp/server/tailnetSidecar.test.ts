@@ -9,7 +9,6 @@ const config: TailnetSidecarConfig = {
   caPem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
   clientCertPem: "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----",
   clientKeyPem: "-----BEGIN EC PRIVATE KEY-----\nkey\n-----END EC PRIVATE KEY-----",
-  preauthKey: "hskey-auth-example",
   stateDir: "/tmp/replycant/tsnet",
   hostname: "desktop",
 };
@@ -389,26 +388,6 @@ describe("startTailnetSidecar", () => {
     await vi.waitFor(() => expect(logged.some((line) => line.includes("not json"))).toBe(true));
 
     expect(seen).toHaveLength(0);
-    await sidecar.stop();
-  });
-
-  // A pre-auth key is single-use, so a rejoining device has none. Requiring it
-  // would make every restart after the first fail.
-  it("starts without a pre-auth key", async () => {
-    const child = new FakeSidecarProcess();
-    const stdinRead = child.readStdin();
-    const { preauthKey: _omitted, ...withoutKey } = config;
-
-    const starting = startTailnetSidecar({
-      binaryPath: "/opt/replycant/replycant-tsnet",
-      config: withoutKey as TailnetSidecarConfig,
-      spawnFn: makeSpawn(child),
-    });
-    child.announceReady();
-    const sidecar = await starting;
-
-    const written = JSON.parse(await stdinRead) as Record<string, string>;
-    expect(written.preauth_key).toBe("");
     await sidecar.stop();
   });
 });

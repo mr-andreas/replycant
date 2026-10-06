@@ -22,7 +22,6 @@ export interface TailnetJoinRequest {
   caPem: string;
   clientCertPem: string;
   clientKeyPem: string;
-  preauthKey?: string;
   hostname: string;
 }
 

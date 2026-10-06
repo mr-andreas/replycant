@@ -19,9 +19,6 @@ const payload: PairingPayload = {
   caPem: "-----BEGIN CERTIFICATE-----ca-----END CERTIFICATE-----",
 };
 
-// Only the first device's join carries a key, from the CA page.
-const firstDeviceKey = "preauth-abc";
-
 const identity = {
   privateKeyPem: "-----BEGIN PRIVATE KEY-----k",
   certificatePem: "-----BEGIN CERTIFICATE-----c",
@@ -173,7 +170,6 @@ describe("joinTailnet", () => {
       record: toTailnetConfigRecord(payload),
       caPem: payload.caPem,
       identity,
-      preauthKey: firstDeviceKey,
     });
 
     expect(joinTailnetBridge).toHaveBeenCalledWith({
@@ -184,22 +180,8 @@ describe("joinTailnet", () => {
       caPem: payload.caPem,
       clientCertPem: identity.certificatePem,
       clientKeyPem: identity.privateKeyPem,
-      preauthKey: "preauth-abc",
       hostname: "Ante's Laptop",
     });
-  });
-
-  // A paired device, and any rejoin after restart, has no key to offer and
-  // must not send an empty one: the sidecar would try to register with it
-  // instead of minting its own.
-  it("omits the pre-auth key when there is none", async () => {
-    await joinTailnet({
-      record: toTailnetConfigRecord(payload),
-      caPem: payload.caPem,
-      identity,
-    });
-
-    expect(joinTailnetBridge.mock.calls[0]?.[0]).not.toHaveProperty("preauthKey");
   });
 
   // The browser build reaching this point is a bug, but the user should read an
