@@ -304,15 +304,13 @@ func (h *handler) handleQRCode(w http.ResponseWriter, r *http.Request) {
 	w.Write(qrCode)
 }
 
-// Serves setup configuration JSON so browser onboarding can discover CA and upstream endpoints.
+// Serves setup configuration JSON for clients that discover the server
+// rather than scan its QR. Deliberately same-origin only: on a tailnet
+// deployment the payload carries a live join key, and the page listens on the
+// whole LAN, so any website the operator visited could otherwise read one.
+// The desktop app fetches it from its own local server, which CORS does not
+// govern.
 func (h *handler) handleConfigJSON(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return

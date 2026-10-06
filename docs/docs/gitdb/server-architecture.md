@@ -118,7 +118,7 @@ The CA server provides a simple way for devices to obtain the server's CA certif
 |----------|--------------|-------------|
 | `/` | `text/html` | HTML page with QR code and copyable text |
 | `/qr.png` | `image/png` | QR code image for scanning |
-| `/config.json` | `application/json` | Machine-readable config payload for browser discovery |
+| `/config.json` | `application/json` | Machine-readable config payload for desktop discovery (same-origin only) |
 
 ### QR Code Data
 
@@ -138,14 +138,14 @@ LAN-only / integration (no `--tsnet-dir`) still serves `{ca, url}`. Clients
 always reach gitd at `https://gitd.replycant.internal:8443` once they are on
 the tailnet; that address is not carried in the QR.
 
-The `/config.json` endpoint returns the same payload as the QR JSON and
-includes `Access-Control-Allow-Origin: *` so desktop onboarding can discover
-it.
+The `/config.json` endpoint returns the same payload as the QR JSON. It sends
+no CORS headers: a tailnet payload carries a live join key, so no other
+website may read it. The desktop app fetches it from its own local server.
 
 ### Device Onboarding
 
 1. Open `http://127.0.0.1:8080` on the host running gitd
-2. Scan the QR with the app, or point the desktop app at that URL
+2. Scan the QR with the iOS app, which creates the library
 3. The first device joins the tailnet, then pushes to gitd over it
 
 ## Key Caching

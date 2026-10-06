@@ -32,8 +32,10 @@ func TestConfigJSONEndpoint(t *testing.T) {
 	if got := resp.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("unexpected content-type: got %q want %q", got, "application/json")
 	}
-	if got := resp.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("unexpected CORS origin header: got %q want %q", got, "*")
+	// The tailnet variant of this payload carries a live join key, so no
+	// other origin may read it. The desktop fetches it from its own server.
+	if got := resp.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("config.json must not allow cross-origin reads, got %q", got)
 	}
 
 	var payload map[string]string
@@ -48,22 +50,36 @@ func TestConfigJSONEndpoint(t *testing.T) {
 	}
 }
 
-// Verifies preflight requests succeed so browser-based setup discovery can call the endpoint cross-origin.
-func TestConfigJSONEndpointOptions(t *testing.T) {
-	handler := lanHandler(t)
+// The CA page listens on the whole LAN by default, so any website the
+// operator visits could otherwise preflight and read a freshly minted join
+// key. A preflight is refused outright, and refusing it must not mint.
+func TestConfigJSONRefusesCrossOriginPreflight(t *testing.T) {
+	calls := 0
+	handler, err := NewHandler(Config{
+		CA: "pem-ca",
+		Mint: func() (string, string, error) {
+			calls++
+			return "https://hs.example", "hskey-x", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodOptions, "/config.json", nil)
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: got %d want %d", resp.Code, http.StatusNoContent)
+	if resp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("unexpected status code: got %d want %d", resp.Code, http.StatusMethodNotAllowed)
 	}
-	if got := resp.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("unexpected CORS origin header: got %q want %q", got, "*")
+	if got := resp.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("a preflight must not grant cross-origin access, got %q", got)
 	}
-	if got := resp.Header().Get("Access-Control-Allow-Methods"); got != "GET, OPTIONS" {
-		t.Fatalf("unexpected CORS methods header: got %q want %q", got, "GET, OPTIONS")
+	if calls != 0 {
+		t.Fatalf("a refused preflight minted %d keys", calls)
 	}
 }
 
