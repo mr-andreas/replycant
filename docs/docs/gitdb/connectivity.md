@@ -98,6 +98,12 @@ its first successful join. A join that never succeeds does not save that
 state, so a record that cannot be used does not leave the app retrying a
 tailnet it never reached.
 
+On iOS the same rebuild happens when the app returns from a long time in
+the background. The node's status can keep reading as running across a
+suspend, because that read does not use the local proxy the system may
+have reclaimed, so a wake after that long does not trust the existing
+node. A quick switch to another app leaves it running.
+
 Each launch still opens its first control session through the hosted
 relay. The shim cannot prefer the in-tailnet path until the node is up,
 and the node cannot come up without a control session. Once the node is

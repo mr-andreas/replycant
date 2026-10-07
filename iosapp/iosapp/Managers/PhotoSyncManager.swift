@@ -188,6 +188,11 @@ final class PhotoSyncManager: ObservableObject {
         
         syncTask = Task {
             do {
+                // A wake rebuild may still be replacing the node. Waiting
+                // here keeps the upload off a proxy iOS dropped while the
+                // phone was locked.
+                try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+
                 log("Requesting photo library authorization...", context: "PhotoSync")
                 guard await photoLibrary.requestAuthorization() else {
                     logError("Photo library access denied", context: "PhotoSync")

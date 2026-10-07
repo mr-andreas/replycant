@@ -39,6 +39,7 @@
 
 #### iOS app
 
+- after the phone has been locked for a while, photo upload and sync connect again instead of failing while Settings still says the device is connected
 - setup and photo upload now say what they are doing instead of showing a silent spinner
 - linking a new device no longer freezes after the pairing QR is scanned
 

@@ -3,6 +3,14 @@ import GitDB
 import LibGit2
 import Security
 
+extension Notification.Name {
+    /// Posted when the tailnet node is torn down or comes back, so Settings
+    /// does not keep a Connected row for a proxy that no longer exists.
+    static let tailnetMembershipDidChange = Notification.Name(
+        "replycant.tailnetMembershipDidChange"
+    )
+}
+
 /// Owns the app's single tailnet node and brings it up when there is one to
 /// bring up.
 ///
@@ -42,25 +50,38 @@ actor TailnetBootstrap {
     /// still reaches the local library promptly.
     static let launchJoinTimeout: Duration = .seconds(10)
 
+    /// A stay shorter than this is a quick app switch. iOS has not had time
+    /// to reclaim the node's loopback proxy, so the node is left running.
+    static let suspendRebuildThreshold: TimeInterval = 30
+
     private let configurations: TailnetConfigurationManager
     private let router: TailnetSessionRouter
     private let rejoinOverride: (@Sendable (TailnetConfiguration) async throws -> Void)?
+    private let clock: @Sendable () -> Date
     private var manager: TailnetManager?
     private var launchJoin: Task<Void, Error>?
     private var statusWatch: Task<Void, Never>?
     private var lastLoggedStatus: TailnetStatusReport?
     private var lastStatusError: String?
+    /// Set when a join has succeeded, including the test stand-in that never
+    /// builds a real node. Cleared when the node is torn down for a rebuild.
+    private var joined = false
+    /// When the app last entered the background, if it has not come back yet.
+    private var backgroundedAt: Date?
 
     /// - Parameter rejoin: replaces the real rejoin, so tests can stand in
     ///   for a node that never comes up.
+    /// - Parameter clock: lets tests move the background stay without waiting.
     init(
         configurations: TailnetConfigurationManager = .shared,
         router: TailnetSessionRouter = .shared,
-        rejoin: (@Sendable (TailnetConfiguration) async throws -> Void)? = nil
+        rejoin: (@Sendable (TailnetConfiguration) async throws -> Void)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.configurations = configurations
         self.router = router
         self.rejoinOverride = rejoin
+        self.clock = clock
     }
 
     /// Where tsnet persists the node's machine key and peer state.
@@ -90,7 +111,11 @@ actor TailnetBootstrap {
     /// lost track of it.
     func ensureJoinedIfConfigured(timeout: Duration = launchJoinTimeout) async throws {
         guard let configuration = configurations.load() else { return }
-        if let manager, await manager.isJoined { return }
+        if joined { return }
+        if let manager, await manager.isJoined {
+            joined = true
+            return
+        }
 
         let join: Task<Void, Error>
         if let launchJoin {
@@ -101,11 +126,78 @@ actor TailnetBootstrap {
             // set, and clearing it afterwards lets a failed join be retried.
             join = Task {
                 defer { launchJoin = nil }
-                try await rejoin(configuration)
+                do {
+                    try await rejoin(configuration)
+                    joined = true
+                    notifyMembershipChanged()
+                } catch {
+                    throw error
+                }
             }
             launchJoin = join
         }
         try await Self.wait(for: join, timeout: timeout)
+    }
+
+    /// Records that the app left the foreground, so the next return can tell
+    /// a quick app switch from a suspend that may have dropped the proxy.
+    func noteEnteredBackground() {
+        backgroundedAt = clock()
+    }
+
+    /// Rebuilds the node after a long background stay.
+    ///
+    /// The node's status keeps reporting Running across a suspend, because
+    /// that read does not use the loopback proxy iOS may have reclaimed.
+    /// Rejoining is how a cold launch gets a new proxy and new sockets, so
+    /// a long wake does the same thing. A stay under the threshold does
+    /// nothing.
+    func noteReturnedToForeground() async throws {
+        guard let started = backgroundedAt else { return }
+        backgroundedAt = nil
+        guard clock().timeIntervalSince(started) >= Self.suspendRebuildThreshold else {
+            return
+        }
+        guard let configuration = configurations.load() else { return }
+        // A join still coming up is the node we want. Tearing it down would
+        // start a second one on the same state directory.
+        if launchJoin != nil {
+            try await ensureJoinedIfConfigured()
+            return
+        }
+        // Publish the replacement join before the first await. An upload
+        // that starts in this window then waits on it, instead of seeing
+        // the old node as still joined and dialling a dead proxy.
+        joined = false
+        let previous = manager
+        manager = nil
+        router.use(nil)
+        statusWatch?.cancel()
+        statusWatch = nil
+        lastLoggedStatus = nil
+        lastStatusError = nil
+        notifyMembershipChanged()
+        let join = Task {
+            defer { launchJoin = nil }
+            await previous?.shutDown()
+            do {
+                try await rejoin(configuration)
+                joined = true
+                notifyMembershipChanged()
+            } catch {
+                throw error
+            }
+        }
+        launchJoin = join
+        try await Self.wait(for: join, timeout: Self.launchJoinTimeout)
+    }
+
+    /// Tells Settings the connection it is showing may no longer exist.
+    private func notifyMembershipChanged() {
+        let name = Notification.Name.tailnetMembershipDidChange
+        Task { @MainActor in
+            NotificationCenter.default.post(name: name, object: nil)
+        }
     }
 
     private func rejoin(_ configuration: TailnetConfiguration) async throws {
@@ -180,6 +272,8 @@ actor TailnetBootstrap {
         statusWatch = nil
         lastLoggedStatus = nil
         lastStatusError = nil
+        backgroundedAt = nil
+        joined = false
         await manager?.shutDown()
         manager = nil
         router.use(nil)

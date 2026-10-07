@@ -13,6 +13,7 @@ import SwiftUI
 struct SettingsView: View {
     let onWipeAndResync: () -> Void
     let showRecoveryWarning: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isShowingResetConfirmation = false
     @State private var hasLoadedTailnet = false
     @State private var isTailnetConfigured = false
@@ -86,10 +87,17 @@ struct SettingsView: View {
                     }
                 }
             }
-            .task {
-                isTailnetConfigured = await TailnetBootstrap.shared.isConfigured
-                tailnetReport = await TailnetBootstrap.shared.status()
-                hasLoadedTailnet = true
+            .task { await reloadTailnetStatus() }
+            .onChange(of: scenePhase) { _, phase in
+                // The first visit loads from .task. Later wakes have to
+                // read again, or a row captured before the lock stays green.
+                guard phase == .active, hasLoadedTailnet else { return }
+                Task { await reloadTailnetStatus() }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: .tailnetMembershipDidChange)
+            ) { _ in
+                Task { await reloadTailnetStatus() }
             }
             .navigationTitle("Settings")
             .alert("Reset Local State?", isPresented: $isShowingResetConfirmation) {
@@ -101,6 +109,15 @@ struct SettingsView: View {
                 Text("This will remove local repository data and download it again from the server.")
             }
         }
+    }
+
+    /// Reads the connection again. During a wake rebuild there is no node,
+    /// so the existing presentation shows Unavailable instead of the
+    /// Connected row from before the phone locked.
+    private func reloadTailnetStatus() async {
+        isTailnetConfigured = await TailnetBootstrap.shared.isConfigured
+        tailnetReport = await TailnetBootstrap.shared.status()
+        hasLoadedTailnet = true
     }
 
     @ViewBuilder

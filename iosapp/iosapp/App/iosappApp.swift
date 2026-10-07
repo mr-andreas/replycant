@@ -10,7 +10,8 @@ import LibGit2
 
 @main
 struct iosappApp: App {
-    
+    @Environment(\.scenePhase) private var scenePhase
+
     // Runs launch-time setup so simulator debug sessions can connect immediately without QR onboarding.
     init() {
         // Canvas hosts the real app process; skip launch I/O so #Preview
@@ -85,6 +86,34 @@ struct iosappApp: App {
             .onOpenURL { url in
                 RecoveryDeepLinkRouter.shared.handle(url: url)
             }
+            .onChange(of: scenePhase) { _, phase in
+                handleScenePhase(phase)
+            }
+    }
+
+    /// Rebuilds the tailnet node after a long lock. A quick switch to
+    /// another app leaves it running; launch does not come through here
+    /// with a recorded background time, so the startup join is unchanged.
+    private func handleScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .background:
+            Task { await TailnetBootstrap.shared.noteEnteredBackground() }
+        case .active:
+            Task {
+                do {
+                    try await TailnetBootstrap.shared.noteReturnedToForeground()
+                } catch TailnetBootstrap.BootstrapError.stillConnecting {
+                    log("Tailnet join still in progress after wake", context: "Tailnet")
+                } catch {
+                    logError(
+                        "Failed to restore the tailnet after wake: \(error.localizedDescription)",
+                        context: "Tailnet"
+                    )
+                }
+            }
+        default:
+            break
+        }
     }
     
     // Creates the device key on first boot. Called exactly once per app installation.

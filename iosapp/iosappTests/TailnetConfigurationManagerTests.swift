@@ -219,6 +219,98 @@ struct TailnetBootstrapTests {
 
         #expect(await probe.attempts == 2)
     }
+
+    // A locked phone can drop the loopback proxy while status still says
+    // Running. Coming back after that has to build a new node, once.
+    @Test func aLongBackgroundStayRebuildsTheNodeOnce() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 2)
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        #expect(await probe.attempts == 2)
+    }
+
+    // A quick app switch does not suspend the process, so rebuilding would
+    // only interrupt a connection that is still fine.
+    @Test func aShortBackgroundStayLeavesTheNodeRunning() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold - 1)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 1)
+    }
+
+    // An upload that starts while the wake rebuild is in flight has to wait
+    // on that rebuild. Starting another join would put two nodes on one
+    // state directory.
+    @Test func aSyncDuringRebuildWaitsOnTheSameJoin() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in
+                await probe.begin()
+                if await probe.attempts > 1 {
+                    await probe.waitForRelease()
+                }
+            },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold + 5)
+        let wake = Task {
+            try await bootstrap.noteReturnedToForeground()
+        }
+        #expect(await probe.waitUntilAttempts(reach: 2))
+
+        let sync = Task {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        }
+        // Let the sync attach to the join already in flight before it ends.
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await probe.attempts == 2)
+        await probe.release()
+        try await wake.value
+        try await sync.value
+
+        #expect(await probe.attempts == 2)
+    }
+}
+
+/// A clock tests can move forward without sleeping for the suspend threshold.
+private final class ManualClock: @unchecked Sendable {
+    private var now = Date(timeIntervalSince1970: 1_700_000_000)
+
+    func current() -> Date { now }
+
+    func advance(by seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
+    }
 }
 
 /// Counts join attempts and can hold one open until released, standing in
@@ -241,5 +333,13 @@ private actor JoinProbe {
         released = true
         waiters.forEach { $0.resume() }
         waiters.removeAll()
+    }
+
+    func waitUntilAttempts(reach count: Int) async -> Bool {
+        for _ in 0..<200 {
+            if attempts >= count { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
     }
 }
