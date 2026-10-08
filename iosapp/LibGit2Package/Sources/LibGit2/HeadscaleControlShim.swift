@@ -185,9 +185,18 @@ public final class HeadscaleControlShim {
                         continuation.resume(throwing: ShimError.listenerFailed("listener bound without a port"))
                     }
                 case .failed(let error):
-                    guard !resumed else { return }
+                    // After ready, this is the listener iOS reclaimed while
+                    // the app was suspended. Nothing is waiting on start()
+                    // anymore, so the log is the only record.
+                    guard !resumed else {
+                        self?.logger?("headscale shim: listener failed: \(error)")
+                        return
+                    }
                     resumed = true
                     continuation.resume(throwing: ShimError.listenerFailed(String(describing: error)))
+                case .cancelled:
+                    guard resumed else { break }
+                    self?.logger?("headscale shim: listener cancelled")
                 default:
                     break
                 }
@@ -382,6 +391,7 @@ public final class HeadscaleControlShim {
         // state callback and the timer below run on.
         var settled = false
         var advanced = false
+        var reportedWaiting = false
         let advance: (String) -> Void = { [weak self] reason in
             guard let self, !settled, !advanced else { return }
             advanced = true
@@ -416,6 +426,13 @@ public final class HeadscaleControlShim {
                 if !advanced {
                     self.teardown(key)
                 }
+            case .waiting(let error):
+                // The relay attempt has no timeout, so this is the only
+                // sign that it is stuck instead of moving bytes.
+                guard !reportedWaiting else { break }
+                reportedWaiting = true
+                self.logger?("headscale shim: \(attempt.route.rawValue) route to "
+                    + "\(attempt.host):\(attempt.port) waiting: \(error)")
             default:
                 break
             }

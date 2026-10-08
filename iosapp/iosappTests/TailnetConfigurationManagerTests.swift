@@ -161,7 +161,7 @@ struct TailnetBootstrapTests {
             configurations: try Self.configuredStore(),
             router: router,
             rejoin: { _ in
-                await probe.begin()
+                _ = await probe.begin()
                 await probe.waitForRelease()
             }
         )
@@ -189,7 +189,7 @@ struct TailnetBootstrapTests {
         let bootstrap = TailnetBootstrap(
             configurations: try Self.configuredStore(),
             router: TailnetSessionRouter(),
-            rejoin: { _ in await probe.begin() }
+            rejoin: { _ in _ = await probe.begin() }
         )
 
         try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
@@ -205,7 +205,7 @@ struct TailnetBootstrapTests {
             configurations: try Self.configuredStore(),
             router: TailnetSessionRouter(),
             rejoin: { _ in
-                await probe.begin()
+                _ = await probe.begin()
                 if await probe.attempts == 1 {
                     throw TailnetManager.TailnetError.notJoined
                 }
@@ -228,7 +228,7 @@ struct TailnetBootstrapTests {
         let bootstrap = TailnetBootstrap(
             configurations: try Self.configuredStore(),
             router: TailnetSessionRouter(),
-            rejoin: { _ in await probe.begin() },
+            rejoin: { _ in _ = await probe.begin() },
             clock: { clock.current() }
         )
         try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
@@ -250,7 +250,7 @@ struct TailnetBootstrapTests {
         let bootstrap = TailnetBootstrap(
             configurations: try Self.configuredStore(),
             router: TailnetSessionRouter(),
-            rejoin: { _ in await probe.begin() },
+            rejoin: { _ in _ = await probe.begin() },
             clock: { clock.current() }
         )
         try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
@@ -272,7 +272,7 @@ struct TailnetBootstrapTests {
             configurations: try Self.configuredStore(),
             router: TailnetSessionRouter(),
             rejoin: { _ in
-                await probe.begin()
+                _ = await probe.begin()
                 if await probe.attempts > 1 {
                     await probe.waitForRelease()
                 }
@@ -300,6 +300,91 @@ struct TailnetBootstrapTests {
 
         #expect(await probe.attempts == 2)
     }
+
+    // A join still inside up() when the phone locks has had its loopback
+    // sockets reclaimed. The next long wake has to start a new join; waiting
+    // on the old one never reaches Running.
+    @Test func aLongWakeReplacesAJoinStillInFlight() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in
+                let attempt = await probe.begin()
+                if attempt == 1 {
+                    await probe.waitForRelease()
+                }
+            },
+            clock: { clock.current() }
+        )
+
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 2)
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        #expect(await probe.attempts == 2)
+
+        // The first join stands in for one that never reaches Running.
+        // Releasing it only lets the test process finish.
+        await probe.release()
+    }
+
+    // The replaced join can still finish, late, after its sockets are gone.
+    // That completion must not drop the replacement or look like the device
+    // is back on the tailnet before the replacement has succeeded.
+    @Test func aReplacedJoinFinishingLateDoesNotClearTheNewOne() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in
+                let attempt = await probe.begin()
+                await probe.waitForRelease()
+                if attempt == 1 {
+                    throw TailnetManager.TailnetError.notJoined
+                }
+            },
+            clock: { clock.current() }
+        )
+
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        let wake = Task {
+            try await bootstrap.noteReturnedToForeground()
+        }
+        #expect(await probe.waitUntilAttempts(reach: 2))
+
+        await probe.releaseNext()
+        // Let the replaced join finish and try to publish itself before the
+        // sync attaches.
+        try await Task.sleep(for: .milliseconds(50))
+
+        let sync = Task {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await probe.attempts == 2)
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await sync.value
+        }
+
+        await probe.release()
+        try await wake.value
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        #expect(await probe.attempts == 2)
+    }
 }
 
 /// A clock tests can move forward without sleeping for the suspend threshold.
@@ -320,8 +405,18 @@ private actor JoinProbe {
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func begin() {
+    /// Records one join attempt and reports which one it is, so a test can
+    /// fail only the join a wake replaced.
+    func begin() -> Int {
         attempts += 1
+        return attempts
+    }
+
+    /// Lets the oldest held join finish while later ones stay blocked, so a
+    /// replaced join can fail after its replacement has already started.
+    func releaseNext() {
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().resume()
     }
 
     func waitForRelease() async {

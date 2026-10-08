@@ -60,6 +60,10 @@ actor TailnetBootstrap {
     private let clock: @Sendable () -> Date
     private var manager: TailnetManager?
     private var launchJoin: Task<Void, Error>?
+    /// Bumped every time a join replaces the one before it. A join that
+    /// finishes after that must not publish itself over the replacement:
+    /// the one it replaced had its sockets reclaimed by a suspend.
+    private var joinGeneration = 0
     private var statusWatch: Task<Void, Never>?
     private var lastLoggedStatus: TailnetStatusReport?
     private var lastStatusError: String?
@@ -117,26 +121,51 @@ actor TailnetBootstrap {
             return
         }
 
-        let join: Task<Void, Error>
-        if let launchJoin {
-            join = launchJoin
-        } else {
-            router.use(nil)
-            // Inherits this actor, so it cannot start before `launchJoin` is
-            // set, and clearing it afterwards lets a failed join be retried.
-            join = Task {
-                defer { launchJoin = nil }
-                do {
-                    try await rejoin(configuration)
-                    joined = true
-                    notifyMembershipChanged()
-                } catch {
-                    throw error
+        let join = launchJoin ?? startJoin(configuration)
+        try await Self.wait(for: join, timeout: timeout)
+    }
+
+    /// Starts the one join callers wait on.
+    ///
+    /// Each join gets a generation. One that finishes after a newer join
+    /// has replaced it must not clear that join or mark the device
+    /// connected: a suspend reclaims the old node's sockets, and its
+    /// `up()` can still return later.
+    private func startJoin(
+        _ configuration: TailnetConfiguration,
+        beforeRejoin: (@Sendable () async -> Void)? = nil
+    ) -> Task<Void, Error> {
+        joinGeneration += 1
+        let generation = joinGeneration
+        router.use(nil)
+        // Inherits this actor, so it cannot start before `launchJoin` is
+        // set. Clearing that only when this generation is still current
+        // lets a failed join be retried without dropping its replacement.
+        let join = Task {
+            defer {
+                if generation == joinGeneration {
+                    launchJoin = nil
                 }
             }
-            launchJoin = join
+            if let beforeRejoin {
+                await beforeRejoin()
+            }
+            do {
+                try await rejoin(configuration)
+            } catch {
+                guard generation == joinGeneration else {
+                    throw BootstrapError.stillConnecting
+                }
+                throw error
+            }
+            guard generation == joinGeneration else {
+                throw BootstrapError.stillConnecting
+            }
+            joined = true
+            notifyMembershipChanged()
         }
-        try await Self.wait(for: join, timeout: timeout)
+        launchJoin = join
+        return join
     }
 
     /// Records that the app left the foreground, so the next return can tell
@@ -147,11 +176,12 @@ actor TailnetBootstrap {
 
     /// Rebuilds the node after a long background stay.
     ///
-    /// The node's status keeps reporting Running across a suspend, because
-    /// that read does not use the loopback proxy iOS may have reclaimed.
-    /// Rejoining is how a cold launch gets a new proxy and new sockets, so
-    /// a long wake does the same thing. A stay under the threshold does
-    /// nothing.
+    /// The node's sockets do not survive that stay. Status keeps reporting
+    /// Running because that read does not use the loopback proxy iOS
+    /// reclaims, and a join still inside `up()` is stuck on those same
+    /// sockets. Rejoining is how a cold launch gets a new proxy, so a long
+    /// wake does the same thing, including when the previous join never
+    /// finished. A stay under the threshold does nothing.
     func noteReturnedToForeground() async throws {
         guard let started = backgroundedAt else { return }
         backgroundedAt = nil
@@ -159,36 +189,20 @@ actor TailnetBootstrap {
             return
         }
         guard let configuration = configurations.load() else { return }
-        // A join still coming up is the node we want. Tearing it down would
-        // start a second one on the same state directory.
-        if launchJoin != nil {
-            try await ensureJoinedIfConfigured()
-            return
-        }
         // Publish the replacement join before the first await. An upload
         // that starts in this window then waits on it, instead of seeing
         // the old node as still joined and dialling a dead proxy.
         joined = false
         let previous = manager
         manager = nil
-        router.use(nil)
         statusWatch?.cancel()
         statusWatch = nil
         lastLoggedStatus = nil
         lastStatusError = nil
         notifyMembershipChanged()
-        let join = Task {
-            defer { launchJoin = nil }
+        let join = startJoin(configuration) {
             await previous?.shutDown()
-            do {
-                try await rejoin(configuration)
-                joined = true
-                notifyMembershipChanged()
-            } catch {
-                throw error
-            }
         }
-        launchJoin = join
         try await Self.wait(for: join, timeout: Self.launchJoinTimeout)
     }
 
@@ -373,6 +387,11 @@ actor TailnetBootstrap {
             clientIdentity: identity,
             onProgress: onProgress
         )
+
+        // A wake may have replaced this manager while `up()` was still
+        // running. Publishing it now would point every request at sockets
+        // iOS already reclaimed.
+        guard self.manager === manager else { return }
 
         // Every URLSession the app builds routes through the node's proxy, and
         // the router refuses to hand out a configuration until a node is

@@ -91,6 +91,18 @@ public actor TailnetManager: TailnetNodeProviding {
     private var shim: HeadscaleControlShim?
     private var node: TailscaleNode?
 
+    /// A node still blocked in `up()`, plus the watch that logs it back in
+    /// if headscale has forgotten it.
+    private struct Joining {
+        let node: TailscaleNode
+        let watch: Task<Void, Never>?
+    }
+
+    /// iOS reclaims this node's sockets if the app is suspended before
+    /// `up()` returns, and libtailscale cannot cancel `up()`. Shutdown
+    /// closes it so the next join can use the same state directory.
+    private var joining: Joining?
+
     /// Fed by every node's log so a forgotten running node is noticed.
     private let forgottenNode: TailnetForgottenNodeSignal
     /// tsnet's backend log, the only place a forgotten running node shows up.
@@ -257,13 +269,7 @@ public actor TailnetManager: TailnetNodeProviding {
         let watch = Task {
             await self.logInWhileJoining(node: node, shim: shim, onProgress: onProgress)
         }
-        defer { watch.cancel() }
-        do {
-            try await node.up()
-        } catch {
-            try? await node.close()
-            throw error
-        }
+        try await bringingUp(node, watch: watch)
         return node
     }
 
@@ -340,13 +346,40 @@ public actor TailnetManager: TailnetNodeProviding {
         key: String
     ) async throws -> TailscaleNode {
         let node = try makeNode(request, controlURL: controlURL, authKey: key)
+        try await bringingUp(node, watch: nil)
+        return node
+    }
+
+    /// Holds `up()` open where shutdown can close it.
+    ///
+    /// A wake that finds this join still running has to tear the node down
+    /// before starting another on the same state directory. `up()` itself
+    /// cannot be cancelled; closing the node is what stops it writing state.
+    private func bringingUp(_ node: TailscaleNode, watch: Task<Void, Never>?) async throws {
+        joining = Joining(node: node, watch: watch)
+        defer {
+            watch?.cancel()
+            if joining?.node === node {
+                joining = nil
+            }
+        }
         do {
             try await node.up()
         } catch {
-            try? await node.close()
+            // Leave a node shutdown already closed alone. Closing the one
+            // this join still owns is what keeps a failed `up()` from
+            // leaking it.
+            if joining?.node === node {
+                try? await node.close()
+            }
             throw error
         }
-        return node
+        // Shutdown took the node while `up()` was in flight. Returning it
+        // would let the rest of join install a proxy on sockets iOS, or
+        // shutdown, already closed.
+        guard joining?.node === node else {
+            throw TailnetError.notJoined
+        }
     }
 
     /// Whether the node in `stateDirectory` has never logged in, read from the
@@ -566,6 +599,18 @@ public actor TailnetManager: TailnetNodeProviding {
     public func shutDown() async {
         reloginWatch?.cancel()
         reloginWatch = nil
+        let pending = joining
+        joining = nil
+        pending?.watch?.cancel()
+        // The joined node is closed just below. Closing the same one here
+        // would only report a second failure.
+        if let pendingNode = pending?.node, pendingNode !== node {
+            do {
+                try await pendingNode.close()
+            } catch {
+                logger?("tailnet: failed to close the node cleanly: \(error)")
+            }
+        }
         if let node {
             do {
                 try await node.close()
