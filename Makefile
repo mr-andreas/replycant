@@ -48,10 +48,13 @@ TAILSCALEKIT_REV := 59d4bb82744915815178e0f0776d60026a397ee7
 TAILSCALEKIT_REPO := https://github.com/tailscale/libtailscale.git
 TAILSCALEKIT_SRC := iosapp/build/libtailscale
 TAILSCALEKIT_FRAMEWORK := iosapp/TailscaleKit.xcframework
+# The revision is part of the stamp name, inside the framework directory.
+# A full build is several minutes of Go compilation, so Make must skip it
+# unless the pin changed. Deleting the framework deletes the stamp with it,
+# and a CI cache restore brings the matching stamp back.
+TAILSCALEKIT_STAMP := $(TAILSCALEKIT_FRAMEWORK)/.rev-$(TAILSCALEKIT_REV)
 
-# Builds the framework only when it is missing or built from a different
-# commit, because a full build is several minutes of Go compilation.
-$(TAILSCALEKIT_FRAMEWORK)/Info.plist:
+$(TAILSCALEKIT_STAMP):
 	@set -euo pipefail; \
 	  mkdir -p iosapp/build; \
 	  if [ ! -d $(TAILSCALEKIT_SRC)/.git ]; then \
@@ -64,9 +67,10 @@ $(TAILSCALEKIT_FRAMEWORK)/Info.plist:
 	  cd "$(CURDIR)"; \
 	  rm -rf $(TAILSCALEKIT_FRAMEWORK); \
 	  cp -R $(TAILSCALEKIT_SRC)/swift/build/Build/Products/Release-iphonefat/TailscaleKit.xcframework \
-	    $(TAILSCALEKIT_FRAMEWORK)
+	    $(TAILSCALEKIT_FRAMEWORK); \
+	  touch "$@"
 
-ios-tailscalekit: $(TAILSCALEKIT_FRAMEWORK)/Info.plist ## Build the vendored TailscaleKit xcframework
+ios-tailscalekit: $(TAILSCALEKIT_STAMP) ## Build the vendored TailscaleKit xcframework
 .PHONY: ios-tailscalekit
 
 ios-tailscalekit-clean:
@@ -156,7 +160,7 @@ ios-bundle:
 	  env PATH="$(HOMEBREW_RUBY_BIN):$$PATH" bundle install
 .PHONY: ios-bundle
 
-ios-screenshots: ios-bundle
+ios-screenshots: ios-tailscalekit ios-bundle
 	$(FASTLANE) screenshots
 .PHONY: ios-screenshots
 

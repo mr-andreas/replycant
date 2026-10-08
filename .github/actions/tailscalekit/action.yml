@@ -1,0 +1,46 @@
+name: TailscaleKit
+description: >-
+  Restore or build the vendored TailscaleKit xcframework before Swift
+  package resolution. A clean checkout has no framework, and the binary
+  target cannot resolve without it.
+
+inputs:
+  xcode-version:
+    description: >-
+      Xcode version that produced the cached framework. A framework built
+      with one Xcode is not reused under another.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        # Absolute path so the lookup does not depend on this step's
+        # working directory. libtailscale may ask for a newer Go;
+        # GOTOOLCHAIN=auto, the toolchain default, downloads it.
+        go-version-file: ${{ github.workspace }}/go.mod
+
+    - name: Read pinned TailscaleKit revision
+      id: rev
+      shell: bash
+      run: |
+        rev="$(sed -n 's/^TAILSCALEKIT_REV := //p' Makefile)"
+        if [ -z "$rev" ]; then
+          echo "TAILSCALEKIT_REV is not set in the Makefile"
+          exit 1
+        fi
+        echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+    - name: Cache TailscaleKit
+      uses: actions/cache@v4
+      with:
+        path: iosapp/TailscaleKit.xcframework
+        key: tailscalekit-${{ steps.rev.outputs.rev }}-xcode-${{ inputs.xcode-version }}
+
+    - name: Build TailscaleKit
+      shell: bash
+      # A cache hit restores the revision stamp, so Make does nothing.
+      # A miss builds the framework, and the cache saves it afterwards.
+      run: make ios-tailscalekit

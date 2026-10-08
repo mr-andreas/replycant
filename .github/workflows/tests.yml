@@ -137,6 +137,11 @@ jobs:
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
 
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
       - name: Cache Swift package checkouts
         uses: actions/cache@v4
         with:
@@ -170,6 +175,11 @@ jobs:
         run: |
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
+
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Cache Swift package checkouts
         uses: actions/cache@v4

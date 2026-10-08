@@ -22,6 +22,7 @@ jobs:
       IOS_SCHEME: iosapp
       IOS_PROJECT: iosapp/iosapp.xcodeproj
       IOS_BUILD_DIR: iosapp/build/release
+      XCODE_VERSION: "26.5"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,9 +37,14 @@ jobs:
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Prepare App Store Connect key
         env:
