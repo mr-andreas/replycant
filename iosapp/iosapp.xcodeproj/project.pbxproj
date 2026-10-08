@@ -31,7 +31,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		EFDF8AD02EA0F4A4007A04E9 /* iosapp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iosapp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EFDF8AD02EA0F4A4007A04E9 /* replycant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = replycant.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EFDF8ADD2EA0F4A6007A04E9 /* iosappTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iosappTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EFDF8AE72EA0F4A6007A04E9 /* iosappUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iosappUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EFF5A1113B2156A50000ABCD /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
@@ -122,7 +122,7 @@
 		EFDF8AD12EA0F4A4007A04E9 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				EFDF8AD02EA0F4A4007A04E9 /* iosapp.app */,
+				EFDF8AD02EA0F4A4007A04E9 /* replycant.app */,
 				EFDF8ADD2EA0F4A6007A04E9 /* iosappTests.xctest */,
 				EFDF8AE72EA0F4A6007A04E9 /* iosappUITests.xctest */,
 			);
@@ -155,7 +155,7 @@
 				EFA1B9222F00000100A1B923 /* GRDB */,
 			);
 			productName = iosapp;
-			productReference = EFDF8AD02EA0F4A4007A04E9 /* iosapp.app */;
+			productReference = EFDF8AD02EA0F4A4007A04E9 /* replycant.app */;
 			productType = "com.apple.product-type.application";
 		};
 		EFDF8ADC2EA0F4A6007A04E9 /* iosappTests */ = {
@@ -462,7 +462,8 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.ios.replycant.com;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = iosapp;
+				PRODUCT_NAME = replycant;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -494,7 +495,8 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.ios.replycant.com;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = iosapp;
+				PRODUCT_NAME = replycant;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -515,7 +517,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iosapp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iosapp";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/replycant.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/replycant";
 			};
 			name = Debug;
 		};
@@ -533,7 +535,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/iosapp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/iosapp";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/replycant.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/replycant";
 			};
 			name = Release;
 		};

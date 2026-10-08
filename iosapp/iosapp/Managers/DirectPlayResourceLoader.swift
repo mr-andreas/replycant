@@ -5,7 +5,7 @@ import Security
 import UniformTypeIdentifiers
 import os.log
 
-private let logger = Logger(subsystem: "com.replycant.app", category: "DirectPlay")
+private let logger = Logger(subsystem: appLogSubsystem, category: "DirectPlay")
 
 /// Intercepts AVAssetResourceLoader requests for a custom URL scheme so
 /// AVPlayer can stream from decryptd's extensionless `/objects/{oid}` endpoint

@@ -4,7 +4,7 @@ import LibGit2
 import Security
 import os.log
 
-private let hlsLogger = Logger(subsystem: "com.replycant.app", category: "HLSPlayback")
+private let hlsLogger = Logger(subsystem: appLogSubsystem, category: "HLSPlayback")
 
 /// Serves HLS playlists and segments to AVPlayer over gitd's mTLS endpoint.
 ///

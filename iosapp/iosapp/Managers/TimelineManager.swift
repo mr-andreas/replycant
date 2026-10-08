@@ -880,7 +880,7 @@ final class TimelineManager: ObservableObject {
 
     // Loads one fresh region from offset after clearing old sparse state during random access.
     private func loadFreshRegion(offset: Int, loader: ManifestLoaderProtocol) async throws {
-        let signpostLog = OSLog(subsystem: "com.replycant.iosapp", category: "PointsOfInterest")
+        let signpostLog = OSLog(subsystem: appLogSubsystem, category: "PointsOfInterest")
         let freshRegionSignpostId = OSSignpostID(log: signpostLog)
         var loadTimelinePageMs = 0.0
         os_signpost(

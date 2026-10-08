@@ -41,10 +41,14 @@ public enum LogLevel: Int, Comparable {
 /// Minimum severity that produces output. Set to .debug to see routine diagnostics.
 public var logMinLevel: LogLevel = .info
 
+/// One subsystem for every line this app writes, so Console.app can show
+/// the whole process with a single filter.
+let appLogSubsystem = "com.replycant.app"
+
 /// Logs a message to the system log with a timestamp.
 ///
 /// Console.app can show these after the debugger has detached. Filter on
-/// subsystem `com.replycant.iosapp`.
+/// subsystem `com.replycant.app` (`appLogSubsystem`).
 /// - Parameters:
 ///   - items: Items to log (works like standard print)
 ///   - context: Optional context label (e.g., "UI", "PhotoSync", "Timeline")
@@ -64,7 +68,7 @@ public func log(
     // print() dies with the debugger. The system log is what remains after
     // the phone locks and the debug session drops.
     let logger = Logger(
-        subsystem: "com.replycant.iosapp",
+        subsystem: appLogSubsystem,
         category: context ?? "App"
     )
     logToSystem(logger, level.osLogType, line)
@@ -126,7 +130,7 @@ private func timestamp() -> String {
 
 // Centralizes startup/timeline signposts so Instruments can correlate cold-start milestones.
 enum AppSignposts {
-    private static let logger = Logger(subsystem: "com.replycant.iosapp", category: "PointsOfInterest")
+    private static let logger = Logger(subsystem: appLogSubsystem, category: "PointsOfInterest")
     private static let signposter = OSSignposter(logger: logger)
 
     // Starts one signposted interval for the provided startup/timeline phase.
