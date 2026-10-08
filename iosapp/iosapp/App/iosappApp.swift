@@ -32,6 +32,10 @@ struct iosappApp: App {
             AppSignposts.end("AppInit", appInitSignpost)
         }
 
+        // The monitor has to be running before the first video or upload,
+        // so the mobile-data decision is ready when the user acts.
+        _ = NetworkCostMonitor.shared
+
         // Keeps UITest-only setup code out of Release/App Store builds.
         #if DEBUG
         TestSupport.setupTestEnvironment()

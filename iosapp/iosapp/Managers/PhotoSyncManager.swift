@@ -24,6 +24,14 @@ enum PhotoSyncError: Error {
     case syncInProgress
 }
 
+// Tells the upload tab why a Wi-Fi upload stopped, and that pressing
+// Start Upload again is how to continue. Already-uploaded items are skipped.
+struct UploadPausedOnMobileDataError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Upload paused because the phone switched to mobile data. Press Start Upload to continue."
+    }
+}
+
 // Carries the already-computed user guidance so the upload tab can
 // show the same copy as the incompatibility banner.
 private struct UploadRefusedError: Error, LocalizedError {
@@ -67,6 +75,7 @@ final class PhotoSyncManager: ObservableObject {
     
     private let photoLibrary: PhotoLibraryProviding
     private let uploadedMediaCache: UploadedMediaCaching
+    private let networkCost: NetworkCostProviding
     private var idleTimer: IdleTimerControlling
     var syncTask: Task<Void, Never>?
     // Preserves caller-injected test doubles so global invalidation broadcasts
@@ -76,6 +85,10 @@ final class PhotoSyncManager: ObservableObject {
     // database replacement broadcasts require a fresh instance.
     private var cachedManifestManager: ManifestManager?
     private var syncGeneration: UInt64 = 0
+    // Remembers a run the user already accepted on mobile data, so a later
+    // path change does not cancel a transfer they chose to pay for.
+    private var startedOnMeteredNetwork = false
+    private var networkCostCancellable: AnyCancellable?
     // Observes LFS endpoint changes so subsequent syncs rebuild clients with the updated server URL.
     private var lfsURLObserver: AnyCancellable?
     // Observes replacement of the shared manifest database so syncs never write through a discarded instance.
@@ -86,15 +99,21 @@ final class PhotoSyncManager: ObservableObject {
         photoLibraryProvider: PhotoLibraryProviding = PhotoLibraryManager(),
         manifestManager: ManifestManager? = nil,
         uploadedMediaCache: UploadedMediaCaching = UploadedMediaCache.shared,
-        idleTimer: IdleTimerControlling = UIApplicationIdleTimerController()
+        idleTimer: IdleTimerControlling = UIApplicationIdleTimerController(),
+        networkCost: NetworkCostProviding = NetworkCostMonitor.shared
     ) {
         self.photoLibrary = photoLibraryProvider
         self.injectedManifestManager = manifestManager
         self.uploadedMediaCache = uploadedMediaCache
         self.idleTimer = idleTimer
+        self.networkCost = networkCost
         observeLFSURLChanges()
         observeDatabaseInvalidation()
+        observeNetworkCost()
     }
+
+    // Lets the upload button decide whether to warn before any bytes move.
+    var isOnMeteredNetwork: Bool { networkCost.isMetered }
 
     // Recreates manifest dependencies lazily, letting each sync run pick up the latest configured LFS endpoint.
     func getManifestManager() throws -> ManifestManager {
@@ -168,12 +187,34 @@ final class PhotoSyncManager: ObservableObject {
             }
     }
     
+    // Stops a Wi-Fi upload that walks onto mobile data, including the file
+    // currently in flight, so the phone does not keep spending data.
+    private func observeNetworkCost() {
+        networkCostCancellable = networkCost.isMeteredPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isMetered in
+                guard isMetered else { return }
+                Task { @MainActor in
+                    self?.stopForMeteredNetwork()
+                }
+            }
+    }
+
+    // Ignores the transition unless this run began on Wi-Fi and is still
+    // moving bytes. A confirmed mobile-data upload is left alone.
+    private func stopForMeteredNetwork() {
+        guard isSyncing, !startedOnMeteredNetwork else { return }
+        log("Pausing upload because the network became metered", context: "PhotoSync")
+        stopSync(finalState: .failed(UploadPausedOnMobileDataError()))
+    }
+
     // Starts a new sync run and stamps it with a generation token so stale callbacks cannot update UI state.
     func startSync() async {
         guard !isSyncing else {
             logWarning("Sync already in progress, ignoring request", context: "PhotoSync")
             return
         }
+        startedOnMeteredNetwork = networkCost.isMetered
         
         if let incompatibility = DatabaseCompatibilityManager.shared.incompatibility {
             logError("Refusing upload because the database format is incompatible", context: "PhotoSync")
@@ -228,13 +269,19 @@ final class PhotoSyncManager: ObservableObject {
     // Cancels the active run and invalidates its generation so late callbacks are ignored.
     func cancelSync() {
         log("Cancelling sync...", context: "PhotoSync")
+        stopSync(finalState: .idle)
+        log("Sync cancelled", context: "PhotoSync")
+    }
+
+    // Shared by the user cancel and the mobile-data stop so both abort the
+    // in-flight file and ignore progress from the abandoned generation.
+    private func stopSync(finalState: SyncState) {
         syncGeneration += 1
         injectedManifestManager?.cancelActiveLFSUpload()
         cachedManifestManager?.cancelActiveLFSUpload()
         syncTask?.cancel()
         syncTask = nil
-        setSyncState(.idle)
-        log("Sync cancelled", context: "PhotoSync")
+        setSyncState(finalState)
     }
     
     // Encrypts and uploads assets while preserving plaintext integrity hashes in manifests for post-decryption verification.

@@ -1238,13 +1238,7 @@ final class FullResolutionImageLoader: ObservableObject {
 
     // Builds encrypted playback context and starts AVPlayer with request-scoped DEK headers for decryptd.
     private func playVideo(item: TimelineItem) async throws {
-        if let localPlayer = await makeLocalVideoPlayerIfAvailable(for: item) {
-            self.player = localPlayer
-            qualityMonitoringTask?.cancel()
-            qualityMonitoringTask = nil
-            directPlayLoader = nil
-            hlsLoader = nil
-            logDebug("Loaded local video asset for \(item.id)", context: "FullScreen")
+        if await loadLocalVideoIfAvailable(for: item) {
             return
         }
 
@@ -1461,6 +1455,22 @@ final class FullResolutionImageLoader: ObservableObject {
         loadTask = nil
         qualityMonitoringTask = nil
         player = nil
+    }
+
+    // Publishes a Photos-library player when one exists so a metered
+    // network can still autoplay a video that will not touch the network.
+    // Returns false when playback has to stream the original from the server.
+    func loadLocalVideoIfAvailable(for item: TimelineItem) async -> Bool {
+        guard let localPlayer = await makeLocalVideoPlayerIfAvailable(for: item) else {
+            return false
+        }
+        self.player = localPlayer
+        qualityMonitoringTask?.cancel()
+        qualityMonitoringTask = nil
+        directPlayLoader = nil
+        hlsLoader = nil
+        logDebug("Loaded local video asset for \(item.id)", context: "FullScreen")
+        return true
     }
 
     // Resolves a local video URL when the performance toggle is enabled so fullscreen playback can avoid server startup latency.

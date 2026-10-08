@@ -10,6 +10,7 @@ enum PhotoSyncStatusCopy {
 
 struct PhotoSyncView: View {
     @StateObject private var syncManager: PhotoSyncManager
+    @State private var showMobileDataUploadWarning = false
 
     init(syncManager: PhotoSyncManager? = nil) {
         if let manager = syncManager {
@@ -42,8 +43,12 @@ struct PhotoSyncView: View {
             
             if !isActivelySyncing {
                 Button(action: {
-                    Task {
-                        await syncManager.startSync()
+                    if syncManager.isOnMeteredNetwork {
+                        showMobileDataUploadWarning = true
+                    } else {
+                        Task {
+                            await syncManager.startSync()
+                        }
                     }
                 }) {
                     Label("Start Upload", systemImage: "arrow.up.circle.fill")
@@ -71,6 +76,16 @@ struct PhotoSyncView: View {
             }
         }
         .padding()
+        .alert("Upload over mobile data?", isPresented: $showMobileDataUploadWarning) {
+            Button("Upload") {
+                Task {
+                    await syncManager.startSync()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Photos and videos upload in full original quality, which can use a lot of data.")
+        }
     }
     
     // Uses SyncState as the rendering source of truth so controls stay aligned with progress content.
