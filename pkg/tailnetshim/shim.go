@@ -40,40 +40,6 @@ import (
 // retries, and a hung dial would otherwise hold a goroutine and a socket.
 const defaultDialTimeout = 30 * time.Second
 
-// How long to spend on the in-tailnet route before falling back.
-//
-// Deliberately short. tsnet's Dial blocks until the node reaches Running, so
-// this doubles as the guard against a node that has gone offline: the wait is
-// paid once per connection and the relay picks up the session, rather than the
-// device appearing to hang.
-const tailnetDialTimeout = 2 * time.Second
-
-// Which path a connection took, for diagnostics.
-const (
-	RouteTailnet = "tailnet"
-	RouteRelay   = "relay"
-)
-
-// An in-tailnet path to the control plane, installed after the node is up.
-//
-// It cannot be part of Config because it does not exist yet at construction
-// time: the node needs the shim's control URL in order to come up at all, so
-// the first control session necessarily predates any tailnet route.
-type TailnetRoute struct {
-	// host:port of the control path inside the tailnet, dialled by name so
-	// tsnet resolves it with MagicDNS. Nothing else knows tailnet names.
-	Addr string
-
-	// Verified against the certificate hsproxy presents on this path. Distinct
-	// from the relay's server name: the same certificate carries both, and
-	// sending the wrong one fails verification.
-	ServerName string
-
-	// Dials inside the tailnet, normally tsnet.Server.Dial. The shim performs
-	// TLS over whatever this returns.
-	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
-}
-
 // How the shim reaches the deployment's control plane.
 type Config struct {
 	// host:port of the control plane, the tunnel hostname a device dials.
@@ -109,12 +75,9 @@ type Shim struct {
 	tlsConfig          *tls.Config
 	logf               func(format string, args ...any)
 
-	mu           sync.Mutex
-	listener     net.Listener
-	closed       bool
-	tailnetRoute *TailnetRoute
-	tailnetTLS   *tls.Config
-	lastRoute    string
+	mu       sync.Mutex
+	listener net.Listener
+	closed   bool
 }
 
 // Validates the configuration and prepares the TLS parameters, so a bad
@@ -227,57 +190,11 @@ func (s *Shim) Serve(ctx context.Context) {
 	}
 }
 
-// Installs the in-tailnet path to the control plane, which later connections
-// then prefer over the relay.
-//
-// Safe to call while serving, and expected to be: the sidecar calls it as soon
-// as the node reaches Running, which is always after the shim has already
-// carried at least one control session.
-func (s *Shim) SetTailnetRoute(route TailnetRoute) error {
-	addr := strings.TrimSpace(route.Addr)
-	if addr == "" {
-		return errors.New("shim: the tailnet route address is required")
-	}
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		return fmt.Errorf("shim: tailnet route address must be host:port, got %q: %w",
-			addr, err)
-	}
-	serverName := strings.TrimSpace(route.ServerName)
-	if serverName == "" {
-		return errors.New("shim: the tailnet route server name is required; " +
-			"skipping verification would make this path the weakest one")
-	}
-	if route.Dial == nil {
-		return errors.New("shim: the tailnet route needs a dialer, " +
-			"since tailnet addresses are not reachable through the host stack")
-	}
-
-	// Same roots and same client identity as the relay path; only the name
-	// being verified differs.
-	tailnetTLS := s.tlsConfig.Clone()
-	tailnetTLS.ServerName = serverName
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tailnetRoute = &TailnetRoute{Addr: addr, ServerName: serverName, Dial: route.Dial}
-	s.tailnetTLS = tailnetTLS
-	return nil
-}
-
-// Which path the most recent connection took, or empty before the first one.
-// Surfaced so the desktop app can tell a user whether they still depend on the
-// hosted relay.
-func (s *Shim) LastRoute() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastRoute
-}
-
 // Wraps one loopback connection in a mTLS session to the control plane.
 func (s *Shim) relay(ctx context.Context, local net.Conn) {
 	defer local.Close()
 
-	upstream, route := s.dialControlPlane(ctx)
+	upstream := s.dialControlPlane(ctx)
 	if upstream == nil {
 		// Closing the local side is what turns this into a clear failure for
 		// the Tailscale client, which then retries with backoff.
@@ -285,36 +202,18 @@ func (s *Shim) relay(ctx context.Context, local net.Conn) {
 	}
 	defer upstream.Close()
 
-	s.mu.Lock()
-	s.lastRoute = route
-	s.mu.Unlock()
-
 	// Bytes are copied verbatim in both directions. The Tailscale control
 	// protocol upgrades a POST into a long-lived bidirectional stream, so
 	// anything that tried to parse or buffer HTTP here would break it.
 	netsplice.Splice(ctx, local, upstream, netsplice.Options{})
 }
 
-// Establishes a mTLS session to the control plane, preferring the tailnet.
+// Establishes a mTLS session to the control plane through the hosted relay.
 //
-// Returns a nil connection when both paths fail, having already logged why.
-// The tailnet is tried first and briefly; the relay is what a device
-// bootstraps through and what it falls back to when its own tailnet path is
-// broken, so the relay attempt keeps the generous timeout.
-func (s *Shim) dialControlPlane(ctx context.Context) (net.Conn, string) {
-	s.mu.Lock()
-	route, tailnetTLS := s.tailnetRoute, s.tailnetTLS
-	s.mu.Unlock()
-
-	if route != nil {
-		conn, err := s.dialTailnet(ctx, *route, tailnetTLS)
-		if err == nil {
-			return conn, RouteTailnet
-		}
-		s.logf("shim: tailnet route to %s unavailable, falling back to %s: %v",
-			route.Addr, s.upstreamAddr, err)
-	}
-
+// Returns a nil connection when the dial fails, having already logged why.
+// The relay is the only path: a device cannot reach hsproxy until its node is
+// up, and the control session is what brings the node up.
+func (s *Shim) dialControlPlane(ctx context.Context) net.Conn {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: s.dialTimeout},
 		Config:    s.tlsConfig,
@@ -325,30 +224,9 @@ func (s *Shim) dialControlPlane(ctx context.Context) (net.Conn, string) {
 	conn, err := dialer.DialContext(dialCtx, "tcp", s.upstreamAddr)
 	if err != nil {
 		s.logf("shim: could not reach the control plane at %s: %v", s.upstreamAddr, err)
-		return nil, ""
+		return nil
 	}
-	return conn, RouteRelay
-}
-
-// Performs the handshake over a connection the tailnet dialer produced.
-//
-// tls.Dialer cannot be used here because the dial has to go through tsnet's
-// userspace stack rather than the host's, so TLS is layered on by hand.
-func (s *Shim) dialTailnet(ctx context.Context, route TailnetRoute, tlsConfig *tls.Config) (net.Conn, error) {
-	dialCtx, cancel := context.WithTimeout(ctx, tailnetDialTimeout)
-	defer cancel()
-
-	raw, err := route.Dial(dialCtx, "tcp", route.Addr)
-	if err != nil {
-		return nil, err
-	}
-
-	conn := tls.Client(raw, tlsConfig)
-	if err := conn.HandshakeContext(dialCtx); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	return conn, nil
+	return conn
 }
 
 // The loopback address the Tailscale client should dial. Empty before Start.

@@ -35,12 +35,8 @@ export interface TailnetStatus {
   // The DERP region carrying this node's traffic.
   derpHome: string;
 
-  // Which path the last control session took, "tailnet" or "relay". A device
-  // permanently on the relay is a deployment problem with no other symptom.
-  controlRoute: string;
-
-  // How Git and LFS currently reach gitd. Distinct from controlRoute: that
-  // hop is the shim's path to headscale.
+  // How Git and LFS currently reach gitd. Control traffic always goes through
+  // the hosted relay, so this is the hop the panel can still distinguish.
   serverPath: string;
   serverRelay: string;
 
@@ -104,7 +100,6 @@ interface StatusMessage {
   backend_state?: string;
   tailnet_ips?: string[];
   derp_home?: string;
-  control_route?: string;
   server_path?: string;
   server_relay?: string;
   peers?: number;
@@ -158,7 +153,6 @@ const toTailnetStatus = (event: { type?: unknown }): TailnetStatus => {
     backendState: typeof message.backend_state === "string" ? message.backend_state : "Unknown",
     tailnetIps: Array.isArray(message.tailnet_ips) ? message.tailnet_ips : [],
     derpHome: typeof message.derp_home === "string" ? message.derp_home : "",
-    controlRoute: typeof message.control_route === "string" ? message.control_route : "",
     serverPath: typeof message.server_path === "string" ? message.server_path : "",
     serverRelay: typeof message.server_relay === "string" ? message.server_relay : "",
     peers: typeof message.peers === "number" ? message.peers : 0,

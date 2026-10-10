@@ -21,8 +21,7 @@ final class PassthroughTailnetNode: TailnetNodeProviding {
 
     func status() async throws -> TailnetStatusReport {
         try TailnetStatusReport.decode(
-            Data(#"{"BackendState":"Running"}"#.utf8),
-            controlRoute: .tailnet
+            Data(#"{"BackendState":"Running"}"#.utf8)
         )
     }
 

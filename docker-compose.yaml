@@ -135,18 +135,12 @@ services:
 
         # hsproxy terminates TLS for headscale, so its certificate has to match
         # the hostname devices dial - the tunnel subdomain, or the operator's
-        # own name in manual mode.
-        #
-        # The tailnet name is a SAN too, because a device that is already a
-        # tailnet member reaches hsproxy through gitd's in-tailnet control
-        # relay instead of through the tunnel. Both paths end at this same
-        # certificate, so one missing SAN would pin every device to the relay.
-        if cert_covers hsproxy.crt "$${HEADSCALE_HOST}" "$${GITD_TAILNET_NAME}"; then
+        # own name in manual mode. Control traffic always takes that path.
+        if cert_covers hsproxy.crt "$${HEADSCALE_HOST}"; then
           echo "hsproxy certificate already covers $${HEADSCALE_HOST}"
         else
           echo "Issuing hsproxy certificate for $${HEADSCALE_HOST}"
-          issue_cert hsproxy "$${HEADSCALE_HOST}" \
-            "DNS:$${HEADSCALE_HOST},DNS:$${GITD_TAILNET_NAME}"
+          issue_cert hsproxy "$${HEADSCALE_HOST}" "DNS:$${HEADSCALE_HOST}"
         fi
 
   # Render the headscale config and policy from the names server-key derived.

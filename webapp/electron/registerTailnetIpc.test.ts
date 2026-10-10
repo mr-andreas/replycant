@@ -7,7 +7,6 @@ const runningStatus: TailnetStatus = {
   backendState: "Running",
   tailnetIps: ["100.64.0.2"],
   derpHome: "fra",
-  controlRoute: "tailnet",
   serverPath: "direct",
   serverRelay: "",
   peers: 2,
@@ -204,7 +203,7 @@ describe("registerTailnetIpc", () => {
     await invoke("tailnet:join", validRequest);
     const reported = (await invoke("tailnet:status")) as { status?: TailnetStatus };
 
-    expect(reported.status?.controlRoute).toBe("tailnet");
+    expect(reported.status?.serverPath).toBe("direct");
     expect(reported.status?.derpHome).toBe("fra");
   });
 

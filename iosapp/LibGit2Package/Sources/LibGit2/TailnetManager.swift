@@ -200,8 +200,6 @@ public actor TailnetManager: TailnetNodeProviding {
             throw error
         }
 
-        await installTailnetControlRoute(on: shim, request: request)
-
         do {
             guard let node else {
                 throw TailnetError.notJoined
@@ -410,7 +408,7 @@ public actor TailnetManager: TailnetNodeProviding {
     /// The node's backend state, or nil when its status cannot be read.
     private static func backendState(_ node: TailscaleNode) async -> String? {
         guard let data = try? await node.statusJSON(),
-              let report = try? TailnetStatusReport.decode(data, controlRoute: nil) else {
+              let report = try? TailnetStatusReport.decode(data) else {
             return nil
         }
         return report.backendState
@@ -478,53 +476,10 @@ public actor TailnetManager: TailnetNodeProviding {
         logger?("tailnet: logged in again with a new key")
     }
 
-    /// Points the shim at gitd's in-tailnet control relay.
-    ///
-    /// Only possible after the node is up, because the route runs through the
-    /// node's own SOCKS5 proxy. From here on the device reaches the control
-    /// plane over WireGuard, which is what turns the hosted relay from
-    /// something every session depends on into a bootstrap step.
-    ///
-    /// Failures are logged rather than thrown: the relay path still works, so
-    /// a deployment without the in-tailnet relay keeps its previous behaviour
-    /// instead of failing to join.
-    private func installTailnetControlRoute(
-        on shim: HeadscaleControlShim,
-        request: TailnetJoinRequest
-    ) async {
-        guard let node else { return }
-        do {
-            let loopback = try await node.loopback()
-            guard let ip = loopback.ip, let port = loopback.port,
-                  let proxyPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
-                logger?("tailnet: node exposed no usable SOCKS proxy; control traffic stays on the relay")
-                return
-            }
-            try shim.setTailnetRoute(HeadscaleControlShim.TailnetRoute(
-                host: Self.gitdHost,
-                port: Self.gitdControlPort,
-                socksProxy: .hostPort(host: NWEndpoint.Host(ip), port: proxyPort),
-                // tsnet's SOCKS5 listener always authenticates as this user,
-                // with the loopback credential as the password.
-                socksUsername: "tsnet",
-                socksPassword: loopback.proxyCredential
-            ))
-        } catch {
-            logger?("tailnet: in-tailnet control path unavailable, staying on the relay: \(error)")
-        }
-    }
-
     /// MagicDNS name gitd registers on the tailnet. Pinned rather than
     /// delivered in a pairing record so a QR and a certificate SAN cannot
     /// drift.
     static let gitdHost = "gitd.replycant.internal"
-
-    /// The port gitd relays control-plane traffic on inside the tailnet.
-    ///
-    /// Pinned here rather than delivered in the pairing record because it is a
-    /// property of the gitd build, not of the deployment, and a device only
-    /// ever talks to a gitd from the same release.
-    static let gitdControlPort: UInt16 = 8444
 
     public func apply(to configuration: URLSessionConfiguration) async throws {
         guard let node else {
@@ -712,17 +667,12 @@ public actor TailnetManager: TailnetNodeProviding {
     ///
     /// Reads the node's own view rather than tracking state here, because the
     /// node's connectivity changes underneath the app - a peer going offline, a
-    /// DERP region changing - with nothing to notify us. The control route
-    /// comes from the shim, which is the only thing that knows which path the
-    /// last control session took.
+    /// DERP region changing - with nothing to notify us.
     public func status() async throws -> TailnetStatusReport {
         guard let node else {
             throw TailnetError.notJoined
         }
-        return try TailnetStatusReport.decode(
-            try await node.statusJSON(),
-            controlRoute: shim?.lastRoute
-        )
+        return try TailnetStatusReport.decode(try await node.statusJSON())
     }
 
     /// Takes the node and the shim down.

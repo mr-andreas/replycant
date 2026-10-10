@@ -5,18 +5,12 @@ import Testing
 @testable import GitDB
 @testable import LibGit2
 
-// Covers which way the headscale shim reaches the control plane.
+// Covers the key request the shim sends to hsproxy.
 //
-// The hosted relay is a bootstrap dependency: a device with no tailnet has no
-// other way to talk to the control plane. Once it is a member it should stop
-// using the relay, because otherwise every household stays permanently
-// dependent on a service replycant operates. These tests pin down that the
-// tailnet is tried first, and that a device whose tailnet path is broken still
-// reaches the control plane instead of being stranded.
-//
-// Neither upstream here completes a TLS handshake, and that is deliberate: the
-// subject is route selection, and standing up two mTLS servers signed by a
-// pinned CA would test Network framework rather than the shim.
+// A device mints its tailnet key through the shim's own loopback listener, so
+// the request gets the pinned CA and the device certificate. Neither upstream
+// here completes a TLS handshake: what matters is that the request left
+// through the shim, not that Network framework finished the handshake.
 @MainActor
 @Suite(.sharedAppState)
 struct HeadscaleControlShimRouteTests {
@@ -42,9 +36,8 @@ struct HeadscaleControlShimRouteTests {
             let recorder = try RecordingListener()
             recorder.listener.newConnectionHandler = { [weak recorder] connection in
                 guard let recorder else { return }
-                // Held rather than cancelled: cancelling would let the shim's
-                // attempt fail early, and the timeout is part of what is
-                // being tested.
+                // Held rather than cancelled so the shim's dial counts as an
+                // accept instead of failing before the test can observe it.
                 connection.start(queue: recorder.queue)
                 recorder.lock.lock()
                 recorder.accepted += 1
@@ -113,135 +106,6 @@ struct HeadscaleControlShimRouteTests {
         return try #require(ClientIdentityManager.shared.loadSecIdentity())
     }
 
-    // Opens one control connection through the shim and leaves it open, since
-    // closing it would tear down the attempt being observed.
-    private func openControlConnection(to port: UInt16) -> NWConnection {
-        let connection = NWConnection(
-            host: .ipv4(.loopback),
-            port: NWEndpoint.Port(rawValue: port)!,
-            using: .tcp
-        )
-        connection.start(queue: .global())
-        // Something has to be written for the shim to have a session worth
-        // relaying, and for the far side to see a connection at all.
-        connection.send(content: Data("GET /key?v=120\r\n".utf8), completion: .idempotent)
-        return connection
-    }
-
-    // The point of the whole phase: a device that is already on the tailnet
-    // must not keep routing control traffic through replycant's hosted relay.
-    @Test func tailnetRouteIsTriedBeforeTheRelay() async throws {
-        let socksProxy = try await RecordingListener.started()
-        let relay = try await RecordingListener.started()
-        defer {
-            socksProxy.stop()
-            relay.stop()
-        }
-
-        let shim = HeadscaleControlShim(
-            upstreamHost: "127.0.0.1",
-            upstreamPort: relay.port,
-            trust: .pinned(try Self.deploymentCA()),
-            clientIdentity: try Self.deviceIdentity()
-        )
-        try await shim.start()
-        defer { shim.stop() }
-
-        try shim.setTailnetRoute(HeadscaleControlShim.TailnetRoute(
-            host: "gitd.replycant.internal",
-            port: 8444,
-            socksProxy: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: socksProxy.port)!),
-            socksUsername: "tsnet",
-            socksPassword: "credential"
-        ))
-
-        let control = openControlConnection(to: try #require(shim.port))
-        defer { control.cancel() }
-
-        #expect(await socksProxy.waitForAccept(atLeast: 1, within: 5),
-                "the tailnet route must be attempted through the node's SOCKS proxy")
-        #expect(relay.acceptCount == 0,
-                "the relay must not be dialled while the tailnet route is still being tried")
-    }
-
-    // The tailnet route depends on the node being up and the server being
-    // online. A device whose own tailnet path is broken has to keep working,
-    // or a transient WireGuard problem becomes an unrecoverable one.
-    @Test func aStalledTailnetRouteFallsBackToTheRelay() async throws {
-        let socksProxy = try await RecordingListener.started()
-        let relay = try await RecordingListener.started()
-        defer {
-            socksProxy.stop()
-            relay.stop()
-        }
-
-        let shim = HeadscaleControlShim(
-            upstreamHost: "127.0.0.1",
-            upstreamPort: relay.port,
-            trust: .pinned(try Self.deploymentCA()),
-            clientIdentity: try Self.deviceIdentity()
-        )
-        try await shim.start()
-        defer { shim.stop() }
-
-        // The proxy accepts and then never speaks SOCKS, which is how a node
-        // that has gone offline behaves: the attempt stalls rather than fails.
-        try shim.setTailnetRoute(HeadscaleControlShim.TailnetRoute(
-            host: "gitd.replycant.internal",
-            port: 8444,
-            socksProxy: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: socksProxy.port)!),
-            socksUsername: "tsnet",
-            socksPassword: "credential"
-        ))
-
-        let control = openControlConnection(to: try #require(shim.port))
-        defer { control.cancel() }
-
-        #expect(await relay.waitForAccept(atLeast: 1, within: 10),
-                "a stalled tailnet route must fall back to the relay rather than stranding the device")
-    }
-
-    // Before the node is up there is no tailnet to dial, and attempting one
-    // would add the fallback timeout to the very connections the join depends
-    // on.
-    @Test func bootstrapGoesStraightToTheRelay() async throws {
-        let relay = try await RecordingListener.started()
-        defer { relay.stop() }
-
-        let shim = HeadscaleControlShim(
-            upstreamHost: "127.0.0.1",
-            upstreamPort: relay.port,
-            trust: .pinned(try Self.deploymentCA()),
-            clientIdentity: try Self.deviceIdentity()
-        )
-        try await shim.start()
-        defer { shim.stop() }
-
-        let control = openControlConnection(to: try #require(shim.port))
-        defer { control.cancel() }
-
-        #expect(await relay.waitForAccept(atLeast: 1, within: 5),
-                "with no tailnet route the relay must be dialled immediately")
-    }
-
-    // The status view distinguishes "still on the relay" from "nothing has
-    // connected yet", and the two mean very different things to a user.
-    @Test func noRouteIsReportedBeforeAnythingConnects() async throws {
-        let relay = try await RecordingListener.started()
-        defer { relay.stop() }
-
-        let shim = HeadscaleControlShim(
-            upstreamHost: "127.0.0.1",
-            upstreamPort: relay.port,
-            trust: .pinned(try Self.deploymentCA()),
-            clientIdentity: try Self.deviceIdentity()
-        )
-        try await shim.start()
-        defer { shim.stop() }
-
-        #expect(shim.lastRoute == nil)
-    }
-
     // A device mints its tailnet key through the shim's own loopback listener,
     // so before the shim listens there is nowhere to send the request.
     @Test func mintingAKeyBeforeTheShimStartsFails() async throws {
@@ -283,29 +147,5 @@ struct HeadscaleControlShimRouteTests {
 
         #expect(await relay.waitForAccept(atLeast: 1, within: 5),
                 "the key request must reach hsproxy through the shim")
-    }
-
-    // A route with no host would be dialled as an empty name and fail on every
-    // connection, silently costing every session the fallback timeout.
-    @Test func anEmptyTailnetHostIsRejected() async throws {
-        let relay = try await RecordingListener.started()
-        defer { relay.stop() }
-
-        let shim = HeadscaleControlShim(
-            upstreamHost: "127.0.0.1",
-            upstreamPort: relay.port,
-            trust: .pinned(try Self.deploymentCA()),
-            clientIdentity: try Self.deviceIdentity()
-        )
-
-        #expect(throws: HeadscaleControlShim.ShimError.self) {
-            try shim.setTailnetRoute(HeadscaleControlShim.TailnetRoute(
-                host: "  ",
-                port: 8444,
-                socksProxy: .hostPort(host: .ipv4(.loopback), port: 1080),
-                socksUsername: "tsnet",
-                socksPassword: "credential"
-            ))
-        }
     }
 }

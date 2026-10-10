@@ -148,7 +148,6 @@ func run() error {
 		go publishStatus(ctx, os.Stdout, statusPoller{
 			Interval: statusInterval,
 			Status:   client.Status,
-			Route:    controlPlane.LastRoute,
 		})
 	}
 

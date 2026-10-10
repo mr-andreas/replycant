@@ -35,7 +35,7 @@ func runningStatus() *ipnstate.Status {
 // "connected but the server is down", which is the distinction users cannot
 // make today. Everything the panel shows comes from this mapping.
 func TestStatusReportsWhatTheUserNeedsToTellFailuresApart(t *testing.T) {
-	event := newStatusEvent(runningStatus(), "tailnet", nil)
+	event := newStatusEvent(runningStatus(), nil)
 
 	if event.Type != statusEventType {
 		t.Errorf("event type = %q, want %q", event.Type, statusEventType)
@@ -57,11 +57,11 @@ func TestStatusReportsWhatTheUserNeedsToTellFailuresApart(t *testing.T) {
 	}
 }
 
-// Control path and server path are different hops. A device on the hosted
-// relay can still have a direct WireGuard path to gitd, and the panel is
-// the only place that distinction is visible.
+// A device whose control session goes through the hosted relay can still
+// have a direct WireGuard path to gitd, and the panel is the only place
+// that hop is visible.
 func TestStatusReportsADirectPathWhenGitdHasACurrentAddress(t *testing.T) {
-	event := newStatusEvent(runningStatus(), "relay", nil)
+	event := newStatusEvent(runningStatus(), nil)
 	if event.ServerPath != "direct" {
 		t.Errorf("server path = %q, want direct", event.ServerPath)
 	}
@@ -70,9 +70,8 @@ func TestStatusReportsADirectPathWhenGitdHasACurrentAddress(t *testing.T) {
 	}
 }
 
-// Empty CurAddr with a Relay region is Tailscale's DERP hop, not
-// Replycant's hosted tunnel. Showing the region is what keeps "hel"
-// from being read as the control-path hosted relay.
+// Empty CurAddr with a Relay region is Tailscale's DERP hop. Showing
+// the region is what keeps "hel" distinct from a direct connection.
 func TestStatusReportsARelayPathWhenGitdHasNoCurrentAddress(t *testing.T) {
 	status := runningStatus()
 	for _, peer := range status.Peer {
@@ -82,7 +81,7 @@ func TestStatusReportsARelayPathWhenGitdHasNoCurrentAddress(t *testing.T) {
 		}
 	}
 
-	event := newStatusEvent(status, "tailnet", nil)
+	event := newStatusEvent(status, nil)
 	if event.ServerPath != "relay" {
 		t.Errorf("server path = %q, want relay", event.ServerPath)
 	}
@@ -102,7 +101,7 @@ func TestStatusReportsOfflineWhenGitdIsNotOnline(t *testing.T) {
 		}
 	}
 
-	event := newStatusEvent(status, "tailnet", nil)
+	event := newStatusEvent(status, nil)
 	if event.ServerPath != "offline" {
 		t.Errorf("server path = %q, want offline", event.ServerPath)
 	}
@@ -118,22 +117,9 @@ func TestStatusHidesTheServerPathWhenGitdIsMissing(t *testing.T) {
 		}
 	}
 
-	event := newStatusEvent(status, "tailnet", nil)
+	event := newStatusEvent(status, nil)
 	if event.ServerPath != "" {
 		t.Errorf("server path = %q, want empty", event.ServerPath)
-	}
-}
-
-// Which path control traffic took is the one thing tailscale's own status
-// cannot report, because the shim owns that choice. It is worth surfacing: a
-// device permanently on the relay is a deployment problem the user can see no
-// other way.
-func TestStatusReportsWhichControlPathWasUsed(t *testing.T) {
-	if got := newStatusEvent(runningStatus(), "relay", nil).ControlRoute; got != "relay" {
-		t.Errorf("control route = %q, want relay", got)
-	}
-	if got := newStatusEvent(runningStatus(), "tailnet", nil).ControlRoute; got != "tailnet" {
-		t.Errorf("control route = %q, want tailnet", got)
 	}
 }
 
@@ -144,7 +130,7 @@ func TestStatusCarriesHealthWarnings(t *testing.T) {
 	status := runningStatus()
 	status.Health = []string{"DERP region fra is unreachable"}
 
-	event := newStatusEvent(status, "tailnet", nil)
+	event := newStatusEvent(status, nil)
 	if len(event.Health) != 1 || !strings.Contains(event.Health[0], "unreachable") {
 		t.Errorf("health = %v", event.Health)
 	}
@@ -154,7 +140,7 @@ func TestStatusCarriesHealthWarnings(t *testing.T) {
 // must be reported rather than dropped, or the panel would freeze on the last
 // good reading and claim everything is fine.
 func TestStatusReportsAFailedQuery(t *testing.T) {
-	event := newStatusEvent(nil, "relay", errors.New("node is not answering"))
+	event := newStatusEvent(nil, errors.New("node is not answering"))
 
 	if event.BackendState != backendStateUnknown {
 		t.Errorf("backend state = %q, want %q", event.BackendState, backendStateUnknown)
@@ -167,7 +153,7 @@ func TestStatusReportsAFailedQuery(t *testing.T) {
 // The node reports no Self until it has joined, and a panel that crashed the
 // sidecar during startup would take the tailnet down with it.
 func TestStatusToleratesAPartiallyStartedNode(t *testing.T) {
-	event := newStatusEvent(&ipnstate.Status{BackendState: "Starting"}, "", nil)
+	event := newStatusEvent(&ipnstate.Status{BackendState: "Starting"}, nil)
 
 	if event.BackendState != "Starting" {
 		t.Errorf("backend state = %q", event.BackendState)
@@ -224,7 +210,6 @@ func TestPublishStatusEmitsRepeatedly(t *testing.T) {
 				}
 				return runningStatus(), nil
 			},
-			Route: func() string { return "tailnet" },
 		})
 	}()
 
@@ -282,7 +267,6 @@ func TestPublishStatusKeepsGoingAfterAFailedQuery(t *testing.T) {
 				}
 				return runningStatus(), nil
 			},
-			Route: func() string { return "relay" },
 		})
 	}()
 

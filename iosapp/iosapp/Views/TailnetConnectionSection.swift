@@ -30,7 +30,6 @@ struct TailnetConnectionSection: View {
         if let address = report.tailnetIPs.first {
             LabeledContent("Address", value: address)
         }
-        LabeledContent("Control path", value: Self.describe(report.controlRoute))
         if let path = report.serverPath {
             LabeledContent("Server path", value: Self.describe(path))
         }
@@ -61,19 +60,9 @@ struct TailnetConnectionSection: View {
         return isConfigured ? .unavailable : .hidden
     }
 
-    /// How the control path reads to a user.
-    static func describe(_ route: HeadscaleControlShim.Route?) -> String {
-        switch route {
-        case .tailnet: return "Direct"
-        case .relay: return "Hosted relay"
-        case nil: return "Not yet used"
-        }
-    }
-
     /// How the path to gitd reads to a user.
     ///
-    /// Named without "hosted" so Tailscale DERP is not mistaken for the
-    /// control-plane tunnel. The region is what makes "hel" distinct.
+    /// The region is what makes "hel" distinct from a direct connection.
     static func describe(_ path: TailnetStatusReport.ServerPath) -> String {
         switch path {
         case .direct: return "Direct"
@@ -83,12 +72,7 @@ struct TailnetConnectionSection: View {
         }
     }
 
-    /// Named explicitly because a device that never leaves the relay
-    /// still works, but depends on hosted infrastructure for every
-    /// session, and nothing else would show that.
-    static func footer(for route: HeadscaleControlShim.Route?) -> String {
-        route == .relay
-            ? "Control traffic is going through Replycant's hosted relay instead of directly to your server."
-            : "Your device reaches this library over its own private network."
-    }
+    /// What Settings puts under the connection rows. The device is on its
+    /// own tailnet even though joining it still uses the hosted relay.
+    static let footer = "Your device reaches this library over its own private network."
 }

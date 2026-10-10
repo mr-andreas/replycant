@@ -48,8 +48,7 @@ private final class FakeNode: TailnetNodeProviding, @unchecked Sendable {
     // shares the node protocol.
     func status() async throws -> TailnetStatusReport {
         try TailnetStatusReport.decode(
-            Data(#"{"BackendState":"Running","TailscaleIPs":["100.64.0.7"]}"#.utf8),
-            controlRoute: .tailnet
+            Data(#"{"BackendState":"Running","TailscaleIPs":["100.64.0.7"]}"#.utf8)
         )
     }
 

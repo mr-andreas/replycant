@@ -225,7 +225,6 @@ no host-port listener.
 |------|----------|---------|-------------|
 | `--tsnet-dir` | Yes | - | Tailnet node state directory |
 | `--tsnet-control-url` | Yes | - | headscale control URL as seen from the compose network |
-| `--tailnet-control-upstream` | No | `hsproxy:8443` | hsproxy address that control-plane traffic arriving over the tailnet is spliced to |
 | `--headscale-api-url` | Yes | - | headscale API base URL, used to mint gitd's own tailnet key and the first device's key, and to remove device nodes on revocation |
 | `--headscale-api-key-file` | Yes | - | File holding the headscale API key, re-read on every call so a key replaced after a database wipe takes effect |
 | `--headscale-client-url` | Yes | - | headscale URL advertised to pairing devices, the tunnel hostname |

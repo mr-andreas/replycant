@@ -8,7 +8,10 @@ SAN for LAN-only deployments is superseded: LAN-only mode was removed, and
 the integration harness runs on the tailnet like a real deployment. The
 double-sealed pairing record, the CA-label check, and manual-exposure
 delivery are superseded by
-[ADR-0013](0013-pairing-record-authenticated-only.md).
+[ADR-0013](0013-pairing-record-authenticated-only.md). gitd's `:8444`
+splice, the tailnet SAN on hsproxy, and the tailnet-first control route
+are superseded by
+[ADR-0014](0014-control-traffic-through-the-hosted-relay-only.md).
 
 ## Context
 gitd published its mTLS Git port and its CA port on the host. Reaching a home

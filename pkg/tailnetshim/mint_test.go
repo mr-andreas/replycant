@@ -154,34 +154,3 @@ func TestMintPreauthKeyReportsARefusal(t *testing.T) {
 		t.Errorf("the error should name the status, got %v", err)
 	}
 }
-
-// A node that is still a tailnet member can ask over the tailnet, which keeps
-// working when the hosted relay is down. The same preference applies as for
-// control sessions.
-func TestMintPreauthKeyPrefersTheTailnetRoute(t *testing.T) {
-	pki := newTestPKI(t)
-	relay := newFakeKeyEndpoint(t, pki, "abc.tunnel.replycant.com", http.StatusOK)
-	overTailnet := newFakeKeyEndpoint(t, pki, "gitd.replycant.internal", http.StatusOK)
-	shim := newMintingShim(t, pki, relay.addr(), "abc.tunnel.replycant.com")
-
-	dialer := &countingDialer{dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, overTailnet.addr())
-	}}
-	if err := shim.SetTailnetRoute(TailnetRoute{
-		Addr:       "gitd.replycant.internal:8444",
-		ServerName: "gitd.replycant.internal",
-		Dial:       dialer.Dial,
-	}); err != nil {
-		t.Fatalf("set the tailnet route: %v", err)
-	}
-
-	if _, err := shim.MintPreauthKey(mintContext(t)); err != nil {
-		t.Fatalf("the tailnet route must carry the request: %v", err)
-	}
-	if requests, _ := overTailnet.snapshot(); len(requests) != 1 {
-		t.Errorf("expected the tailnet upstream to serve the request, got %v", requests)
-	}
-	if requests, _ := relay.snapshot(); len(requests) != 0 {
-		t.Errorf("the relay must not be used once the tailnet route works, got %v", requests)
-	}
-}

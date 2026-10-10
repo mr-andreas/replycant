@@ -55,4 +55,6 @@ The tailnet is the only path `git-replycant` supports.
   lock is held.
 - Joining still depends on Tailscale's public DERP map for the first
   control session. After the node is up, control prefers gitd's
-  in-tailnet relay and falls back to hsproxy.
+  in-tailnet relay and falls back to hsproxy. Superseded by server
+  [ADR-0014](../../server/adr/0014-control-traffic-through-the-hosted-relay-only.md):
+  control traffic stays on the hosted relay.

@@ -23,11 +23,10 @@ permanent attack surface for those who can.
 
 Two paths matter and they are deliberately separate:
 
-- **Control path.** Joining the tailnet requires talking to headscale. The
-  first control session of each app launch goes through the hosted relay,
-  because a device cannot route to peers until its node is up. After that the
-  device's loopback shim prefers gitd's in-tailnet control relay (a raw TCP
-  splice to hsproxy) and falls back to the hosted relay if that path fails.
+- **Control path.** Joining the tailnet requires talking to headscale, and
+  every control session goes through the hosted relay. A device cannot
+  route to peers until its node is up, and the node cannot come up without
+  a control session, so there is no earlier path to prefer.
 - **Data path.** Git, LFS, decryptd, and transcoded all travel inside the
   tailnet, peer to peer. They never touch the relay.
 
@@ -62,9 +61,9 @@ push. `gitd.replycant.internal` does not resolve until the node is up.
 1. Pin the CA and remember gitd as `https://gitd.replycant.internal:8443`.
 2. Start the loopback shim and point the Tailscale client at
    `http://127.0.0.1:P`.
-3. The shim dials the tunnel hostname. This is the first control session,
-   so it can only go through the hosted relay: the node has no route to
-   gitd yet.
+3. The shim dials the tunnel hostname through the hosted relay. The node
+   has no route to gitd yet, and control traffic stays on the relay after
+   it does.
 4. `tunnel-agent` splices the stream to `hsproxy`. The repository has no
    branches, so `hsproxy` allows the device certificate even though it is
    not in `pubkeys/` yet. That exemption is the only way a first device
@@ -103,15 +102,11 @@ suspend, because that read does not use the local proxy the system may
 have reclaimed, so a wake after that long does not trust the existing
 node. A quick switch to another app leaves it running.
 
-Each launch still opens its first control session through the hosted
-relay. The shim cannot prefer the in-tailnet path until the node is up,
-and the node cannot come up without a control session. Once the node is
-running, later control sessions dial `gitd.replycant.internal:8444`, and
-gitd splices that listener to the same `hsproxy`. The shim gives this path
-two seconds, then falls back to the relay, so a peer that is offline does
-not hang the control connection.
+Every control session goes through the hosted relay. The node cannot
+route to peers until that session has brought it up, so control traffic
+stays on the relay for as long as the app is running.
 
-Git, LFS, and media take neither control path. They are tailnet
+Git, LFS, and media take a different path. They are tailnet
 connections to `gitd.replycant.internal:8443`.
 
 ## The pieces
@@ -142,12 +137,9 @@ protocol upgrades a `POST` into a long-lived bidirectional stream, which no
 HTTP-aware proxy layer survives. The one exception is
 `POST /replycant/preauthkey`. hsproxy reads the request line of each
 authorized connection, answers that request itself with a fresh `tag:device`
-key, and splices every other request to headscale unchanged.
-
-Once a device is on the tailnet, later control sessions go to gitd's second
-tsnet listener (`:8444`), which splices to this same `hsproxy`. The
-certificate therefore carries both the tunnel hostname and
-`gitd.replycant.internal`, so either path verifies.
+key, and splices every other request to headscale unchanged. Its
+certificate names the tunnel hostname devices dial, which is the only
+way a device reaches it.
 
 hsproxy sends the deployment CA after its leaf. A phone restoring from a
 recovery key has only the CA's hash and no other way to fetch the CA: the CA
@@ -161,7 +153,7 @@ the CA it was onboarded with.
 
 The tailnet exists so devices can reach this household's server, not so they
 can reach each other. headscale loads a file-mode policy that grants
-`tag:device` access to `tag:server` on the Git and control ports only. There
+`tag:device` access to `tag:server` on the Git port only. There
 is no device-to-device rule and no server-to-device rule, so a compromised
 phone cannot enumerate or attack the rest of the household. gitd's own node
 is tagged `tag:server` at mint time; every paired device is tagged

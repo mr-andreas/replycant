@@ -22,11 +22,11 @@
 #### iOS app
 
 - on mobile data or in Low Data Mode, videos no longer autoplay and uploads ask before starting; both warn how much data full-quality media uses, and an upload started on Wi-Fi pauses if the phone switches to mobile data
-- show how this device reaches the library — connected or not, which control path it is using, whether the server is reached directly or through a relay, and whether peers are online — in Settings
+- show how this device reaches the library — connected or not, whether the server is reached directly or through a relay, and whether peers are online — in Settings
 
 #### Desktop app
 
-- show how this device reaches the library — connected or not, which control path it is using, whether the server is reached directly or through a relay, and whether peers are online — in the settings pane
+- show how this device reaches the library — connected or not, whether the server is reached directly or through a relay, and whether peers are online — in the settings pane
 
 #### git-replycant
 

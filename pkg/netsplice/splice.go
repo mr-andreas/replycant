@@ -1,9 +1,9 @@
 // Package netsplice joins two connections byte for byte.
 //
 // Every hop between a device and the control plane (the hosted relay, the
-// tunnel agent, hsproxy, gitd's in-tailnet relay, the loopback shim, the CLI
-// agent's proxy) relays a session it cannot or must not parse. One
-// implementation keeps them agreeing on when a session ends.
+// tunnel agent, hsproxy, the loopback shim, the CLI agent's proxy) relays a
+// session it cannot or must not parse. One implementation keeps them agreeing
+// on when a session ends.
 package netsplice
 
 import (

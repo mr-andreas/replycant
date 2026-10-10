@@ -65,9 +65,10 @@ func TestPolicyUsesNoWildcards(t *testing.T) {
 	}
 }
 
-// Devices still have to reach the server, and only on the ports gitd actually
-// serves on the tailnet: the mTLS Git listener and the control-plane relay.
-// Pinning the ports is what stops the rule from quietly widening to all ports.
+// Devices still have to reach the server, and only on the port gitd actually
+// serves on the tailnet: the mTLS Git listener. Control traffic goes through
+// the hosted relay, so opening another tailnet port would only widen the
+// rule. Pinning the port is what stops it from quietly covering all ports.
 func TestPolicyAllowsDevicesToReachOnlyTheServerPorts(t *testing.T) {
 	allowed := map[string]bool{}
 	for _, rule := range renderedPolicy(t).ACLs {
@@ -90,13 +91,11 @@ func TestPolicyAllowsDevicesToReachOnlyTheServerPorts(t *testing.T) {
 		}
 	}
 
-	for _, port := range []int{tailnetaddr.GitdPort, tailnetaddr.ControlPort} {
-		want := fmt.Sprintf("%s:%d", tailnet.ServerTag, port)
-		if !allowed[want] {
-			t.Errorf("devices must be allowed to reach %s, got destinations %v", want, allowed)
-		}
-		delete(allowed, want)
+	want := fmt.Sprintf("%s:%d", tailnet.ServerTag, tailnetaddr.GitdPort)
+	if !allowed[want] {
+		t.Errorf("devices must be allowed to reach %s, got destinations %v", want, allowed)
 	}
+	delete(allowed, want)
 	if len(allowed) > 0 {
 		t.Errorf("policy allows unexpected destinations %v", allowed)
 	}

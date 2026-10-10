@@ -10,9 +10,3 @@ func TestGitdURLIsTheHardcodedTailnetAddress(t *testing.T) {
 		t.Errorf("GitdURL() = %q", GitdURL())
 	}
 }
-
-func TestControlAddrIsTheHardcodedTailnetRelay(t *testing.T) {
-	if ControlAddr() != "gitd.replycant.internal:8444" {
-		t.Errorf("ControlAddr() = %q", ControlAddr())
-	}
-}

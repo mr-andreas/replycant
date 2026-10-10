@@ -9,8 +9,6 @@ export interface TailnetStatusReport {
   backendState: string;
   tailnetIps: string[];
   derpHome: string;
-  controlRoute: string;
-  // Distinct from controlRoute: that hop is the shim's path to headscale.
   serverPath: string;
   serverRelay: string;
   peers: number;
@@ -43,26 +41,9 @@ const toEnvelope = (raw: unknown): TailnetStatusEnvelope | null => {
   return { running: candidate.running, status: candidate.status };
 };
 
-// How the control path reads to a user.
-//
-// The distinction is worth spelling out: a device that never leaves the relay
-// still works, but it depends on hosted infrastructure for every session, and
-// nothing else in the app would ever show that.
-const describeRoute = (route: string): string => {
-  switch (route) {
-    case "tailnet":
-      return "Direct (tailnet)";
-    case "relay":
-      return "Hosted relay";
-    default:
-      return "Not yet used";
-  }
-};
-
 // How the path to gitd reads to a user.
 //
-// Named without "hosted" so Tailscale DERP is not mistaken for the
-// control-plane tunnel. The region is what makes "hel" distinct.
+// The region is what makes "hel" distinct from a direct connection.
 const describeServerPath = (path: string, relay: string): string => {
   switch (path) {
     case "direct":
@@ -138,8 +119,6 @@ export const TailnetStatusPanel = () => {
             <dd>{status.tailnetIps[0]}</dd>
           </>
         ) : null}
-        <dt>Control path</dt>
-        <dd>{describeRoute(status.controlRoute)}</dd>
         {status.serverPath ? (
           <>
             <dt>Server path</dt>

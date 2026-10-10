@@ -161,7 +161,6 @@ EOF
     --cache-ttl=1s \
     --tsnet-dir=/tmp/tsnet-gitd \
     --tsnet-control-url="http://127.0.0.1:${headscale_port}" \
-    --tailnet-control-upstream="127.0.0.1:${hsproxy_port}" \
     --headscale-api-url="http://127.0.0.1:${headscale_port}" \
     --headscale-api-key-file=/tmp/tailnet/headscale.apikey \
     --headscale-client-url="https://localhost:${hsproxy_port}" \

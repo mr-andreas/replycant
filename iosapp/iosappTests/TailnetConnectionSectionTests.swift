@@ -13,8 +13,7 @@ import Testing
 struct TailnetConnectionSectionTests {
     private static func report() throws -> TailnetStatusReport {
         try TailnetStatusReport.decode(
-            Data(#"{"BackendState":"Running"}"#.utf8),
-            controlRoute: .relay
+            Data(#"{"BackendState":"Running"}"#.utf8)
         )
     }
 
@@ -75,9 +74,7 @@ struct TailnetConnectionSectionTests {
         )
     }
 
-    // Server path must not reuse Control path's "Hosted relay" wording.
-    // That hop is Replycant's tunnel to headscale; this one is Tailscale
-    // DERP to gitd, and the region is what makes them distinguishable.
+    // The region is what makes a DERP hop distinct from a direct connection.
     @Test func namesTheServerPathWithoutCallingItTheHostedRelay() {
         #expect(TailnetConnectionSection.describe(.direct) == "Direct")
         #expect(TailnetConnectionSection.describe(.relay(region: "hel")) == "Relay (hel)")

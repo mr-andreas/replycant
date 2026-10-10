@@ -25,15 +25,14 @@ const maxKeyResponseBytes = 4096
 // one out to any certificate currently in pubkeys/. Asking costs nothing to an
 // authorized device and gets a revoked one nowhere.
 //
-// The request rides the same mTLS session and route preference as control
-// traffic, so it trusts only the deployment CA and works whichever of the
-// tailnet or the relay is currently reachable. The key is returned rather than
-// stored: it is single-use and expires within minutes.
+// The request rides the same mTLS session as control traffic, so it trusts
+// only the deployment CA and goes through the hosted relay. The key is
+// returned rather than stored: it is single-use and expires within minutes.
 func (s *Shim) MintPreauthKey(ctx context.Context) (string, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
 			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				conn, _ := s.dialControlPlane(ctx)
+				conn := s.dialControlPlane(ctx)
 				if conn == nil {
 					return nil, errors.New("the control plane is unreachable")
 				}

@@ -6,7 +6,10 @@ Accepted. Supersedes the parts of
 come from, that `hsproxy` is a pure byte splicer, and that keys are captured
 at init time. An unknown certificate asking for a pre-auth key is answered
 `403` rather than closed in silence; that refinement is
-[ADR-0012](0012-refused-key-requests-answer-403.md).
+[ADR-0012](0012-refused-key-requests-answer-403.md). The tailnet-first
+route is superseded by
+[ADR-0014](0014-control-traffic-through-the-hosted-relay-only.md):
+control traffic goes through the hosted relay only.
 
 ## Context
 ADR-0010 put every device on a headscale tailnet and made `pubkeys/` the

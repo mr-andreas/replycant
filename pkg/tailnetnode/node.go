@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
 	"github.com/mr-andreas/replycant/pkg/tailnetlogin"
 	"github.com/mr-andreas/replycant/pkg/tailnetshim"
 	"tailscale.com/tsnet"
@@ -169,14 +168,11 @@ func (d *Device) Close() error {
 	return errors.Join(nodeErr, shimErr)
 }
 
-// Starts the shim and the node behind it, then points later control sessions
-// at gitd's in-tailnet relay.
+// Starts the shim and the node behind it.
 //
-// The first session has to cross the hosted relay, because the node can route
-// nothing until it is up. Preferring the in-tailnet path afterwards keeps the
-// relay a bootstrap dependency rather than something every session holds
-// open. A route that cannot be installed is logged rather than fatal: the
-// relay path still works.
+// Every control session crosses the hosted relay. The node cannot route
+// anything until it is up, and the control session is what brings it up, so
+// there is no earlier path to prefer.
 func StartDevice(ctx context.Context, config DeviceConfig) (*Device, error) {
 	logf := config.Logf
 	if logf == nil {
@@ -208,17 +204,6 @@ func StartDevice(ctx context.Context, config DeviceConfig) (*Device, error) {
 	if err != nil {
 		_ = controlPlane.Close()
 		return nil, err
-	}
-
-	route := tailnetshim.TailnetRoute{
-		Addr:       tailnetaddr.ControlAddr(),
-		ServerName: tailnetaddr.GitdHost,
-		Dial:       node.Dial,
-	}
-	if err := controlPlane.SetTailnetRoute(route); err != nil {
-		logf("in-tailnet control path unavailable, staying on the relay: %v", err)
-	} else {
-		logf("control traffic will prefer %s over %s", route.Addr, config.HeadscaleAddr)
 	}
 	return &Device{Node: node, ControlPlane: controlPlane}, nil
 }

@@ -78,7 +78,7 @@ type headscaleACL struct {
 // The tailnet exists so devices can reach this household's server, not each
 // other. Naming only the server as a destination leaves everything else to
 // headscale's default deny, so a compromised phone cannot reach the other
-// devices. Ports are pinned to the two gitd serves on the tailnet, and nothing
+// devices. The port is pinned to the one gitd serves on the tailnet, and nothing
 // grants the server access to devices, because it never initiates.
 //
 // Built from the same tags and ports gitd and hsproxy use, so the policy
@@ -97,7 +97,6 @@ func RenderHeadscalePolicy() ([]byte, error) {
 			Source:   []string{DeviceTag},
 			Dest: []string{
 				fmt.Sprintf("%s:%d", ServerTag, tailnetaddr.GitdPort),
-				fmt.Sprintf("%s:%d", ServerTag, tailnetaddr.ControlPort),
 			},
 		}},
 	}

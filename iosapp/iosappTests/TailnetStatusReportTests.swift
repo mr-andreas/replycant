@@ -61,7 +61,7 @@ struct TailnetStatusReportTests {
     }
 
     @Test func readsWhatTheSettingsScreenShows() throws {
-        let report = try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .tailnet)
+        let report = try TailnetStatusReport.decode(Self.statusJSON())
 
         #expect(report.isConnected)
         #expect(report.backendState == "Running")
@@ -72,17 +72,15 @@ struct TailnetStatusReportTests {
         #expect(report.peersOnline == 1)
     }
 
-    // Control path and server path are different hops. A device on the hosted
-    // relay can still have a direct WireGuard path to gitd, and the Settings
-    // row is the only place that distinction is visible.
+    // A current address is Tailscale's direct path. Settings is the only
+    // place a user can see that gitd is reachable without DERP.
     @Test func reportsADirectPathWhenGitdHasACurrentAddress() throws {
-        #expect(try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .relay)
+        #expect(try TailnetStatusReport.decode(Self.statusJSON())
             .serverPath == .direct)
     }
 
-    // Empty CurAddr with a Relay region is Tailscale's DERP hop, not
-    // Replycant's hosted tunnel. Showing the region is what keeps "hel" from
-    // being read as the control-path hosted relay.
+    // Empty CurAddr with a Relay region is Tailscale's DERP hop. Showing
+    // the region is what keeps "hel" distinct from a direct connection.
     @Test func reportsARelayPathWhenGitdHasNoCurrentAddress() throws {
         let json = Self.statusJSON(gitdPeer: """
               "ID": "n1",
@@ -92,7 +90,7 @@ struct TailnetStatusReportTests {
               "Relay": "hel"
         """)
 
-        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+        #expect(try TailnetStatusReport.decode(json)
             .serverPath == .relay(region: "hel"))
     }
 
@@ -107,7 +105,7 @@ struct TailnetStatusReportTests {
               "Relay": "hel"
         """)
 
-        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+        #expect(try TailnetStatusReport.decode(json)
             .serverPath == .offline)
     }
 
@@ -115,8 +113,7 @@ struct TailnetStatusReportTests {
     // has not been seen would be a guess.
     @Test func hidesTheServerPathWhenGitdIsMissing() throws {
         #expect(try TailnetStatusReport.decode(
-            Self.statusJSON(gitdPeer: nil),
-            controlRoute: .tailnet
+            Self.statusJSON(gitdPeer: nil)
         ).serverPath == nil)
     }
 
@@ -131,7 +128,7 @@ struct TailnetStatusReportTests {
               "CurAddr": "192.0.2.10:41641"
         """)
 
-        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+        #expect(try TailnetStatusReport.decode(json)
             .serverPath == .direct)
     }
 
@@ -140,28 +137,11 @@ struct TailnetStatusReportTests {
     @Test func onlyRunningCountsAsConnected() throws {
         for state in ["Starting", "Stopped", "NeedsLogin", "NoState"] {
             let report = try TailnetStatusReport.decode(
-                Self.statusJSON(backendState: state),
-                controlRoute: nil
+                Self.statusJSON(backendState: state)
             )
             #expect(report.isConnected == false, "\(state) must not read as connected")
             #expect(report.backendState == state)
         }
-    }
-
-    // The shim owns this choice, so it cannot come from the node's status. A
-    // device permanently on the relay has no other visible symptom.
-    @Test func carriesTheControlPathTheShimUsed() throws {
-        #expect(try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .relay)
-            .controlRoute == .relay)
-        #expect(try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .tailnet)
-            .controlRoute == .tailnet)
-    }
-
-    // Before the first control session there is no path to report, and
-    // claiming one would be a guess.
-    @Test func reportsNoControlPathBeforeAnyControlSession() throws {
-        #expect(try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: nil)
-            .controlRoute == nil)
     }
 
     // A node can be Running and still unable to carry traffic, which would
@@ -172,7 +152,7 @@ struct TailnetStatusReportTests {
           "Health": ["DERP region fra is unreachable"]
         """)
 
-        let report = try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+        let report = try TailnetStatusReport.decode(json)
         #expect(report.health == ["DERP region fra is unreachable"])
     }
 
@@ -182,7 +162,7 @@ struct TailnetStatusReportTests {
     @Test func toleratesAPartiallyStartedNode() throws {
         let json = Data(#"{"BackendState":"Starting","AuthURL":"","Version":"1.102.3"}"#.utf8)
 
-        let report = try TailnetStatusReport.decode(json, controlRoute: nil)
+        let report = try TailnetStatusReport.decode(json)
         #expect(report.backendState == "Starting")
         #expect(report.tailnetIPs.isEmpty)
         #expect(report.derpHome == "")
@@ -192,14 +172,14 @@ struct TailnetStatusReportTests {
     }
 
     // The log line is what gets captured next to a slow LFS transfer.
-    // It has to name both hops the way Settings does, and keep the gitd
+    // It has to name the path the way Settings does, and keep the gitd
     // endpoint Settings discards after deciding the path is direct.
     @Test func summarizesADirectPathWithTheGitdEndpoint() throws {
-        let report = try TailnetStatusReport.decode(Self.statusJSON(), controlRoute: .relay)
+        let report = try TailnetStatusReport.decode(Self.statusJSON())
 
         #expect(report.gitdAddress == "192.0.2.10:41641")
         #expect(report.logLines == [
-            "state=Running address=100.64.0.2 control=Hosted relay server=Direct gitd=192.0.2.10:41641 derp=fra peers=1/2"
+            "state=Running address=100.64.0.2 server=Direct gitd=192.0.2.10:41641 derp=fra peers=1/2"
         ])
     }
 
@@ -214,10 +194,10 @@ struct TailnetStatusReportTests {
               "Relay": "hel"
         """)
 
-        let report = try TailnetStatusReport.decode(json, controlRoute: .tailnet)
+        let report = try TailnetStatusReport.decode(json)
         #expect(report.gitdAddress == nil)
         #expect(report.logLines == [
-            "state=Running address=100.64.0.2 control=Direct server=Relay (hel) derp=fra peers=1/2"
+            "state=Running address=100.64.0.2 server=Relay (hel) derp=fra peers=1/2"
         ])
     }
 
@@ -232,8 +212,8 @@ struct TailnetStatusReportTests {
               "Relay": "hel"
         """)
 
-        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet).logLines == [
-            "state=Running address=100.64.0.2 control=Direct server=Offline derp=fra peers=0/2"
+        #expect(try TailnetStatusReport.decode(json).logLines == [
+            "state=Running address=100.64.0.2 server=Offline derp=fra peers=0/2"
         ])
     }
 
@@ -245,8 +225,8 @@ struct TailnetStatusReportTests {
           "Health": ["DERP region fra is unreachable"]
         """)
 
-        #expect(try TailnetStatusReport.decode(json, controlRoute: .tailnet).logLines == [
-            "state=Running address=100.64.0.2 control=Direct server=Direct gitd=192.0.2.10:41641 derp=fra peers=1/2",
+        #expect(try TailnetStatusReport.decode(json).logLines == [
+            "state=Running address=100.64.0.2 server=Direct gitd=192.0.2.10:41641 derp=fra peers=1/2",
             "DERP region fra is unreachable"
         ])
     }
@@ -256,7 +236,7 @@ struct TailnetStatusReportTests {
     // rather than render as a disconnected tailnet.
     @Test func rejectsAPayloadItCannotParse() {
         #expect(throws: (any Error).self) {
-            try TailnetStatusReport.decode(Data("not json".utf8), controlRoute: nil)
+            try TailnetStatusReport.decode(Data("not json".utf8))
         }
     }
 }

@@ -55,14 +55,9 @@ type statusEvent struct {
 	// connection, because DERP is still the fallback path.
 	DERPHome string `json:"derp_home"`
 
-	// Which path the shim's most recent control session took. Not part of
-	// tailscale's status, because the shim owns the choice: a device stuck on
-	// the relay is a deployment problem with no other visible symptom.
-	ControlRoute string `json:"control_route"`
-
-	// How Git and LFS currently reach gitd. Distinct from ControlRoute: that
-	// hop is the shim's path to headscale, and a device on the hosted relay
-	// can still have a direct WireGuard path to the server.
+	// How Git and LFS currently reach gitd. A device whose control session
+	// goes through the hosted relay can still have a direct WireGuard path
+	// to the server, so this hop is reported on its own.
 	ServerPath  string `json:"server_path,omitempty"`
 	ServerRelay string `json:"server_relay,omitempty"`
 
@@ -84,11 +79,10 @@ type statusEvent struct {
 // Separate from the polling loop so the mapping can be tested without standing
 // up a WireGuard node, and tolerant of a partially started node because status
 // is polled from the moment the sidecar starts.
-func newStatusEvent(status *ipnstate.Status, route string, queryErr error) statusEvent {
+func newStatusEvent(status *ipnstate.Status, queryErr error) statusEvent {
 	event := statusEvent{
 		Type:         statusEventType,
 		BackendState: backendStateUnknown,
-		ControlRoute: route,
 	}
 	if queryErr != nil {
 		event.LastError = queryErr.Error()
@@ -155,12 +149,10 @@ func findGitd(peers map[key.NodePublic]*ipnstate.PeerStatus) *ipnstate.PeerStatu
 
 // Where a status snapshot comes from.
 //
-// Both are functions so the loop can be driven in tests, and because the
-// route is owned by the shim while the status is owned by the node.
+// A function so the loop can be driven in tests without a WireGuard node.
 type statusPoller struct {
 	Interval time.Duration
 	Status   func(context.Context) (*ipnstate.Status, error)
-	Route    func() string
 }
 
 // Streams status until the context is cancelled.
@@ -180,11 +172,7 @@ func publishStatus(ctx context.Context, out io.Writer, poller statusPoller) {
 
 	for {
 		status, err := poller.Status(ctx)
-		route := ""
-		if poller.Route != nil {
-			route = poller.Route()
-		}
-		if writeErr := emit(out, newStatusEvent(status, route, err)); writeErr != nil {
+		if writeErr := emit(out, newStatusEvent(status, err)); writeErr != nil {
 			// stdout closing means the parent is gone, so there is no one left
 			// to report to.
 			log.Printf("stopping status stream: %v", writeErr)

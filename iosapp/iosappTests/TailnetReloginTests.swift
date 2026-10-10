@@ -187,14 +187,12 @@ struct TailnetReloginTests {
     // signal for a node that started with state headscale no longer has.
     @Test func needsLoginIsReadFromTheStatus() throws {
         let report = try TailnetStatusReport.decode(
-            Data(#"{"BackendState":"NeedsLogin"}"#.utf8),
-            controlRoute: nil
+            Data(#"{"BackendState":"NeedsLogin"}"#.utf8)
         )
         #expect(report.needsLogin)
 
         let running = try TailnetStatusReport.decode(
-            Data(#"{"BackendState":"Running"}"#.utf8),
-            controlRoute: nil
+            Data(#"{"BackendState":"Running"}"#.utf8)
         )
         #expect(!running.needsLogin)
     }

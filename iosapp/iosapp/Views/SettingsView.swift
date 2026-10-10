@@ -144,7 +144,7 @@ struct SettingsView: View {
             } header: {
                 Text("Connection")
             } footer: {
-                Text(TailnetConnectionSection.footer(for: report.controlRoute))
+                Text(TailnetConnectionSection.footer)
             }
         }
     }

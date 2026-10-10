@@ -7,7 +7,6 @@ const runningStatus: TailnetStatus = {
   backendState: "Running",
   tailnetIps: ["100.64.0.2"],
   derpHome: "fra",
-  controlRoute: "tailnet",
   serverPath: "direct",
   serverRelay: "",
   peers: 2,

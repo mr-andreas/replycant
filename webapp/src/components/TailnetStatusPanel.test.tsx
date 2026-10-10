@@ -2,14 +2,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TailnetStatusPanel } from "./TailnetStatusPanel";
 
-// A tailnet that is fully up and taking the in-tailnet control path.
+// A tailnet that is fully up, with a direct path to gitd.
 const connected = {
   running: true,
   status: {
     backendState: "Running",
     tailnetIps: ["100.64.0.2"],
     derpHome: "fra",
-    controlRoute: "tailnet",
     serverPath: "direct",
     serverRelay: "",
     peers: 2,
@@ -40,21 +39,19 @@ describe("TailnetStatusPanel", () => {
   // The panel exists so a user can tell "this device is not on the tailnet"
   // from "this device is on the tailnet but the server is down". Both used to
   // look like a failed sync with no way to tell them apart.
-  it("shows the tailnet as connected with its address and route", async () => {
+  it("shows the tailnet as connected with its address and path to the server", async () => {
     installBridge(connected);
     render(<TailnetStatusPanel />);
 
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("100.64.0.2")).toBeInTheDocument();
-    expect(screen.getByText(/Direct \(tailnet\)/)).toBeInTheDocument();
     expect(screen.getByText("Direct")).toBeInTheDocument();
     expect(screen.getByText("fra")).toBeInTheDocument();
   });
 
-  // Server path must not reuse Control path's "Hosted relay" wording.
-  // That hop is Replycant's tunnel to headscale; this one is Tailscale
-  // DERP to gitd, and the region is what makes them distinguishable.
-  it("names the path to gitd without calling it the hosted relay", async () => {
+  // Empty CurAddr with a region is Tailscale's DERP hop to gitd. Showing
+  // the region is what keeps "hel" distinct from a direct connection.
+  it("names the DERP region when gitd is reached through a relay", async () => {
     installBridge({
       running: true,
       status: { ...connected.status, serverPath: "relay", serverRelay: "hel" },
@@ -62,20 +59,6 @@ describe("TailnetStatusPanel", () => {
     render(<TailnetStatusPanel />);
 
     expect(await screen.findByText("Relay (hel)")).toBeInTheDocument();
-    expect(screen.queryByText("Hosted relay")).not.toBeInTheDocument();
-  });
-
-  // A device that never gets off the relay is a deployment problem with no
-  // other visible symptom, so the panel names the path explicitly rather than
-  // reporting a single "connected" state for both.
-  it("says when control traffic is still crossing the hosted relay", async () => {
-    installBridge({
-      running: true,
-      status: { ...connected.status, controlRoute: "relay" },
-    });
-    render(<TailnetStatusPanel />);
-
-    expect(await screen.findByText(/Hosted relay/)).toBeInTheDocument();
   });
 
   // A node that is Running but unhealthy would otherwise look like a healthy

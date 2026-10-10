@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,7 +20,6 @@ import (
 	"github.com/mr-andreas/replycant/server/gitd/lfs"
 	"github.com/mr-andreas/replycant/server/pairing"
 	"github.com/mr-andreas/replycant/server/tailnet"
-	"github.com/mr-andreas/replycant/server/tcprelay"
 	"github.com/mr-andreas/replycant/server/tsnetserve"
 )
 
@@ -57,14 +54,6 @@ type CLI struct {
 
 	TsnetDir        string `required:"" help:"Directory for tailnet node state" type:"path"`
 	TsnetControlURL string `required:"" help:"Headscale control URL for the tailnet node (e.g. http://headscale:8080)"`
-
-	// A second way into the control plane, reachable only from inside the
-	// tailnet. Devices bootstrap through the hosted relay because they have no
-	// tailnet yet, but once they are members they should not keep depending on
-	// a hosted service to stay connected. Splicing to hsproxy rather than to
-	// headscale keeps the device's TLS session terminating at the same
-	// authenticating front door on both paths.
-	TailnetControlUpstream string `default:"hsproxy:8443" help:"hsproxy address that tailnet control-plane traffic is spliced to"`
 
 	// Where pairing records are published. A new device has no other way to
 	// learn the CA and the control-plane hostname.
@@ -255,28 +244,6 @@ func main() {
 			log.Fatalf("gitd server failed: %v", err)
 		}
 	}()
-
-	// The in-tailnet path to the control plane. A device that is already a
-	// member reaches hsproxy through here instead of through the hosted relay,
-	// which is what keeps the relay a bootstrap dependency rather than a
-	// permanent one. Failing to bind is not fatal: devices can still reach the
-	// control plane the way they did during pairing.
-	controlListener, err := tsnetNode.Listen("tcp", fmt.Sprintf(":%d", tailnetaddr.ControlPort))
-	if err != nil {
-		log.Printf("Tailnet control path unavailable on %s; devices will keep "+
-			"using the relay: %v", tailnetaddr.ControlAddr(), err)
-	} else {
-		go func() {
-			log.Printf("Relaying tailnet control traffic from %s to %s",
-				tailnetaddr.ControlAddr(), cli.TailnetControlUpstream)
-			err := tcprelay.Serve(controlListener, tcprelay.Config{
-				UpstreamAddr: cli.TailnetControlUpstream,
-			})
-			if err != nil && !errors.Is(err, net.ErrClosed) {
-				log.Printf("tailnet control relay stopped: %v", err)
-			}
-		}()
-	}
 
 	var lfsInternalServer *http.Server
 	if cli.LfsInternalAddr != "" {

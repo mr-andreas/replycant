@@ -19,17 +19,11 @@ public struct TailnetStatusReport: Sendable, Equatable {
     /// picks one.
     public let derpHome: String
 
-    /// Which path the shim's most recent control session took, or nil before
-    /// any control session happened. Not part of tailscale's status because the
-    /// shim owns the choice, and a device stuck on the hosted relay has no
-    /// other visible symptom.
-    public let controlRoute: HeadscaleControlShim.Route?
-
     /// How Git and LFS currently reach gitd, or nil before that peer appears.
     ///
-    /// Distinct from `controlRoute`: that hop is the shim's path to headscale,
-    /// and a device on the hosted relay can still have a direct WireGuard
-    /// path to the server. This is the row that makes those distinguishable.
+    /// Control traffic always goes through the hosted relay, so this is the
+    /// hop Settings can still distinguish: a direct WireGuard path, DERP, or
+    /// an offline server.
     public let serverPath: ServerPath?
 
     /// The address Tailscale is currently using to reach gitd.
@@ -40,8 +34,7 @@ public struct TailnetStatusReport: Sendable, Equatable {
 
     /// How this device reaches gitd over the tailnet.
     ///
-    /// Worth its own type so Settings can name Tailscale DERP without
-    /// reusing the control path's "Hosted relay" wording.
+    /// Worth its own type so Settings can name Tailscale DERP as its own hop.
     public enum ServerPath: Equatable, Sendable {
         case direct
         case relay(region: String)
@@ -71,7 +64,6 @@ public struct TailnetStatusReport: Sendable, Equatable {
         if let address = tailnetIPs.first {
             parts.append("address=\(address)")
         }
-        parts.append("control=\(Self.controlLabel(controlRoute))")
         parts.append("server=\(Self.serverLabel(serverPath))")
         if let gitdAddress {
             parts.append("gitd=\(gitdAddress)")
@@ -114,10 +106,7 @@ public struct TailnetStatusReport: Sendable, Equatable {
     /// node starts, long before it has addresses, peers, or a relay region,
     /// and a settings screen that threw during startup would be worse than one
     /// reporting an incomplete picture.
-    public static func decode(
-        _ data: Data,
-        controlRoute: HeadscaleControlShim.Route?
-    ) throws -> TailnetStatusReport {
+    public static func decode(_ data: Data) throws -> TailnetStatusReport {
         let wire = try JSONDecoder().decode(Wire.self, from: data)
         let peers = wire.Peer ?? [:]
         let gitd = peers.values.first(where: isGitd)
@@ -126,22 +115,12 @@ public struct TailnetStatusReport: Sendable, Equatable {
             backendState: wire.BackendState ?? "Unknown",
             tailnetIPs: wire.TailscaleIPs ?? [],
             derpHome: wire.`Self`?.Relay ?? "",
-            controlRoute: controlRoute,
             serverPath: gitd.flatMap(classify),
             gitdAddress: Self.endpoint(of: gitd),
             peers: peers.count,
             peersOnline: peers.values.filter { $0.Online == true }.count,
             health: wire.Health ?? []
         )
-    }
-
-    /// Names the control hop the way Settings does.
-    private static func controlLabel(_ route: HeadscaleControlShim.Route?) -> String {
-        switch route {
-        case .tailnet: return "Direct"
-        case .relay: return "Hosted relay"
-        case nil: return "Not yet used"
-        }
     }
 
     /// Names the path to gitd the way Settings does.

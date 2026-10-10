@@ -53,7 +53,6 @@ class FakeSidecarProcess extends EventEmitter {
         backend_state: "Running",
         tailnet_ips: ["100.64.0.2"],
         derp_home: "fra",
-        control_route: "tailnet",
         peers: 2,
         peers_online: 1,
         ...overrides,
@@ -298,14 +297,13 @@ describe("startTailnetSidecar", () => {
     const sidecar = await starting;
 
     child.emitStatus();
-    child.emitStatus({ backend_state: "Stopped", control_route: "relay", peers_online: 0 });
+    child.emitStatus({ backend_state: "Stopped", peers_online: 0 });
     await vi.waitFor(() => expect(seen).toHaveLength(2));
 
     expect(seen[0]).toEqual({
       backendState: "Running",
       tailnetIps: ["100.64.0.2"],
       derpHome: "fra",
-      controlRoute: "tailnet",
       serverPath: "",
       serverRelay: "",
       peers: 2,
@@ -314,7 +312,6 @@ describe("startTailnetSidecar", () => {
       lastError: undefined,
     });
     expect(seen[1]?.backendState).toBe("Stopped");
-    expect(seen[1]?.controlRoute).toBe("relay");
 
     await sidecar.stop();
   });

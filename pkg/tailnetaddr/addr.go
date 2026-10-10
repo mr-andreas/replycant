@@ -22,11 +22,8 @@ const (
 	GitdHost = GitdHostname + "." + Domain
 
 	// Port gitd serves Git and LFS on inside the tailnet. The headscale
-	// policy opens exactly this port and ControlPort to devices.
+	// policy opens exactly this port to devices.
 	GitdPort = 8443
-
-	// Port gitd relays control-plane traffic on inside the tailnet.
-	ControlPort = 8444
 
 	// Path on the control-plane host (hsproxy) where a device whose key is
 	// in pubkeys/ asks for a fresh single-use pre-auth key. It lives on the
@@ -39,10 +36,4 @@ const (
 // URL clients use for Git and LFS after they have joined the tailnet.
 func GitdURL() string {
 	return fmt.Sprintf("https://%s:%d", GitdHost, GitdPort)
-}
-
-// Where a joined device should send control-plane traffic so it can stop
-// depending on the hosted relay.
-func ControlAddr() string {
-	return fmt.Sprintf("%s:%d", GitdHost, ControlPort)
 }

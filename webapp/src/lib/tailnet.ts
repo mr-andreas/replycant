@@ -48,9 +48,10 @@ export const toHeadscaleAddr = (headscaleUrl: string): { addr: string; serverNam
 
 // The port gitd serves Git and LFS on inside the tailnet.
 //
-// Pinned for the same reason as the control port below, and it must stay in
-// step with the ports the headscale policy in docker-compose.yaml opens: a
-// device that dials anything else is denied by the tailnet itself, not by gitd.
+// Pinned rather than delivered in a pairing record because it is a property
+// of the gitd build, and a device only ever talks to a gitd from the same
+// release. It must stay in step with the one port the headscale policy opens:
+// a device that dials anything else is denied by the tailnet itself, not by gitd.
 export const GITD_TAILNET_PORT = 8443;
 
 // MagicDNS name gitd registers on the tailnet. Pinned rather than delivered
