@@ -119,7 +119,7 @@ jobs:
         run: npm run e2e
 
       - name: Run integration e2e tests
-        run: npm run e2e:integration
+        run: xvfb-run -a npm run e2e:integration
 
   ios-unit-tests:
     name: iOS unit tests

@@ -20,7 +20,8 @@ const DISCOVERY_BASE_URL = "http://discovery.test:18082";
 // nothing, the way a fresh install does.
 //
 // The mock keychain keeps macOS from prompting for keychain access, which an
-// unattended run cannot answer.
+// unattended run cannot answer. --no-sandbox is required because Linux CI
+// cannot use Electron's setuid sandbox helper from node_modules.
 const launchDesktopApp = async (): Promise<{ app: ElectronApplication; userDataDir: string }> => {
   const userDataDir = mkdtempSync(join(tmpdir(), "replycant-desktop-it-"));
   const app = await electron.launch({
@@ -28,6 +29,7 @@ const launchDesktopApp = async (): Promise<{ app: ElectronApplication; userDataD
       ELECTRON_MAIN,
       `--user-data-dir=${userDataDir}`,
       "--use-mock-keychain",
+      "--no-sandbox",
       "--host-resolver-rules=MAP *.discovery.test 127.0.0.1",
     ],
     env: {
