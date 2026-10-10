@@ -4,7 +4,9 @@
 Accepted. Supersedes the parts of
 [ADR-0010](0010-headscale-tailnet-transport.md) that say where tailnet keys
 come from, that `hsproxy` is a pure byte splicer, and that keys are captured
-at init time.
+at init time. An unknown certificate asking for a pre-auth key is answered
+`403` rather than closed in silence; that refinement is
+[ADR-0012](0012-refused-key-requests-answer-403.md).
 
 ## Context
 ADR-0010 put every device on a headscale tailnet and made `pubkeys/` the

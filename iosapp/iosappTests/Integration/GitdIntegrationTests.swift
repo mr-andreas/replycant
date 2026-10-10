@@ -162,6 +162,11 @@ struct GitdIntegrationTests {
             serverConfiguration: config
         )
 
+        // recover() refuses a device that is already configured, before it
+        // looks at the password. Wiping is what a real wrong-password attempt
+        // is: a fresh install holding someone else's recovery key.
+        try await IntegrationHarness.resetLocalInstallState()
+
         do {
             _ = try await manager.recover(input: created.deepLink, password: "definitely-wrong")
             Issue.record("recovery unexpectedly succeeded with wrong password")

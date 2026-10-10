@@ -178,8 +178,10 @@ func (p *Proxy) Serve(listener net.Listener) error {
 }
 
 // Authorizes one connection and, if it belongs to a known device, relays it to
-// headscale. Anything unauthorized is closed without a reply, so an attacker
-// probing the tunnel learns nothing about what is behind it.
+// headscale. An unauthorized session is closed without a reply, so an attacker
+// probing the tunnel learns nothing about what is behind it. A key request is
+// the one exception: it is answered 403, so a revoked device can tell refusal
+// apart from a network fault.
 func (p *Proxy) handle(rawConn net.Conn) {
 	defer rawConn.Close()
 
@@ -206,16 +208,17 @@ func (p *Proxy) handle(rawConn net.Conn) {
 	}
 
 	username, err := p.authorizer.Authenticate(peerCerts[0])
-	bootstrap := false
+	var access sessionAccess
 	switch {
 	case err == nil:
+		access = accessAuthorized
 		p.logf("hsproxy: authorized %q from %s", username, rawConn.RemoteAddr())
 	case errors.Is(err, ErrBootstrap):
-		bootstrap = true
+		access = accessBootstrap
 		p.logf("hsproxy: allowing bootstrap client from %s (repository is empty)", rawConn.RemoteAddr())
 	default:
+		access = accessUnauthorized
 		p.logf("hsproxy: rejected %s: %v", rawConn.RemoteAddr(), err)
-		return
 	}
 
 	// HTTP clients speak first, so the request line arrives promptly. The
@@ -236,7 +239,13 @@ func (p *Proxy) handle(rawConn net.Conn) {
 	}
 
 	if isKeyRequest {
-		p.serveKeyRequest(tlsConn, reader, username, bootstrap)
+		p.serveKeyRequest(tlsConn, reader, username, access)
+		return
+	}
+	// Control traffic from an unknown certificate stays silent. Answering it
+	// would tell a probe what sits behind the tunnel; a key request is the
+	// only refusal a client needs to read.
+	if access == accessUnauthorized {
 		return
 	}
 
@@ -277,13 +286,30 @@ func peekKeyRequest(reader *bufio.Reader) (bool, error) {
 	}
 }
 
+// What the certificate was allowed to do on this session.
+type sessionAccess int
+
+const (
+	// The certificate is in pubkeys/, so the session may reach headscale and
+	// may be given a key.
+	accessAuthorized sessionAccess = iota
+	// The repository is empty. Control traffic is allowed so the first device
+	// can join with the CA page's key; minting is not.
+	accessBootstrap
+	// The certificate is unknown. Control traffic is dropped, and a key
+	// request is answered 403 so the device can tell refusal from a fault.
+	accessUnauthorized
+)
+
 // Answers a key request on the device's own session and closes it.
 //
-// Bootstrap sessions are refused even though their control traffic is
-// allowed: the exemption exists so the first device can register with the key
-// it got from the loopback-only CA page, and extending it to minting would let
-// anyone who reached the tunnel during that window enroll themselves.
-func (p *Proxy) serveKeyRequest(conn net.Conn, reader *bufio.Reader, username string, bootstrap bool) {
+// Only an authorized certificate gets a key. Bootstrap sessions are refused
+// even though their control traffic is allowed: the exemption exists so the
+// first device can register with the key it got from the loopback-only CA
+// page, and extending it to minting would let anyone who reached the tunnel
+// during that window enroll themselves. An unknown certificate gets the same
+// 403, which is how a revoked device learns it was removed.
+func (p *Proxy) serveKeyRequest(conn net.Conn, reader *bufio.Reader, username string, access sessionAccess) {
 	request, err := http.ReadRequest(reader)
 	if err != nil {
 		p.logf("hsproxy: parse key request: %v", err)
@@ -292,13 +318,21 @@ func (p *Proxy) serveKeyRequest(conn net.Conn, reader *bufio.Reader, username st
 	_, _ = io.Copy(io.Discard, io.LimitReader(request.Body, maxRequestLineBytes))
 	_ = request.Body.Close()
 
-	switch {
-	case bootstrap:
+	switch access {
+	case accessBootstrap:
 		p.logf("hsproxy: refused a key to a bootstrap client; the first device's key comes from the CA page")
 		writeResponse(conn, http.StatusForbidden, "text/plain; charset=utf-8",
 			[]byte("Pre-auth keys are only issued to devices in pubkeys/\n"))
 		return
-	case p.minter == nil:
+	case accessUnauthorized:
+		p.logf("hsproxy: refused a key to %s; the certificate is not in pubkeys/", conn.RemoteAddr())
+		writeResponse(conn, http.StatusForbidden, "text/plain; charset=utf-8",
+			[]byte("Pre-auth keys are only issued to devices in pubkeys/\n"))
+		return
+	case accessAuthorized:
+	}
+
+	if p.minter == nil {
 		writeResponse(conn, http.StatusNotFound, "text/plain; charset=utf-8",
 			[]byte("Pre-auth keys are not issued by this deployment\n"))
 		return

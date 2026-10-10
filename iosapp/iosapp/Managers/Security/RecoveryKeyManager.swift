@@ -293,6 +293,21 @@ final class RecoveryKeyManager {
                     headscaleURL: plaintext.headscaleURL,
                     preauthKey: nil
                 )
+                // The rejoin reuses this device's node key moments after the
+                // recovery node stopped. gitd can still be sending to that
+                // process, so the first handshake is lost and the next
+                // request, usually revoking the used key, fails. Waiting
+                // here is what makes that request succeed. A timeout is
+                // logged rather than thrown: the key is already pushed, and
+                // throwing would wipe the configuration this recovery just
+                // created.
+                let reachable = await TailnetBootstrap.shared.waitUntilGitdReachable()
+                if !reachable {
+                    logError(
+                        "gitd was not reachable after rejoining as this device",
+                        context: "Recovery"
+                    )
+                }
             }
         )
     }

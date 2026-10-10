@@ -643,31 +643,37 @@ func TestProxyRefusesKeysDuringBootstrap(t *testing.T) {
 	}
 }
 
-// An unknown certificate must get no key and no reply, exactly as for control
-// traffic, so the minting path adds nothing an attacker can probe.
+// An unknown certificate must be told it is refused, rather than seeing a
+// dropped connection it cannot tell from a network fault. A revoked device
+// uses that 403 to show "this key was removed" instead of a generic error.
+// Headscale is still never dialed, and no key is minted.
 func TestProxyRefusesKeysToUnauthorizedClients(t *testing.T) {
 	pki := newTestPKI(t)
-	upstreamAddr, _ := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")
+	upstreamAddr, upstreamRequests := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")
 	minter := &recordingMinter{key: "hskey-auth-never"}
 	authorizer := &recordingAuthorizer{err: errors.New("public key not authorized")}
 	proxy := newMintingProxy(t, pki, upstreamAddr, authorizer, minter)
 
 	conn, err := dialProxy(t, startProxy(t, proxy), pki, ptr(newClientIdentity(t, "stranger")))
-	if err == nil {
-		defer conn.Close()
-		_, _ = io.WriteString(conn, "POST "+tailnetaddr.PreauthKeyPath+" HTTP/1.1\r\n\r\n")
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		if _, err := conn.Read(make([]byte, 64)); err == nil {
-			t.Fatal("an unauthorized client must get no reply")
-		}
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	response, _ := requestPreauthKey(t, conn)
+	if response.StatusCode != http.StatusForbidden {
+		t.Errorf("an unauthorized client must be refused a key, got %d", response.StatusCode)
 	}
 	if calls, _, _ := minter.snapshot(); calls != 0 {
 		t.Errorf("no key may be minted for an unauthorized client, minted %d", calls)
 	}
+	if got := len(upstreamRequests()); got != 0 {
+		t.Errorf("the refused request must not reach headscale, saw %d", got)
+	}
 }
 
-// A headscale failure must reach the device as a failure it can retry, not as
-// a closed connection that looks like being unauthorized.
+// A headscale failure must reach the device as a failure it can retry, with a
+// status other than the 403 that means the device is not in pubkeys/.
 func TestProxyReportsMintFailureAsBadGateway(t *testing.T) {
 	pki := newTestPKI(t)
 	upstreamAddr, _ := newEchoUpstream(t, "HTTP/1.1 200 OK\r\n\r\n")

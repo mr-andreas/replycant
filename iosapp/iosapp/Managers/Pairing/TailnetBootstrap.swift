@@ -294,6 +294,24 @@ actor TailnetBootstrap {
         configurations.clear()
     }
 
+    /// Waits until gitd accepts a connection through the node.
+    ///
+    /// Used after recovery rejoins. That rejoin reuses a node key seconds
+    /// after the previous node stopped, and gitd's cached direct path to the
+    /// old process drops the first handshake. Returns false when there is no
+    /// node or gitd never answers; the caller has already pushed this
+    /// device's key and must not treat that as a failed recovery.
+    func waitUntilGitdReachable(
+        timeout: Duration = TailnetManager.reachabilityTimeout
+    ) async -> Bool {
+        guard let manager else { return false }
+        return await manager.waitUntilReachable(
+            host: TailnetConfiguration.gitdHost,
+            port: TailnetConfiguration.gitdPort,
+            timeout: timeout
+        )
+    }
+
     /// How this device is connected, or nil when there is no node to
     /// describe yet. Failures are logged rather than thrown so Settings still
     /// renders while the node is unreachable.

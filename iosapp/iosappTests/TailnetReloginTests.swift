@@ -199,3 +199,61 @@ struct TailnetReloginTests {
         #expect(!running.needsLogin)
     }
 }
+
+// Counts attempts for the retry helper without sharing mutable state across
+// the test runner's tasks.
+private final class AttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+// Recovery rejoins the tailnet and then immediately talks to gitd. The first
+// packets can be lost while the previous node's direct path is still cached,
+// so the wait has to try again until one attempt works, and give up rather
+// than hang when none ever does.
+struct TailnetReachabilityRetryTests {
+    @Test func retryUntilReturnsOnceAnAttemptSucceeds() async {
+        let calls = AttemptCounter()
+        let started = Date()
+        let reached = await TailnetManager.retryUntil(
+            timeout: .seconds(30),
+            clock: { started },
+            sleep: { _ in },
+            attempt: { calls.next() >= 3 }
+        )
+        #expect(reached)
+        #expect(calls.count == 3)
+    }
+
+    @Test func retryUntilGivesUpWhenTheTimeoutPasses() async {
+        let calls = AttemptCounter()
+        let started = Date()
+        let clockReads = AttemptCounter()
+        let reached = await TailnetManager.retryUntil(
+            timeout: .milliseconds(500),
+            clock: {
+                clockReads.next() == 1 ? started : started.addingTimeInterval(1)
+            },
+            sleep: { _ in },
+            attempt: {
+                _ = calls.next()
+                return false
+            }
+        )
+        #expect(!reached)
+        #expect(calls.count == 1)
+    }
+}

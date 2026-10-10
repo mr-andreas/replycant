@@ -113,6 +113,15 @@ public actor TailnetManager: TailnetNodeProviding {
     /// How often a running node is checked for having been forgotten.
     static let reloginCheckInterval: Duration = .seconds(5)
 
+    /// How long recovery waits for gitd after rejoining. The first handshake
+    /// to a node that just restarted is often lost, and the retry lands a
+    /// few seconds later.
+    public static let reachabilityTimeout: Duration = .seconds(15)
+
+    /// How long one probe waits. Short enough that a lost handshake can be
+    /// tried again inside `reachabilityTimeout`.
+    static let reachabilityAttemptTimeout: Duration = .seconds(4)
+
     /// The least time between two mints. A device hsproxy refuses, or a
     /// headscale that keeps losing state, must not turn into a key per check.
     static let reloginCooldown: TimeInterval = 30
@@ -563,6 +572,135 @@ public actor TailnetManager: TailnetNodeProviding {
         proxyCache.store(configurations)
     }
 
+    /// Waits until a plain TCP connection to `host` succeeds through this
+    /// node's SOCKS proxy.
+    ///
+    /// Recovery restarts the node, with the same node key, a moment after
+    /// the previous one stopped. gitd can still be sending to the old
+    /// process, so the first handshake is lost and the next request fails.
+    /// A connection only becomes ready once WireGuard to gitd works, which
+    /// is the signal that the request recovery makes next will too.
+    /// Returns false, rather than throwing, when it never does: the device
+    /// key is already on the server, and failing the join would throw away
+    /// a recovery that otherwise succeeded.
+    public func waitUntilReachable(
+        host: String,
+        port: UInt16,
+        timeout: Duration = reachabilityTimeout
+    ) async -> Bool {
+        guard let node else { return false }
+        let proxy: NWEndpoint
+        let password: String
+        do {
+            let loopback = try await node.loopback()
+            guard let ip = loopback.ip, let proxyPort = loopback.port,
+                  let endpointPort = NWEndpoint.Port(rawValue: UInt16(proxyPort)) else {
+                logger?("tailnet: cannot probe \(host): node exposed no SOCKS proxy")
+                return false
+            }
+            proxy = .hostPort(host: NWEndpoint.Host(ip), port: endpointPort)
+            password = loopback.proxyCredential
+        } catch {
+            logger?("tailnet: cannot probe \(host): \(error)")
+            return false
+        }
+        return await Self.retryUntil(timeout: timeout) {
+            await Self.probeTCP(
+                host: host,
+                port: port,
+                proxy: proxy,
+                username: "tsnet",
+                password: password,
+                timeout: Self.reachabilityAttemptTimeout
+            )
+        }
+    }
+
+    /// Tries `attempt` until it succeeds or `timeout` has passed.
+    ///
+    /// The clock and the sleep are replaceable so tests can cover both
+    /// outcomes without waiting. A failed attempt that is already past the
+    /// deadline returns immediately, so a timeout of zero does not loop.
+    nonisolated static func retryUntil(
+        timeout: Duration,
+        pause: Duration = .milliseconds(200),
+        clock: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (Duration) async -> Void = { duration in
+            try? await Task.sleep(for: duration)
+        },
+        attempt: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        let start = clock()
+        let limit = seconds(timeout)
+        while true {
+            if await attempt() {
+                return true
+            }
+            if clock().timeIntervalSince(start) >= limit {
+                return false
+            }
+            await sleep(pause)
+        }
+    }
+
+    nonisolated private static func seconds(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds) + TimeInterval(components.attoseconds) / 1e18
+    }
+
+    /// Opens one TCP connection through the node's SOCKS proxy.
+    ///
+    /// Ready means tsnet accepted the dial, which only happens once it has a
+    /// working path to the peer. A new privacy context per attempt keeps this
+    /// proxy off every other connection the app makes, including the control
+    /// shim's.
+    nonisolated private static func probeTCP(
+        host: String,
+        port: UInt16,
+        proxy: NWEndpoint,
+        username: String,
+        password: String,
+        timeout: Duration
+    ) async -> Bool {
+        let parameters = NWParameters.tcp
+        var socks = ProxyConfiguration(socksv5Proxy: proxy)
+        socks.applyCredential(username: username, password: password)
+        let context = NWParameters.PrivacyContext(
+            description: "replycant-gitd-probe-\(UUID().uuidString)"
+        )
+        context.proxyConfigurations = [socks]
+        parameters.setPrivacyContext(context)
+
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
+            return false
+        }
+        let connection = NWConnection(
+            host: NWEndpoint.Host(host),
+            port: endpointPort,
+            using: parameters
+        )
+        return await withCheckedContinuation { continuation in
+            let outcome = ProbeOutcome(continuation)
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.cancel()
+                    outcome.resolve(true)
+                case .failed, .cancelled:
+                    outcome.resolve(false)
+                default:
+                    break
+                }
+            }
+            connection.start(queue: .global())
+            Task {
+                try? await Task.sleep(for: timeout)
+                connection.cancel()
+                outcome.resolve(false)
+            }
+        }
+    }
+
     public func addresses() async throws -> (ip4: String?, ip6: String?) {
         guard let node else {
             throw TailnetError.notJoined
@@ -624,6 +762,25 @@ public actor TailnetManager: TailnetNodeProviding {
         shim?.stop()
         shim = nil
         isJoined = false
+    }
+}
+
+/// Resumes a probe with whichever of the connection and its timeout
+/// finishes first, exactly once.
+private final class ProbeOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
     }
 }
 
