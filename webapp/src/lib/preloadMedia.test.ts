@@ -75,7 +75,7 @@ describe("preloadMedia", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  // Ensures decrypted PNG bytes get a MIME type so Firefox can paint object URLs.
+  // Ensures decrypted PNG bytes get an image MIME so Chromium can paint the blob URL.
   it("sets blob type from sniffed PNG magic bytes", async () => {
     const pngHeader = Uint8Array.from([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,

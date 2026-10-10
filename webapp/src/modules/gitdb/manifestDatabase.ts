@@ -80,16 +80,17 @@ export interface DerivedStoreContext {
 // Defines one app-owned derived store and the hooks gitdb executes to keep it
 // synchronized with the manifest snapshot.
 //
-// Firefox transaction contract for both hooks: implementations may only await IDB
-// requests (cursor walks, get/put/delete). Awaiting any non-IDB promise (fetch,
-// setTimeout, postMessage, decryption, message-channel handoff) inside a hook will
-// drop the surrounding transaction in Firefox and cause TransactionInactiveError on
-// the next IDB call. See ADR 0008.
+// IndexedDB transaction contract for both hooks: implementations may only await
+// IDB requests (cursor walks, get/put/delete). A transaction commits once it has
+// no pending requests and control returns to the event loop, so awaiting any
+// non-IDB promise (fetch, setTimeout, postMessage, decryption, message-channel
+// handoff) inside a hook causes TransactionInactiveError on the next IDB call.
+// See ADR 0008.
 //
 // rebuild runs inside the final commit transaction of a full rehydration, after
-// every manifest chunk has landed, so it observes the complete snapshot. applyMutation
-// runs inside the single CAS-guarded transaction of an incremental update and shares
-// the same Firefox-safety contract.
+// every manifest chunk has landed, so it observes the complete snapshot.
+// applyMutation runs inside the single CAS-guarded transaction of an incremental
+// update and shares the same contract.
 export interface DerivedStoreDefinition {
   name: string;
   keyPath: string;
@@ -104,10 +105,10 @@ const META_KEY = "state";
 const SCHEMA_VERSION = 6;
 
 // Bounds how many manifest records each full-rehydration chunk transaction writes.
-// Sized to amortize transaction overhead while keeping each transaction short enough
-// to satisfy Firefox's strict IDB lifecycle (see ADR 0008): a transaction must never
-// span a non-IDB await, so streamed pipelines write in many small transactions and
-// rely on a final commit marker for consumer-visible atomicity.
+// Sized to amortize transaction overhead while keeping each transaction short
+// enough for the IndexedDB auto-commit rule (see ADR 0008): a transaction must
+// never span a non-IDB await, so streamed pipelines write in many small
+// transactions and rely on a final commit marker for consumer-visible atomicity.
 export const FULL_REHYDRATION_CHUNK_SIZE = 2000;
 
 // Describes one persisted sync metadata row that keeps CAS and recovery state durable.
@@ -496,9 +497,9 @@ export class ManifestDatabase {
 
   // Replaces full cache from a streaming pipeline so records flow into IDB as they
   // are decoded, keeping peak memory bounded by chunk size rather than total record
-  // count. Splits work across many short transactions because Firefox auto-commits
-  // an IDB transaction across any await on a non-IDB promise (the streaming pipeline
-  // awaits git reads, decryption, and bounded-channel handoffs between writes). The
+  // count. Splits work across many short transactions because an IDB transaction
+  // commits across any await on a non-IDB promise (the streaming pipeline awaits
+  // git reads, decryption, and bounded-channel handoffs between writes). The
   // consumer-visible atomicity guarantee comes from the syncState / stagedCommitHash
   // meta row: readers gate on syncedCommitHash and never observe partial state.
   // See ADR 0008 for the full rationale and recovery model.
@@ -569,7 +570,7 @@ export class ManifestDatabase {
   // Writes one in-memory chunk of records in a single short transaction. The for-loop
   // does not await between put() calls, so every IDB request is queued on the
   // transaction before control returns to the event loop, keeping the transaction
-  // active in Firefox until tx.done.
+  // active until tx.done.
   private async writeFullRehydrationChunk(chunk: RegisteredManifestRecord[]): Promise<void> {
     if (chunk.length === 0) return;
     const db = this.requireDb();
@@ -587,7 +588,8 @@ export class ManifestDatabase {
 
   // Writes pointer rows in their own short transaction after manifest chunks land.
   // Pointers are typically much smaller than the manifest set and arrive fully
-  // materialized, so a single transaction is both correct and Firefox-safe.
+  // materialized, so a single transaction stays within the IndexedDB auto-commit
+  // rule.
   private async writeFullRehydrationPointers(
     pointersByPath: Map<string, LfsPointerFields>,
   ): Promise<void> {
@@ -602,8 +604,8 @@ export class ManifestDatabase {
 
   // Flips the commit marker and rebuilds derived stores over the now-complete
   // manifest snapshot. Derived hook implementations may only await IDB requests
-  // (cursor walks, get/put/delete), which keeps this final transaction alive in
-  // Firefox; awaiting a non-IDB promise from a derived hook would break the contract.
+  // (cursor walks, get/put/delete), which keeps this final transaction alive;
+  // awaiting a non-IDB promise from a derived hook would break the contract.
   private async commitFullRehydration(syncedCommitHash: string, cacheFormatVersion = 0): Promise<void> {
     const db = this.requireDb();
     const stores = this.storeNames();
@@ -651,11 +653,11 @@ export class ManifestDatabase {
   // apply because incremental updates are race-sensitive (a concurrent sync attempt
   // may try to advance from the same expected hash) and must commit atomically.
   //
-  // This single-transaction design is safe in Firefox only because the caller
-  // provides a fully-materialized ManifestDatabaseMutation in memory and every
-  // await inside this method is on an IDB request: Firefox keeps the transaction
-  // active across IDB request callbacks but auto-commits across awaits on
-  // non-IDB promises. The streaming full-rehydration path cannot share this design
+  // This single-transaction design is safe only because the caller provides a
+  // fully-materialized ManifestDatabaseMutation in memory and every await inside
+  // this method is on an IDB request: IndexedDB keeps the transaction active
+  // across IDB request callbacks but auto-commits across awaits on non-IDB
+  // promises. The streaming full-rehydration path cannot share this design
   // because its records arrive from an async pipeline (git reads, decryption,
   // channel handoffs); it uses chunked transactions instead. See ADR 0008.
   async applyIncrementalWithCas(options: IncrementalApplyOptions): Promise<IncrementalApplyResult> {

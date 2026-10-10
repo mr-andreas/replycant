@@ -1,5 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Runs mocked browser e2e in Chromium, the engine Electron ships with.
 export default defineConfig({
   testDir: ".",
   testMatch: "src/e2e/**/*.e2e.spec.ts",
@@ -7,6 +8,7 @@ export default defineConfig({
   timeout: 30_000,
   reporter: [["list"]],
   use: {
+    ...devices["Desktop Chrome"],
     headless: true,
     baseURL: "http://127.0.0.1:5173",
   },
@@ -16,20 +18,4 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
-  projects: [
-    {
-      name: "chrome",
-      use: {
-        ...devices["Desktop Chrome"],
-        browserName: "chromium",
-      },
-    },
-    {
-      name: "firefox",
-      use: {
-        ...devices["Desktop Firefox"],
-        browserName: "firefox",
-      },
-    },
-  ],
 });

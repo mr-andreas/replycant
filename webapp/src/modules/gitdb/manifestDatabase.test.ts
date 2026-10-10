@@ -915,7 +915,7 @@ describe("ManifestDatabase", () => {
     }
   });
 
-  describe("replaceCacheStreamed Firefox-safe chunking", () => {
+  describe("replaceCacheStreamed chunking", () => {
     // Captures every readwrite/readonly transaction opened against IDB so structural
     // tests can verify the chunked design rather than a single long-lived transaction.
     const installTransactionSpy = () => {
@@ -994,7 +994,7 @@ describe("ManifestDatabase", () => {
 
     // Reproduces the production failure shape from the streaming pipeline: each next()
     // resolves via a macrotask (setTimeout) rather than synchronously from a buffer,
-    // which is what triggered TransactionInactiveError under Firefox's strict IDB lifecycle.
+    // which is what makes IndexedDB auto-commit a transaction that spans the await.
     it("handles async iterables whose next() resolves on the macrotask queue", async () => {
       const CHUNK_SIZE = 2;
       const db = new ManifestDatabase([originalRegistration], [], TEST_DB, CHUNK_SIZE);

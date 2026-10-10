@@ -914,7 +914,7 @@ describe("SyncEngine", () => {
   // Pins the "single shared isomorphic-git cache" invariant: every git.*
   // helper that accepts a cache must receive the SAME object reference for
   // the engine's lifetime. Otherwise pack-index parses are duplicated and the
-  // Firefox+LightningFS rewind/blob-read performance regression returns.
+  // LightningFS rewind/blob-read performance regression returns.
   it("threads the same cache reference across expandOid, readTree, and readBlob calls", async () => {
     const snapshots: SyncSnapshot[] = [];
     const engine = createEngine(snapshots);

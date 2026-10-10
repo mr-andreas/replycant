@@ -4,7 +4,7 @@ const README_PORT = 5181;
 const README_URL = `http://127.0.0.1:${README_PORT}`;
 
 // Isolates README Electron capture from regular e2e so Docker integration setup
-// and multi-browser projects do not slow marketing screenshot regeneration.
+// does not slow marketing screenshot regeneration.
 export default defineConfig({
   testDir: ".",
   testMatch: "src/e2e/readme-screenshot.spec.ts",
