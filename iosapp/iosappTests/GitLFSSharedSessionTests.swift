@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import Testing
 import LibGit2
+@testable import iosapp
 
 // Serves in-memory LFS batch and download responses for one isolated host
 // so shared-session tests can exercise concurrent GitLFS use without a

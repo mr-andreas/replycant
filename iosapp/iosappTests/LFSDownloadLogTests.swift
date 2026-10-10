@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import Testing
 import LibGit2
+@testable import iosapp
 
 // Provides an LFS mock isolated to this suite so parallel suites cannot
 // overwrite its in-memory object map.
