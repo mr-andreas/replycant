@@ -7,14 +7,14 @@ import GitDB
 ///
 /// A device that has never paired knows nothing about the deployment: not the
 /// CA, not where headscale lives, and it holds no tailnet credential. It shows
-/// a QR carrying its own age public key plus a freshly minted pairing secret,
-/// then waits for gitd to publish a record it alone can open.
+/// a QR carrying a freshly minted pairing secret, then waits for gitd to
+/// publish a record that secret can open.
 ///
-/// Both halves of that record matter. The pairing secret proves the record was
-/// written in response to *this* QR, and the age key proves it was written for
-/// *this* device. Someone who learns the discovery slot still cannot plant a
-/// record, because the slot is derived from the secret but opening a record
-/// requires the secret itself.
+/// The pairing secret is the whole protection. It proves the record was
+/// written in response to *this* QR. Someone who learns the discovery slot
+/// still cannot plant a record, because the slot is derived from the secret
+/// but opening a record requires the secret itself. Nothing in the record is
+/// confidential, so there is no second layer.
 ///
 /// The wire format is fixed by the Go writer, so every constant here has to
 /// match `pkg/pairing/pairing.go` exactly. `PairingRecordCrossLanguageTests`
@@ -25,13 +25,9 @@ public enum PairingRecord {
         case malformedSecret
         case wrongSecretLength(Int)
         case wrongPairingSecret
-        case malformedEnvelope
-        case unsupportedEnvelopeVersion(Int)
-        case incompleteEnvelope
-        case wrongDevice
+        case malformedPayload
         case missingFields([String])
         case malformedHeadscaleURL
-        case caFingerprintMismatch
 
         public var errorDescription: String? {
             switch self {
@@ -43,20 +39,12 @@ public enum PairingRecord {
                 return "Pairing secret must be \(secretByteCount) bytes, got \(count)."
             case .wrongPairingSecret:
                 return "Pairing record did not open under this pairing secret."
-            case .malformedEnvelope:
-                return "Pairing envelope is not valid JSON."
-            case .unsupportedEnvelopeVersion(let version):
-                return "Unsupported pairing envelope version \(version) (expected \(envelopeVersion))."
-            case .incompleteEnvelope:
-                return "Pairing envelope is missing its wrapped key or payload."
-            case .wrongDevice:
-                return "Pairing record was written for a different device."
+            case .malformedPayload:
+                return "Pairing payload is not valid JSON."
             case .missingFields(let fields):
                 return "Pairing payload is missing \(fields.joined(separator: ", "))."
             case .malformedHeadscaleURL:
                 return "Headscale URL in the pairing record is not a valid URL."
-            case .caFingerprintMismatch:
-                return "The pairing record's CA does not match the fingerprint in the headscale hostname."
             }
         }
     }
@@ -68,17 +56,6 @@ public enum PairingRecord {
     /// 16 bytes of digest keeps slots collision-free in practice while fitting
     /// well inside the 63-octet DNS label limit, since the slot is a subdomain.
     private static let slotDigestByteCount = 16
-
-    /// Bumped when the envelope layout changes, so an old client reports an
-    /// unsupported version rather than a decryption failure that reads as
-    /// corruption.
-    private static let envelopeVersion = 1
-
-    /// Hex characters in a tunnel hostname's CA fingerprint label, truncated
-    /// from a SHA-256 of the CA's DER. Must match `caDNSLabelHexChars` in
-    /// `pkg/gitcrypt`, since the deployment registers the tunnel subdomain
-    /// under exactly this label.
-    private static let caLabelHexChars = 32
 
     // Domain separation. Deriving the slot and the wrap key with different info
     // strings is what makes it safe to publish the slot as a hostname while the
@@ -140,93 +117,33 @@ public enum PairingRecord {
 
     /// Opens a record fetched from the discovery API.
     ///
-    /// Both credentials are required by construction: the outer AEAD only opens
-    /// under the pairing secret, and the inner content key only unwraps with
-    /// the device's age key. Neither alone is enough to read a record.
-    public static func open(
-        sealed: Data,
-        secretEncoded: String,
-        ageIdentity: Curve25519.KeyAgreement.PrivateKey
-    ) throws -> Payload {
+    /// The pairing secret is the whole credential: the ciphertext only opens
+    /// under the secret from this device's QR.
+    public static func open(sealed: Data, secretEncoded: String) throws -> Payload {
         let secret = try parseSecret(secretEncoded)
         let slot = slot(for: secret)
         let aad = associatedData(slot: slot)
 
         let wrapKey = SymmetricKey(data: derive(secret: secret, info: wrapKeyInfo, byteCount: 32))
 
-        let inner: Data
+        let payloadJSON: Data
         do {
-            inner = try AES.GCM.open(
+            payloadJSON = try AES.GCM.open(
                 AES.GCM.SealedBox(combined: sealed),
                 using: wrapKey,
                 authenticating: aad
             )
         } catch {
-            // Almost always a record written for a different pairing attempt,
-            // which is worth distinguishing from the device-key mismatch below.
             throw PairingError.wrongPairingSecret
         }
 
-        let envelope: WireEnvelope
+        let wire: WirePayload
         do {
-            envelope = try JSONDecoder().decode(WireEnvelope.self, from: inner)
+            wire = try JSONDecoder().decode(WirePayload.self, from: payloadJSON)
         } catch {
-            throw PairingError.malformedEnvelope
+            throw PairingError.malformedPayload
         }
-        guard envelope.v == envelopeVersion else {
-            throw PairingError.unsupportedEnvelopeVersion(envelope.v)
-        }
-        guard let ageBase64 = envelope.age, let payloadBase64 = envelope.payload,
-              let ageBytes = Data(base64Encoded: ageBase64),
-              let payloadBytes = Data(base64Encoded: payloadBase64) else {
-            throw PairingError.incompleteEnvelope
-        }
-
-        let contentKey: Data
-        do {
-            contentKey = try AgeCrypto.decrypt(ciphertext: ageBytes, identity: ageIdentity)
-        } catch {
-            throw PairingError.wrongDevice
-        }
-
-        let payloadJSON = try AES.GCM.open(
-            AES.GCM.SealedBox(combined: payloadBytes),
-            using: SymmetricKey(data: contentKey),
-            authenticating: aad
-        )
-        return try toPayload(try JSONDecoder().decode(WirePayload.self, from: payloadJSON))
-    }
-
-    /// Confirms the delivered CA is the one the headscale hostname commits to.
-    ///
-    /// In tunnel mode the hostname's first label is a fingerprint of the CA,
-    /// giving the device a second check, independent of the record's
-    /// encryption, that it is about to trust the CA the hostname names.
-    /// Manual-exposure hostnames carry no fingerprint, so there is nothing to
-    /// compare and this passes.
-    public static func verifyCALabel(_ payload: Payload) throws {
-        let trimmed = payload.headscaleURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let host = URLComponents(string: trimmed)?.host, !host.isEmpty else {
-            throw PairingError.malformedHeadscaleURL
-        }
-        let label = (host.split(separator: ".").first.map(String.init) ?? "").lowercased()
-        guard label.count == caLabelHexChars,
-              label.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
-            return
-        }
-
-        let base64 = payload.caPEM
-            .replacingOccurrences(of: "-----BEGIN CERTIFICATE-----", with: "")
-            .replacingOccurrences(of: "-----END CERTIFICATE-----", with: "")
-            .filter { !$0.isWhitespace }
-        guard let der = Data(base64Encoded: base64) else {
-            throw PairingError.caFingerprintMismatch
-        }
-        let digest = SHA256.hash(data: der)
-            .map { String(format: "%02x", $0) }
-            .joined()
-            .prefix(caLabelHexChars)
-        guard digest == label else { throw PairingError.caFingerprintMismatch }
+        return try toPayload(wire)
     }
 
     // Binds a record to its slot so a valid record cannot be relocated to
@@ -244,12 +161,6 @@ public enum PairingRecord {
             outputByteCount: byteCount
         )
         return key.withUnsafeBytes { Data($0) }
-    }
-
-    private struct WireEnvelope: Decodable {
-        let v: Int
-        let age: String?
-        let payload: String?
     }
 
     private struct WirePayload: Decodable {

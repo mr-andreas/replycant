@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -20,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	"github.com/mr-andreas/replycant/pkg/pairing"
 	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
 	"github.com/mr-andreas/replycant/pkg/tailnetagent"
@@ -149,34 +147,7 @@ func TestCloneDoesNotPersistConfigWhenJoinFails(t *testing.T) {
 	assert.ErrorIs(t, loadErr, tailnetagent.ErrNotConfigured)
 }
 
-// A record whose CA does not match the fingerprint in the headscale hostname
-// must be refused before this machine joins that tailnet.
-func TestCloneRefusesMismatchedCALabel(t *testing.T) {
-	putRemoteHelperOnPath(t)
-	secret := mustSecret(t)
-	dir := filepath.Join(t.TempDir(), "repo")
-	server := pairingServer(t, dir, secret, pairing.Payload{
-		HeadscaleURL: "https://0123456789abcdef0123456789abcdef.example.com",
-		CAPEM:        testCAPEM(t),
-	})
-	err := runClone(CloneOptions{
-		Directory:    dir,
-		DiscoveryURL: "http://discovery.test",
-		NoLFS:        true,
-	}, cloneRuntime{
-		pollInterval: 10 * time.Millisecond,
-		httpClient:   dialClient(server),
-		newSecret:    func() (pairing.Secret, error) { return secret, nil },
-		join: func(context.Context, string, tailnetagent.StartConfig) error {
-			t.Fatal("refused CA must not join")
-			return nil
-		},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "does not match")
-}
-
-func pairingServer(t *testing.T, dir string, secret pairing.Secret, payload pairing.Payload) *httptest.Server {
+func pairingServer(t *testing.T, _ string, secret pairing.Secret, payload pairing.Payload) *httptest.Server {
 	t.Helper()
 	var hits atomic.Int32
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -184,23 +155,7 @@ func pairingServer(t *testing.T, dir string, secret pairing.Secret, payload pair
 			http.NotFound(w, nil)
 			return
 		}
-		identityPath := filepath.Join(dir, ".git", "replycant", "identity.json")
-		raw, err := os.ReadFile(identityPath)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		var identity gitcrypt.Identity
-		if err := json.Unmarshal(raw, &identity); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		ageKey, err := gitcrypt.DecodeAgePublicKey(identity.AgePublicKey)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		sealed, err := pairing.Seal(secret, ageKey, payload)
+		sealed, err := pairing.Seal(secret, payload)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -21,7 +21,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 
-	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	pairingblob "github.com/mr-andreas/replycant/pkg/pairing"
 )
 
@@ -112,16 +111,6 @@ func writeTestCA(t *testing.T) (path string, pemBytes []byte) {
 	return path, pemBytes
 }
 
-// A device identity, as the pairing QR would carry it.
-func newTestDevice(t *testing.T) gitcrypt.Identity {
-	t.Helper()
-	identity, _, _, err := gitcrypt.CreateIdentityWithMTLS("test-device")
-	if err != nil {
-		t.Fatalf("create device identity: %v", err)
-	}
-	return identity
-}
-
 func newTestPublisher(t *testing.T, fake *fakeDiscovery) (*Publisher, []byte) {
 	t.Helper()
 	caPath, caPEM := writeTestCA(t)
@@ -144,19 +133,18 @@ func newTestPublisher(t *testing.T, fake *fakeDiscovery) (*Publisher, []byte) {
 func TestPublishedRecordOpensOnTheDevice(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, caPEM := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
 	if err != nil {
 		t.Fatalf("generate secret: %v", err)
 	}
 
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err != nil {
+	if err := publisher.Publish(context.Background(), secret); err != nil {
 		t.Fatalf("publishing must succeed: %v", err)
 	}
 
 	_, _, _, raw := fake.snapshot()
-	payload, err := pairingblob.Open(secret, device.AgePrivateKeyBase64, raw)
+	payload, err := pairingblob.Open(secret, raw)
 	if err != nil {
 		t.Fatalf("the device must be able to open what gitd published: %v", err)
 	}
@@ -176,13 +164,12 @@ func TestPublishedRecordOpensOnTheDevice(t *testing.T) {
 func TestRecordIsPublishedToTheSecretsSlot(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, _ := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
 	if err != nil {
 		t.Fatalf("generate secret: %v", err)
 	}
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err != nil {
+	if err := publisher.Publish(context.Background(), secret); err != nil {
 		t.Fatalf("publishing must succeed: %v", err)
 	}
 
@@ -199,13 +186,12 @@ func TestRecordIsPublishedToTheSecretsSlot(t *testing.T) {
 func TestPublishedRecordIsOpaque(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, caPEM := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
 	if err != nil {
 		t.Fatalf("generate secret: %v", err)
 	}
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err != nil {
+	if err := publisher.Publish(context.Background(), secret); err != nil {
 		t.Fatalf("publishing must succeed: %v", err)
 	}
 
@@ -227,10 +213,9 @@ func TestDiscoveryFailureIsReported(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	fake.setStatus(http.StatusInternalServerError)
 	publisher, _ := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	secret, _ := pairingblob.NewSecret()
-	_, err := publisher.Publish(context.Background(), secret, device.AgePublicKey)
+	err := publisher.Publish(context.Background(), secret)
 	if err == nil {
 		t.Fatal("publishing must fail when the discovery API rejects the record")
 	}
@@ -239,35 +224,14 @@ func TestDiscoveryFailureIsReported(t *testing.T) {
 	}
 }
 
-// The device's age public key comes off a scanned QR code, so a garbled or
-// hostile value has to be rejected rather than producing a record nobody can
-// open.
-func TestMalformedDeviceKeyIsRejected(t *testing.T) {
-	fake := newFakeDiscovery(t)
-	publisher, _ := newTestPublisher(t, fake)
-
-	secret, _ := pairingblob.NewSecret()
-	for _, name := range []string{"", "not-an-age-key", "age1invalid"} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := publisher.Publish(context.Background(), secret, name); err == nil {
-				t.Fatal("a malformed device key must be rejected")
-			}
-		})
-	}
-	if puts, _, _, _ := fake.snapshot(); puts != 0 {
-		t.Errorf("nothing should be published for a malformed key, got %d writes", puts)
-	}
-}
-
 // The discovery API distinguishes records by content type, and a mismatch is
 // rejected there. Asserting it here keeps the failure local to this package.
 func TestRecordIsSentAsOpaqueBytes(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, _ := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	secret, _ := pairingblob.NewSecret()
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err != nil {
+	if err := publisher.Publish(context.Background(), secret); err != nil {
 		t.Fatalf("publishing must succeed: %v", err)
 	}
 	if _, _, contentType, _ := fake.snapshot(); contentType != "application/octet-stream" {
@@ -295,14 +259,13 @@ func TestCAIsReadAtPublishTime(t *testing.T) {
 		t.Fatalf("rotate CA: %v", err)
 	}
 
-	device := newTestDevice(t)
 	secret, _ := pairingblob.NewSecret()
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err != nil {
+	if err := publisher.Publish(context.Background(), secret); err != nil {
 		t.Fatalf("publishing must succeed: %v", err)
 	}
 
 	_, _, _, raw := fake.snapshot()
-	payload, err := pairingblob.Open(secret, device.AgePrivateKeyBase64, raw)
+	payload, err := pairingblob.Open(secret, raw)
 	if err != nil {
 		t.Fatalf("open published record: %v", err)
 	}
@@ -325,9 +288,8 @@ func TestMissingCAIsReported(t *testing.T) {
 		t.Fatalf("a missing file should not fail construction: %v", err)
 	}
 
-	device := newTestDevice(t)
 	secret, _ := pairingblob.NewSecret()
-	if _, err := publisher.Publish(context.Background(), secret, device.AgePublicKey); err == nil {
+	if err := publisher.Publish(context.Background(), secret); err == nil {
 		t.Fatal("publishing must fail when the CA cannot be read")
 	}
 }
@@ -348,6 +310,7 @@ func TestNewPublisherRejectsIncompleteConfig(t *testing.T) {
 	}{
 		{"no CA path", func(c *Config) { c.CACertPath = "" }},
 		{"no headscale URL", func(c *Config) { c.HeadscaleURL = "" }},
+		{"no discovery URL", func(c *Config) { c.DiscoveryURL = "" }},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			config := complete
@@ -364,19 +327,18 @@ func TestNewPublisherRejectsIncompleteConfig(t *testing.T) {
 func TestPublishFromScannedValues(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, _ := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	secret, err := pairingblob.NewSecret()
 	if err != nil {
 		t.Fatalf("generate secret: %v", err)
 	}
 
-	if _, err := publisher.PublishPairingRecord(context.Background(), secret.String(), device.AgePublicKey); err != nil {
+	if err := publisher.PublishPairingRecord(context.Background(), secret.String()); err != nil {
 		t.Fatalf("publishing from scanned values must succeed: %v", err)
 	}
 
 	_, _, _, raw := fake.snapshot()
-	payload, err := pairingblob.Open(secret, device.AgePrivateKeyBase64, raw)
+	payload, err := pairingblob.Open(secret, raw)
 	if err != nil {
 		t.Fatalf("the device must be able to open the record: %v", err)
 	}
@@ -390,11 +352,10 @@ func TestPublishFromScannedValues(t *testing.T) {
 func TestUnparseableScannedSecretIsRejected(t *testing.T) {
 	fake := newFakeDiscovery(t)
 	publisher, _ := newTestPublisher(t, fake)
-	device := newTestDevice(t)
 
 	for _, name := range []string{"", "!!!not base64!!!", "dG9vLXNob3J0"} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := publisher.PublishPairingRecord(context.Background(), name, device.AgePublicKey); err == nil {
+			if err := publisher.PublishPairingRecord(context.Background(), name); err == nil {
 				t.Fatal("an unusable secret must be rejected")
 			}
 		})
@@ -415,14 +376,12 @@ func TestConcurrentPublishesAreIndependent(t *testing.T) {
 	errs := make(chan error, devices)
 	for range devices {
 		go func() {
-			device := newTestDevice(t)
 			secret, err := pairingblob.NewSecret()
 			if err != nil {
 				errs <- err
 				return
 			}
-			_, publishErr := publisher.Publish(context.Background(), secret, device.AgePublicKey)
-			errs <- publishErr
+			errs <- publisher.Publish(context.Background(), secret)
 		}()
 	}
 	for range devices {

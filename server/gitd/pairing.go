@@ -13,24 +13,17 @@ import (
 // device it just scanned.
 const pairingPath = "/pair"
 
-// The sealed record is opaque bytes to everyone but the pairing device, and is
-// labelled as such so no intermediary tries to interpret it.
-const pairingRecordContentType = "application/octet-stream"
-
-// Caps the request body. The endpoint reads two short strings, so anything
+// Caps the request body. The endpoint reads one short string, so anything
 // larger is either a bug or an attempt to exhaust memory through an endpoint
 // that authenticated clients can reach.
 const maxPairingRequestBytes = 8 << 10
 
-// Produces the sealed record a pairing device needs, publishing it to the
-// discovery API when the deployment has one.
+// Publishes the sealed record a pairing device needs to the discovery API.
 //
 // An interface so gitd does not depend on the discovery client, which keeps
 // this package testable and lets a deployment swap the transport.
-// The record is returned in every case, because manual-exposure deployments
-// deliver it by displaying it rather than by publishing it.
 type PairingPublisher interface {
-	PublishPairingRecord(ctx context.Context, pairingSecret, deviceAgePublicKey string) ([]byte, error)
+	PublishPairingRecord(ctx context.Context, pairingSecret string) error
 }
 
 // What an authorizing device sends after scanning a new device's QR code.
@@ -39,13 +32,9 @@ type pairingRequest struct {
 	// determines the discovery slot and authenticates the record, so it is
 	// never logged.
 	PairingSecret string `json:"pairing_secret"`
-
-	// The pairing device's age recipient, also from the QR code. The record is
-	// encrypted to it so only that device can read the credential inside.
-	AgePublicKey string `json:"age_pubkey"`
 }
 
-// Produces the pairing record for a device being onboarded.
+// Publishes the pairing record for a device being onboarded.
 //
 // Authorization is inherited from the mTLS handshake: only a device already in
 // pubkeys/ reaches this handler, which is the same trust boundary that governs
@@ -53,11 +42,8 @@ type pairingRequest struct {
 // credential; the new device can only join once that push has landed, because
 // it mints its own tailnet key from hsproxy with its certificate.
 //
-// The sealed record is returned in the response body. It is safe to hand back
-// because it is encrypted to the pairing device's key and authenticated under
-// the pairing secret from its QR, so the caller cannot read it either. On
-// manual-exposure deployments this response is the only delivery channel: the
-// authorizing device renders it as a QR for the pairing device to scan.
+// The response is empty. The record lives on the discovery API, addressed by
+// the secret, and the caller already holds that secret from the QR.
 //
 // The handler deliberately holds the request open until the record is stored.
 // The pairing device polls its slot, so reporting success before the record
@@ -79,21 +65,19 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 
 	var request pairingRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxPairingRequestBytes)).Decode(&request); err != nil {
-		http.Error(w, "Pairing request must be JSON with pairing_secret and age_pubkey",
+		http.Error(w, "Pairing request must be JSON with pairing_secret",
 			http.StatusBadRequest)
 		return
 	}
 
 	secret := strings.TrimSpace(request.PairingSecret)
-	deviceKey := strings.TrimSpace(request.AgePublicKey)
-	if secret == "" || deviceKey == "" {
-		http.Error(w, "Pairing request must include both pairing_secret and age_pubkey",
+	if secret == "" {
+		http.Error(w, "Pairing request must include pairing_secret",
 			http.StatusBadRequest)
 		return
 	}
 
-	record, err := s.pairingPublisher.PublishPairingRecord(r.Context(), secret, deviceKey)
-	if err != nil {
+	if err := s.pairingPublisher.PublishPairingRecord(r.Context(), secret); err != nil {
 		// Logged but not returned: the detail names internal hosts that a
 		// client has no business learning.
 		log.Printf("Failed to publish pairing record: %v", err)
@@ -101,9 +85,5 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", pairingRecordContentType)
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(record); err != nil {
-		log.Printf("Failed to write pairing record response: %v", err)
-	}
+	w.WriteHeader(http.StatusNoContent)
 }

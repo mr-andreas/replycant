@@ -18,26 +18,21 @@ type recordingPublisher struct {
 	mu      sync.Mutex
 	calls   int
 	secrets []string
-	keys    []string
 	err     error
 }
 
-func (p *recordingPublisher) PublishPairingRecord(_ context.Context, secret, deviceAgePublicKey string) ([]byte, error) {
+func (p *recordingPublisher) PublishPairingRecord(_ context.Context, secret string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
 	p.secrets = append(p.secrets, secret)
-	p.keys = append(p.keys, deviceAgePublicKey)
-	if p.err != nil {
-		return nil, p.err
-	}
-	return []byte("sealed-record-bytes"), nil
+	return p.err
 }
 
-func (p *recordingPublisher) snapshot() (calls int, secrets, keys []string) {
+func (p *recordingPublisher) snapshot() (calls int, secrets []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.calls, append([]string(nil), p.secrets...), append([]string(nil), p.keys...)
+	return p.calls, append([]string(nil), p.secrets...)
 }
 
 // A well-formed pairing request from an already-trusted device.
@@ -55,12 +50,12 @@ func newPairingRequest(t *testing.T, body any) *http.Request {
 func validPairingBody() map[string]string {
 	return map[string]string{
 		"pairing_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQ",
-		"age_pubkey":     "age1exampleexampleexampleexampleexampleexampleexampleexamplexxxx",
 	}
 }
 
-// The happy path: an authorized device hands gitd the secret and key it scanned
-// off the new device's screen, and gitd publishes a record for it.
+// The happy path: an authorized device hands gitd the secret it scanned off
+// the new device's screen, and gitd publishes a record for it. The record
+// itself stays on the discovery API; the caller only learns that it landed.
 func TestPairingRequestPublishesARecord(t *testing.T) {
 	publisher := &recordingPublisher{}
 	server := &Server{pairingPublisher: publisher}
@@ -69,28 +64,20 @@ func TestPairingRequestPublishesARecord(t *testing.T) {
 	body := validPairingBody()
 	server.handlePairing(recorder, newPairingRequest(t, body))
 
-	if recorder.Code != http.StatusOK {
+	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("a valid pairing request must be accepted, got %d: %s",
 			recorder.Code, recorder.Body.String())
 	}
-	// Manual-exposure deployments have no discovery service, so this response
-	// body is the only way the record reaches the pairing device.
-	if recorder.Body.String() != "sealed-record-bytes" {
-		t.Errorf("the sealed record must be returned to the caller, got %q", recorder.Body.String())
-	}
-	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/octet-stream" {
-		t.Errorf("the record is opaque bytes, got content type %q", contentType)
+	if recorder.Body.Len() != 0 {
+		t.Errorf("the record must not be returned to the caller, got %q", recorder.Body.String())
 	}
 
-	calls, secrets, keys := publisher.snapshot()
+	calls, secrets := publisher.snapshot()
 	if calls != 1 {
 		t.Fatalf("expected one publish, got %d", calls)
 	}
 	if secrets[0] != body["pairing_secret"] {
 		t.Errorf("the scanned secret must reach the publisher, got %q", secrets[0])
-	}
-	if keys[0] != body["age_pubkey"] {
-		t.Errorf("the scanned device key must reach the publisher, got %q", keys[0])
 	}
 }
 
@@ -108,18 +95,15 @@ func TestPairingIsNotOfferedWithoutAPublisher(t *testing.T) {
 	}
 }
 
-// Both fields are required to produce a record anyone can open, so an
-// incomplete request is refused before a credential is minted for it.
+// The secret is what addresses and authenticates the record, so a request
+// without one is refused before anything is published.
 func TestIncompletePairingRequestsAreRejected(t *testing.T) {
 	for _, testCase := range []struct {
 		name string
 		body map[string]string
 	}{
-		{"no secret", map[string]string{"age_pubkey": "age1example"}},
-		{"no device key", map[string]string{"pairing_secret": "c2VjcmV0"}},
-		{"neither", map[string]string{}},
-		{"blank secret", map[string]string{"pairing_secret": "  ", "age_pubkey": "age1example"}},
-		{"blank device key", map[string]string{"pairing_secret": "c2VjcmV0", "age_pubkey": " "}},
+		{"no secret", map[string]string{}},
+		{"blank secret", map[string]string{"pairing_secret": "  "}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			publisher := &recordingPublisher{}
@@ -131,7 +115,7 @@ func TestIncompletePairingRequestsAreRejected(t *testing.T) {
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("an incomplete request must be refused, got %d", recorder.Code)
 			}
-			if calls, _, _ := publisher.snapshot(); calls != 0 {
+			if calls, _ := publisher.snapshot(); calls != 0 {
 				t.Errorf("nothing should be published for an invalid request, got %d publishes", calls)
 			}
 		})
@@ -150,7 +134,7 @@ func TestMalformedPairingBodyIsRejected(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("a malformed body must be refused, got %d", recorder.Code)
 	}
-	if calls, _, _ := publisher.snapshot(); calls != 0 {
+	if calls, _ := publisher.snapshot(); calls != 0 {
 		t.Errorf("nothing should be published, got %d publishes", calls)
 	}
 }
@@ -170,7 +154,7 @@ func TestOnlyPostCanPair(t *testing.T) {
 			if recorder.Code != http.StatusMethodNotAllowed {
 				t.Fatalf("%s must not pair, got %d", method, recorder.Code)
 			}
-			if calls, _, _ := publisher.snapshot(); calls != 0 {
+			if calls, _ := publisher.snapshot(); calls != 0 {
 				t.Errorf("nothing should be published, got %d publishes", calls)
 			}
 		})
@@ -221,7 +205,7 @@ func TestOversizedPairingBodyIsRejected(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("an oversized body must be refused, got %d", recorder.Code)
 	}
-	if calls, _, _ := publisher.snapshot(); calls != 0 {
+	if calls, _ := publisher.snapshot(); calls != 0 {
 		t.Errorf("nothing should be published, got %d publishes", calls)
 	}
 }

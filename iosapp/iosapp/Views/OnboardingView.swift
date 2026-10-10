@@ -513,11 +513,9 @@ struct OnboardingView: View {
         pairingWait?.cancel()
         pairingWait = Task {
             do {
-                let ageIdentity = try ClientIdentityManager.shared.agePrivateKey()
                 let payload = try await TailnetPairing.awaitAuthorization(
                     secretEncoded: secret.encoded,
-                    slot: secret.slot,
-                    ageIdentity: ageIdentity
+                    slot: secret.slot
                 )
                 if Task.isCancelled { return }
 

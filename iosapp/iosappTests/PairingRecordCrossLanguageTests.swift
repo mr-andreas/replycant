@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 @testable import GitDB
@@ -22,14 +21,9 @@ struct PairingRecordCrossLanguageTests {
         let secret: String
         let slot: String
         let otherSecret: String
-        let agePrivateKeyBase64: String
-        let caLabel: String
         let payload: WirePayload
         let sealedBase64: String
         let otherSecretSealedBase64: String
-        let foreignDeviceSealedBase64: String
-        let mismatchedCaSealedBase64: String
-        let manualModeSealedBase64: String
     }
 
     private static func fixture() throws -> Fixture {
@@ -43,11 +37,6 @@ struct PairingRecordCrossLanguageTests {
     // Locates the test bundle. Swift Testing has no bundle of its own, and
     // Bundle.module is unavailable in an Xcode test target.
     private final class BundleMarker {}
-
-    private static func ageIdentity(_ fixture: Fixture) throws -> Curve25519.KeyAgreement.PrivateKey {
-        let raw = try #require(Data(base64Encoded: fixture.agePrivateKeyBase64))
-        return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw)
-    }
 
     private static func sealed(_ base64: String) throws -> Data {
         try #require(Data(base64Encoded: base64))
@@ -63,14 +52,13 @@ struct PairingRecordCrossLanguageTests {
     }
 
     // The whole point: a record gitd sealed must open on this device with the
-    // pairing secret from its own QR and its own age key.
+    // pairing secret from its own QR.
     @Test func opensARecordSealedByGo() throws {
         let fixture = try Self.fixture()
 
         let payload = try PairingRecord.open(
             sealed: try Self.sealed(fixture.sealedBase64),
-            secretEncoded: fixture.secret,
-            ageIdentity: try Self.ageIdentity(fixture)
+            secretEncoded: fixture.secret
         )
 
         #expect(payload.headscaleURL == fixture.payload.headscale_url)
@@ -86,91 +74,9 @@ struct PairingRecordCrossLanguageTests {
         #expect(throws: PairingRecord.PairingError.wrongPairingSecret) {
             try PairingRecord.open(
                 sealed: try Self.sealed(fixture.otherSecretSealedBase64),
-                secretEncoded: fixture.secret,
-                ageIdentity: try Self.ageIdentity(fixture)
+                secretEncoded: fixture.secret
             )
         }
-    }
-
-    // The age layer is load bearing, not decoration: whoever scans the QR
-    // learns the pairing secret, and only the device's own key stops them from
-    // reading the credential gitd sealed for it.
-    @Test func rejectsARecordSealedForAnotherDevice() throws {
-        let fixture = try Self.fixture()
-
-        #expect(throws: PairingRecord.PairingError.wrongDevice) {
-            try PairingRecord.open(
-                sealed: try Self.sealed(fixture.foreignDeviceSealedBase64),
-                secretEncoded: fixture.secret,
-                ageIdentity: try Self.ageIdentity(fixture)
-            )
-        }
-    }
-
-    // In tunnel mode the hostname's first label fingerprints the CA, giving a
-    // check on the CA that does not depend on the record's encryption holding.
-    @Test func acceptsACAThatMatchesItsHostnameFingerprint() throws {
-        let fixture = try Self.fixture()
-        let payload = try PairingRecord.open(
-            sealed: try Self.sealed(fixture.sealedBase64),
-            secretEncoded: fixture.secret,
-            ageIdentity: try Self.ageIdentity(fixture)
-        )
-
-        #expect(payload.headscaleURL.contains(fixture.caLabel))
-        try PairingRecord.verifyCALabel(payload)
-    }
-
-    // Real hostnames carry a shard label between the CA fingerprint and the
-    // tunnel domain, which is what lets the relay fleet grow without renaming
-    // any deployment. That only works because the check reads the leftmost
-    // label, so a sharded hostname has to verify like an unsharded one.
-    @Test func acceptsAHostnameWithAShardLabelAfterTheFingerprint() throws {
-        let fixture = try Self.fixture()
-        let payload = try PairingRecord.open(
-            sealed: try Self.sealed(fixture.sealedBase64),
-            secretEncoded: fixture.secret,
-            ageIdentity: try Self.ageIdentity(fixture)
-        )
-
-        let host = try #require(URL(string: payload.headscaleURL)?.host)
-        var labels = host.split(separator: ".").map(String.init)
-        labels.insert("s52", at: 1)
-
-        try PairingRecord.verifyCALabel(
-            PairingRecord.Payload(
-                headscaleURL: "https://" + labels.joined(separator: "."),
-                caPEM: payload.caPEM
-            )
-        )
-    }
-
-    // A record naming one CA in its hostname and delivering another is the
-    // shape a substituted CA would take, so it must be refused.
-    @Test func rejectsACAThatContradictsItsHostnameFingerprint() throws {
-        let fixture = try Self.fixture()
-        let payload = try PairingRecord.open(
-            sealed: try Self.sealed(fixture.mismatchedCaSealedBase64),
-            secretEncoded: fixture.secret,
-            ageIdentity: try Self.ageIdentity(fixture)
-        )
-
-        #expect(throws: PairingRecord.PairingError.caFingerprintMismatch) {
-            try PairingRecord.verifyCALabel(payload)
-        }
-    }
-
-    // An operator who exposes headscale through their own DNS name commits to
-    // no CA in it, so there is nothing to compare and pairing must still work.
-    @Test func acceptsAManualExposureHostnameWithNoFingerprint() throws {
-        let fixture = try Self.fixture()
-        let payload = try PairingRecord.open(
-            sealed: try Self.sealed(fixture.manualModeSealedBase64),
-            secretEncoded: fixture.secret,
-            ageIdentity: try Self.ageIdentity(fixture)
-        )
-
-        try PairingRecord.verifyCALabel(payload)
     }
 
     // The QR is scanned by a camera, and a partial read has to be reported as

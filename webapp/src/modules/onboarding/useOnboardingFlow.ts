@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SETUP_CONFIG_STORAGE_KEY } from "../../lib/config";
 import { pollForPairingRecord } from "../../lib/discovery";
-import { createPairingSecret, openPairingRecord, PairingSecret, verifyCALabel } from "../../lib/pairing";
+import { createPairingSecret, openPairingRecord, PairingSecret } from "../../lib/pairing";
 import { ensureProxySession } from "../../lib/proxySession";
 import {
   clearTailnetConfigRecord,
@@ -318,11 +318,9 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
   //
   // Everything the device needs arrives in one sealed record: the CA to trust
   // and where headscale is. Until that record appears the device has no way to
-  // reach anything, which is why this is a poll rather than a request.
-  //
-  // The CA is checked against the fingerprint in the headscale hostname before
-  // it is installed. That check is independent of the record's encryption, so a
-  // deployment that opened correctly but names the wrong CA is still refused.
+  // reach anything, which is why this is a poll rather than a request. The
+  // record only opens under this device's pairing secret, which is what stops
+  // a planted record from naming someone else's CA.
   useEffect(() => {
     if (setupMode !== "tailnetPairing" || !identity || !pairingSecret) {
       return;
@@ -339,12 +337,7 @@ export const useOnboardingFlow = (): OnboardingFlowState => {
           discoveryBase,
           signal: controller.signal,
         });
-        const payload = await openPairingRecord(
-          pairingSecret.encoded,
-          identity.agePrivateKeyBase64,
-          sealed,
-        );
-        await verifyCALabel(payload);
+        const payload = await openPairingRecord(pairingSecret.encoded, sealed);
 
         const tailnetRecord = toTailnetConfigRecord(payload);
         // No key: the authorizing device committed this device's key before

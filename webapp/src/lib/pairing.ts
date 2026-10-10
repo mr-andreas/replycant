@@ -1,23 +1,23 @@
-import { decryptAesGcmCombined, decryptAgeEnvelope, importAes256Key } from "../modules/gitdb/encryption";
+import { decryptAesGcmCombined, importAes256Key } from "../modules/gitdb/encryption";
 
 // Client half of the discovery handshake, mirroring pkg/pairing in the Go tree.
 //
 // A device that has never paired knows nothing about the deployment: not the
-// CA, and not where headscale lives. It shows a QR carrying its own age public
-// key plus a freshly minted pairing secret, then waits for gitd to publish a
-// record it alone can open. The record carries no tailnet credential: the
-// authorizing device commits this device's key to pubkeys/ first, so the
-// sidecar mints its own key from hsproxy with the device certificate.
+// CA, and not where headscale lives. It shows a QR carrying a freshly minted
+// pairing secret, then waits for gitd to publish a record that secret can
+// open. The record carries no tailnet credential: the authorizing device
+// commits this device's key to pubkeys/ first, so the sidecar mints its own
+// key from hsproxy with the device certificate.
 //
-// Both halves of that record matter. The pairing secret proves the record was
-// written in response to *this* QR, and the age key proves the record was
-// written for *this* device. An attacker who learns the discovery slot still
-// cannot plant a record, because the slot is derived from the secret but
-// opening a record requires the secret itself.
+// The pairing secret is the whole protection. It proves the record was
+// written in response to *this* QR. An attacker who learns the discovery slot
+// still cannot plant a record, because the slot is derived from the secret
+// but opening a record requires the secret itself. Nothing in the record is
+// confidential, so there is no second layer.
 //
 // The wire format is fixed by the Go writer, so every constant here has to
-// match pkg/pairing/pairing.go exactly. pairing.crossLanguage.test.ts pins that
-// with a record produced by the Go implementation.
+// match pkg/pairing/pairing.go exactly. pairing.test.ts pins that with a
+// record produced by the Go implementation.
 
 // 32 bytes is far beyond brute force, which is affordable because the secret
 // only ever travels inside a QR code shown on the user's own screen.
@@ -26,16 +26,6 @@ const SECRET_BYTES = 32;
 // 16 bytes of digest keeps slots collision-free in practice while fitting well
 // inside the 63-octet DNS label limit, since the slot is used as a subdomain.
 const SLOT_DIGEST_BYTES = 16;
-
-// Bumped when the envelope layout changes, so an old client reports an
-// unsupported version rather than a decryption failure that reads as
-// corruption.
-const ENVELOPE_VERSION = 1;
-
-// Hex characters in a tunnel hostname's CA fingerprint label, truncated from a
-// SHA-256 of the CA's DER. Must match caDNSLabelHexChars in pkg/gitcrypt, since
-// the deployment registers the tunnel subdomain under exactly this label.
-const CA_LABEL_HEX_CHARS = 32;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -83,9 +73,6 @@ const decodeBase64Url = (encoded: string): Uint8Array => {
   const binary = atob(normalized);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 };
-
-const decodeBase64 = (encoded: string): Uint8Array =>
-  Uint8Array.from(atob(encoded.trim()), (character) => character.charCodeAt(0));
 
 // Expands the secret into an independent key for one purpose.
 const derive = async (secret: Uint8Array, info: Uint8Array, lengthBytes: number): Promise<Uint8Array> => {
@@ -144,12 +131,6 @@ const associatedData = (slot: string): Uint8Array => {
   return combined;
 };
 
-interface WireEnvelope {
-  v?: number;
-  age?: string;
-  payload?: string;
-}
-
 interface WirePayload {
   headscale_url?: string;
   ca_pem?: string;
@@ -180,12 +161,10 @@ const toPayload = (wire: WirePayload): PairingPayload => {
 
 // Opens a record fetched from the discovery API.
 //
-// Both credentials are required by construction: the outer AEAD only opens
-// under the pairing secret, and the inner content key only unwraps with the
-// device's age key. Neither alone is enough to read a record.
+// The pairing secret is the whole credential: the ciphertext only opens under
+// the secret from this device's QR.
 export const openPairingRecord = async (
   secretEncoded: string,
-  agePrivateKeyBase64: string,
   sealed: Uint8Array,
 ): Promise<PairingPayload> => {
   const secret = parsePairingSecret(secretEncoded);
@@ -194,69 +173,18 @@ export const openPairingRecord = async (
 
   const wrapKey = await importAes256Key(await derive(secret, WRAP_KEY_INFO, 32));
 
-  let inner: Uint8Array;
+  let payloadJson: Uint8Array;
   try {
-    inner = await decryptAesGcmCombined(sealed, wrapKey, aad);
+    payloadJson = await decryptAesGcmCombined(sealed, wrapKey, aad);
   } catch {
-    // Almost always a record written for a different pairing attempt, which is
-    // worth distinguishing from a device-key mismatch below.
     throw new Error("Pairing record did not open under this pairing secret.");
   }
 
-  let envelope: WireEnvelope;
+  let wire: WirePayload;
   try {
-    envelope = JSON.parse(textDecoder.decode(inner)) as WireEnvelope;
+    wire = JSON.parse(textDecoder.decode(payloadJson)) as WirePayload;
   } catch {
-    throw new Error("Pairing envelope is not valid JSON.");
+    throw new Error("Pairing payload is not valid JSON.");
   }
-  if (envelope.v !== ENVELOPE_VERSION) {
-    throw new Error(
-      `Unsupported pairing envelope version ${String(envelope.v)} (expected ${ENVELOPE_VERSION}).`,
-    );
-  }
-  if (!envelope.age || !envelope.payload) {
-    throw new Error("Pairing envelope is missing its wrapped key or payload.");
-  }
-
-  const contentKey = await decryptAgeEnvelope(decodeBase64(envelope.age), agePrivateKeyBase64);
-  const payloadJson = await decryptAesGcmCombined(
-    decodeBase64(envelope.payload),
-    await importAes256Key(contentKey),
-    aad,
-  );
-
-  return toPayload(JSON.parse(textDecoder.decode(payloadJson)) as WirePayload);
-};
-
-// Confirms the delivered CA is the one the headscale hostname commits to.
-//
-// In tunnel mode the hostname's first label is a fingerprint of the CA, giving
-// the device a second check, independent of the record's encryption, that it is
-// about to trust the CA the hostname names. Manual-exposure hostnames carry no
-// fingerprint, so there is nothing to compare and this passes.
-export const verifyCALabel = async (payload: PairingPayload): Promise<void> => {
-  let host: string;
-  try {
-    host = new URL(payload.headscaleUrl.trim()).hostname;
-  } catch {
-    throw new Error("Headscale URL in the pairing record is not a valid URL.");
-  }
-  const label = host.split(".")[0]?.toLowerCase() ?? "";
-  if (!new RegExp(`^[0-9a-f]{${CA_LABEL_HEX_CHARS}}$`).test(label)) {
-    return;
-  }
-
-  const der = decodeBase64(
-    payload.caPem
-      .replace(/-----BEGIN CERTIFICATE-----/g, "")
-      .replace(/-----END CERTIFICATE-----/g, "")
-      .replace(/\s+/g, ""),
-  );
-  const digest = toHex(toBytes(await crypto.subtle.digest("SHA-256", der as BufferSource))).slice(
-    0,
-    CA_LABEL_HEX_CHARS,
-  );
-  if (digest !== label) {
-    throw new Error("The pairing record's CA does not match the fingerprint in the headscale hostname.");
-  }
+  return toPayload(wire);
 };

@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 @testable import GitDB
@@ -25,10 +24,8 @@ struct TailnetPairingTests {
 
         let secret: String
         let slot: String
-        let agePrivateKeyBase64: String
         let payload: WirePayload
         let sealedBase64: String
-        let mismatchedCaSealedBase64: String
     }
 
     private static func fixture() throws -> Fixture {
@@ -37,11 +34,6 @@ struct TailnetPairingTests {
             "the generated pairing fixture must be bundled with the tests"
         )
         return try JSONDecoder().decode(Fixture.self, from: try Data(contentsOf: url))
-    }
-
-    private static func ageIdentity(_ fixture: Fixture) throws -> Curve25519.KeyAgreement.PrivateKey {
-        let raw = try #require(Data(base64Encoded: fixture.agePrivateKeyBase64))
-        return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw)
     }
 
     // Serves the discovery slot from memory.
@@ -111,9 +103,8 @@ struct TailnetPairingTests {
         override func stopLoading() {}
     }
 
-    // The happy path: the operator publishes, the device opens the record with
-    // its own age key, and the CA is checked against the fingerprint in the
-    // hostname before anything trusts it.
+    // The happy path: the operator publishes, and the device opens the record
+    // with the pairing secret from its own QR.
     @Test func returnsTheRecordTheOperatorPublished() async throws {
         let fixture = try Self.fixture()
         StubDiscovery.install(.init(
@@ -125,7 +116,6 @@ struct TailnetPairingTests {
         let payload = try await TailnetPairing.awaitAuthorization(
             secretEncoded: fixture.secret,
             slot: fixture.slot,
-            ageIdentity: try Self.ageIdentity(fixture),
             interval: 0,
             timeout: 5,
             session: StubDiscovery.session()
@@ -149,36 +139,12 @@ struct TailnetPairingTests {
         _ = try await TailnetPairing.awaitAuthorization(
             secretEncoded: fixture.secret,
             slot: fixture.slot,
-            ageIdentity: try Self.ageIdentity(fixture),
             interval: 0,
             timeout: 5,
             session: StubDiscovery.session()
         )
 
         #expect(StubDiscovery.hosts.count == 4)
-    }
-
-    // A record naming one CA in its hostname and delivering another is the
-    // shape a substituted CA takes. It has to be refused here, before the CA
-    // is installed, not after the first failed connection.
-    @Test func refusesARecordWhoseCAContradictsItsHostname() async throws {
-        let fixture = try Self.fixture()
-        StubDiscovery.install(.init(
-            notFoundResponses: 0,
-            body: try #require(Data(base64Encoded: fixture.mismatchedCaSealedBase64)),
-            status: 200
-        ))
-
-        await #expect(throws: PairingRecord.PairingError.caFingerprintMismatch) {
-            try await TailnetPairing.awaitAuthorization(
-                secretEncoded: fixture.secret,
-                slot: fixture.slot,
-                ageIdentity: try Self.ageIdentity(fixture),
-                interval: 0,
-                timeout: 5,
-                session: StubDiscovery.session()
-            )
-        }
     }
 
     // Anything other than 200 or 404 means the discovery service is not
@@ -191,7 +157,6 @@ struct TailnetPairingTests {
             try await TailnetPairing.awaitAuthorization(
                 secretEncoded: fixture.secret,
                 slot: fixture.slot,
-                ageIdentity: try Self.ageIdentity(fixture),
                 interval: 0,
                 timeout: 5,
                 session: StubDiscovery.session()
@@ -210,7 +175,6 @@ struct TailnetPairingTests {
             try await TailnetPairing.awaitAuthorization(
                 secretEncoded: fixture.secret,
                 slot: fixture.slot,
-                ageIdentity: try Self.ageIdentity(fixture),
                 interval: 0,
                 timeout: 0,
                 session: StubDiscovery.session()

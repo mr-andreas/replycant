@@ -147,18 +147,18 @@ sets up.
 2. **New device shows its QR**, including `pairing_secret`.
 3. **Paired device commits and pushes** the new public key, exactly as in normal
    device linking.
-4. **Paired device calls `POST /pair`** on gitd with the secret and age key from
-   the QR. Only a device already in `pubkeys/` can reach this endpoint, because
-   it is behind the same mTLS gate as everything else.
+4. **Paired device calls `POST /pair`** on gitd with the secret from the QR.
+   Only a device already in `pubkeys/` can reach this endpoint, because it is
+   behind the same mTLS gate as everything else. The age key from the QR was
+   committed in step 3, so later epoch wraps include this device.
 5. **gitd builds the record** from the CA and the control-plane hostname,
    seals it, and publishes it at the slot. The request is held open until the
    record is stored, so a downstream failure surfaces as an error rather than
    as an unexplained timeout on the other device.
 6. **New device polls its slot** until the record appears. The API deletes it on
    read, and it expires after 10 minutes regardless.
-7. **New device opens the record**, then checks that the CA inside it hashes to
-   the label in the headscale hostname. That is what stops the record from
-   naming a CA the deployment does not own.
+7. **New device opens the record** under the pairing secret. A record that
+   does not open was not written by the device that scanned this QR.
 8. **New device mints a tailnet key** through hsproxy, presenting its device
    certificate, which step 3 already put in `pubkeys/`. It joins the tailnet
    with that key and clones gitd at its MagicDNS name.
@@ -167,25 +167,14 @@ sets up.
 
 The new device holds no trust anchor: it does not know the CA, so nothing in the
 record can be checked against a signature it already trusts. Meanwhile the slot
-travels in the clear as a DNS hostname, and device public keys are published in
-`pubkeys/`.
+travels in the clear as a DNS hostname.
 
-Encrypting the record to the device's age key alone therefore gives
-confidentiality but no writer authentication — anyone could plant a record
-naming their own CA and headscale, and the device would enroll into their
-tailnet. The AEAD wrap under the pairing secret is what makes that impossible,
-because the secret only ever appeared on a screen in front of the user.
-
-Both layers bind the slot as associated data, so a valid record cannot be
+The record holds no secret, so confidentiality is not the property it needs.
+Authenticity is. The AEAD under the pairing secret is what stops anyone who
+can see the slot from planting a record and enrolling the device into their
+own tailnet, because the secret only ever appeared on a screen in front of
+the user. The slot is bound as associated data, so a valid record cannot be
 relocated to a different slot.
-
-### Manual-exposure deployments
-
-When the operator publishes headscale themselves, gitd has no discovery API to
-publish to. It still seals the record, and returns it
-to the authorizing device, which renders it as a second QR code for the new
-device to scan. The record and its protections are identical; only the delivery
-channel changes.
 
 ## Desktop Onboarding
 

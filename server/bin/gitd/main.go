@@ -66,10 +66,9 @@ type CLI struct {
 	// authenticating front door on both paths.
 	TailnetControlUpstream string `default:"hsproxy:8443" help:"hsproxy address that tailnet control-plane traffic is spliced to"`
 
-	// Cloud discovery. Without a discovery URL gitd runs in manual-exposure
-	// mode, where the authorizing device shows the sealed record as a QR and
-	// no record is ever published.
-	DiscoveryURL        string `help:"Base URL of the discovery API; the pairing slot is prepended as a subdomain. Leave unset for manual-exposure mode"`
+	// Where pairing records are published. A new device has no other way to
+	// learn the CA and the control-plane hostname.
+	DiscoveryURL        string `required:"" help:"Base URL of the discovery API; the pairing slot is prepended as a subdomain"`
 	HeadscaleAPIURL     string `name:"headscale-api-url" required:"" help:"Headscale API base URL used to mint keys for gitd and the first device, and to expire revoked device nodes (e.g. http://headscale:8080)"`
 	HeadscaleAPIKeyFile string `required:"" help:"File containing the headscale API key; read from a file so it stays out of logs and the process list" type:"path"`
 	HeadscaleUser       string `default:"replycant" help:"Headscale user that paired devices are registered under"`
@@ -78,7 +77,7 @@ type CLI struct {
 	// --headscale-api-url, which is the compose-internal address gitd itself
 	// uses: devices reach the control plane through the tunnel or a forwarded
 	// port, never over the compose network.
-	HeadscaleClientURL string `required:"" help:"Headscale URL advertised to pairing devices (the tunnel hostname, or your own DNS name in manual mode)"`
+	HeadscaleClientURL string `required:"" help:"Headscale URL advertised to pairing devices (the tunnel hostname)"`
 
 	// Records which keys were authorized the last time headscale was
 	// reconciled with pubkeys/, so a removal can be told apart from a
@@ -102,9 +101,8 @@ func (c *CLI) headscaleClient() (*tailnet.Client, error) {
 	})
 }
 
-// Builds the publisher that seals pairing records. DiscoveryURL may be empty,
-// which selects manual-exposure delivery: the record is returned to the
-// authorizing device instead of published.
+// Builds the publisher that seals pairing records and stores them on the
+// discovery API.
 func (c *CLI) buildPairingPublisher() (gitd.PairingPublisher, error) {
 	return pairing.NewPublisher(pairing.Config{
 		CACertPath:   c.CA,

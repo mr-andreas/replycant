@@ -2,21 +2,20 @@
 //
 // A device that has never paired knows nothing about the deployment: not the
 // CA, and not where headscale is. Both have to arrive in one record it can
-// both decrypt and trust, published by something that already holds the
-// deployment's CA. That is gitd, which is why this lives here rather than in
-// the hosted service. No tailnet credential travels in the record: once its
-// key is in pubkeys/, the device mints its own from hsproxy.
+// trust, published by something that already holds the deployment's CA. That
+// is gitd, which is why this lives here rather than in the hosted service.
+// No tailnet credential travels in the record: once its key is in pubkeys/,
+// the device mints its own from hsproxy.
 //
 // The record is published to a slot derived from the pairing secret shown in
 // the QR code, so the discovery API never learns who a record is for and the
-// slot never has to be transmitted. See pkg/pairing for the record format and
-// why it carries two layers of encryption.
+// slot never has to be transmitted. See pkg/pairing for why one AEAD under
+// that secret is the whole protection.
 package pairing
 
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +24,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	pairingblob "github.com/mr-andreas/replycant/pkg/pairing"
 )
 
@@ -54,16 +52,13 @@ type Config struct {
 	// newly paired devices without restarting gitd.
 	CACertPath string
 
-	// Where the device should point its tailnet client. Either the tunnel
-	// hostname or, in manual-exposure mode, the operator's own DNS name.
+	// Where the device should point its tailnet client: the tunnel hostname
+	// derived from the deployment CA.
 	HeadscaleURL string
 
 	// Base URL of the discovery API. The slot is prepended as a subdomain, so
-	// this is the parent domain rather than a full record URL.
-	//
-	// Optional. Left empty the record is only returned to the caller, which is
-	// manual-exposure mode: the authorizing device renders it as a QR for the
-	// pairing device to scan, and no hosted service is involved at all.
+	// this is the parent domain rather than a full record URL. Required: the
+	// discovery API is the only way a pairing record reaches a new device.
 	DiscoveryURL string
 
 	// Overridable for tests; production uses a client with publishTimeout.
@@ -85,28 +80,28 @@ type Publisher struct {
 // Validates the deployment description so a misconfiguration surfaces when
 // gitd starts instead of when a user is standing there with a QR code open.
 func NewPublisher(config Config) (*Publisher, error) {
-	missing := make([]string, 0, 2)
+	missing := make([]string, 0, 3)
 	if strings.TrimSpace(config.CACertPath) == "" {
 		missing = append(missing, "CA certificate path")
 	}
 	if strings.TrimSpace(config.HeadscaleURL) == "" {
 		missing = append(missing, "headscale URL")
 	}
+	if strings.TrimSpace(config.DiscoveryURL) == "" {
+		missing = append(missing, "discovery URL")
+	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("pairing publisher is missing %s", strings.Join(missing, ", "))
 	}
 
-	var discoveryScheme, discoveryHost string
-	if raw := strings.TrimSpace(config.DiscoveryURL); raw != "" {
-		parsed, err := url.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("discovery URL is not a valid URL: %w", err)
-		}
-		if parsed.Scheme == "" || parsed.Host == "" {
-			return nil, fmt.Errorf("discovery URL must include a scheme and host, got %q", config.DiscoveryURL)
-		}
-		discoveryScheme, discoveryHost = parsed.Scheme, parsed.Host
+	parsed, err := url.Parse(strings.TrimSpace(config.DiscoveryURL))
+	if err != nil {
+		return nil, fmt.Errorf("discovery URL is not a valid URL: %w", err)
 	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("discovery URL must include a scheme and host, got %q", config.DiscoveryURL)
+	}
+	discoveryScheme, discoveryHost := parsed.Scheme, parsed.Host
 
 	httpClient := config.HTTPClient
 	if httpClient == nil {
@@ -121,60 +116,40 @@ func NewPublisher(config Config) (*Publisher, error) {
 	}, nil
 }
 
-// Seals the deployment description, returning the record and, when cloud
-// discovery is configured, also storing it where the pairing device is polling.
+// Seals the deployment description and stores it where the pairing device is
+// polling.
 //
-// The record is returned in both modes because it is safe to hand back: it is
-// encrypted to the pairing device's key and authenticated under the pairing
-// secret, so only the device that produced the QR can open it. That is what
-// lets manual-exposure mode work with no hosted service at all, by having the
-// authorizing device display the record as a QR instead.
-func (p *Publisher) Publish(ctx context.Context, secret Secret, deviceAgePublicKey string) ([]byte, error) {
-	recipient, err := decodeDeviceKey(deviceAgePublicKey)
-	if err != nil {
-		return nil, err
-	}
-
+// Nothing is returned to the caller. The record opens under the pairing
+// secret, which the authorizing device already has from the QR, so handing
+// the bytes back would not tell it anything it could not already produce.
+func (p *Publisher) Publish(ctx context.Context, secret Secret) error {
 	caPEM, err := os.ReadFile(p.config.CACertPath)
 	if err != nil {
-		return nil, fmt.Errorf("read CA certificate for the pairing record: %w", err)
+		return fmt.Errorf("read CA certificate for the pairing record: %w", err)
 	}
 
-	sealed, err := pairingblob.Seal(secret, recipient, Payload{
+	sealed, err := pairingblob.Seal(secret, Payload{
 		HeadscaleURL: p.config.HeadscaleURL,
 		CAPEM:        string(caPEM),
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	if !p.discoveryConfigured() {
-		return sealed, nil
-	}
-	if err := p.store(ctx, secret.Slot(), sealed); err != nil {
-		return nil, err
-	}
-	return sealed, nil
+	return p.store(ctx, secret.Slot(), sealed)
 }
 
-// Reports whether records go to the hosted discovery API, as opposed to being
-// handed back for the authorizing device to display as a QR.
-func (p *Publisher) discoveryConfigured() bool {
-	return p.discoveryHost != ""
-}
-
-// Publishes a record from the values as they appear in a scanned QR code.
+// Publishes a record from the secret as it appears in a scanned QR code.
 //
 // This is the form gitd's HTTP endpoint receives, so parsing the secret happens
 // here rather than in the handler: a truncated or mistyped scan is a pairing
 // problem, and keeping the parse next to the publish means the handler does not
 // have to know the secret's encoding.
-func (p *Publisher) PublishPairingRecord(ctx context.Context, pairingSecret, deviceAgePublicKey string) ([]byte, error) {
+func (p *Publisher) PublishPairingRecord(ctx context.Context, pairingSecret string) error {
 	secret, err := pairingblob.ParseSecret(pairingSecret)
 	if err != nil {
-		return nil, fmt.Errorf("the scanned pairing secret is not usable: %w", err)
+		return fmt.Errorf("the scanned pairing secret is not usable: %w", err)
 	}
-	return p.Publish(ctx, secret, deviceAgePublicKey)
+	return p.Publish(ctx, secret)
 }
 
 // Writes the sealed record to its slot.
@@ -201,21 +176,4 @@ func (p *Publisher) store(ctx context.Context, slot string, record []byte) error
 			response.StatusCode, strings.TrimSpace(string(detail)))
 	}
 	return nil
-}
-
-// Converts the bech32 age recipient carried in the pairing QR into the raw key
-// the record format needs.
-//
-// This is the first thing done with a scanned value, so a garbled or hostile QR
-// is rejected before anything is sealed for it.
-func decodeDeviceKey(agePublicKey string) ([]byte, error) {
-	trimmed := strings.TrimSpace(agePublicKey)
-	if trimmed == "" {
-		return nil, errors.New("the pairing device's age public key is required")
-	}
-	recipient, err := gitcrypt.DecodeAgePublicKey(trimmed)
-	if err != nil {
-		return nil, fmt.Errorf("the pairing device's age public key is not a valid age recipient: %w", err)
-	}
-	return recipient, nil
 }

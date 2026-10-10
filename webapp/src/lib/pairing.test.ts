@@ -4,7 +4,6 @@ import {
   deriveSlot,
   openPairingRecord,
   parsePairingSecret,
-  verifyCALabel,
 } from "./pairing";
 import fixture from "./pairing.fixture.json";
 
@@ -63,7 +62,7 @@ describe("openPairingRecord", () => {
   // open in the browser. Every other test here is downstream of this one. It
   // carries no tailnet key: the paired device mints its own from hsproxy.
   it("opens a record written by the Go implementation", async () => {
-    const payload = await openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, sealed);
+    const payload = await openPairingRecord(fixture.secret, sealed);
 
     expect(payload).toEqual({
       headscaleUrl: fixture.payload.headscale_url,
@@ -76,33 +75,16 @@ describe("openPairingRecord", () => {
   // public hostname safe.
   it("refuses a record written under a different pairing secret", async () => {
     await expect(
-      openPairingRecord(
-        fixture.secret,
-        fixture.agePrivateKeyBase64,
-        decodeBase64(fixture.otherSecretSealedBase64),
-      ),
+      openPairingRecord(fixture.secret, decodeBase64(fixture.otherSecretSealedBase64)),
     ).rejects.toThrow(/did not open under this pairing secret/);
   });
 
   // Same check from the other direction: holding the record and the wrong
   // secret is equally useless.
   it("refuses to open a record with the wrong secret", async () => {
-    await expect(
-      openPairingRecord(fixture.otherSecret, fixture.agePrivateKeyBase64, sealed),
-    ).rejects.toThrow(/did not open under this pairing secret/);
-  });
-
-  // The age layer has to be load bearing rather than along for the ride: a
-  // record addressed to another device must not open here even though the
-  // pairing secret matches.
-  it("refuses a record sealed for a different device", async () => {
-    await expect(
-      openPairingRecord(
-        fixture.secret,
-        fixture.agePrivateKeyBase64,
-        decodeBase64(fixture.foreignDeviceSealedBase64),
-      ),
-    ).rejects.toThrow();
+    await expect(openPairingRecord(fixture.otherSecret, sealed)).rejects.toThrow(
+      /did not open under this pairing secret/,
+    );
   });
 
   // Flipping a byte must fail authentication rather than yield garbage, since
@@ -110,75 +92,14 @@ describe("openPairingRecord", () => {
   it("refuses a tampered record", async () => {
     const tampered = new Uint8Array(sealed);
     tampered[tampered.length - 1] ^= 0x01;
-    await expect(
-      openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, tampered),
-    ).rejects.toThrow();
+    await expect(openPairingRecord(fixture.secret, tampered)).rejects.toThrow();
   });
 
   it("refuses a truncated record", async () => {
-    await expect(
-      openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, sealed.slice(0, 8)),
-    ).rejects.toThrow();
+    await expect(openPairingRecord(fixture.secret, sealed.slice(0, 8))).rejects.toThrow();
   });
 
   it("refuses an empty record", async () => {
-    await expect(
-      openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, new Uint8Array()),
-    ).rejects.toThrow();
-  });
-});
-
-describe("verifyCALabel", () => {
-  // In tunnel mode the hostname commits to the CA, giving the device a check
-  // that is independent of the record's own encryption.
-  it("accepts a CA matching the fingerprint in the hostname", async () => {
-    const payload = await openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, sealed);
-    await expect(verifyCALabel(payload)).resolves.toBeUndefined();
-  });
-
-  // A record that opens correctly but names a CA the hostname does not commit
-  // to means the deployment is misconfigured or the record was substituted by
-  // someone who held the secret. Either way the CA must not be trusted.
-  it("rejects a CA that does not match the hostname", async () => {
-    const payload = await openPairingRecord(
-      fixture.secret,
-      fixture.agePrivateKeyBase64,
-      decodeBase64(fixture.mismatchedCaSealedBase64),
-    );
-    await expect(verifyCALabel(payload)).rejects.toThrow(/does not match the fingerprint/);
-  });
-
-  // Manual-exposure deployments use the operator's own DNS name, which carries
-  // no fingerprint, so there is nothing to compare and pairing must still work.
-  it("accepts an operator-chosen hostname with no fingerprint label", async () => {
-    const payload = await openPairingRecord(
-      fixture.secret,
-      fixture.agePrivateKeyBase64,
-      decodeBase64(fixture.manualModeSealedBase64),
-    );
-    expect(payload.headscaleUrl).toBe("https://headscale.example.com");
-    await expect(verifyCALabel(payload)).resolves.toBeUndefined();
-  });
-
-  // Real hostnames carry a shard label between the fingerprint and the tunnel
-  // domain, which is what lets the relay fleet grow without renaming any
-  // deployment. It only works because the check reads the leftmost label, so a
-  // sharded hostname has to verify exactly like an unsharded one.
-  it("accepts a hostname with a shard label after the fingerprint", async () => {
-    const payload = await openPairingRecord(fixture.secret, fixture.agePrivateKeyBase64, sealed);
-    const host = new URL(payload.headscaleUrl).hostname;
-    const [label, ...rest] = host.split(".");
-    await expect(
-      verifyCALabel({ ...payload, headscaleUrl: `https://${label}.s52.${rest.join(".")}` }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("rejects a headscale URL that is not a URL", async () => {
-    await expect(
-      verifyCALabel({
-        headscaleUrl: "not a url",
-        caPem: fixture.payload.ca_pem,
-      }),
-    ).rejects.toThrow(/not a valid URL/);
+    await expect(openPairingRecord(fixture.secret, new Uint8Array())).rejects.toThrow();
   });
 });

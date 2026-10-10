@@ -81,10 +81,9 @@ push. `gitd.replycant.internal` does not resolve until the node is up.
 ## Later devices and later launches
 
 A later device cannot open the CA page. It is not on the host, and gitd
-publishes nothing it could dial. An already-paired device fetches a sealed
-record for it. The record, the two encryption layers, and both delivery
-channels — the discovery API, or a second QR when the operator publishes
-headscale themselves — are in
+publishes nothing it could dial. An already-paired device asks gitd to
+publish a sealed record, and the new device collects it from the discovery
+API. The record and how it is authenticated are in
 [Tailnet Pairing](./device-onboarding.md#tailnet-pairing).
 
 The record carries no tailnet key. The authorizing device commits the new
@@ -278,7 +277,7 @@ like "we can read your traffic".
 | Service | Sees | Does not see |
 |---------|------|--------------|
 | Reverse TCP relay | Ciphertext, the SNI hostname, connection timing and volume, client IP addresses | Anything inside the TLS session. It holds no key for it: TLS terminates at `hsproxy` on the user's own host |
-| Discovery API | An opaque blob and the slot it was published under | The blob contents. The inner layer is encrypted to the device's age key and the outer layer is an AEAD under a key derived from the QR secret, neither of which the API ever receives |
+| Discovery API | An opaque blob and the slot it was published under | The blob contents. The record is an AEAD under a key derived from the QR secret, which the API never receives |
 | Tailscale DERP | WireGuard ciphertext, peer public keys, traffic volume | Packet contents |
 
 The relay's SNI hostname is `{ca-label}.s{NN}.tunnel.replycant.com`. The first
@@ -290,9 +289,8 @@ than by shared state. Growing the fleet repoints DNS for some slots and never
 changes a deployment's hostname, so no certificate needs reissuing and no
 stored `headscale_url` goes stale.
 
-Every reader of the CA fingerprint — the relay's SNI check, and both clients'
-pairing-record verification — takes only the leftmost label, so the shard
-component changes none of them.
+The relay's SNI check reads only the leftmost label, so the shard component
+changes nothing about which deployment a registration belongs to.
 
 ### DERP
 
@@ -325,15 +323,13 @@ gitd's address is not in the record. Every client already uses
 No tailnet key is in the record either. The device mints one through hsproxy
 once it has the CA and the control-plane hostname.
 
-The record is sealed in two layers, both binding the slot as associated data so
-a valid record cannot be relocated:
-
-1. **Inner:** encrypted to the device's age public key. A bystander who
-   photographed the QR code cannot read it.
-2. **Outer:** AEAD under a key derived from the pairing secret. Someone who
-   knows the slot and the device's public key — both of which are effectively
-   public — still cannot forge a record and enroll the device into their own
-   tailnet.
+The record is one AES-GCM ciphertext under a key derived from the pairing
+secret, with the slot bound as associated data so a valid record cannot be
+relocated. Nothing in the record is confidential. The ciphertext is what
+stops someone who knows the slot from planting a record and enrolling the
+device into their own tailnet: the secret only ever appeared on a screen in
+front of the user, and gitd receives it from the device that scanned that
+screen.
 
 Records have a 10-minute TTL and are deleted on read, so a stale record cannot
 be replayed.
@@ -381,17 +377,14 @@ hostname. The agent also pins the relay's own self-signed certificate,
 which names no shard hostname, so a substitute TLS endpoint cannot collect
 the registration.
 
-**The discovery API can satisfy the CA-label check on its own.** The
-operator can mint a CA, name that CA's own tunnel hostname inside a
-record, and the label check passes: the label is the hash of whichever CA
-the record contains. The check only rejects a record whose CA and hostname
-disagree. The device polls a slot the operator can see, and the operator
-can answer that poll. What they cannot produce is a record that opens.
-Writer authentication is the outer AEAD, under a key derived from the
-pairing secret. The new device generates that secret and shows it only in
-its QR code; the discovery API never receives it. Both layers also bind
-the slot as associated data, so a record sealed for one slot cannot be
-moved to another. Records expire after 10 minutes and are deleted on read.
+**The discovery API cannot write a record the device will open.** The
+device polls a slot the operator can see, and the operator can answer that
+poll. What they cannot produce is a record that opens. Writer
+authentication is the AEAD under a key derived from the pairing secret.
+The new device generates that secret and shows it only in its QR code; the
+discovery API never receives it. The slot is bound as associated data, so
+a record sealed for one slot cannot be moved to another. Records expire
+after 10 minutes and are deleted on read.
 
 **Reading a control session would still not make the operator gitd.** Git,
 LFS, and media present the device certificate to gitd and verify gitd's
@@ -406,36 +399,7 @@ only encryption on that path.
 SNI hostname, timing, volume, and client IP addresses on the relay; an
 opaque blob and its slot on the discovery API; WireGuard ciphertext, peer
 public keys, and volume on DERP when a direct path fails. They can also
-drop traffic. A deployment that does not want either hosted service in the
-join path publishes `hsproxy` itself. See
-[Choosing manual exposure](#choosing-manual-exposure).
-
-## Choosing manual exposure
-
-Cloud discovery is the default. Manual exposure trades a small amount of setup
-for not depending on the hosted relay or discovery API at all.
-
-Choose manual if you already run dynamic DNS or a static address, you want no
-third-party service in the join path, or you are running in an environment where
-outbound connections to the relay are blocked.
-
-To enable it, set `REPLYCANT_HEADSCALE_URL` to your own DNS name, bind
-`hsproxy` publicly with `REPLYCANT_HSPROXY_BIND=0.0.0.0`, forward that port on
-your router, and start the stack with `--scale tunnel-agent=0` so the hosted
-relay is not used. Clear `REPLYCANT_DISCOVERY_URL` to keep gitd from publishing
-records.
-
-The certificate `hsproxy` presents follows `REPLYCANT_HEADSCALE_URL`
-automatically, and pairing hands the record back to the authorizing device to
-display as a QR code instead of publishing it. Everything else — the tailnet,
-the mTLS gate, gitd being unpublished — is identical.
-
-| | Cloud discovery | Manual exposure |
-|---|---|---|
-| Router configuration | None | One forwarded port |
-| DNS | Provided | Yours to run |
-| Third parties in the join path | Relay and discovery API | None |
-| Pairing record delivery | Hosted discovery API | Second QR code |
+drop traffic.
 
 ## What closing the ports changed
 
@@ -443,10 +407,10 @@ gitd publishes no Git port. There is no plain-LAN URL to point a client at any
 more; every device joins the tailnet first. Same-LAN peers still connect
 directly, so LFS and video throughput are unaffected in the common case.
 
-Only two ports are published. `hsproxy` binds to `127.0.0.1` by default
-(`REPLYCANT_HSPROXY_BIND`). gitd's first-device CA page binds to every
-interface (`REPLYCANT_CA_BIND`), so a headless server can be bootstrapped
-from the LAN; it serves join keys only until the first push.
+Only two ports are published. `hsproxy` binds to `127.0.0.1`. gitd's
+first-device CA page binds to every interface (`REPLYCANT_CA_BIND`), so a
+headless server can be bootstrapped from the LAN; it serves join keys only
+until the first push.
 
 ## Related documentation
 

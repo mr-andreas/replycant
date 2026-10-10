@@ -27,6 +27,7 @@ func requiredArgs(t *testing.T) []string {
 		"--headscale-api-url", "http://headscale:8080",
 		"--headscale-api-key-file", filepath.Join(dir, "apikey"),
 		"--headscale-client-url", "https://example.tunnel.replycant.com",
+		"--discovery-url", "https://discovery.replycant.com",
 		"--tailnet-reconcile-marker", filepath.Join(dir, "reconciled-pubkeys.json"),
 	}
 }
@@ -77,6 +78,7 @@ func TestTailnetFlagsAreRequired(t *testing.T) {
 		"--headscale-api-url",
 		"--headscale-api-key-file",
 		"--headscale-client-url",
+		"--discovery-url",
 		"--tailnet-reconcile-marker",
 	} {
 		t.Run(flag, func(t *testing.T) {
@@ -120,16 +122,18 @@ func TestValidateRejectsAControlURLThatIsNotAURL(t *testing.T) {
 	}
 }
 
-// Manual-exposure mode is the default flags without a discovery URL. gitd
-// still seals pairing records; it just hands them back for the authorizing
-// device to display instead of publishing them.
-func TestManualExposureModeNeedsNoDiscoveryURL(t *testing.T) {
-	cli, err := parseCLI(t, requiredArgs(t)...)
-	if err != nil {
-		t.Fatalf("manual-exposure mode must be a valid configuration: %v", err)
+// Pairing records are published to the discovery API, so a deployment with
+// nowhere to publish them cannot onboard a second device.
+func TestDiscoveryURLIsRequired(t *testing.T) {
+	args := requiredArgs(t)
+	for i := range args {
+		if args[i] == "--discovery-url" {
+			args = append(args[:i], args[i+2:]...)
+			break
+		}
 	}
-	if cli.DiscoveryURL != "" {
-		t.Fatalf("DiscoveryURL default = %q, want empty", cli.DiscoveryURL)
+	if _, err := parseCLI(t, args...); err == nil {
+		t.Fatal("expected --discovery-url to be required")
 	}
 }
 
@@ -148,6 +152,7 @@ func cliWithAPIKey(t *testing.T) CLI {
 		HeadscaleAPIURL:        "http://headscale:8080",
 		HeadscaleAPIKeyFile:    apiKeyPath,
 		HeadscaleClientURL:     "https://abc.tunnel.replycant.com",
+		DiscoveryURL:           "https://discovery.replycant.com",
 		HeadscaleUser:          "replycant",
 		TailnetReconcileMarker: filepath.Join(dir, "reconciled-pubkeys.json"),
 	}
@@ -166,15 +171,18 @@ func TestReconcilerIsBuiltWithHeadscale(t *testing.T) {
 	}
 }
 
-// Both delivery modes need a publisher: it mints the credential and seals the
-// record, whether it is then published or displayed.
-func TestBothDeliveryModesBuildAPublisher(t *testing.T) {
-	for _, discoveryURL := range []string{"", "https://discovery.replycant.com"} {
-		cli := cliWithAPIKey(t)
-		cli.DiscoveryURL = discoveryURL
-		if _, err := cli.buildPairingPublisher(); err != nil {
-			t.Fatalf("discovery URL %q must build a publisher: %v", discoveryURL, err)
-		}
+// The publisher is what puts a pairing record where the new device is
+// polling, so it has to come up with the discovery API configured and fail
+// when that URL is missing.
+func TestPairingPublisherRequiresDiscoveryURL(t *testing.T) {
+	cli := cliWithAPIKey(t)
+	if _, err := cli.buildPairingPublisher(); err != nil {
+		t.Fatalf("a configured discovery URL must build a publisher: %v", err)
+	}
+
+	cli.DiscoveryURL = ""
+	if _, err := cli.buildPairingPublisher(); err == nil {
+		t.Fatal("a missing discovery URL must fail")
 	}
 }
 

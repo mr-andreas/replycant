@@ -361,7 +361,7 @@ describe("useOnboardingFlow", () => {
     gitdbMocks.mockCreateIdentity.mockResolvedValue({
       deviceName: "Test Device",
       publicKeySsh: "ssh",
-      agePublicKey: pairingFixture.agePublicKeyBase64,
+      agePublicKey: "age1test",
       deviceUUID: "uuid",
       wrap: "device",
     });
@@ -369,7 +369,7 @@ describe("useOnboardingFlow", () => {
       privateKeyPem: "key",
       certificatePem: "cert",
       deviceName: "Test Device",
-      agePrivateKeyBase64: pairingFixture.agePrivateKeyBase64,
+      agePrivateKeyBase64: "YWJj",
     });
 
     render(<OnboardingHarness />);
@@ -380,8 +380,8 @@ describe("useOnboardingFlow", () => {
     });
   };
 
-  // The secret has to be minted only once there is an age key to seal a record
-  // to, since the QR must carry both together for the record to be openable.
+  // The secret has to be minted with the identity, since the QR carries it
+  // next to the age key the authorizing device commits to pubkeys/.
   it("mints a pairing secret when identity creation finishes", async () => {
     installDesktopBridge();
     await startTailnetPairing();
@@ -418,9 +418,10 @@ describe("useOnboardingFlow", () => {
     expect(pairingMocks.mockPollForPairingRecord).toHaveBeenCalledWith(
       expect.objectContaining({ slot: pairingFixture.slot }),
     );
+    const headscale = new URL(pairingFixture.payload.headscale_url);
     expect(joinTailnet).toHaveBeenCalledWith(
       expect.objectContaining({
-        headscaleAddr: `${pairingFixture.caLabel}.tunnel.replycant.com:443`,
+        headscaleAddr: `${headscale.hostname}:443`,
         caPem: pairingFixture.payload.ca_pem,
       }),
     );
@@ -460,7 +461,7 @@ describe("useOnboardingFlow", () => {
       privateKeyPem: "key",
       certificatePem: "cert",
       deviceName: "Test Device",
-      agePrivateKeyBase64: pairingFixture.agePrivateKeyBase64,
+      agePrivateKeyBase64: "YWJj",
     });
 
     render(<OnboardingHarness />);
@@ -484,22 +485,6 @@ describe("useOnboardingFlow", () => {
     expect(screen.getByTestId("mode")).toHaveTextContent("tailnetPairing");
     expect(localStorage.getItem(TAILNET_CONFIG_STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem(SETUP_CONFIG_STORAGE_KEY)).toBeNull();
-  });
-
-  // A record that opens but names a CA the headscale hostname does not commit
-  // to must not be installed as a trust root, even though it decrypted cleanly.
-  it("refuses a pairing record whose CA does not match its hostname", async () => {
-    const { joinTailnet } = installDesktopBridge();
-    pairingMocks.mockPollForPairingRecord.mockResolvedValue(
-      decodeBase64(pairingFixture.mismatchedCaSealedBase64),
-    );
-
-    await startTailnetPairing();
-
-    await waitFor(() =>
-      expect(screen.getByTestId("error")).toHaveTextContent(/does not match the fingerprint/),
-    );
-    expect(joinTailnet).not.toHaveBeenCalled();
   });
 
   // A record planted by someone who guessed the slot cannot open, and the

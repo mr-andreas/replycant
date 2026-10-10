@@ -146,11 +146,8 @@ func runClone(options CloneOptions, runtime cloneRuntime) error {
 	if err != nil {
 		return err
 	}
-	payload, err := pairing.Open(secret, local.Identity.AgePrivateKeyBase64, sealed)
+	payload, err := pairing.Open(secret, sealed)
 	if err != nil {
-		return err
-	}
-	if err := payload.VerifyCALabel(); err != nil {
 		return err
 	}
 

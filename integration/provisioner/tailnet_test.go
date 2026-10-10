@@ -39,23 +39,24 @@ func TestPostPairingRecordSendsTheQRFields(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	err := postPairingRecord(context.Background(), server.Client(), server.URL+"/pair", "sekrit", "age1example")
+	err := postPairingRecord(context.Background(), server.Client(), server.URL+"/pair", "sekrit")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(body)
-	if !containsAll(got, `"pairing_secret":"sekrit"`, `"age_pubkey":"age1example"`) {
+	if !containsAll(got, `"pairing_secret":"sekrit"`) || containsAll(got, `"age_pubkey"`) {
 		t.Fatalf("body = %s", got)
 	}
 }
 
 // A host-side harness drives approval through the control service rather
 // than a loopback QR page, so it hands over only the secret. The age key
-// must still be the new device's, or the record would not open there.
+// still has to be the new device's: it is committed to pubkeys/ so later
+// epoch wraps include this device.
 func TestPairingSecretFlagPairsTheNewIdentity(t *testing.T) {
 	cfg := provisionerConfig{pairingSecret: "sekrit"}
 	payload, pairing, err := resolvePairing(context.Background(), cfg, "age1newdevice")

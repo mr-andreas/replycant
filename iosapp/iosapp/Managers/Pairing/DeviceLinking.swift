@@ -35,7 +35,6 @@ enum DeviceLinking {
 
         var authorize: @Sendable (
             _ pairingSecret: String,
-            _ agePublicKey: String,
             _ onProgress: @Sendable (String) -> Void
         ) async throws -> Void
     }
@@ -65,11 +64,7 @@ enum DeviceLinking {
             )
         }.value
 
-        try await operations.authorize(
-            pairingSecret,
-            agePubkey,
-            onProgress
-        )
+        try await operations.authorize(pairingSecret, onProgress)
     }
 
     /// Adds both identity keys and re-wraps KEK epochs so the new device
@@ -126,11 +121,9 @@ enum DeviceLinking {
     /// Relays the scanned secret to gitd so the waiting device can join.
     ///
     /// The waiting device cannot reach gitd yet. This device already has an
-    /// authenticated path, so its job is to hand gitd the secret and age
-    /// recipient from the QR.
+    /// authenticated path, so its job is to hand gitd the secret from the QR.
     static func authorizeTailnetPairing(
         pairingSecret: String,
-        agePublicKey: String,
         onProgress: @Sendable (String) -> Void
     ) async throws {
         onProgress("Authorizing on your library's network...")
@@ -140,7 +133,6 @@ enum DeviceLinking {
         }
         try await PairingAuthorization.publish(
             pairingSecret: pairingSecret,
-            agePublicKey: agePublicKey,
             serverURL: serverURL,
             session: try await PairingAuthorization.session()
         )
@@ -191,10 +183,9 @@ extension DeviceLinking.Operations {
                     onProgress: onProgress
                 )
             },
-            authorize: { pairingSecret, agePublicKey, onProgress in
+            authorize: { pairingSecret, onProgress in
                 try await DeviceLinking.authorizeTailnetPairing(
                     pairingSecret: pairingSecret,
-                    agePublicKey: agePublicKey,
                     onProgress: onProgress
                 )
             }

@@ -92,12 +92,11 @@ struct PairingAuthorizationTests {
     // The field names are gitd's contract, and the path is where gitd serves
     // pairing. A rename on either side would show up only as the other device
     // never being authorized.
-    @Test func postsTheSecretAndRecipientToTheServersPairEndpoint() async throws {
-        StubServer.install(status: 200)
+    @Test func postsTheSecretToTheServersPairEndpoint() async throws {
+        StubServer.install(status: 204, body: Data())
 
-        _ = try await PairingAuthorization.publish(
+        try await PairingAuthorization.publish(
             pairingSecret: "AAAA-secret",
-            agePublicKey: "age1example",
             serverURL: "https://gitd.example.com:8443",
             session: StubServer.session()
         )
@@ -111,7 +110,7 @@ struct PairingAuthorizationTests {
             try JSONSerialization.jsonObject(with: rawBody) as? [String: String]
         )
         #expect(body["pairing_secret"] == "AAAA-secret")
-        #expect(body["age_pubkey"] == "age1example")
+        #expect(body["age_pubkey"] == nil)
     }
 
     // The stored URL uses the mtls scheme so libgit2 routes through the custom
@@ -120,9 +119,8 @@ struct PairingAuthorizationTests {
     @Test func dialsTheServerOverPlainHTTPS() async throws {
         StubServer.install(status: 200)
 
-        _ = try await PairingAuthorization.publish(
+        try await PairingAuthorization.publish(
             pairingSecret: "secret",
-            agePublicKey: "age1example",
             serverURL: "mtls+https://gitd.example.com:8443",
             session: StubServer.session()
         )
@@ -139,34 +137,16 @@ struct PairingAuthorizationTests {
         await #expect(throws: PairingAuthorization.AuthorizationError.publishFailed(502)) {
             try await PairingAuthorization.publish(
                 pairingSecret: "secret",
-                agePublicKey: "age1example",
                 serverURL: "https://gitd.example.com:8443",
                 session: StubServer.session()
             )
         }
     }
 
-    // Manual-exposure deployments publish nothing and deliver the record in
-    // this response instead, so the bytes have to be handed back rather than
-    // discarded.
-    @Test func returnsTheSealedRecordTheServerProduced() async throws {
-        StubServer.install(status: 200, body: Data([0x01, 0x02, 0x03]))
-
-        let record = try await PairingAuthorization.publish(
-            pairingSecret: "secret",
-            agePublicKey: "age1example",
-            serverURL: "https://gitd.example.com:8443",
-            session: StubServer.session()
-        )
-
-        #expect(record == Data([0x01, 0x02, 0x03]))
-    }
-
     @Test func refusesAServerURLItCannotBuildARequestFrom() async {
         await #expect(throws: PairingAuthorization.AuthorizationError.invalidServerURL) {
             try await PairingAuthorization.publish(
                 pairingSecret: "secret",
-                agePublicKey: "age1example",
                 serverURL: "   ",
                 session: StubServer.session()
             )

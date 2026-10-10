@@ -76,8 +76,7 @@ type TailnetRoute struct {
 
 // How the shim reaches the deployment's control plane.
 type Config struct {
-	// host:port of the control plane. The tunnel hostname in cloud mode, or
-	// the operator's own published address in manual-exposure mode.
+	// host:port of the control plane, the tunnel hostname a device dials.
 	UpstreamAddr string
 
 	// Name sent as SNI and verified against the presented certificate.

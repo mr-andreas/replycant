@@ -1,30 +1,26 @@
 // Package pairing implements the sealed record a device fetches from the
 // hosted discovery API to learn how to reach its own headscale.
 //
-// The problem this solves: a device that has never been paired has no trust
-// anchor. It does not know the CA, so nothing in the record can be verified
-// with a signature it already trusts. Meanwhile the discovery slot travels in
-// the clear as a DNS hostname, and device public keys are published in the
-// repository's pubkeys/ directory, so neither the slot nor the device key is a
-// secret. Encrypting to the device's public key therefore gives confidentiality
-// but no writer authentication: anyone could plant a record naming their own CA
-// and headscale, and the device would enroll into the attacker's tailnet.
+// The record holds the deployment CA and the control-plane URL. Neither is a
+// secret: the device is about to pin that CA, and the URL is a hostname
+// derived from it. What the record needs is authenticity. A device that has
+// never paired holds no trust anchor, the discovery slot travels in the clear
+// as a DNS hostname, and anyone who can write to the discovery API could
+// otherwise plant a record naming their own CA and enroll the device into
+// their tailnet.
 //
 // The pairing secret closes that gap. It is generated fresh by the pairing
 // device, shown only in the QR code, and so is only known to whoever was
-// physically in front of the screen. Two values are derived from it, with
-// domain separation so that publishing one does not expose the other:
+// physically in front of the screen and to gitd, which receives it from the
+// already-paired device that scanned the QR. Two values are derived from it,
+// with domain separation so that publishing one does not expose the other:
 //
 //   - the slot, which addresses the record and is unlinkable to any long-lived
 //     identity because it rotates per attempt
 //   - the wrap key, which authenticates the record
 //
-// Records carry two layers. The inner layer is encrypted to the device's age
-// public key, so a bystander who photographed the QR still cannot read the
-// contents. The outer layer is an AEAD under the wrap key, so a party who knows
-// the slot and the device key still cannot forge a record. Both layers bind the
-// slot as associated data, so a valid record cannot be relocated to another
-// slot.
+// The record is one AES-GCM ciphertext under the wrap key. The slot is bound
+// as associated data, so a valid record cannot be relocated to another slot.
 package pairing
 
 import (
@@ -36,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
@@ -52,10 +47,6 @@ const (
 	// collision-free in practice while fitting well inside the 63-octet DNS
 	// label limit.
 	slotHexChars = 32
-
-	// Envelope version, so a future format change is a clear error on old
-	// clients rather than a decryption failure that looks like corruption.
-	envelopeVersion = 1
 )
 
 // Domain-separation labels. Deriving the slot and the wrap key with different
@@ -145,7 +136,9 @@ func (s Secret) derive(info []byte, length int) []byte {
 // No credential is here either. The authorizing device commits the new
 // device's key to pubkeys/ before publishing the record, so the new device
 // mints its own single-use tailnet key from hsproxy with its certificate, the
-// same way it does whenever headscale forgets it later.
+// same way it does whenever headscale forgets it later. The record is
+// authenticated under the pairing secret rather than encrypted to that key:
+// nothing in it is confidential.
 type Payload struct {
 	HeadscaleURL string `json:"headscale_url"`
 	CAPEM        string `json:"ca_pem"`
@@ -168,71 +161,15 @@ func (p Payload) validate() error {
 	return nil
 }
 
-// Confirms the delivered CA is the one the headscale hostname commits to.
+// Builds the record for a device, addressed and authenticated by the secret.
 //
-// In tunnel mode the hostname's first label is a fingerprint of the CA, which
-// gives the device a second, independent check that the record it just opened
-// names the CA it is about to trust. Manual-mode hostnames carry no
-// fingerprint, so there is nothing to compare and the check passes.
-func (p Payload) VerifyCALabel() error {
-	parsed, err := url.Parse(strings.TrimSpace(p.HeadscaleURL))
-	if err != nil {
-		return fmt.Errorf("headscale URL is not a valid URL: %w", err)
-	}
-	hostname := parsed.Hostname()
-	if hostname == "" {
-		return fmt.Errorf("headscale URL has no hostname: %q", p.HeadscaleURL)
-	}
-
-	firstLabel := hostname
-	if index := strings.Index(hostname, "."); index >= 0 {
-		firstLabel = hostname[:index]
-	}
-	if !isCALabelShaped(firstLabel) {
-		// Manual exposure: the operator's own DNS name commits to nothing.
-		return nil
-	}
-
-	expected, err := gitcrypt.CADNSLabel(p.CAPEM)
-	if err != nil {
-		return fmt.Errorf("compute CA label: %w", err)
-	}
-	if !strings.EqualFold(expected, firstLabel) {
-		return fmt.Errorf("delivered CA does not match the headscale hostname: expected label %q, got %q",
-			expected, firstLabel)
-	}
-	return nil
-}
-
-// Reports whether a hostname label has the shape of a CA fingerprint, which is
-// how tunnel hostnames are told apart from operator-chosen ones.
-func isCALabelShaped(label string) bool {
-	if len(label) != slotHexChars {
-		return false
-	}
-	_, err := hex.DecodeString(label)
-	return err == nil
-}
-
-// The stored record, before the outer authentication layer is applied. Kept as
-// JSON so a stored record stays inspectable during development and so the
-// version is readable without a key.
-type envelope struct {
-	Version    int    `json:"v"`
-	AgeWrapped string `json:"age"`
-	Payload    string `json:"payload"`
-}
-
-// Builds the record for a device, addressed by the secret's slot.
-//
-// deviceAgePublicKey is the raw 32-byte X25519 key from the device's identity,
-// which is what the pairing QR carries as age_pubkey.
-func Seal(secret Secret, deviceAgePublicKey []byte, payload Payload) ([]byte, error) {
+// One ciphertext is enough. The payload names a CA and a URL derived from
+// that CA, so there is nothing confidential to hide from someone who already
+// holds the secret, and the secret is what stops anyone else from writing a
+// record this device will open.
+func Seal(secret Secret, payload Payload) ([]byte, error) {
 	if err := payload.validate(); err != nil {
 		return nil, err
-	}
-	if len(deviceAgePublicKey) != 32 {
-		return nil, fmt.Errorf("device age public key must be 32 bytes, got %d", len(deviceAgePublicKey))
 	}
 
 	payloadJSON, err := json.Marshal(payload)
@@ -240,82 +177,23 @@ func Seal(secret Secret, deviceAgePublicKey []byte, payload Payload) ([]byte, er
 		return nil, fmt.Errorf("encode pairing payload: %w", err)
 	}
 
-	// A fresh content key per record, wrapped to the device. This keeps the
-	// age envelope doing the one job it is already trusted with elsewhere in
-	// the codebase: protecting a 32-byte key.
-	contentKey := make([]byte, 32)
-	if _, err := rand.Read(contentKey); err != nil {
-		return nil, fmt.Errorf("generate content key: %w", err)
-	}
-
-	ageWrapped, err := gitcrypt.WrapKEKForAge(contentKey, deviceAgePublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("wrap content key for device: %w", err)
-	}
-
-	slotAAD := associatedData(secret)
-	sealedPayload, err := gitcrypt.EncryptAesGcmCombined(contentKey, payloadJSON, slotAAD)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt pairing payload: %w", err)
-	}
-
-	inner, err := json.Marshal(envelope{
-		Version:    envelopeVersion,
-		AgeWrapped: base64.StdEncoding.EncodeToString(ageWrapped),
-		Payload:    base64.StdEncoding.EncodeToString(sealedPayload),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode pairing envelope: %w", err)
-	}
-
 	wrapKey := secret.wrapKey()
-	sealed, err := gitcrypt.EncryptAesGcmCombined(wrapKey[:], inner, slotAAD)
+	sealed, err := gitcrypt.EncryptAesGcmCombined(wrapKey[:], payloadJSON, associatedData(secret))
 	if err != nil {
-		return nil, fmt.Errorf("seal pairing envelope: %w", err)
+		return nil, fmt.Errorf("seal pairing record: %w", err)
 	}
 	return sealed, nil
 }
 
 // Opens a record fetched from the discovery API.
 //
-// Both the pairing secret and the device's age private key are required: the
-// secret proves the record came from whoever scanned the QR, and the age key
-// proves this is the device the record was written for.
-func Open(secret Secret, deviceAgePrivateKeyBase64 string, sealed []byte) (Payload, error) {
+// The pairing secret is the whole credential: it proves the record was
+// written by whoever scanned this device's QR.
+func Open(secret Secret, sealed []byte) (Payload, error) {
 	wrapKey := secret.wrapKey()
-	slotAAD := associatedData(secret)
-
-	inner, err := gitcrypt.DecryptAesGcmCombined(wrapKey[:], sealed, slotAAD)
+	payloadJSON, err := gitcrypt.DecryptAesGcmCombined(wrapKey[:], sealed, associatedData(secret))
 	if err != nil {
 		return Payload{}, fmt.Errorf("pairing record did not open under this pairing secret: %w", err)
-	}
-
-	var parsed envelope
-	if err := json.Unmarshal(inner, &parsed); err != nil {
-		return Payload{}, fmt.Errorf("decode pairing envelope: %w", err)
-	}
-	if parsed.Version != envelopeVersion {
-		return Payload{}, fmt.Errorf("unsupported pairing envelope version %d (expected %d)",
-			parsed.Version, envelopeVersion)
-	}
-
-	ageWrapped, err := base64.StdEncoding.DecodeString(parsed.AgeWrapped)
-	if err != nil {
-		return Payload{}, fmt.Errorf("decode wrapped content key: %w", err)
-	}
-	sealedPayload, err := base64.StdEncoding.DecodeString(parsed.Payload)
-	if err != nil {
-		return Payload{}, fmt.Errorf("decode sealed payload: %w", err)
-	}
-
-	contentKey, err := gitcrypt.UnwrapKEKFromAgeEnvelope(ageWrapped, deviceAgePrivateKeyBase64)
-	if err != nil {
-		return Payload{}, fmt.Errorf("unwrap content key with the device age key: %w", err)
-	}
-
-	payloadJSON, err := gitcrypt.DecryptAesGcmCombined(contentKey, sealedPayload, slotAAD)
-	if err != nil {
-		return Payload{}, fmt.Errorf("decrypt pairing payload: %w", err)
 	}
 
 	var payload Payload

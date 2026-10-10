@@ -19,7 +19,6 @@ services:
     image: alpine/openssl:3.5.4
     environment:
       - REPLYCANT_TUNNEL_DOMAIN=${REPLYCANT_TUNNEL_DOMAIN:-tunnel.replycant.com}
-      - REPLYCANT_HEADSCALE_URL
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/:/data/
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet
@@ -74,15 +73,8 @@ services:
         # pin it: must match tailnetaddr.GitdHost.
         GITD_TAILNET_NAME="gitd.replycant.internal"
 
-        # Manual mode wins when the operator published headscale themselves,
-        # because then the certificate has to match their own DNS name.
-        if [ -n "$${REPLYCANT_HEADSCALE_URL}" ]; then
-          HEADSCALE_HOST=$$(echo "$${REPLYCANT_HEADSCALE_URL}" | sed -e 's#^[a-z]*://##' -e 's#[:/].*$$##')
-          HEADSCALE_URL="$${REPLYCANT_HEADSCALE_URL}"
-        else
-          HEADSCALE_HOST="$${CA_LABEL}.$${CA_SHARD}.$${REPLYCANT_TUNNEL_DOMAIN}"
-          HEADSCALE_URL="https://$${HEADSCALE_HOST}"
-        fi
+        HEADSCALE_HOST="$${CA_LABEL}.$${CA_SHARD}.$${REPLYCANT_TUNNEL_DOMAIN}"
+        HEADSCALE_URL="https://$${HEADSCALE_HOST}"
 
         # Where the tunnel agent registers. Derived rather than configured so
         # an operator never has to know which shard their CA landed in; the
@@ -281,12 +273,9 @@ services:
         fi
         echo "headscale initialisation complete"
 
-  # Authenticating front door for headscale. This is the only service intended
-  # to be reachable from outside, either through the reverse tunnel or through a
-  # manually forwarded router port.
-  #
-  # REPLYCANT_HSPROXY_BIND defaults to loopback so a default `docker compose up`
-  # exposes nothing. Manual mode sets it to 0.0.0.0.
+  # Authenticating front door for headscale. Reachable from outside only
+  # through the reverse tunnel. The host port stays on loopback so a default
+  # `docker compose up` exposes nothing.
   hsproxy:
     image: ${REPLYCANT_GITD_IMAGE:-gitd:local}
     build:
@@ -303,7 +292,7 @@ services:
       headscale-init:
         condition: service_completed_successfully
     ports:
-      - "${REPLYCANT_HSPROXY_BIND:-127.0.0.1}:${REPLYCANT_HSPROXY_PORT:-8443}:8443"
+      - "127.0.0.1:${REPLYCANT_HSPROXY_PORT:-8443}:8443"
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo:ro
       # The directory rather than the key file, so a key headscale-init
@@ -332,11 +321,8 @@ services:
     restart: unless-stopped
 
   # Holds the outbound connection that publishes headscale through the hosted
-  # relay, so the user never has to forward a router port.
-  #
-  # Starts by default: a first device has no other way to reach the control
-  # plane. Manual-exposure deployments that publish hsproxy themselves can
-  # omit it with `docker compose up --scale tunnel-agent=0`.
+  # relay, so the user never has to forward a router port. A first device has
+  # no other way to reach the control plane.
   tunnel-agent:
     image: ${REPLYCANT_GITD_IMAGE:-gitd:local}
     build:
@@ -401,10 +387,9 @@ services:
     ports:
       - "${REPLYCANT_CA_BIND:-0.0.0.0}:${REPLYCANT_CA_PORT:-8080}:8080"
     environment:
-      # Empty selects manual-exposure delivery: gitd still seals a pairing
-      # record, but hands it back to the authorizing device to display as a
-      # QR instead of publishing it to the hosted API.
-      REPLYCANT_DISCOVERY_URL: ${REPLYCANT_DISCOVERY_URL-https://discovery.replycant.com}
+      # Where pairing records are published. An empty value falls back to the
+      # hosted API rather than switching delivery modes.
+      REPLYCANT_DISCOVERY_URL: ${REPLYCANT_DISCOVERY_URL:-https://discovery.replycant.com}
     volumes:
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/tailnet:/data/tailnet:ro
       - ${REPLYCANT_DATA_DIR:-./replycant-data}/gitd/repo:/data/repo

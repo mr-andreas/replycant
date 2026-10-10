@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import GitDB
 import LibGit2
@@ -48,14 +47,9 @@ enum TailnetPairing {
     /// the device is waiting on a human action on another device, and the slot
     /// is genuinely absent until that happens.
     ///
-    /// The CA is checked against the fingerprint carried in the headscale
-    /// hostname before it is returned. That check does not depend on the
-    /// record's encryption holding, so a record that opened correctly but names
-    /// a different CA than the deployment's own is still refused.
     static func awaitAuthorization(
         secretEncoded: String,
         slot: String,
-        ageIdentity: Curve25519.KeyAgreement.PrivateKey,
         host: String = DiscoveryClient.defaultHost,
         interval: TimeInterval = DiscoveryClient.defaultInterval,
         timeout: TimeInterval = DiscoveryClient.defaultTimeout,
@@ -68,13 +62,7 @@ enum TailnetPairing {
             timeout: timeout,
             session: session
         )
-        let payload = try PairingRecord.open(
-            sealed: sealed,
-            secretEncoded: secretEncoded,
-            ageIdentity: ageIdentity
-        )
-        try PairingRecord.verifyCALabel(payload)
-        return payload
+        return try PairingRecord.open(sealed: sealed, secretEncoded: secretEncoded)
     }
 
     /// Acts on an opened record: joins the tailnet, then points the app at gitd.

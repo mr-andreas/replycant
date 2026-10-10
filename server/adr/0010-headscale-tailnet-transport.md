@@ -5,7 +5,10 @@ Accepted. Where tailnet keys come from, hsproxy's pure splicing, and init-time
 key capture are superseded by
 [ADR-0011](0011-headscale-state-derived-from-git.md). Retaining the `.local`
 SAN for LAN-only deployments is superseded: LAN-only mode was removed, and
-the integration harness runs on the tailnet like a real deployment.
+the integration harness runs on the tailnet like a real deployment. The
+double-sealed pairing record, the CA-label check, and manual-exposure
+delivery are superseded by
+[ADR-0013](0013-pairing-record-authenticated-only.md).
 
 ## Context
 gitd published its mTLS Git port and its CA port on the host. Reaching a home

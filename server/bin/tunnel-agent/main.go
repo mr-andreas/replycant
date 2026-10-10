@@ -2,8 +2,7 @@
 // without the user forwarding a router port.
 //
 // It dials the hosted relay and holds that connection open, so arriving device
-// connections are pushed back down it. Run alongside hsproxy; disable it and
-// publish hsproxy's port directly to use manual exposure instead.
+// connections are pushed back down it. Run alongside hsproxy.
 package main
 
 import (

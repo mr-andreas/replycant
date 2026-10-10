@@ -40,7 +40,7 @@ func approveTailnetPairing(ctx context.Context, identityDir, caPEM, headscaleURL
 		return err
 	}
 	defer cleanup()
-	return postPairingRecord(ctx, client, pairURL, payload.PairingSecret, payload.AgePublicKey)
+	return postPairingRecord(ctx, client, pairURL, payload.PairingSecret)
 }
 
 func fetchQRPayload(ctx context.Context, qrURL string) (qrPayload, error) {
@@ -83,10 +83,9 @@ func fetchQRPayload(ctx context.Context, qrURL string) (qrPayload, error) {
 	}
 }
 
-func postPairingRecord(ctx context.Context, client *http.Client, pairURL, secret, ageKey string) error {
+func postPairingRecord(ctx context.Context, client *http.Client, pairURL, secret string) error {
 	body, err := json.Marshal(map[string]string{
 		"pairing_secret": secret,
-		"age_pubkey":     ageKey,
 	})
 	if err != nil {
 		return err
@@ -102,7 +101,7 @@ func postPairingRecord(ctx context.Context, client *http.Client, pairURL, secret
 	}
 	defer response.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("gitd /pair returned %s: %s", response.Status, strings.TrimSpace(string(respBody)))
 	}
 	return nil

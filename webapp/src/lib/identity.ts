@@ -383,7 +383,8 @@ export const buildMtlsHeaders = (
 
 // Serializes the pairing QR an already-paired device scans to approve this
 // one. The pairing secret tells it where to publish the sealed record this
-// device is waiting for, and the age key is what the record is sealed to.
+// device is waiting for. The age key is committed to pubkeys/ so later epoch
+// wraps include this device; the record itself is not sealed to it.
 export const buildPublicKeyQrPayload = (
   identity: Pick<DecryptedIdentity, "publicKeySsh" | "deviceName" | "deviceUUID" | "agePublicKey">,
   pairingSecret: string,

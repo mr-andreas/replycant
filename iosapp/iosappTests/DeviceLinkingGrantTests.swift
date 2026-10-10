@@ -53,7 +53,7 @@ struct DeviceLinkingGrantTests {
                     try await addDeviceKey()
                 }
             },
-            authorize: { _, _, _ in
+            authorize: { _, _ in
                 recorder.record("authorize")
             }
         )

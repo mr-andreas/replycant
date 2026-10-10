@@ -18,8 +18,8 @@ gitd runs three HTTP servers. The Git listener is on the tailnet only, at
 `REPLYCANT_CA_BIND` narrows it). The Git listener is
 bound to an embedded `tsnet` node, so gitd is reachable only from inside the
 deployment's tailnet, at `https://gitd.replycant.internal:8443`. `hsproxy` is
-the other published port, and it binds to loopback unless the deployment is in
-manual-exposure mode. See [Connectivity](./connectivity.md) for the whole
+the other published port, and it binds to loopback. See
+[Connectivity](./connectivity.md) for the whole
 topology.
 
 Media backends sit on the internal Docker network:
@@ -228,14 +228,10 @@ no host-port listener.
 | `--tailnet-control-upstream` | No | `hsproxy:8443` | hsproxy address that control-plane traffic arriving over the tailnet is spliced to |
 | `--headscale-api-url` | Yes | - | headscale API base URL, used to mint gitd's own tailnet key and the first device's key, and to remove device nodes on revocation |
 | `--headscale-api-key-file` | Yes | - | File holding the headscale API key, re-read on every call so a key replaced after a database wipe takes effect |
-| `--headscale-client-url` | Yes | - | headscale URL advertised to pairing devices: the tunnel hostname, or your own DNS name in manual mode |
+| `--headscale-client-url` | Yes | - | headscale URL advertised to pairing devices, the tunnel hostname |
 | `--tailnet-reconcile-marker` | Yes | - | Writable file recording the `pubkeys/` set last reconciled with headscale and the key each device node uses. Losing it makes every device rejoin once |
 | `--headscale-user` | No | `replycant` | headscale user that paired devices register under |
-| `--discovery-url` | No | - | Discovery API base URL, with the slot prepended as a subdomain. Unset selects manual-exposure delivery |
-
-`--discovery-url` is the one optional pairing flag: its presence is what
-chooses between publishing the sealed record to the hosted API and handing it
-back for the authorizing device to display as a QR code.
+| `--discovery-url` | Yes | - | Discovery API base URL, with the slot prepended as a subdomain |
 
 ## Webapp Proxy mTLS Bridging
 

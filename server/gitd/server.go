@@ -35,9 +35,9 @@ type ServerConfig struct {
 	DecryptdURL   string
 	TranscodedURL string
 
-	// Optional. When unset, /pair is not offered, which is the correct
-	// behaviour for manual-exposure deployments that put the headscale URL and
-	// CA in the pairing QR directly and run no discovery service.
+	// Optional. When unset, /pair is not offered. Production always sets it;
+	// handler tests leave it unset so they can cover Git without a discovery
+	// API.
 	PairingPublisher PairingPublisher
 
 	// Optional. Called after every receive-pack request, which is the only

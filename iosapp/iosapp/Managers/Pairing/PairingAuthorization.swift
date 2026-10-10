@@ -5,9 +5,9 @@ import LibGit2
 ///
 /// A device joining over the tailnet cannot ask gitd for anything, so an
 /// already-paired device has to ask on its behalf. This is that request: it
-/// hands gitd the secret and age recipient from the scanned QR, and gitd seals
-/// a record telling the device where the control plane is and which CA to
-/// trust, and publishes it to the slot the scanned device is polling.
+/// hands gitd the secret from the scanned QR, and gitd seals a record telling
+/// the device where the control plane is and which CA to trust, and publishes
+/// it to the slot the scanned device is polling.
 ///
 /// Authorization is inherited from the mTLS handshake - only a device already
 /// in `pubkeys/` can reach the endpoint - which is the same boundary that
@@ -33,23 +33,17 @@ enum PairingAuthorization {
     /// Where gitd serves pairing. Must match `pairingPath` in `server/gitd`.
     static let path = "/pair"
 
-    /// Asks gitd to authorize the scanned device, returning the sealed record.
+    /// Asks gitd to authorize the scanned device.
     ///
-    /// The record is returned because manual-exposure deployments have no
-    /// discovery service to publish to and deliver it through this response
-    /// instead. It is safe to hold: it is encrypted to the scanned device's age
-    /// key and authenticated under the secret from its QR, so this device
-    /// cannot read it either.
-    ///
-    /// gitd holds the request open until the record is stored, so a success
-    /// here means the other device's poll will find it.
-    @discardableResult
+    /// gitd holds the request open until the record is stored on the discovery
+    /// API, so a success here means the other device's poll will find it. The
+    /// response carries nothing: the record opens under the secret from the
+    /// QR, which this device already has.
     static func publish(
         pairingSecret: String,
-        agePublicKey: String,
         serverURL: String,
         session: URLSession
-    ) async throws -> Data {
+    ) async throws {
         // libgit2 needs the mtls scheme to route through the custom transport,
         // so that is the form the app stores. URLSession does not know it.
         let https = MTLSTransport.convertToHTTPSScheme(
@@ -62,18 +56,16 @@ enum PairingAuthorization {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "pairing_secret": pairingSecret,
-            "age_pubkey": agePublicKey
+            "pairing_secret": pairingSecret
         ])
 
-        let (data, response) = try await session.data(for: request)
+        let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw AuthorizationError.publishFailed(0)
         }
         guard (200..<300).contains(http.statusCode) else {
             throw AuthorizationError.publishFailed(http.statusCode)
         }
-        return data
     }
 
     /// Builds a session that can reach gitd: mTLS credentials and the tailnet
