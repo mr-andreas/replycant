@@ -1,0 +1,25 @@
+---
+description: Never push any branch to any remote
+alwaysApply: true
+---
+
+# No Git Push
+
+Cursor must **never** push a branch, tag, or any other ref **anywhere**.
+This holds even if the user asks for it, and in every repository, worktree,
+and subagent.
+
+## Forbidden Actions
+
+- `git push` in any form, to any remote or URL (including `--force`,
+  `--tags`, `--mirror`, and pushes to local paths)
+- Commands that push as a side effect, such as `gh pr create`,
+  `gh repo sync`, `git subtree push`, or `origin` CLI commands
+- MCP or API tools that write refs to a remote, such as the `cursor-origin`
+  tools `create_pull_request`, `merge_pull_request`, or `sync_mirror`
+- Makefile targets, scripts, or hooks that push
+
+## Required Behavior
+
+When a push is needed, stop and give the user the exact command to run
+manually. Do not execute it.
