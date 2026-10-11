@@ -5,6 +5,39 @@ import UIKit
 import GitDB
 
 #if DEBUG
+// Stands in for a joined node when tests answer LFS from a local server
+// or a URLProtocol stub. The router refuses every request without a node,
+// and these tests must still see the request instead of a tailnet proxy.
+final class PassthroughTailnetNode: TailnetNodeProviding {
+    func apply(to configuration: URLSessionConfiguration) async throws {}
+
+    func applyCachedProxy(to configuration: URLSessionConfiguration) -> Bool {
+        true
+    }
+
+    func addresses() async throws -> (ip4: String?, ip6: String?) {
+        (nil, nil)
+    }
+
+    func status() async throws -> TailnetStatusReport {
+        try TailnetStatusReport.decode(
+            Data(#"{"BackendState":"Running"}"#.utf8)
+        )
+    }
+
+    func shutDown() async {}
+}
+
+extension TailnetSessionRouter {
+    // A private router that lets requests through unproxied. Private so
+    // it never touches the shared router the tailnet suites drive.
+    static func passthroughForTests() -> TailnetSessionRouter {
+        let router = TailnetSessionRouter()
+        router.use(PassthroughTailnetNode())
+        return router
+    }
+}
+
 // Test support code for UI testing
 // This exists to keep UITest-only fixture setup out of shipped builds.
 class TestSupport {
@@ -82,6 +115,11 @@ class TestSupport {
         }
         
         print("TestSupport: Running in UI test mode")
+
+        // Fixture media is served by the in-process LFS server, which is
+        // not on a tailnet. Without a node the shared router refuses every
+        // download, so fullscreen images never leave the spinner.
+        TailnetSessionRouter.shared.use(PassthroughTailnetNode())
         
         // Start test LFS server
         do {

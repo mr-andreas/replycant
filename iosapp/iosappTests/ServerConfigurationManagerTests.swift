@@ -72,6 +72,20 @@ struct ServerConfigurationManagerTests {
         #expect(ServerConfigurationManager.certificateHash(fromPEM: spacedPem) == expected)
     }
 
+    // A phone restoring onto a tailnet learns the CA from hsproxy's TLS chain
+    // as DER and stores it as PEM. It has to hash back to what the recovery
+    // key pinned, or every later connection would be checked against a
+    // different CA than the one that was verified.
+    @Test func testPEMFromDERHashesToTheSameCertificate() {
+        let der = Data((0..<200).map { UInt8($0) })
+        let pem = ServerConfigurationManager.pemString(fromDER: der)
+
+        #expect(pem.hasPrefix("-----BEGIN CERTIFICATE-----\n"))
+        #expect(pem.split(separator: "\n").allSatisfy { $0.count <= 64 })
+        #expect(ServerConfigurationManager.certificateHash(fromPEM: pem)
+            == SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined())
+    }
+
     // Confirms LFS endpoint derivation always keeps git origin and rewrites path to /lfs.
     @Test func testDeriveLFSURLFromGitURL() {
         #expect(
@@ -133,114 +147,4 @@ struct ServerConfigurationManagerTests {
             == "https://replycant.local:9443"
         )
     }
-
-    // Confirms user-entered discovery addresses consistently normalize to config.json endpoints.
-    @Test func testDiscoveryConfigURLNormalization() {
-        #expect(
-            ServerConfigurationManager.discoveryConfigURL(from: "http://localhost:8080")?.absoluteString
-            == "http://localhost:8080/config.json"
-        )
-        #expect(
-            ServerConfigurationManager.discoveryConfigURL(from: "http://localhost:8080/")?.absoluteString
-            == "http://localhost:8080/config.json"
-        )
-        #expect(
-            ServerConfigurationManager.discoveryConfigURL(from: "http://localhost:8080/config.json")?.absoluteString
-            == "http://localhost:8080/config.json"
-        )
-        #expect(
-            ServerConfigurationManager.discoveryConfigURL(from: "http://localhost:8080/bootstrap")?.absoluteString
-            == "http://localhost:8080/bootstrap/config.json"
-        )
-        #expect(ServerConfigurationManager.discoveryConfigURL(from: "not-a-url") == nil)
-    }
-
-    // Confirms recovery discovery rejects mismatched CA fingerprints before saving configuration.
-    @Test func testDiscoverAndConfigureRejectsMismatchedCAHash() async throws {
-        let manager = ServerConfigurationManager.shared
-        manager.clearConfiguration()
-
-        let certPEM = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----"
-        URLProtocolStub.responseData = try JSONSerialization.data(withJSONObject: [
-            "url": "https://replycant.local:8443",
-            "ca": certPEM,
-        ])
-        URLProtocolStub.statusCode = 200
-
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [URLProtocolStub.self]
-        let session = URLSession(configuration: sessionConfig)
-
-        await #expect(throws: ConfigurationError.self) {
-            _ = try await manager.discoverAndConfigure(
-                discoveryURLString: "http://localhost:8080",
-                expectedCAHash: String(repeating: "b", count: 64),
-                session: session
-            )
-        }
-        #expect(manager.loadConfiguration() == nil)
-    }
-
-    // Confirms successful discovery with matching hash persists both URL and CA for later mTLS setup.
-    @Test func testDiscoverAndConfigurePersistsWhenHashMatches() async throws {
-        let manager = ServerConfigurationManager.shared
-        manager.clearConfiguration()
-        defer { manager.clearConfiguration() }
-
-        let certPEM = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----"
-        URLProtocolStub.responseData = try JSONSerialization.data(withJSONObject: [
-            "url": "https://replycant.local:8443",
-            "ca": certPEM,
-        ])
-        URLProtocolStub.statusCode = 200
-
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.protocolClasses = [URLProtocolStub.self]
-        let session = URLSession(configuration: sessionConfig)
-
-        let expected = ServerConfigurationManager.certificateHash(fromPEM: certPEM)!
-        let config = try await manager.discoverAndConfigure(
-            discoveryURLString: "http://localhost:8080",
-            expectedCAHash: expected,
-            session: session
-        )
-
-        #expect(config.url == "https://replycant.local:8443")
-        #expect(manager.loadURL() == "https://replycant.local:8443")
-        #expect(manager.loadCACertificate() == certPEM)
-    }
 }
-
-// Replaces network transport so discovery tests can deterministically return synthetic payloads.
-private final class URLProtocolStub: URLProtocol {
-    static var responseData = Data()
-    static var statusCode = 200
-
-    // Declares all requests as stubbed to keep discovery tests independent from network state.
-    override class func canInit(with request: URLRequest) -> Bool {
-        _ = request
-        return true
-    }
-
-    // Returns requests unchanged because the test suite doesn't need URL canonicalization behavior.
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
-
-    // Delivers configured response bytes so tests can validate CA-hash checks without a live server.
-    override func startLoading() {
-        let response = HTTPURLResponse(
-            url: request.url ?? URL(string: "http://localhost")!,
-            statusCode: Self.statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: nil
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseData)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    // Exists to satisfy URLProtocol and indicates this stub performs no asynchronous cleanup.
-    override func stopLoading() {}
-}
-

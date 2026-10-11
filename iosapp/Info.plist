@@ -8,12 +8,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Connects to a local git server for repository sync.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_https._tcp</string>
-		<string>_http._tcp</string>
-	</array>
+	<string>Reaches your library's server directly when it is on the same network, instead of through a relay.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

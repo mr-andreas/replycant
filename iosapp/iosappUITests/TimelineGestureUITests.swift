@@ -123,6 +123,37 @@ final class TimelineGestureUITests: XCTestCase {
         }
         XCTAssertTrue(didOpenPhoto, "Should be in full screen photo view")
     }
+
+    // Pages in the fullscreen pager that show this photo id. Neighbouring
+    // pages stay in the accessibility tree, so the caller still has to pick
+    // the one that is on screen.
+    private func images(labeled label: String) -> XCUIElementQuery {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(
+                format: "identifier == 'zoomableImage' AND label == %@",
+                label
+            ))
+    }
+
+    // The on-screen fullscreen page with this photo id. A plain firstMatch
+    // on zoomableImage can return a page that is not the one showing.
+    // `hittable` is not a valid element-query key, so it is checked on the
+    // resolved elements instead.
+    private func visibleImage(labeled label: String) -> XCUIElement {
+        let pages = images(labeled: label)
+        return pages.allElementsBoundByIndex.first(where: \.isHittable) ?? pages.firstMatch
+    }
+
+    // Waits for the on-screen fullscreen page to show `label`. CI simulators
+    // can take seconds to settle a page transition, so a single read after a
+    // fixed sleep can still see the previous page.
+    private func waitForCurrentImage(_ label: String, timeout: TimeInterval = 10) -> Bool {
+        let pages = images(labeled: label)
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            pages.allElementsBoundByIndex.contains(where: \.isHittable)
+        }, object: nil)
+        return XCTWaiter().wait(for: [visible], timeout: timeout) == .completed
+    }
     
     // MARK: - Swipe to Dismiss Tests
     
@@ -269,15 +300,11 @@ final class TimelineGestureUITests: XCTestCase {
         let startPoint = imageView.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
         let endPoint = imageView.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
         startPoint.press(forDuration: 0.1, thenDragTo: endPoint)
-        
-        Thread.sleep(forTimeInterval: 0.5)
-        
-        // Should have navigated to the next image (i-2)
-        let newImageView = app.descendants(matching: .any).matching(identifier: "zoomableImage").firstMatch
-        XCTAssertTrue(newImageView.exists, "Should still be viewing an image after horizontal swipe")
-        let newLabel = newImageView.label
-        XCTAssertNotEqual(newLabel, initialLabel, "Should have navigated to a different image")
-        XCTAssertEqual(newLabel, "i-2", "Should have navigated to second image")
+
+        XCTAssertTrue(
+            waitForCurrentImage("i-2"),
+            "Should have navigated to second image"
+        )
     }
     
     // Verifies that swiping right horizontally navigates back to the previous
@@ -295,25 +322,23 @@ final class TimelineGestureUITests: XCTestCase {
         var startPoint = imageView.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
         var endPoint = imageView.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
         startPoint.press(forDuration: 0.1, thenDragTo: endPoint)
-        Thread.sleep(forTimeInterval: 0.5)
-        
-        // Verify we navigated to the next image (i-2)
-        let imageViewAfterLeft = app.descendants(matching: .any).matching(identifier: "zoomableImage").firstMatch
-        let labelAfterLeft = imageViewAfterLeft.label
-        XCTAssertEqual(labelAfterLeft, "i-2", "Should have navigated to second image")
-        
-        // Now swipe right to go back
+
+        XCTAssertTrue(
+            waitForCurrentImage("i-2"),
+            "Should have navigated to second image"
+        )
+
+        // Swipe right from the page that is actually on screen, not from an
+        // off-screen neighbour the pager may still expose.
+        let imageViewAfterLeft = visibleImage(labeled: "i-2")
         startPoint = imageViewAfterLeft.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
         endPoint = imageViewAfterLeft.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
         startPoint.press(forDuration: 0.1, thenDragTo: endPoint)
-        Thread.sleep(forTimeInterval: 0.5)
-        
-        // Verify we navigated back to the first image (i-1)
-        let imageViewAfterRight = app.descendants(matching: .any).matching(identifier: "zoomableImage").firstMatch
-        XCTAssertTrue(imageViewAfterRight.exists, "Should still be viewing an image")
-        let finalLabel = imageViewAfterRight.label
-        XCTAssertEqual(finalLabel, initialLabel, "Should have navigated back to first image")
-        XCTAssertEqual(finalLabel, "i-1", "Should be back on first image")
+
+        XCTAssertTrue(
+            waitForCurrentImage(initialLabel),
+            "Should have navigated back to first image"
+        )
     }
     
     // MARK: - Gesture Isolation Tests

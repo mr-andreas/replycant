@@ -37,6 +37,7 @@ struct ContentView: View {
     @State private var showRecoveryFlow = false
     @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
+    @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
     init(previewState: PreviewState? = nil) {
@@ -129,6 +130,24 @@ struct ContentView: View {
                     }
                     .toolbarBackground(.ultraThinMaterial, for: .tabBar)
                     .toolbarBackground(.visible, for: .tabBar)
+                    .overlay(alignment: .top) {
+                        // Floats over the content so a slow join does not
+                        // push the timeline down. Sits below the inline
+                        // title, and ignores taps so photos stay reachable.
+                        if tailnetJoinIndicator.isUnreachable {
+                            Label("Connection problems", systemImage: "wifi.exclamationmark")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .padding(.top, 44)
+                                .allowsHitTesting(false)
+                                .transition(.opacity)
+                                .accessibilityIdentifier("tailnetUnreachableBanner")
+                        }
+                    }
+                    .animation(.easeInOut, value: tailnetJoinIndicator.isUnreachable)
                 }
                 .onAppear {
                     emitMainTabsVisibleIfNeeded()
@@ -178,6 +197,13 @@ struct ContentView: View {
             updatePeriodicSyncLifecycle()
             await refreshRecoveryWarning()
         }
+        .task(id: shouldShowMainTabs) {
+            guard previewState == nil,
+                  !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment),
+                  shouldShowMainTabs
+            else { return }
+            await tailnetJoinIndicator.watch()
+        }
         .task {
             guard previewState == nil,
                   !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment)
@@ -219,6 +245,17 @@ struct ContentView: View {
         }
 
         errorMessage = nil
+
+        // The local library does not need the tailnet, and waiting for the
+        // join held the timeline behind a "local data was reset" screen for
+        // the whole handshake. The join runs beside Git setup. Requests
+        // that need the server wait for it themselves, and the banner
+        // reports a join that is still down after a few seconds.
+        // Detached so leaving this view does not cancel a join libtailscale
+        // cannot restart cleanly.
+        Task.detached {
+            await Self.rejoinTailnetForLaunch()
+        }
 
         let gitInitStartTime = CFAbsoluteTimeGetCurrent()
         let gitInitSignpost = AppSignposts.begin("GitInitialize")
@@ -321,6 +358,12 @@ struct ContentView: View {
                 throw ContentViewResyncError.missingServerURL
             }
 
+            // Launch no longer waits for the join, and a clone has nothing
+            // to copy until the node is up. A stall surfaces on the retry
+            // screen rather than hanging the progress view.
+            resyncProgressMessage = "Connecting to your library's network..."
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+
             let repoPath = RepositoryManager.shared.repositoryPath()
             resyncProgress = 20
             resyncProgressMessage = "Cloning from server..."
@@ -370,6 +413,21 @@ struct ContentView: View {
             errorMessage = error.localizedDescription
         }
         updatePeriodicSyncLifecycle()
+    }
+
+    /// Starts the launch join and logs how it ended.
+    ///
+    /// The caller does not wait. A stall is reported by the banner, and a
+    /// failure here used to replace the library with an error that looked
+    /// like a broken repository.
+    private static func rejoinTailnetForLaunch() async {
+        do {
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+        } catch TailnetBootstrap.BootstrapError.stillConnecting {
+            log("Tailnet join still in progress; continuing offline", context: "Tailnet")
+        } catch {
+            logError("Failed to rejoin the tailnet: \(error.localizedDescription)", context: "Tailnet")
+        }
     }
 
     // Isolates onboarding skip decisions so tests can verify simulator installs do not bypass onboarding implicitly.

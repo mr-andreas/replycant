@@ -22,24 +22,17 @@ struct DeviceLinkingUXRedesignTests {
         #expect(withBorder.hasBorder)
     }
 
-    // Ensures new-device Step 1 copy emphasizes waiting for the other device
-    // before advancing, reducing accidental early taps.
+    // The new device has nothing to tap once its QR is shown: approval
+    // arrives on its own, so the copy has to say it is waiting.
     @Test func onboardingConnectToExistingCopyMatchesRedesign() {
         #expect(OnboardingView.connectToExistingStepOneInstruction == "On your other device, go to Settings → Link a New Device and scan this code")
-        #expect(OnboardingView.connectToExistingStepOneContinueLabel == "Next")
         #expect(OnboardingView.connectToExistingStepOneWaitingLabel == "Waiting for your other device to scan...")
         #expect(OnboardingView.connectToExistingRecoveryShortcutLabel == "I have a recovery key")
         #expect(OnboardingView.connectToExistingPasteBackupLabel == "Paste backup text")
-        #expect(OnboardingView.connectToExistingStepTwoHint == "Your other device should now be showing a green-bordered QR code. You can also scan a recovery QR here.")
         #expect(OnboardingView.connectToExistingRecoveryScanHint == "Scan your saved recovery QR, or paste backup text.")
     }
 
-    // Ensures old-device copy clearly separates the grant-access success state
-    // from the follow-up config-sharing step.
     @Test func existingDeviceLinkingCopyMatchesRedesign() {
         #expect(DeviceLinkingView.scanPublicKeyHeading == "Scan the new device's QR code")
-        #expect(DeviceLinkingView.shareConfigSuccessLabel == "Access granted!")
-        #expect(DeviceLinkingView.shareConfigHeading == "Now let the new device scan this")
-        #expect(DeviceLinkingView.shareConfigBody == "On the new device, tap Next and point its camera at this code")
     }
 }

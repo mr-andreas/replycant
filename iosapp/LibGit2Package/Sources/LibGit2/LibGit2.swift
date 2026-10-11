@@ -11,11 +11,41 @@ internal var logMinLevel: String = "INFO"
 
 private let levelOrder = ["DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3]
 
-// Simple logging utility for the LibGit2 package
+/// Unified-log severity for a LibGit2 log level string.
+///
+/// Warning has no OSLogType of its own; `.default` is the notice level
+/// between info and error. Unknown levels stay at info so a typo does not
+/// look like a failure.
+internal func osLogType(forLevel level: String) -> OSLogType {
+    switch level {
+    case "DEBUG": return .debug
+    case "INFO": return .info
+    case "WARNING": return .default
+    case "ERROR": return .error
+    default: return .info
+    }
+}
+
+// Simple logging utility for the LibGit2 package.
+// Goes to the system log so a failure after the debugger detaches is still
+// readable in Console.app.
 internal func log(_ message: String, context: String = "Git", level: String = "INFO") {
     guard (levelOrder[level] ?? 1) >= (levelOrder[logMinLevel] ?? 1) else { return }
     let timestamp = timestamp()
-    Swift.print("[\(timestamp)][\(level)][\(context)] \(message)")
+    let line = "[\(timestamp)][\(level)][\(context)] \(message)"
+    let logger = Logger(subsystem: "com.replycant.libgit2", category: context)
+    switch osLogType(forLevel: level) {
+    case .debug:
+        logger.debug("\(line, privacy: .public)")
+    case .info:
+        logger.info("\(line, privacy: .public)")
+    case .error:
+        logger.error("\(line, privacy: .public)")
+    case .fault:
+        logger.fault("\(line, privacy: .public)")
+    default:
+        logger.log("\(line, privacy: .public)")
+    }
 }
 
 // Returns a timestamp string in format HH:mm:ss.SSS for consistent logging

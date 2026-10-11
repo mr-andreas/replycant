@@ -79,7 +79,7 @@ const stopEmptyTileMonitor = async (page: Page) =>
     return monitor.maxEmptyTiles;
   });
 
-// Valid 1x1 PNG so Firefox Image.decode accepts the decrypted blob.
+// Valid 1x1 PNG so Image.decode accepts the decrypted blob.
 const MINIMAL_PNG = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
   0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
@@ -132,7 +132,7 @@ test.describe("Timeline thumbnail stability", () => {
 
     // Jump past the initial 25-after preload page so later unique OIDs
     // are fetched. Small down-steps stay inside that already-fetched
-    // window and leave Firefox at ~37 URLs on the 6.75cm grid.
+    // window and request too few unique URLs to churn the cache.
     await timeline.evaluate((node) => {
       const row = node.querySelector(".image-row");
       if (!(row instanceof HTMLElement)) throw new Error("timeline row not rendered");

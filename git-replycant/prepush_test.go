@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,13 +156,17 @@ func TestBuildLFSHTTPClient(t *testing.T) {
 	testRunGit(t, repo, "config", "--local", "http.sslCAInfo", caPath)
 	testRunGit(t, repo, "config", "--local", "http.sslCert", local.ClientCertPath)
 	testRunGit(t, repo, "config", "--local", "http.sslKey", local.ClientKeyPath)
+	require.NoError(t, os.WriteFile(filepath.Join(local.ConfigDirectory, "ca.pem"), certPEM, 0o600))
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(backend.Close)
+	armTestTailnet(t, repo, backend)
 
 	client, err := buildLFSHTTPClient(repo)
 	require.NoError(t, err)
 	require.NotNil(t, client)
 	transport, ok := client.Transport.(*http.Transport)
 	require.True(t, ok)
-	require.NotNil(t, transport.DialContext)
+	require.NotNil(t, transport.Proxy)
 	require.NotNil(t, transport.TLSClientConfig)
 	assert.Len(t, transport.TLSClientConfig.Certificates, 1)
 }

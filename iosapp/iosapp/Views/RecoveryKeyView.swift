@@ -17,6 +17,11 @@ struct RecoveryKeyView: View {
         "Save this recovery key somewhere safe. The password needed to unlock it is not included, so keep it separately."
     static let createdStepShareLabel = "Share recovery key"
     static let createdStepShareAgainLabel = "Share again"
+    #if DEBUG
+    // Names the debug-only export so a development build can hand off
+    // a pasteable recovery link without changing the release screen.
+    static let createdStepDebugLinkLabel = "Share as text link (debug)"
+    #endif
     static let createdStepDoneLabel = "Done"
     static let deleteButtonLabel = "Delete"
     static let deleteConfirmationBody =
@@ -56,6 +61,11 @@ struct RecoveryKeyView: View {
     @State private var confirmPassword = ""
     @State private var createdKey: RecoveryKeyManager.CreatedRecoveryKey?
     @State private var hasSharedCreatedKey = false
+    #if DEBUG
+    // Kept separately from the password field, which is cleared as soon
+    // as the key exists, so the debug share can still include it.
+    @State private var debugShareLink: String?
+    #endif
     @State private var shareBundle: RecoveryShareBundle?
     @State private var pendingDeletion: RecoveryKeyManager.RecoveryKeyRecord?
     @State private var deletingUUIDs: Set<String> = []
@@ -212,6 +222,9 @@ struct RecoveryKeyView: View {
                     confirmPassword = ""
                     createdKey = nil
                     hasSharedCreatedKey = false
+                    #if DEBUG
+                    debugShareLink = nil
+                    #endif
                     currentStep = .name
                 }
                 .buttonStyle(PairingPrimaryButtonStyle())
@@ -389,9 +402,23 @@ struct RecoveryKeyView: View {
             VStack(spacing: 12) {
                 createdStepShareButton
 
+                // Debug builds can export a password-bearing link for
+                // local recovery files. Release builds omit the button.
+                #if DEBUG
+                if let debugShareLink {
+                    Button(Self.createdStepDebugLinkLabel) {
+                        shareBundle = RecoveryShareBundle(plainText: debugShareLink)
+                    }
+                    .buttonStyle(PairingTertiaryButtonStyle())
+                }
+                #endif
+
                 Button(Self.createdStepDoneLabel) {
                     createdKey = nil
                     hasSharedCreatedKey = false
+                    #if DEBUG
+                    debugShareLink = nil
+                    #endif
                     currentStep = .status
                 }
                 .disabled(!Self.canDismissCreatedKey(hasShared: hasSharedCreatedKey))
@@ -512,13 +539,20 @@ struct RecoveryKeyView: View {
             }
             let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-            createdKey = try await manager.createRecoveryKey(
+            let created = try await manager.createRecoveryKey(
                 label: label,
                 password: password,
                 repository: repository,
                 gitDB: gitDB,
                 serverConfiguration: serverConfiguration
             )
+            #if DEBUG
+            debugShareLink = RecoveryBundle.debugDeepLinkString(
+                deepLink: created.deepLink,
+                password: password
+            )
+            #endif
+            createdKey = created
             password = ""
             confirmPassword = ""
             await refresh()

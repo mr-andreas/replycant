@@ -65,10 +65,6 @@ export interface CreateIdentityOptions {
 // Keeps binary-to-text conversions deterministic for encrypted payload persistence.
 const bytesToBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
 
-// Normalizes binary digests to lowercase hex so QR payload verification matches iOS formatting.
-const bytesToHex = (bytes: Uint8Array): string =>
-  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-
 // Restores encrypted payload bytes from local storage records.
 const base64ToBytes = (encoded: string): Uint8Array =>
   Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
@@ -80,22 +76,6 @@ const asBufferSource = (bytes: Uint8Array): BufferSource => bytes as unknown as 
 const derToPem = (label: string, der: ArrayBuffer): string => {
   const body = bytesToBase64(new Uint8Array(der)).match(/.{1,64}/g)?.join("\n") ?? "";
   return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
-};
-
-// Parses PEM certificates into canonical DER bytes so hash comparisons ignore formatting differences.
-const parsePemCertificateDer = (certificatePem: string): Uint8Array => {
-  const normalized = certificatePem
-    .replace("-----BEGIN CERTIFICATE-----", "")
-    .replace("-----END CERTIFICATE-----", "")
-    .replace(/\s+/g, "");
-  if (!normalized) {
-    throw new Error("Certificate PEM is empty.");
-  }
-  try {
-    return base64ToBytes(normalized);
-  } catch {
-    throw new Error("Certificate PEM is invalid.");
-  }
 };
 
 // Encodes raw X25519 public key bytes into Bech32 `age1...` format for cross-device key exchange.
@@ -401,22 +381,19 @@ export const buildMtlsHeaders = (
   [CLIENT_CERT_HEADER]: bytesToBase64(new TextEncoder().encode(identity.certificatePem)),
 });
 
-// Serializes iOS-compatible linking payload so scanner validation can parse public key identity metadata.
+// Serializes the pairing QR an already-paired device scans to approve this
+// one. The pairing secret tells it where to publish the sealed record this
+// device is waiting for. The age key is committed to pubkeys/ so later epoch
+// wraps include this device; the record itself is not sealed to it.
 export const buildPublicKeyQrPayload = (
   identity: Pick<DecryptedIdentity, "publicKeySsh" | "deviceName" | "deviceUUID" | "agePublicKey">,
-  caHash: string,
+  pairingSecret: string,
 ): string =>
   JSON.stringify({
     pubkey: identity.publicKeySsh,
     age_pubkey: identity.agePublicKey,
     name: identity.deviceName,
     uuid: identity.deviceUUID,
-    ca_hash: caHash,
+    pairing_secret: pairingSecret.trim(),
   });
 
-// Hashes canonical certificate bytes so iOS and webapp can compare CA identity deterministically.
-export const computeCaHash = async (certificatePem: string): Promise<string> => {
-  const derBytes = parsePemCertificateDer(certificatePem);
-  const digest = await crypto.subtle.digest("SHA-256", asBufferSource(derBytes));
-  return bytesToHex(new Uint8Array(digest));
-};

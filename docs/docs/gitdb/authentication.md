@@ -77,20 +77,22 @@ Using libgit2's smart transport with a custom subtransport provides:
 
 ## Server Configuration
 
-Devices obtain server configuration by scanning a QR code containing:
+The first device scans the CA page QR, a one-time tailnet join:
 
 ```json
 {
-  "url": "mtls+https://server.example.com:8443/",
-  "ca": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  "ca": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+  "headscale_url": "https://<ca-label>.s<NN>.tunnel.replycant.com",
+  "preauth_key": "hskey-..."
 }
 ```
 
 The CA certificate is used to validate the server's identity (certificate
-pinning). Clients derive the authenticated LFS endpoint from `url` as
-`{origin(url)}/lfs`.
-
-For webapp onboarding, server configuration is discovered programmatically from the CA server `/config.json` endpoint instead of scanning server-config QR data. Webapp linking QR payloads include `ca_hash` (SHA256 of CA DER bytes), which lets iOS verify the webapp connected to the same trusted CA before committing the new public key.
+pinning). gitd is always `https://gitd.replycant.internal:8443` on the
+tailnet, and clients derive the authenticated LFS endpoint as
+`{origin}/lfs`. Every later device, desktop included, receives the same CA
+and control-plane location in a sealed pairing record instead; see
+[Device Onboarding](./device-onboarding.md#tailnet-pairing).
 
 ## Certificate Format
 
@@ -122,6 +124,8 @@ Client certificates are self-signed X.509 certificates:
 
 ### Joining Existing Repository
 
-1. Existing device displays new device's public key as QR
-2. Existing device commits new public key to repository
-3. New device can now authenticate with its certificate
+1. New device displays its public key and a pairing secret as QR
+2. Existing device scans it, commits the new public key, and asks gitd to
+   publish the pairing record
+3. New device collects the record, joins the tailnet, and authenticates with
+   its certificate

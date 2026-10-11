@@ -3,19 +3,33 @@
 package integration
 
 import (
+	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mr-andreas/replycant/server/gitd/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
 	testImage = "replycant-integration:test"
+
+	// Fixed inside the container so the provisioner can read the QR without
+	// learning an ephemeral port, and so discovery DNS matches dnsmasq.
+	e2eDiscoveryURL = "http://discovery.test:18082"
+	e2eQRAddr       = "127.0.0.1:18083"
+	e2eQRURL        = "http://127.0.0.1:18083/payload.json"
+	e2eCAFile       = "/tmp/pki/ca.crt"
+	e2eHeadscaleURL = "https://localhost:18085"
+	e2ePairURL      = "https://gitd.replycant.internal:8443/pair"
 )
 
 // cleanupStaleContainers removes abandoned integration containers from prior interrupted runs.
@@ -69,7 +83,7 @@ func startContainer(t *testing.T) string {
 		_ = exec.Command("docker", "rm", "-f", containerID).Run()
 	})
 
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(6 * time.Minute)
 	for time.Now().Before(deadline) {
 		_, err := dockerExecAllowFail(containerID, "test", "-f", "/tmp/ready")
 		if err == nil {
@@ -117,7 +131,8 @@ func runReplycantCloneAllowFail(containerID string, cloneDir string) (string, er
 		containerID,
 		"git-replycant",
 		"clone",
-		"http://localhost:8080",
+		"--discovery-url", e2eDiscoveryURL,
+		"--qr-addr", e2eQRAddr,
 		cloneDir,
 	)
 }
@@ -130,7 +145,8 @@ func runReplycantCloneBareAllowFail(containerID string, cloneDir string) (string
 		"clone",
 		"--bare",
 		"--no-lfs",
-		"http://localhost:8080",
+		"--discovery-url", e2eDiscoveryURL,
+		"--qr-addr", e2eQRAddr,
 		cloneDir,
 	)
 }
@@ -171,6 +187,10 @@ func provisionDevice(t *testing.T, containerID string, cloneDir string) {
 		"--seeder-identity-dir=/tmp/identity",
 		"--new-identity-json="+cloneDir+"/.git/replycant/identity.json",
 		"--bare-repo=/tmp/repo.git",
+		"--qr-url="+e2eQRURL,
+		"--ca-file="+e2eCAFile,
+		"--headscale-url="+e2eHeadscaleURL,
+		"--pair-url="+e2ePairURL,
 	)
 }
 
@@ -190,7 +210,7 @@ func cloneAndProvision(t *testing.T, containerID string, cloneDir string) {
 	select {
 	case err := <-cloneErr:
 		require.NoError(t, err)
-	case <-time.After(120 * time.Second):
+	case <-time.After(6 * time.Minute):
 		t.Fatal("clone timed out")
 	}
 	dockerExec(t, containerID, "git", "-C", cloneDir, "pull", "--rebase", "origin", "main")
@@ -216,11 +236,15 @@ func cloneAndProvisionBare(t *testing.T, containerID string, cloneDir string) {
 		"--seeder-identity-dir=/tmp/identity",
 		"--new-identity-json="+cloneDir+"/replycant/identity.json",
 		"--bare-repo=/tmp/repo.git",
+		"--qr-url="+e2eQRURL,
+		"--ca-file="+e2eCAFile,
+		"--headscale-url="+e2eHeadscaleURL,
+		"--pair-url="+e2ePairURL,
 	)
 	select {
 	case err := <-cloneErr:
 		require.NoError(t, err)
-	case <-time.After(120 * time.Second):
+	case <-time.After(6 * time.Minute):
 		t.Fatal("clone timed out")
 	}
 }
@@ -473,8 +497,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 			"add cross-clone binary",
 		)
 		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "show", "HEAD:binary/test.bin")
-		oid := parsePointerOID(t, blob)
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "lfs", "push", "--object-id", "origin", oid)
+		parsePointerOID(t, blob)
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "push", "origin", "main")
 	})
 
@@ -503,8 +526,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 			"update cross-clone binary",
 		)
 		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "show", "HEAD:binary/test.bin")
-		oid := parsePointerOID(t, blob)
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "lfs", "push", "--object-id", "origin", oid)
+		parsePointerOID(t, blob)
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "push", "origin", "main")
 	})
 
@@ -574,6 +596,184 @@ func TestE2ELFSCloneExistingRepo(t *testing.T) {
 			assert.Equal(t, checksums[f.path], clonedChecksum)
 		}
 	})
+}
+
+// headscale's database is a cache of pubkeys/, so an operator must be able to
+// delete it without re-pairing anyone. After a wipe, gitd's node and an
+// already-cloned device both have to notice headscale forgot them, mint fresh
+// keys with what git already authorizes, and register again.
+//
+// A fetch alone would not prove that: WireGuard sessions set up before the
+// wipe can keep carrying traffic for a while. So the test first waits for
+// both nodes to reappear in the wiped headscale, then fetches.
+func TestE2ETailnetSurvivesAHeadscaleWipe(t *testing.T) {
+	t.Parallel()
+	containerID := startContainer(t)
+	cloneAndProvision(t, containerID, "/tmp/wipe-clone")
+
+	dockerExec(t, containerID, "/entrypoint.sh", "wipe-headscale")
+	nodes := dockerExec(t, containerID, "headscale", "nodes", "list", "--output", "json")
+	require.NotContains(t, nodes, "tag:", "the wipe must leave headscale with no nodes")
+
+	// Online rather than merely listed: a node is listed as soon as it
+	// registers, before its map session is up and peers can reach it.
+	onlineWithTag := func(nodes string, tag string) bool {
+		var listed []struct {
+			Online bool     `json:"online"`
+			Tags   []string `json:"tags"`
+		}
+		if json.Unmarshal([]byte(nodes), &listed) != nil {
+			return false
+		}
+		for _, node := range listed {
+			if node.Online && slices.Contains(node.Tags, tag) {
+				return true
+			}
+		}
+		return false
+	}
+
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		nodes, _ = dockerExecAllowFail(containerID, "headscale", "nodes", "list", "--output", "json")
+		if onlineWithTag(nodes, "tag:server") && onlineWithTag(nodes, "tag:device") {
+			break
+		}
+		if time.Now().After(deadline) {
+			gitdLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd.log")
+			hsproxyLog, _ := dockerExecAllowFail(containerID, "cat", "/tmp/hsproxy.log")
+			t.Fatalf("gitd and the device did not rejoin the wiped headscale\nnodes: %s\ngitd:\n%s\nhsproxy:\n%s",
+				nodes, gitdLog, hsproxyLog)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	dockerExec(t, containerID, "timeout", "120", "git", "-C", "/tmp/wipe-clone", "fetch", "origin", "main")
+}
+
+// Where the tailnet gitd records the key set it last reconciled and which key
+// each device node authenticates with.
+const e2eReconcileState = "/tmp/tailnet/reconciled-pubkeys.json"
+
+// A clone's device key as revocation sees it: the fingerprint gitd binds its
+// node to, and the pubkeys/ files that authorize it.
+type cloneDevice struct {
+	fingerprint string
+	pubkeyFiles []string
+}
+
+func readCloneDevice(t *testing.T, containerID string, cloneDir string) cloneDevice {
+	t.Helper()
+	var identity struct {
+		DeviceName   string `json:"deviceName"`
+		DeviceUUID   string `json:"deviceUUID"`
+		PublicKeySSH string `json:"publicKeySSH"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(readFile(t, containerID, cloneDir+"/.git/replycant/identity.json")), &identity))
+	parsed, _, _, _, err := ssh.ParseAuthorizedKey([]byte(identity.PublicKeySSH))
+	require.NoError(t, err)
+	key, ok := parsed.(ssh.CryptoPublicKey).CryptoPublicKey().(*ecdsa.PublicKey)
+	require.True(t, ok, "device keys are P-256")
+	base := "pubkeys/" + identity.DeviceName + "-" + identity.DeviceUUID
+	return cloneDevice{
+		fingerprint: auth.KeyFingerprint(key),
+		pubkeyFiles: []string{base + ".pub", base + ".age"},
+	}
+}
+
+// Waits until gitd has bound a node to every given fingerprint and returns
+// fingerprint to machine key.
+func waitForBindings(t *testing.T, containerID string, fingerprints ...string) map[string]string {
+	t.Helper()
+	deadline := time.Now().Add(time.Minute)
+	for {
+		machineKeys := map[string]string{}
+		if raw, err := dockerExecAllowFail(containerID, "cat", e2eReconcileState); err == nil {
+			var state struct {
+				Nodes map[string]string `json:"nodes"`
+			}
+			if json.Unmarshal([]byte(raw), &state) == nil {
+				for machineKey, fingerprint := range state.Nodes {
+					machineKeys[fingerprint] = machineKey
+				}
+			}
+		}
+		complete := true
+		for _, fingerprint := range fingerprints {
+			if machineKeys[fingerprint] == "" {
+				complete = false
+			}
+		}
+		if complete {
+			return machineKeys
+		}
+		if time.Now().After(deadline) {
+			state, _ := dockerExecAllowFail(containerID, "cat", e2eReconcileState)
+			t.Fatalf("gitd did not bind a node to every device key\nstate: %s", state)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// Maps headscale's machine keys to node IDs, from the same CLI an operator
+// would use. Also proves gitd's bindings, which come from tsnet's WhoIs, use
+// the same machine key form headscale reports.
+func headscaleNodeIDs(t *testing.T, containerID string) map[string]string {
+	t.Helper()
+	var nodes []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(dockerExec(t, containerID, "headscale", "nodes", "list", "--output", "json")), &nodes))
+	ids := map[string]string{}
+	for _, node := range nodes {
+		machineKey, _ := node["machine_key"].(string)
+		if machineKey == "" {
+			machineKey, _ = node["machineKey"].(string)
+		}
+		ids[machineKey] = fmt.Sprint(node["id"])
+	}
+	return ids
+}
+
+// Revoking one device must take only that device off the tailnet. gitd has
+// seen every device's node authenticate, so the device that stays authorized
+// keeps its node and its connection instead of being logged out and having to
+// re-enroll.
+func TestE2ETailnetRevocationExpiresOnlyTheRevokedDevice(t *testing.T) {
+	t.Parallel()
+	containerID := startContainer(t)
+	cloneAndProvision(t, containerID, "/tmp/revoke-keep")
+	cloneAndProvision(t, containerID, "/tmp/revoke-gone")
+	dockerExec(t, containerID, "git", "-C", "/tmp/revoke-gone", "fetch", "origin", "main")
+
+	keep := readCloneDevice(t, containerID, "/tmp/revoke-keep")
+	gone := readCloneDevice(t, containerID, "/tmp/revoke-gone")
+	machineKeys := waitForBindings(t, containerID, keep.fingerprint, gone.fingerprint)
+	nodeIDs := headscaleNodeIDs(t, containerID)
+	keepID, gonesID := nodeIDs[machineKeys[keep.fingerprint]], nodeIDs[machineKeys[gone.fingerprint]]
+	require.NotEmpty(t, keepID, "gitd's binding must name a machine key headscale lists")
+	require.NotEmpty(t, gonesID, "gitd's binding must name a machine key headscale lists")
+
+	dockerExec(t, containerID, "git", "-C", "/tmp/revoke-keep", "pull", "--rebase", "origin", "main")
+	dockerExec(t, containerID, append([]string{"git", "-C", "/tmp/revoke-keep", "rm"}, gone.pubkeyFiles...)...)
+	dockerExec(t, containerID, "git", "-C", "/tmp/revoke-keep",
+		"-c", "user.name=test", "-c", "user.email=test@replycant.local",
+		"commit", "-m", "revoke a device")
+	dockerExec(t, containerID, "git", "-C", "/tmp/revoke-keep", "push", "origin", "main")
+
+	expiredLine := func(id string) string { return "expired device node " + id + " (" }
+	deadline := time.Now().Add(time.Minute)
+	for {
+		log, _ := dockerExecAllowFail(containerID, "cat", "/tmp/gitd.log")
+		if strings.Contains(log, expiredLine(gonesID)) {
+			assert.NotContains(t, log, expiredLine(keepID), "the device that stays authorized must keep its node")
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the revoked device's node was not expired\ngitd:\n%s", log)
+		}
+		time.Sleep(time.Second)
+	}
+
+	dockerExec(t, containerID, "timeout", "60", "git", "-C", "/tmp/revoke-keep", "fetch", "origin", "main")
 }
 
 // TestE2EBareClone validates clone bootstrap behavior for bare repository targets.

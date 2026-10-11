@@ -3,7 +3,7 @@ import { createServer, Server as HttpServer } from "node:http";
 import { resolve } from "node:path";
 import { createApp } from "./app";
 import { loadProxyConfig, ProxyConfig } from "./config";
-import { createMtlsAgentPool } from "./proxy";
+import { createMtlsAgentPool, TailnetProxy } from "./proxy";
 
 export interface DesktopServer {
   server: HttpServer;
@@ -17,6 +17,13 @@ export interface StartDesktopServerOptions {
   host?: string;
   port?: number;
   staticDir?: string;
+
+  // Supplies the tailnet SOCKS5 proxy the upstream agents must dial through.
+  //
+  // A getter rather than a value because the tsnet sidecar comes up after this
+  // server does, and can be restarted underneath it. Until it returns a proxy,
+  // upstream requests are refused as not connected.
+  getTailnetProxy: () => TailnetProxy | undefined;
 }
 
 // Starts a loopback-only server so the Electron renderer can use the same HTTP origin contract as the web app.
@@ -25,9 +32,10 @@ export const startDesktopServer = async ({
   host = "127.0.0.1",
   port = 0,
   staticDir = resolve(process.cwd(), "dist"),
-}: StartDesktopServerOptions = {}): Promise<DesktopServer> => {
+  getTailnetProxy,
+}: StartDesktopServerOptions): Promise<DesktopServer> => {
   // Owns the upstream keep-alive pool so desktop shutdown can release sockets deterministically.
-  const agentPool = createMtlsAgentPool();
+  const agentPool = createMtlsAgentPool({ getTailnetProxy });
   const app = createApp(config, undefined, undefined, agentPool);
   app.use(express.static(staticDir));
   app.get("/{*splat}", (req, res, next) => {

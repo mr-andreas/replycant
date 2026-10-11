@@ -184,7 +184,7 @@ struct StreamingEncryptUploadTests {
 
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [StreamingUploadURLProtocol.self] + (sessionConfiguration.protocolClasses ?? [])
-        let lfsClient = GitLFS(serverURL: "https://stream-lfs.local/lfs", sessionConfiguration: sessionConfiguration)
+        let lfsClient = GitLFS(serverURL: "https://stream-lfs.local/lfs", sessionConfiguration: sessionConfiguration, router: .passthroughForTests())
         let pointer = try await EncryptedLFS.uploadEncrypted(
             fileURL: fileURL,
             dek: dek,

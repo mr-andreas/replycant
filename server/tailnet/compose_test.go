@@ -1,0 +1,379 @@
+package tailnet_test
+
+import (
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/mr-andreas/replycant/pkg/tailnetaddr"
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	composePath         = "../../docker-compose.yaml"
+	releaseWorkflowPath = "../../.github/workflows/release.yml"
+)
+
+// hsproxy is reached by one name: the tunnel hostname devices dial through the
+// hosted relay. Adding gitd's MagicDNS name would reissue every deployment's
+// certificate for a path nothing dials, and a stale reissue guard would keep
+// doing that on the next start.
+func TestHsproxyCertificateNamesOnlyTheTunnelHost(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	// The call spans a continuation line, so the match runs to the end of the
+	// enclosing if block rather than to the first newline.
+	issuance := regexp.MustCompile(`(?s)issue_cert hsproxy .*?\n\s*fi`).Find(compose)
+	if issuance == nil {
+		t.Fatal("server-key must issue an hsproxy certificate")
+	}
+	if !regexp.MustCompile(`DNS:\$\$\{HEADSCALE_HOST\}`).Match(issuance) {
+		t.Errorf("hsproxy's certificate must name the tunnel host, got %q", issuance)
+	}
+	if regexp.MustCompile(`GITD_TAILNET_NAME`).Match(issuance) {
+		t.Errorf("hsproxy's certificate must not carry the tailnet name, got %q", issuance)
+	}
+
+	guard := regexp.MustCompile(`(?s)cert_covers hsproxy\.crt[^\n]*\n`).Find(compose)
+	if guard == nil {
+		t.Fatal("server-key must guard hsproxy certificate reissue")
+	}
+	if !regexp.MustCompile(`\$\$\{HEADSCALE_HOST\}`).Match(guard) {
+		t.Errorf("the reissue guard must require the tunnel host, got %q", guard)
+	}
+	if regexp.MustCompile(`GITD_TAILNET_NAME`).Match(guard) {
+		t.Errorf("the reissue guard must not require the tailnet name, got %q", guard)
+	}
+}
+
+// The hostname devices dial has to name the shard the CA hashes to, because
+// only one relay in the fleet holds this deployment's registration. Getting
+// the shard out of the hostname would send every device to a relay that has
+// never heard of the deployment.
+func TestHeadscaleHostnameCarriesTheShardLabel(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	assignment := regexp.MustCompile(`HEADSCALE_HOST="[^"]*TUNNEL_DOMAIN\}"`).Find(compose)
+	if assignment == nil {
+		t.Fatal("server-key must derive HEADSCALE_HOST from the tunnel domain")
+	}
+	want := `HEADSCALE_HOST="$${CA_LABEL}.$${CA_SHARD}.$${REPLYCANT_TUNNEL_DOMAIN}"`
+	if string(assignment) != want {
+		t.Errorf("HEADSCALE_HOST must be %s, got %s", want, assignment)
+	}
+}
+
+// The agent registers with one relay and devices are sent to one relay, and
+// they have to be the same one. Deriving both from CA_SHARD is what guarantees
+// that; a compose-level default would silently point the agent elsewhere.
+func TestTunnelAgentRegistersWithTheDerivedShard(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	derivation := regexp.MustCompile(`TUNNEL_RELAY_ADDR="\$\$\{CA_SHARD\}\.\$\$\{REPLYCANT_TUNNEL_DOMAIN\}:8444"`)
+	if !derivation.Match(compose) {
+		t.Error("server-key must derive the relay address from the shard label")
+	}
+
+	// The override is what keeps self-hosted relays possible, so it has to
+	// survive the derivation being added.
+	if !regexp.MustCompile(`if \[ -n "\$\$\{REPLYCANT_TUNNEL_RELAY_ADDR\}" \]`).Match(compose) {
+		t.Error("REPLYCANT_TUNNEL_RELAY_ADDR must stay an override")
+	}
+
+	// The agent has to read the derived value rather than derive it again,
+	// which would be a second place to get the modulus wrong.
+	if !regexp.MustCompile(`--relay-addr="\$\$REPLYCANT_TUNNEL_RELAY_ADDR"`).Match(compose) {
+		t.Error("tunnel-agent must take its relay address from tailnet.env")
+	}
+	if !regexp.MustCompile(`REPLYCANT_TUNNEL_RELAY_ADDR=\$\$\{TUNNEL_RELAY_ADDR\}`).Match(compose) {
+		t.Error("server-key must publish the relay address in tailnet.env")
+	}
+}
+
+// The services the release workflow can see, decoded rather than matched by
+// regex, because these tests reason about every service at once.
+type composeServices struct {
+	Services map[string]struct {
+		Image   string   `yaml:"image"`
+		Build   any      `yaml:"build"`
+		Volumes []string `yaml:"volumes"`
+	} `yaml:"services"`
+}
+
+func loadComposeServices(t *testing.T) composeServices {
+	t.Helper()
+	raw, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	var compose composeServices
+	if err := yaml.Unmarshal(raw, &compose); err != nil {
+		t.Fatalf("parse the compose file: %v", err)
+	}
+	return compose
+}
+
+// A release ships docker-compose.yaml on its own, without the repository.
+// A bind mount of a repository file resolves to nothing on a user's machine,
+// and Docker silently mounts an empty directory in its place, which is how
+// the tunnel agent once lost its relay pin.
+func TestComposeMountsNoRepositoryFiles(t *testing.T) {
+	for name, service := range loadComposeServices(t).Services {
+		for _, volume := range service.Volumes {
+			if strings.HasPrefix(volume, "./") {
+				t.Errorf("%s mounts %q from the repository, which a release does not ship", name, volume)
+			}
+		}
+	}
+}
+
+// The release workflow swaps each locally built image for its published one
+// by matching the image string. A built service whose image the workflow
+// does not name would keep its local tag and try to build from a source tree
+// the user does not have.
+func TestReleaseRewritesEveryBuiltImage(t *testing.T) {
+	workflow, err := os.ReadFile(releaseWorkflowPath)
+	if err != nil {
+		t.Fatalf("read the release workflow: %v", err)
+	}
+	for name, service := range loadComposeServices(t).Services {
+		if service.Build == nil {
+			continue
+		}
+		if !strings.Contains(string(workflow), `select(.image == "`+service.Image+`")`) {
+			t.Errorf("%s is built locally as %q, but the release workflow never rewrites that image", name, service.Image)
+		}
+	}
+	if !strings.Contains(string(workflow), "del(.services[].build)") {
+		t.Error("the release workflow must drop every build section")
+	}
+}
+
+// Home routers often cache NXDOMAIN from the hours before the shard
+// records existed, and Docker uses that resolver. The agent has to
+// ask a public resolver or a first-device join never reaches the relay.
+func TestTunnelAgentUsesPublicDNS(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	agent := regexp.MustCompile(`(?s)\n  tunnel-agent:\n(.*?\n)  [a-z]`).FindSubmatch(compose)
+	if agent == nil {
+		t.Fatal("compose must declare a tunnel-agent service")
+	}
+	body := string(agent[1])
+	if !regexp.MustCompile(`(?m)^\s+dns:\n\s+- 1\.1\.1\.1\n\s+- 8\.8\.8\.8`).MatchString(body) {
+		t.Error("tunnel-agent must resolve the relay hostname through public DNS")
+	}
+}
+
+// A plain `docker compose up` has to start the hosted relay. Gating the
+// agent on a profile meant a `.env` that only set a hostname never
+// published headscale, and the first device hung at NeedsLogin.
+func TestTunnelAgentStartsWithoutAProfile(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	agent := regexp.MustCompile(`(?s)\n  tunnel-agent:\n(.*?\n)  [a-z]`).FindSubmatch(compose)
+	if agent == nil {
+		t.Fatal("compose must declare a tunnel-agent service")
+	}
+	if regexp.MustCompile(`(?m)^\s+profiles:`).Match(agent[1]) {
+		t.Error("tunnel-agent must start on a default compose up, not behind a profile")
+	}
+}
+
+// The first device has no tailnet yet, so the only way to show it the join
+// QR is a host-published CA page. It defaults to every interface so a server
+// without a browser can be bootstrapped from another machine on the LAN;
+// REPLYCANT_CA_BIND=127.0.0.1 keeps it local. That default is tolerable only
+// because the page stops minting at the first push. Publishing the Git port
+// would put gitd back on the internet.
+//
+// gitd must listen on the fixed container port the mapping targets, or a
+// custom REPLYCANT_CA_PORT would publish a port nothing answers on.
+func TestGitdPublishesOnlyTheCAPortOnAllInterfacesByDefault(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+
+	gitd := regexp.MustCompile(`(?s)\n  gitd:\n(.*?\n)  [a-z]`).FindSubmatch(compose)
+	if gitd == nil {
+		t.Fatal("compose must declare a gitd service")
+	}
+	body := string(gitd[1])
+
+	if !regexp.MustCompile(`"\$\{REPLYCANT_CA_BIND:-0\.0\.0\.0\}:\$\{REPLYCANT_CA_PORT:-8080\}:8080"`).MatchString(body) {
+		t.Error("gitd must publish the CA listener on ${REPLYCANT_CA_BIND:-0.0.0.0}, defaulting to all interfaces")
+	}
+	if !strings.Contains(body, "--ca-addr=:8080 ") {
+		t.Error("gitd must listen for the CA page on the container port the mapping targets")
+	}
+	if regexp.MustCompile(`8443:8443`).MatchString(body) {
+		t.Error("gitd must not publish the Git listener; it is reachable only on the tailnet")
+	}
+}
+
+// Returns one service's block from the compose file, so a test can assert on
+// that service alone rather than on a flag that might belong to another.
+func composeService(t *testing.T, name string) string {
+	t.Helper()
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	service := regexp.MustCompile(`(?s)\n  ` + regexp.QuoteMeta(name) + `:\n(.*?\n)(  [a-z]|[a-z])`).
+		FindSubmatch(compose)
+	if service == nil {
+		t.Fatalf("compose must declare a %s service", name)
+	}
+	return string(service[1])
+}
+
+// gitd mints its own tailnet key over headscale's API whenever its node needs
+// one, so a key captured at init would be a second, stale source of truth.
+// It would also be exactly the state a headscale wipe invalidates.
+func TestNoTailnetKeyIsCapturedAtInit(t *testing.T) {
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	for _, stale := range []string{"gitd.authkey", "preauthkeys create", "--tsnet-auth-key-file"} {
+		if regexp.MustCompile(regexp.QuoteMeta(stale)).Match(compose) {
+			t.Errorf("compose must not mention %q; tailnet keys are minted on demand", stale)
+		}
+	}
+}
+
+// Wiping headscale's database also deletes its API keys, while the key file on
+// disk survives. headscale-init has to notice the stored key is no longer
+// known and mint a new one, or every mint after a wipe fails with 401.
+func TestHeadscaleInitReplacesAnAPIKeyHeadscaleForgot(t *testing.T) {
+	body := composeService(t, "headscale-init")
+
+	if !regexp.MustCompile(`headscale apikeys list`).MatchString(body) {
+		t.Error("headscale-init must check the stored API key against headscale apikeys list")
+	}
+	// headscale lists a key by its first 22 characters: hskey-api- and the
+	// 12-character prefix.
+	if !regexp.MustCompile(`cut -c1-22`).MatchString(body) {
+		t.Error("headscale-init must compare the stored key's 22-character prefix")
+	}
+}
+
+// Devices mint their own keys through hsproxy, which therefore needs the
+// API key, and must not start before headscale-init has written it.
+func TestHsproxyCanMintDeviceKeys(t *testing.T) {
+	body := composeService(t, "hsproxy")
+
+	for _, flag := range []string{
+		`--headscale-api-url=http://headscale:8080`,
+		`--headscale-api-key-file=/data/tailnet/headscale.apikey`,
+	} {
+		if !regexp.MustCompile(regexp.QuoteMeta(flag)).MatchString(body) {
+			t.Errorf("hsproxy must be started with %s", flag)
+		}
+	}
+	// The directory rather than the file, so a key headscale-init replaces
+	// is visible without recreating the container.
+	if !regexp.MustCompile(`/tailnet:/data/tailnet:ro`).MatchString(body) {
+		t.Error("hsproxy must mount the tailnet directory holding the API key")
+	}
+	if !regexp.MustCompile(`(?s)headscale-init:\s*\n\s*condition: service_completed_successfully`).MatchString(body) {
+		t.Error("hsproxy must wait for headscale-init to write the API key")
+	}
+}
+
+// A phone restoring from a recovery key carries only the CA's hash and can
+// reach nothing but hsproxy, so hsproxy has to send the CA in its chain.
+func TestHsproxyServesTheCA(t *testing.T) {
+	body := composeService(t, "hsproxy")
+	if !regexp.MustCompile(`--ca=/data/ca\.crt`).MatchString(body) {
+		t.Error("hsproxy must be started with --ca=/data/ca.crt")
+	}
+	if !regexp.MustCompile(`gitd/ca\.crt:/data/ca\.crt:ro`).MatchString(body) {
+		t.Error("hsproxy must mount the deployment CA")
+	}
+}
+
+// The noise key is the control plane's identity, and every client pins it.
+// Keeping it out of the database directory is what lets an operator delete
+// that directory without every node rejecting the restarted headscale.
+func TestNoiseKeySurvivesADatabaseWipe(t *testing.T) {
+	if !regexp.MustCompile(`headscale/noise:/var/lib/headscale-noise`).MatchString(composeService(t, "headscale")) {
+		t.Error("headscale must mount the noise key directory separately")
+	}
+}
+
+// A long-running service that exits, for example gitd giving up on a tailnet
+// join, must come back on its own. Otherwise the stack keeps running without
+// it and devices see only an unreachable host.
+func TestLongRunningServicesRestart(t *testing.T) {
+	for _, name := range []string{"headscale", "hsproxy", "tunnel-agent", "gitd", "decryptd", "transcoded"} {
+		if !regexp.MustCompile(`\n    restart: unless-stopped\n`).MatchString(composeService(t, name)) {
+			t.Errorf("%s must declare restart: unless-stopped", name)
+		}
+	}
+}
+
+// Clients dial gitd by a name compiled into them, so the certificates must
+// carry exactly that name. A LAN hostname would only matter to a direct
+// connection, which no client makes.
+func TestCertificatesNameGitdByItsTailnetHost(t *testing.T) {
+	body := composeService(t, "server-key")
+	if !strings.Contains(body, `GITD_TAILNET_NAME="`+tailnetaddr.GitdHost+`"`) {
+		t.Errorf("server-key must issue certificates for %s", tailnetaddr.GitdHost)
+	}
+	compose, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read the compose file: %v", err)
+	}
+	for _, stale := range []string{"REPLYCANT_HOSTNAME", ".local", "REPLYCANT_TAILNET_DOMAIN", "REPLYCANT_GIT_PORT"} {
+		if strings.Contains(string(compose), stale) {
+			t.Errorf("compose must not mention %q; gitd is reached only on the tailnet", stale)
+		}
+	}
+}
+
+// headscale's config and policy are rendered by the Go code their tests
+// cover, so a hand-written copy in compose would be untested and could
+// drift from the tags and ports gitd and hsproxy use.
+func TestHeadscaleConfigIsRenderedByGitdsImage(t *testing.T) {
+	body := composeService(t, "headscale-config")
+	if !strings.Contains(body, "image: ${REPLYCANT_GITD_IMAGE:-gitd:local}") {
+		t.Error("headscale-config must run the gitd image, which ships the renderer")
+	}
+	if !regexp.MustCompile(`exec headscale-config `).MatchString(body) {
+		t.Error("headscale-config must run the headscale-config command")
+	}
+	if strings.Contains(body, "HSEOF") || strings.Contains(body, "POLEOF") {
+		t.Error("headscale-config must not write the config by hand")
+	}
+}
+
+// Revocation compares pubkeys/ with the set gitd last reconciled. The marker
+// must persist on a writable volume, or every gitd restart would drop all
+// device nodes again.
+func TestGitdKeepsItsReconcileMarker(t *testing.T) {
+	body := composeService(t, "gitd")
+	if !regexp.MustCompile(`--tailnet-reconcile-marker=/data/tailnet-state/reconciled-pubkeys\.json`).MatchString(body) {
+		t.Error("gitd must be given a reconcile marker path")
+	}
+	if !regexp.MustCompile(`gitd/tailnet-state:/data/tailnet-state\n`).MatchString(body) {
+		t.Error("gitd must mount a writable directory for the reconcile marker")
+	}
+}

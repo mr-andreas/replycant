@@ -20,7 +20,6 @@ import {
   buildPublicKeyQrPayload,
   buildMtlsHeaders,
   clearIdentityRecord,
-  computeCaHash,
   createIdentity,
   createDeviceUuid,
   getDefaultDeviceName,
@@ -163,28 +162,23 @@ describe("identity lifecycle", () => {
     expect(localStorage.getItem(IDENTITY_STORAGE_KEY)).toBe(raw);
   });
 
-  it("builds iOS-compatible public key QR payload", async () => {
+  // The QR is the only thing an approving phone learns about this device:
+  // its keys, its name, and the secret the sealed record is published under.
+  it("builds the pairing QR payload", async () => {
     const record = await createIdentity({
       keySource: { wrap: "password", password: "secret" },
       deviceName: "my-device",
       deviceUUID: "uuid-1",
     });
     const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
-    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, "abc123")) as Record<string, string>;
-    expect(payload.pubkey).toBe(unlocked.publicKeySsh);
-    expect(payload.age_pubkey).toBe(unlocked.agePublicKey);
-    expect(payload.name).toBe("my-device");
-    expect(payload.uuid).toBe("uuid-1");
-    expect(payload.ca_hash).toBe("abc123");
-  });
-
-  it("hashes canonical certificate bytes independent of PEM formatting", async () => {
-    const compactPem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----";
-    const spacedPem = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\r\n-----END CERTIFICATE-----\n";
-    const compactHash = await computeCaHash(compactPem);
-    const spacedHash = await computeCaHash(spacedPem);
-    expect(compactHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(compactHash).toBe(spacedHash);
+    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, " cGFpcmluZy1zZWNyZXQ ")) as Record<string, string>;
+    expect(payload).toEqual({
+      pubkey: unlocked.publicKeySsh,
+      age_pubkey: unlocked.agePublicKey,
+      name: "my-device",
+      uuid: "uuid-1",
+      pairing_secret: "cGFpcmluZy1zZWNyZXQ",
+    });
   });
 
   it("normalizes empty device names and generated metadata helpers", () => {

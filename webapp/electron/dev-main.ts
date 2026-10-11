@@ -2,11 +2,17 @@ import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, shell } fr
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { URL } from "node:url";
+import { resolveDesktopApiListenPort, resolveDevApiMode } from "../server/devApi";
+import { DesktopServer, startDesktopServer } from "../server/desktopServer";
 import { registerIdentityKeyIpc } from "./registerIdentityKeyIpc";
+import { registerTailnetIpc } from "./registerTailnetIpc";
+import { createTailnetSupervisor, resolveSidecarPath, TailnetSupervisor } from "./tailnetSupervisor";
 
 const APP_NAME = "Replycant";
 
 let mainWindow: BrowserWindow | null = null;
+let desktopServer: DesktopServer | null = null;
+let tailnet: TailnetSupervisor | null = null;
 
 // Builds the renderer URL for local development where Vite hosts UI and proxies API routes.
 const resolveDevUrl = (): string => {
@@ -81,6 +87,23 @@ const createMainWindow = async (): Promise<void> => {
 const handleShutdownSignal = (): void => {
   app.quit();
 };
+
+// Releases the API server before the sidecar so in-flight git and LFS
+// requests are not cut off by losing the SOCKS proxy underneath them.
+const stopDesktopServer = async (): Promise<void> => {
+  if (desktopServer) {
+    await desktopServer.close();
+    desktopServer = null;
+  }
+  if (tailnet) {
+    await tailnet.stop();
+    tailnet = null;
+  }
+};
+
+app.on("before-quit", async () => {
+  await stopDesktopServer();
+});
 process.on("SIGINT", handleShutdownSignal);
 process.on("SIGTERM", handleShutdownSignal);
 
@@ -106,6 +129,46 @@ app.whenReady().then(async () => {
   const storeDir = join(app.getPath("userData"), "replycant");
   mkdirSync(storeDir, { recursive: true });
   registerIdentityKeyIpc(ipcMain, { safeStorage, storeDir });
+
+  // Registered here too so the dev shell answers the same channels as the
+  // packaged app; onboarding would otherwise fail on a missing handler.
+  const tailnetStateDir = join(storeDir, "tsnet");
+  mkdirSync(tailnetStateDir, { recursive: true });
+  tailnet = createTailnetSupervisor({
+    binaryPath: resolveSidecarPath({
+      resourcesPath: process.resourcesPath,
+      // app.getAppPath() is dist-electron when launched as
+      // `electron dist-electron/dev-main.js`. The sidecar lives next to
+      // the webapp package, one level above this compiled bundle.
+      projectRoot: resolve(import.meta.dirname, ".."),
+      packaged: app.isPackaged,
+    }),
+    logf: (message) => console.log(message),
+  });
+  registerTailnetIpc(ipcMain, {
+    supervisor: tailnet,
+    stateDir: tailnetStateDir,
+    discoveryBaseUrl: process.env.REPLYCANT_DISCOVERY_BASE_URL || undefined,
+    // Every window, not just the focused one: the connection panel is part of
+    // the app chrome and a background window showing a stale tailnet state
+    // would be worse than showing none.
+    broadcast: (channel, payload) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(channel, payload);
+      }
+    },
+  });
+
+  // Vite still hosts the UI and HMR. When desktop:dev points `/api` here,
+  // this process has to own the proxy so it shares the sidecar SOCKS pool.
+  const devApi = resolveDevApiMode();
+  if (devApi.mode === "proxy") {
+    desktopServer = await startDesktopServer({
+      host: "127.0.0.1",
+      port: resolveDesktopApiListenPort(devApi.target),
+      getTailnetProxy: () => tailnet?.getProxy(),
+    });
+  }
   const lastPagePath = join(storeDir, "lastPage.json");
   ipcMain.on("lastPage:read", (event) => {
     try {

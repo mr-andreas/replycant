@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Declares the required-reason APIs this app reaches, directly and through its
+  dependencies.
+
+  Most of these come from the Go runtime inside the vendored TailscaleKit,
+  which calls stat, sysctl, and statfs during normal operation. The framework
+  ships no privacy manifest of its own, so without these declarations App Store
+  submission is rejected with ITMS-91053.
+
+  Nothing here is collected or transmitted: the app has no analytics, and all
+  user data goes only to the user's own server. Hence the empty collected-data
+  and tracking-domain lists, which are assertions rather than omissions.
+
+  Verify with Xcode's Product > Generate Privacy Report after changing this.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array/>
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array>
+    <dict>
+      <!-- The Go runtime stats files it owns, and the app reads timestamps of
+           its own cached media and git objects. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>C617.1</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- statfs, reached by the Go runtime and by the app deciding whether a
+           photo download or LFS transfer will fit. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>E174.1</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- sysctl kern.boottime, used by the Go runtime's monotonic clock. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>35F9.1</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- The server URL and sync preferences, read back only by this app. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>CA92.1</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

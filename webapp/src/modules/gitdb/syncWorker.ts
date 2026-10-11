@@ -69,8 +69,6 @@ const runRpc = async (message: SyncWorkerRpcMessage): Promise<unknown> => {
       return syncEngine.listRecentLocalCommits(message.args[0] as number | undefined);
     case "readTrackedRemoteHeadCommitHashOrNull":
       return syncEngine.readTrackedRemoteHeadCommitHashOrNull();
-    case "probeOnboardingAuthorization":
-      return syncEngine.probeOnboardingAuthorization();
     case "query":
       if (!manifestDb) throw new Error("Manifest database not initialized.");
       return manifestDb.query(

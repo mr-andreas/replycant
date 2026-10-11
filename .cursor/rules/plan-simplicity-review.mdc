@@ -1,0 +1,22 @@
+---
+description: Review every new plan for simplicity before presenting it
+alwaysApply: true
+---
+
+# Plan Simplicity Review
+
+After drafting a plan, run a second pass before presenting it. Ask: is this
+the simplest solution to the problem we are actually trying to solve?
+
+During the second pass:
+
+- Restate the problem in one sentence. Drop steps that do not serve it.
+- Look for a smaller change: reuse existing code, change one place instead
+  of several, or remove something instead of adding something.
+- Cut speculative work: new abstractions, configuration, or extension points
+  that no current requirement needs.
+- Check that the plan fixes the cause, not a symptom.
+
+If the review finds a simpler approach, revise the plan. Then add a short
+note to the plan that says what the review simplified, or why the original
+approach is already the simplest one that works.

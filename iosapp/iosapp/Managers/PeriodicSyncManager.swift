@@ -141,6 +141,9 @@ final class PeriodicSyncManager {
 
         let startTime = CFAbsoluteTimeGetCurrent()
         do {
+            // Shares a wake rebuild already in flight instead of pushing
+            // through a proxy the suspend may have reclaimed.
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
             try ensureMTLSTransportConfigured()
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
             let pushed = try await gitDB.tryPush()
@@ -168,6 +171,9 @@ final class PeriodicSyncManager {
 
         let startTime = CFAbsoluteTimeGetCurrent()
         do {
+            // Shares a wake rebuild already in flight instead of pulling
+            // through a proxy the suspend may have reclaimed.
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
             try ensureMTLSTransportConfigured()
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
             let pulled = try await gitDB.tryPull()

@@ -4,7 +4,7 @@ import LibGit2
 import Security
 import os.log
 
-private let hlsLogger = Logger(subsystem: "com.replycant.app", category: "HLSPlayback")
+private let hlsLogger = Logger(subsystem: appLogSubsystem, category: "HLSPlayback")
 
 /// Serves HLS playlists and segments to AVPlayer over gitd's mTLS endpoint.
 ///
@@ -31,21 +31,42 @@ final class HLSResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
 
     private let headers: [String: String]
     private let authDelegate: MTLSURLSessionAuthDelegate
+    /// Where a playlist or segment response is reported, so playback that
+    /// cannot reach gitd is also what raises the connection banner.
+    private let reachability: ServerReachability
     private let lock = NSLock()
     private var tasks: [ObjectIdentifier: URLSessionDataTask] = [:]
     private lazy var urlSession = URLSession(
-        configuration: .ephemeral,
+        configuration: Self.tailnetRoutedConfiguration(),
         delegate: authDelegate,
         delegateQueue: nil
     )
 
+    // AVFoundation drives these loaders synchronously from its own queues, so
+    // the proxy is installed as the session is built rather than awaited. gitd
+    // is reachable only through it.
+    private static func tailnetRoutedConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        TailnetSessionRouter.shared.applySynchronously(to: configuration)
+        return configuration
+    }
+
+    /// Reports each playlist and segment response so playback that cannot
+    /// reach the library raises the connection banner.
+    ///
     /// - Parameters:
     ///   - headers: DEK and chunk-size headers forwarded on every sub-request.
     ///   - clientIdentity: Device identity presented to gitd's mTLS endpoint.
     ///   - pinnedCA: CA captured during onboarding, used to pin the server chain.
-    init(headers: [String: String], clientIdentity: SecIdentity?, pinnedCA: SecCertificate?) {
+    init(
+        headers: [String: String],
+        clientIdentity: SecIdentity?,
+        pinnedCA: SecCertificate?,
+        reachability: ServerReachability = .shared
+    ) {
         self.headers = headers
         self.authDelegate = MTLSURLSessionAuthDelegate(clientIdentity: clientIdentity, pinnedCA: pinnedCA)
+        self.reachability = reachability
         super.init()
     }
 
@@ -150,10 +171,14 @@ final class HLSResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
             self.forgetTask(for: requestID)
 
             if let error {
+                self.reachability.recordFailure(error)
                 if (error as? URLError)?.code == .cancelled { return }
                 hlsLogger.error("HLS sub-request failed: \(error.localizedDescription, privacy: .public)")
                 loadingRequest.finishLoading(with: error)
                 return
+            }
+            if response is HTTPURLResponse {
+                self.reachability.recordResponse()
             }
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {

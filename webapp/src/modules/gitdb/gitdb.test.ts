@@ -61,9 +61,6 @@ vi.mock("./syncEngine", () => ({
     async readTrackedRemoteHeadCommitHashOrNull(): Promise<string | null> {
       return null;
     }
-    async probeOnboardingAuthorization(): Promise<{ status: "pending_authorization" }> {
-      return { status: "pending_authorization" };
-    }
   },
 }));
 

@@ -1,12 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Defines a headless cross-browser matrix so git pull benchmarks are comparable across Chrome and Firefox.
+// Runs git benchmarks headless in Chromium so timings match the Electron runtime.
 export default defineConfig({
   testDir: ".",
   testMatch: "src/benchmarks/**/*.benchmark.spec.ts",
   timeout: 10 * 60 * 1000,
   reporter: [["list"]],
   use: {
+    ...devices["Desktop Chrome"],
     headless: true,
     baseURL: "http://127.0.0.1:4173",
   },
@@ -16,20 +17,4 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
-  projects: [
-    {
-      name: "chrome",
-      use: {
-        ...devices["Desktop Chrome"],
-        browserName: "chromium",
-      },
-    },
-    {
-      name: "firefox",
-      use: {
-        ...devices["Desktop Firefox"],
-        browserName: "firefox",
-      },
-    },
-  ],
 });

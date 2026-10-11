@@ -19,7 +19,7 @@ struct RecoveryBundleTests {
         label: "Home safe",
         uuid: "f2b0ef64-4d31-4bea-902f-5f1117de844c",
         created: "2026-08-09T19:00:00Z",
-        discoveryURL: "http://replycant.local:8080",
+        headscaleURL: "https://0123456789abcdef.s1.tunnel.example.com",
         caSHA256: String(repeating: "a", count: 64),
         p256PrivateKeyPEM: samplePEM,
         agePrivateKey: sampleAgeSecret
@@ -148,6 +148,26 @@ struct RecoveryBundleTests {
                 in: "https://example.com/recover?v=1&d=abc&pw=secret"
             ) == nil
         )
+    }
+
+    // Ensures a debug share link can be pasted into RecoveryKeys.md
+    // and recover in one step: the password survives encoding, keep
+    // is set, and the envelope is unchanged.
+    @Test func debugDeepLinkEmbedsPasswordKeepAndEnvelope() throws {
+        let password = "a b&c=d+e#f"
+        let envelope = try RecoveryBundle.encrypt(
+            plaintext: Self.samplePlaintext,
+            password: password
+        )
+        let deepLink = try RecoveryBundle.deepLinkString(for: envelope)
+        let debugLink = RecoveryBundle.debugDeepLinkString(
+            deepLink: deepLink,
+            password: password
+        )
+
+        #expect(RecoveryBundle.embeddedPassword(in: debugLink) == password)
+        #expect(RecoveryBundle.requestsKeepingRecoveryKey(in: debugLink))
+        #expect(try RecoveryBundle.parseEnvelope(from: debugLink) == envelope)
     }
 
     // Verifies all supported input forms parse to the same envelope payload.

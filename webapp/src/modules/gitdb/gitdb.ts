@@ -35,7 +35,6 @@ export interface GitdbClient {
   forwardToRemoteHeadAndResumePolling(): Promise<void>;
   listRecentLocalCommits(limit?: number): Promise<SyncCommitSummary[]>;
   readTrackedRemoteHeadCommitHashOrNull(): Promise<string | null>;
-  probeOnboardingAuthorization(): ReturnType<GitRepoPort["probeOnboardingAuthorization"]>;
   registerManifestKind<T>(registration: ManifestKindRegistration<T>): void;
   query(identity: ManifestQueryIdentity, request: ManifestQueryRequest): Promise<RegisteredManifestRecord[] | number>;
   queryPointers(paths: string[]): Promise<Map<string, LfsPointerFields>>;
@@ -181,10 +180,6 @@ export const createGitdb = (options: CreateGitdbOptions = {}): GitdbClient => {
     async readTrackedRemoteHeadCommitHashOrNull() {
       await initialize();
       return repoPort!.readTrackedRemoteHeadCommitHashOrNull();
-    },
-    async probeOnboardingAuthorization() {
-      await initialize();
-      return repoPort!.probeOnboardingAuthorization();
     },
     registerManifestKind(registration) {
       registry.register(registration);

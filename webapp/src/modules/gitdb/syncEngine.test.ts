@@ -735,43 +735,6 @@ describe("SyncEngine", () => {
     expect(tracked).toBe("abc123");
   });
 
-  it("reports authorized onboarding probe when remote branch head is visible", async () => {
-    const snapshots: SyncSnapshot[] = [];
-    const engine = createEngine(snapshots);
-    const probe = await engine.probeOnboardingAuthorization();
-    expect(probe.status).toBe("authorized");
-    if (probe.status === "authorized") {
-      expect(probe.remoteHead).toBe("abc123");
-    }
-  });
-
-  it("reports pending authorization onboarding probe for unauthorized responses", async () => {
-    const snapshots: SyncSnapshot[] = [];
-    const engine = createEngine(snapshots);
-    gitMock.listServerRefs = vi.fn().mockRejectedValue(new Error("HTTP Error: 401 Unauthorized"));
-    const probe = await engine.probeOnboardingAuthorization();
-    expect(probe).toEqual({ status: "pending_authorization" });
-  });
-
-  it("reports transient onboarding probe for temporary network failures", async () => {
-    const snapshots: SyncSnapshot[] = [];
-    const engine = createEngine(snapshots);
-    gitMock.listServerRefs = vi.fn().mockRejectedValue(new Error("socket hang up"));
-    const probe = await engine.probeOnboardingAuthorization();
-    expect(probe.status).toBe("transient_error");
-  });
-
-  it("reports fatal onboarding probe when remote branch is missing", async () => {
-    const snapshots: SyncSnapshot[] = [];
-    const engine = createEngine(snapshots);
-    gitMock.listServerRefs = vi.fn().mockResolvedValue([]);
-    const probe = await engine.probeOnboardingAuthorization();
-    expect(probe.status).toBe("fatal_error");
-    if (probe.status === "fatal_error") {
-      expect(probe.message).toContain("Remote branch refs/heads/main is missing");
-    }
-  });
-
   it("surfaces actionable startup error when manifest decode fails", async () => {
     const snapshots: SyncSnapshot[] = [];
     const engine = createEngine(snapshots);
@@ -951,7 +914,7 @@ describe("SyncEngine", () => {
   // Pins the "single shared isomorphic-git cache" invariant: every git.*
   // helper that accepts a cache must receive the SAME object reference for
   // the engine's lifetime. Otherwise pack-index parses are duplicated and the
-  // Firefox+LightningFS rewind/blob-read performance regression returns.
+  // LightningFS rewind/blob-read performance regression returns.
   it("threads the same cache reference across expandOid, readTree, and readBlob calls", async () => {
     const snapshots: SyncSnapshot[] = [];
     const engine = createEngine(snapshots);

@@ -1,4 +1,4 @@
-import type { ManifestDatabaseChange, OnboardingAuthorizationProbe, SyncCommitSummary, SyncEngineConfig, SyncSnapshot } from "./syncTypes";
+import type { ManifestDatabaseChange, SyncCommitSummary, SyncEngineConfig, SyncSnapshot } from "./syncTypes";
 import type { ManifestIndexDefinition, RegisteredManifestRecord } from "./manifestRegistry";
 import type { DerivedStoreQueryRequest, ManifestQueryIdentity, ManifestQueryRequest } from "./manifestDatabase";
 import type { LfsPointerFields } from "./encryption";
@@ -17,7 +17,6 @@ export type SyncWorkerRpcMethod =
   | "forwardToRemoteHeadAndResumePolling"
   | "listRecentLocalCommits"
   | "readTrackedRemoteHeadCommitHashOrNull"
-  | "probeOnboardingAuthorization"
   | "query"
   | "queryPointers"
   | "queryDerived";
@@ -36,7 +35,6 @@ export interface SyncWorkerRpcArgsMap {
   forwardToRemoteHeadAndResumePolling: [];
   listRecentLocalCommits: [number?];
   readTrackedRemoteHeadCommitHashOrNull: [];
-  probeOnboardingAuthorization: [];
   query: [ManifestQueryIdentity, ManifestQueryRequest];
   queryPointers: [string[]];
   queryDerived: [string, DerivedStoreQueryRequest];
@@ -56,7 +54,6 @@ export interface SyncWorkerRpcResultMap {
   forwardToRemoteHeadAndResumePolling: void;
   listRecentLocalCommits: SyncCommitSummary[];
   readTrackedRemoteHeadCommitHashOrNull: string | null;
-  probeOnboardingAuthorization: OnboardingAuthorizationProbe;
   query: RegisteredManifestRecord[] | number;
   queryPointers: [string, LfsPointerFields][];
   queryDerived: unknown[] | number;

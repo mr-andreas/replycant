@@ -131,7 +131,9 @@ func TestFormatSSHPublicKey(t *testing.T) {
 	assert.False(t, strings.HasSuffix(withoutComment, " "))
 }
 
-// TestBuildPublicKeyQrPayload verifies QR payload keys match iOS onboarding contract expectations.
+// The QR is the whole request a new device makes: the scanner commits these
+// keys and hands gitd the pairing secret, so every field has to be present and
+// nothing that names a trust root the device cannot know yet.
 func TestBuildPublicKeyQrPayload(t *testing.T) {
 	t.Parallel()
 	identity := gitcrypt.Identity{
@@ -140,16 +142,18 @@ func TestBuildPublicKeyQrPayload(t *testing.T) {
 		DeviceName:   "name",
 		DeviceUUID:   "uuid",
 	}
-	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "caf00d")
+	raw, err := gitcrypt.BuildPublicKeyQrPayload(identity, "cGFpcmluZy1zZWNyZXQ")
 	require.NoError(t, err)
 
 	var payload map[string]string
 	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
-	assert.Equal(t, "ssh", payload["pubkey"])
-	assert.Equal(t, "age", payload["age_pubkey"])
-	assert.Equal(t, "name", payload["name"])
-	assert.Equal(t, "uuid", payload["uuid"])
-	assert.Equal(t, "caf00d", payload["ca_hash"])
+	assert.Equal(t, map[string]string{
+		"pubkey":         "ssh",
+		"age_pubkey":     "age",
+		"name":           "name",
+		"uuid":           "uuid",
+		"pairing_secret": "cGFpcmluZy1zZWNyZXQ",
+	}, payload)
 }
 
 // TestEnsureFileExists validates path checks detect both missing files and directory misuse.
@@ -220,4 +224,19 @@ func TestIdentityIsPerRepo(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, idA.Identity.DeviceUUID, idB.Identity.DeviceUUID)
 	assert.NotEqual(t, idA.ConfigDirectory, idB.ConfigDirectory)
+}
+
+// Without a secret no pairing record can ever reach the device, so a QR built
+// from a blank one (templating, shell interpolation) would leave it waiting
+// forever after the scanner approved it.
+func TestBuildPublicKeyQrPayloadRequiresAPairingSecret(t *testing.T) {
+	t.Parallel()
+	identity := gitcrypt.Identity{
+		PublicKeySSH: "ssh",
+		AgePublicKey: "age",
+		DeviceName:   "name",
+		DeviceUUID:   "uuid",
+	}
+	_, err := gitcrypt.BuildPublicKeyQrPayload(identity, " \t")
+	require.Error(t, err)
 }

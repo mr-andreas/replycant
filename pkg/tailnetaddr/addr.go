@@ -1,0 +1,39 @@
+// Package tailnetaddr holds the addresses every client uses to reach gitd
+// once it is on the deployment's tailnet.
+//
+// These are not delivered in pairing records or QR codes because they are a
+// property of the gitd build, not of a deployment. A device only ever talks
+// to a gitd from the same release, and a name that came from a QR could
+// drift from the certificate SAN and the headscale policy.
+package tailnetaddr
+
+import "fmt"
+
+const (
+	// MagicDNS base domain headscale serves. It must differ from the
+	// control plane's own domain, which is why it is .internal.
+	Domain = "replycant.internal"
+
+	// The node name gitd registers on the tailnet.
+	GitdHostname = "gitd"
+
+	// MagicDNS name gitd is reached at. Must match the SAN on gitd's
+	// certificate.
+	GitdHost = GitdHostname + "." + Domain
+
+	// Port gitd serves Git and LFS on inside the tailnet. The headscale
+	// policy opens exactly this port to devices.
+	GitdPort = 8443
+
+	// Path on the control-plane host (hsproxy) where a device whose key is
+	// in pubkeys/ asks for a fresh single-use pre-auth key. It lives on the
+	// control plane rather than on gitd because a device that headscale has
+	// forgotten is not on the tailnet and cannot reach gitd. hsproxy answers
+	// it from the same mTLS session it would otherwise splice to headscale.
+	PreauthKeyPath = "/replycant/preauthkey"
+)
+
+// URL clients use for Git and LFS after they have joined the tailnet.
+func GitdURL() string {
+	return fmt.Sprintf("https://%s:%d", GitdHost, GitdPort)
+}

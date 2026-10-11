@@ -36,3 +36,9 @@
   --ifm-navbar-background-color: #2d1050;
   --docusaurus-highlighted-code-line-bg: rgba(232, 216, 240, 0.12);
 }
+
+/* draw.io diagrams carry their own light or dark background, so round it into
+   a card instead of leaving a hard rectangle on the tinted page. */
+img[src*='.drawio-'] {
+  border-radius: 8px;
+}

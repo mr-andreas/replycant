@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import Testing
 import LibGit2
+@testable import iosapp
 
 // Provides an LFS mock isolated to this suite so parallel suites cannot
 // overwrite its in-memory object map.
@@ -134,9 +135,9 @@ final class LogTestLFSURLProtocol: URLProtocol {
 
 // Verifies that LFS object downloads produce a compact summary log
 // line per object and that the old multi-line chatter is gone. The
-// summary line must include oid, HTTP status, byte count, TTFB, and
-// total elapsed time so operators can diagnose transfer performance
-// from logs alone even when other suites print unrelated lines.
+// summary line must include oid, HTTP status, byte count, TTFB,
+// total elapsed time, and transfer rate so operators can tell a
+// slow body from a slow handshake without doing the arithmetic.
 @Suite("LFS Download Log Tests", .serialized)
 struct LFSDownloadLogTests {
     private func sha256Hex(_ data: Data) -> String {
@@ -189,7 +190,8 @@ struct LFSDownloadLogTests {
         config.protocolClasses = [LogTestLFSURLProtocol.self]
         let client = GitLFS(
             serverURL: "https://test-lfs.local/lfs",
-            sessionConfiguration: config
+            sessionConfiguration: config,
+            router: .passthroughForTests()
         )
 
         let output = try await captureStdout {
@@ -218,6 +220,12 @@ struct LFSDownloadLogTests {
         #expect(summary.contains("bytes=\(payload.count)"))
         #expect(summary.contains("total="))
         #expect(summary.contains("ms"))
+        #expect(summary.contains("rate="))
+        #expect(summary.contains("B/s"))
+        // Direct GitLFS calls are not queued, so scheduler fields stay off
+        // the line rather than pretending wait and inflight were zero.
+        #expect(!summary.contains("wait="))
+        #expect(!summary.contains("inflight="))
 
         // Old chatty messages must be gone.
         #expect(!output.contains("Batch response status"))
@@ -238,7 +246,8 @@ struct LFSDownloadLogTests {
         config.protocolClasses = [LogTestLFSURLProtocol.self]
         let client = GitLFS(
             serverURL: "https://test-lfs.local/lfs",
-            sessionConfiguration: config
+            sessionConfiguration: config,
+            router: .passthroughForTests()
         )
 
         let missingOID = sha256Hex(Data("does-not-exist".utf8))
@@ -264,5 +273,47 @@ struct LFSDownloadLogTests {
 
         let failLine = try #require(failLines.first)
         #expect(failLine.contains("failed"))
+    }
+
+    // Confirms a scheduled download prints wait and inflight on the
+    // same line as the transfer metrics, which is what separates a
+    // contended slot from a slow body.
+    @Test func downloadIncludesQueueTraceWhenPresent() async throws {
+        let payload = Data("queued-download-payload-for-log-shape".utf8)
+        let oid = sha256Hex(payload)
+
+        LogTestLFSURLProtocol.dataByOID = [oid: payload]
+        defer { LogTestLFSURLProtocol.dataByOID = [:] }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [LogTestLFSURLProtocol.self]
+        let client = GitLFS(
+            serverURL: "https://test-lfs.local/lfs",
+            sessionConfiguration: config,
+            router: .passthroughForTests()
+        )
+
+        let output = try await captureStdout {
+            try await LFSDownloadLog.$queue.withValue(
+                LFSDownloadQueueTrace(waitMs: 40, inflight: 3)
+            ) {
+                let data = try await client.downloadData(
+                    oid: oid,
+                    size: Int64(payload.count)
+                )
+                #expect(data == payload)
+            }
+        }
+
+        let summary = try #require(
+            output
+                .components(separatedBy: "\n")
+                .first(where: {
+                    $0.hasPrefix("LFS:") && $0.contains("oid=\(oid)")
+                })
+        )
+        #expect(summary.contains("wait=40ms"))
+        #expect(summary.contains("inflight=3"))
+        #expect(summary.contains("rate="))
     }
 }

@@ -1,9 +1,9 @@
 import SwiftUI
 import AVFoundation
 
-// Scans QR codes containing server configuration JSON for mTLS setup.
-// Uses AVFoundation's metadata detection to decode {"ca": "...", "url": "..."} payloads.
-// Supports multiple validation modes for different QR code formats (server config, device public key, etc.).
+// Scans the QR codes onboarding, device linking and recovery exchange.
+// Uses AVFoundation's metadata detection; each validation mode accepts one
+// payload shape so a wrong code is rejected before any flow acts on it.
 struct QRCodeScannerView: View {
     let onScan: (String) -> Void
     let onCancel: () -> Void
@@ -17,9 +17,9 @@ struct QRCodeScannerView: View {
     
     // Defines what fields are required in the scanned QR code JSON.
     enum ValidationMode {
-        case serverConfig    // Requires: ca, url
-        case devicePublicKey // Requires: pubkey, name, uuid
-        case connectOrRecovery // Accepts server config or a recovery envelope / replycant link
+        case serverConfig    // Requires: ca, headscale_url, preauth_key
+        case devicePublicKey // Requires: pubkey, age_pubkey, name, uuid, pairing_secret
+        case recoveryBundle  // Accepts a recovery envelope or replycant link
         case any             // No validation, accepts any valid JSON
     }
 

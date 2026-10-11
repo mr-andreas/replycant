@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- all client-to-server traffic now runs over a private tailnet, so every device must be re-onboarded. The first device must be the iOS app: open `http://<server>:8080` from the server or anywhere on the LAN and scan a one-time join QR. The page stops handing out join codes once the first device has joined; set `REPLYCANT_CA_BIND=127.0.0.1` to keep it on the server host. Later devices, including every desktop, show a pairing QR to an already-paired device; the browser build cannot reach a tailnet deployment. The CA page and pairing record no longer carry a gitd URL or tailnet name — clients always use `https://gitd.replycant.internal:8443`. Wipe existing pairings; the QR shape and pairing payload both changed. The control-plane hostname includes a shard label (`{ca-hash}.s{NN}.tunnel.replycant.com`). A plain `docker compose up` publishes the control plane through the hosted relay. Pairing records are authenticated only under the secret from the pairing QR and are delivered only through the discovery API
+- LAN-only servers are gone: the server always runs the tailnet and no longer publishes a Git port, so `REPLYCANT_GIT_PORT` and `REPLYCANT_HOSTNAME` have no effect. Wipe state and pair every device over the tailnet. Recovery keys created before this change no longer open; create a new one once the phone is paired
+
+#### Desktop app
+
+- the browser build now shows a "desktop app required" screen instead of onboarding, because only the desktop app can join the tailnet. Use the desktop app
+
+#### git-replycant
+
+- `clone` no longer takes a server URL and no longer connects directly. Run `git-replycant clone` and approve the pairing QR from a device already on the tailnet. Existing command-line clones have to be cloned again. The release archive's `git-remote-replycant` symlink has to be on `PATH`, because that is how git reaches the repository
+
+### Features
+
+- reach your library from anywhere without forwarding a router port or running dynamic dns. devices join a private network with the server, can reach the server but not each other, media travels directly between them where possible, and the hosted services that make the introduction cannot read any of it. membership follows the device keys in the library: removing a device's key takes it off the network right away without disconnecting the other devices, and the server can lose its network database (delete `headscale/lib` and run `docker compose up`) without anyone pairing again. a recovery key restores the library onto a fresh phone over the same network
+
+#### iOS app
+
+- the library opens immediately at launch instead of waiting for the network, and a notice shows when the library cannot be reached
+- on mobile data or in Low Data Mode, videos no longer autoplay and uploads ask before starting; both warn how much data full-quality media uses, and an upload started on Wi-Fi pauses if the phone switches to mobile data
+- show how this device reaches the library — connected or not, whether the server is reached directly or through a relay, and whether peers are online — on the Connection page in Settings
+
+#### Desktop app
+
+- show how this device reaches the library — connected or not, whether the server is reached directly or through a relay, and whether peers are online — in the settings pane
+
+#### git-replycant
+
+- fetch, push, and LFS share one background tailnet connection per repository. It starts when a command needs the network and exits after a few minutes of idle time
+
+#### replycant-importer
+
+- LFS uploads go through that same tailnet connection, and a repository that was not cloned with `git-replycant` is refused
+
+### Fixes
+
+#### iOS app
+
+- the connection problems banner now appears whenever the phone loses its network or cannot reach your library, not only while connecting at launch
+- photos opened before the app finished connecting to your library now load once the connection is up instead of spinning forever
+- after the phone has been locked for a while, photo upload and sync connect again instead of failing while Settings still says the device is connected
+- setup and photo upload now say what they are doing instead of showing a silent spinner
+- linking a new device no longer freezes after the pairing QR is scanned
+
 ## 0.2.1 - 2026-09-07
 
 ### Fixes

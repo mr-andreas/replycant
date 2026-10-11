@@ -14,6 +14,40 @@ public final class MTLSTransport: NSObject {
     private var pinnedCA: SecCertificate?
     private var isRegistered = false
     
+    /// Which git HTTP request is about to run.
+    ///
+    /// The ref advertisement is the small request periodic sync repeats
+    /// every couple of seconds. It has to give up soon when the server
+    /// cannot be reached, or a dead connection looks healthy until a pack
+    /// transfer's long timeout runs out. A pack stays long because the
+    /// server can go quiet while it writes one.
+    public enum GitRequestPhase: Sendable {
+        case refAdvertisement
+        case packTransfer
+    }
+
+    /// How long one git HTTP request may sit idle before it counts as a
+    /// lost connection.
+    public static func requestTimeout(for phase: GitRequestPhase) -> TimeInterval {
+        switch phase {
+        case .refAdvertisement:
+            return 15
+        case .packTransfer:
+            return 300
+        }
+    }
+
+    /// Maps a libgit2 service onto the timeout its request should use.
+    /// The two `*_LS` services are the ref advertisements.
+    fileprivate static func requestPhase(for action: git_smart_service_t) -> GitRequestPhase {
+        switch action {
+        case GIT_SERVICE_UPLOADPACK_LS, GIT_SERVICE_RECEIVEPACK_LS:
+            return .refAdvertisement
+        default:
+            return .packTransfer
+        }
+    }
+
     private override init() {
         super.init()
     }
@@ -316,11 +350,15 @@ private final class StreamingBuffer {
 // Streams URLSession data chunks into the transport buffer for incremental libgit2 reads.
 private final class StreamingDataDelegate: NSObject, URLSessionDataDelegate {
     private let authDelegate: MTLSURLSessionDelegate
+    /// Where a git response or a dead connection is reported, so the
+    /// banner learns from the sync traffic that already runs.
+    private let reachability: ServerReachability
     private var buffersByTaskId: [Int: StreamingBuffer] = [:]
     private let taskMapLock = NSLock()
     
-    init(authDelegate: MTLSURLSessionDelegate) {
+    init(authDelegate: MTLSURLSessionDelegate, reachability: ServerReachability = .shared) {
         self.authDelegate = authDelegate
+        self.reachability = reachability
         super.init()
     }
 
@@ -373,6 +411,13 @@ private final class StreamingDataDelegate: NSObject, URLSessionDataDelegate {
             completionHandler(.cancel)
             return
         }
+
+        // Any HTTP status means gitd answered. The status check below
+        // still fails the transfer; this only records that the server
+        // was reached.
+        if response is HTTPURLResponse {
+            reachability.recordResponse()
+        }
         
         guard let httpResponse = response as? HTTPURLResponse else {
             responseBuffer.fail(MTLSTransportError.networkError("No HTTP response"))
@@ -398,6 +443,7 @@ private final class StreamingDataDelegate: NSObject, URLSessionDataDelegate {
         guard let responseBuffer = responseBuffer(for: task) else { return }
         unregister(taskIdentifier: task.taskIdentifier)
         if let error {
+            reachability.recordFailure(error)
             let nsError = error as NSError
             logError("Task completed with error: domain=\(nsError.domain) code=\(nsError.code) \(nsError.localizedDescription)", context: "MTLSTransport")
             if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
@@ -626,10 +672,17 @@ private func startHTTPRequest(context: StreamContext) -> Int32 {
         }
         
         let authDelegate = MTLSURLSessionDelegate(clientIdentity: identity, pinnedCA: ca)
-        let delegate = StreamingDataDelegate(authDelegate: authDelegate)
+        let delegate = StreamingDataDelegate(authDelegate: authDelegate, reachability: .shared)
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
+        // Blocking rather than awaited because libgit2 drives this through a
+        // synchronous C callback with nowhere to suspend. The work is a
+        // loopback query against an already-running node, not a round trip.
+        if !TailnetSessionRouter.shared.applySynchronously(to: config) {
+            logError("Tailnet proxy could not be installed; refusing to dial directly", context: "MTLSTransport")
+            return -1
+        }
         context.subtransportContext.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         context.subtransportContext.sessionDelegate = delegate
         logDebug("Created shared URLSession for subtransport", context: "MTLSTransport")
@@ -651,7 +704,12 @@ private func startHTTPRequest(context: StreamContext) -> Int32 {
     
     var request = URLRequest(url: url)
     request.httpMethod = method
-    request.timeoutInterval = 300
+    // The advertisement is what periodic sync repeats. A short idle
+    // timeout there is how a dead connection shows up in seconds rather
+    // than when a pack transfer finally gives up.
+    request.timeoutInterval = MTLSTransport.requestTimeout(
+        for: MTLSTransport.requestPhase(for: context.action)
+    )
     
     if let contentType = contentType {
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")

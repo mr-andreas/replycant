@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -33,6 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
 	"github.com/mr-andreas/replycant/pkg/lfsclient"
+	"github.com/mr-andreas/replycant/pkg/tailnetagent"
 	xdraw "golang.org/x/image/draw"
 	"gopkg.in/yaml.v3"
 )
@@ -555,13 +557,9 @@ func (i *importer) ensureCleanWorktree(ctx context.Context, repoPath string) err
 // ensureNoFullLFSClone rejects filter-driven clones so the importer can write
 // pointers itself without git-lfs clean rewriting multi-megabyte binaries.
 func (i *importer) ensureNoFullLFSClone(ctx context.Context, repoPath string) error {
-	out, err := i.runCmd(ctx, repoPath, "git", "rev-parse", "--git-dir")
+	gitDir, err := i.resolveGitDir(ctx, repoPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve git dir: %w", err)
-	}
-	gitDir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(repoPath, gitDir)
+		return err
 	}
 	attrPath := filepath.Join(gitDir, "info", "attributes")
 	if raw, readErr := os.ReadFile(attrPath); readErr == nil {
@@ -618,27 +616,7 @@ func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) 
 	if err != nil {
 		return fmt.Errorf("resolve remote.origin.url: %w", err)
 	}
-	lfsURL, err := lfsclient.DeriveEndpointURL(strings.TrimSpace(string(originURL)))
-	if err != nil {
-		return fmt.Errorf("derive LFS URL: %w", err)
-	}
-	endpoint, err := lfsclient.ParseEndpoint(lfsURL)
-	if err != nil {
-		return fmt.Errorf("parse LFS URL: %w", err)
-	}
-	caPath, err := i.gitConfigValue(ctx, repoPath, "http.sslCAInfo")
-	if err != nil {
-		return err
-	}
-	certPath, err := i.gitConfigValue(ctx, repoPath, "http.sslCert")
-	if err != nil {
-		return err
-	}
-	keyPath, err := i.gitConfigValue(ctx, repoPath, "http.sslKey")
-	if err != nil {
-		return err
-	}
-	httpClient, err := lfsclient.NewMTLSHTTPClient(caPath, certPath, keyPath)
+	httpClient, endpoint, err := tailnetLFSClient(ctx, i, repoPath, strings.TrimSpace(string(originURL)))
 	if err != nil {
 		return err
 	}
@@ -655,6 +633,69 @@ func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) 
 		return client.Upload(ctx, "", objects, open)
 	}
 	return nil
+}
+
+// tailnetLFSClient is the uploader's transport. The replycant:: prefix is a
+// git remote-helper marker, not part of the URL git-lfs would understand,
+// and the bytes have to cross the repository's tailnet node: gitd has no
+// address on the host network.
+func tailnetLFSClient(ctx context.Context, i *importer, repoPath, originURL string) (*http.Client, lfsclient.Endpoint, error) {
+	gitURL := strings.TrimPrefix(strings.TrimSpace(originURL), "replycant::")
+	lfsURL, err := lfsclient.DeriveEndpointURL(gitURL)
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, fmt.Errorf("derive LFS URL: %w", err)
+	}
+	endpoint, err := lfsclient.ParseEndpoint(lfsURL)
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, fmt.Errorf("parse LFS URL: %w", err)
+	}
+	caPath, err := i.gitConfigValue(ctx, repoPath, "http.sslCAInfo")
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	certPath, err := i.gitConfigValue(ctx, repoPath, "http.sslCert")
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	keyPath, err := i.gitConfigValue(ctx, repoPath, "http.sslKey")
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	gitDir, err := i.resolveGitDir(ctx, repoPath)
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	cfg, err := tailnetagent.LoadStartConfig(gitDir)
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, tailnetagent.DefaultReadyTimeout)
+	defer cancel()
+	proxyURL, err := tailnetagent.Ensure(readyCtx, gitDir, cfg, nil)
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	client, err := tailnetagent.HTTPClient(caPath, certPath, keyPath, proxyURL)
+	if err != nil {
+		return nil, lfsclient.Endpoint{}, err
+	}
+	return client, endpoint, nil
+}
+
+// resolveGitDir asks git where this worktree keeps its metadata. Callers
+// need an absolute path because the tailnet agent and the filter attributes
+// both live under it, and a relative .git would point at the wrong place
+// once a child process changes directory.
+func (i *importer) resolveGitDir(ctx context.Context, repoPath string) (string, error) {
+	out, err := i.runCmd(ctx, repoPath, "git", "rev-parse", "--git-dir")
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repoPath, gitDir)
+	}
+	return gitDir, nil
 }
 
 // gitConfigValue reads one local git config key required for mTLS LFS uploads.

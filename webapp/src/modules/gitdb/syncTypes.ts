@@ -47,13 +47,6 @@ export interface SyncCommitSummary {
   authoredAt: string;
 }
 
-// Models onboarding probe outcomes so callers can distinguish retryable and fatal setup states.
-export type OnboardingAuthorizationProbe =
-  | { status: "authorized"; remoteHead: string }
-  | { status: "pending_authorization" }
-  | { status: "transient_error"; message: string }
-  | { status: "fatal_error"; message: string };
-
 // Defines the callback contract for broadcasting sync snapshots to non-graphical consumers.
 export type SyncListener = (snapshot: SyncSnapshot) => void;
 

@@ -80,6 +80,16 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
         loadImage()
     }
 
+    // Stops a photo that is waiting for the tailnet from downloading
+    // after the page is gone. Swiping while offline would otherwise
+    // queue an original for every page once the connection comes up.
+    deinit {
+        let loader = fullResLoader
+        Task { @MainActor in
+            loader?.cancelLoading()
+        }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutForCurrentBounds()

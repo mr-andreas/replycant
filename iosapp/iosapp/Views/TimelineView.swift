@@ -1146,6 +1146,24 @@ final class FullResolutionImageLoader: ObservableObject {
         return loadedImage
     }
 
+    // Retries a fullscreen photo that was refused because the tailnet
+    // join had not finished. The request fails before any bytes move, so
+    // waiting for the join and trying again is what gets the photo on
+    // screen instead of leaving the spinner up.
+    static func loadWhenConnected<T>(
+        waitForNetwork: () async throws -> Void,
+        _ load: () async throws -> T
+    ) async throws -> T {
+        while true {
+            do {
+                return try await load()
+            } catch TailnetSessionRouter.RoutingError.notConnectedYet {
+                try await waitForNetwork()
+                try Task.checkCancellation()
+            }
+        }
+    }
+
     // Resolves full-resolution image bytes from local Photos when the performance toggle is enabled.
     // Returns nil to preserve fallback behavior when permission, identifiers, or local availability are missing.
     private static func loadLocalOriginalImageIfAvailable(
@@ -1216,12 +1234,18 @@ final class FullResolutionImageLoader: ObservableObject {
                         return
                     }
 
-                    let loadedImage = try await Self.loadOriginalImage(
-                        for: item,
-                        priority: .fullscreenCurrent,
-                        repository: repository,
-                        lfsClient: lfsClient
-                    )
+                    let loadedImage = try await Self.loadWhenConnected(
+                        waitForNetwork: {
+                            try await TailnetBootstrap.shared.waitUntilJoined()
+                        }
+                    ) {
+                        try await Self.loadOriginalImage(
+                            for: item,
+                            priority: .fullscreenCurrent,
+                            repository: repository,
+                            lfsClient: lfsClient
+                        )
+                    }
                     self.image = loadedImage
                     logDebug("Successfully loaded original image (\(loadedImage.size.width)x\(loadedImage.size.height))", context: "FullScreen")
                 }
@@ -1238,13 +1262,7 @@ final class FullResolutionImageLoader: ObservableObject {
 
     // Builds encrypted playback context and starts AVPlayer with request-scoped DEK headers for decryptd.
     private func playVideo(item: TimelineItem) async throws {
-        if let localPlayer = await makeLocalVideoPlayerIfAvailable(for: item) {
-            self.player = localPlayer
-            qualityMonitoringTask?.cancel()
-            qualityMonitoringTask = nil
-            directPlayLoader = nil
-            hlsLoader = nil
-            logDebug("Loaded local video asset for \(item.id)", context: "FullScreen")
+        if await loadLocalVideoIfAvailable(for: item) {
             return
         }
 
@@ -1463,6 +1481,22 @@ final class FullResolutionImageLoader: ObservableObject {
         player = nil
     }
 
+    // Publishes a Photos-library player when one exists so a metered
+    // network can still autoplay a video that will not touch the network.
+    // Returns false when playback has to stream the original from the server.
+    func loadLocalVideoIfAvailable(for item: TimelineItem) async -> Bool {
+        guard let localPlayer = await makeLocalVideoPlayerIfAvailable(for: item) else {
+            return false
+        }
+        self.player = localPlayer
+        qualityMonitoringTask?.cancel()
+        qualityMonitoringTask = nil
+        directPlayLoader = nil
+        hlsLoader = nil
+        logDebug("Loaded local video asset for \(item.id)", context: "FullScreen")
+        return true
+    }
+
     // Resolves a local video URL when the performance toggle is enabled so fullscreen playback can avoid server startup latency.
     // Returns nil to preserve existing streaming fallback when permission, local identifiers, or local files are unavailable.
     private func makeLocalVideoPlayerIfAvailable(for item: TimelineItem) async -> AVPlayer? {
@@ -1660,6 +1694,14 @@ final class FullResolutionImageLoader: ObservableObject {
     deinit {
         loadTask?.cancel()
         qualityMonitoringTask?.cancel()
+    }
+
+    // Drops an in-flight original when the page goes away, so a photo
+    // opened before the tailnet is up does not download after the user
+    // has moved on.
+    func cancelLoading() {
+        loadTask?.cancel()
+        loadTask = nil
     }
 }
 

@@ -430,6 +430,80 @@ func createTestCertificate(t *testing.T, pubKey *ecdsa.PublicKey, privKey *ecdsa
 	return cert
 }
 
+// Tailnet revocation compares the authorized set before and after a push, so
+// it needs every key on main, read the same way authentication reads them.
+// A removed key must disappear from the set on the very next read, without
+// waiting on any cache.
+func TestReadAuthorizedKeysReflectsMainAfterEachPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	bob, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
+	addKeyToRepo(t, testRepo, "bob.pub", &bob.PublicKey)
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Len(t, keys, 2)
+	assert.True(t, keys["alice"].Equal(&alice.PublicKey))
+	assert.True(t, keys["bob"].Equal(&bob.PublicKey))
+
+	removeKeyFromRepo(t, testRepo, "bob.pub")
+
+	keys, err = ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	assert.Len(t, keys, 1)
+	assert.Contains(t, keys, "alice")
+}
+
+// An empty repository authorizes nobody by key. Reporting that as an empty set
+// rather than an error lets revocation run on a fresh deployment without
+// treating the absence of history as a failure.
+func TestReadAuthorizedKeysOnEmptyRepositoryIsEmpty(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	emptyRepo := testCtx.CreateEmptyTestRepo(t)
+
+	keys, err := ReadAuthorizedKeys(emptyRepo)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+// Revocation is decided per key, not per file name: renaming a .pub file must
+// not look like a removal, and two files holding different keys must never
+// collide. The fingerprint is therefore derived from the key alone.
+func TestKeyFingerprintDependsOnlyOnTheKey(t *testing.T) {
+	first, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	second, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	copyOfFirst := &ecdsa.PublicKey{Curve: first.Curve, X: first.X, Y: first.Y}
+	assert.Equal(t, KeyFingerprint(&first.PublicKey), KeyFingerprint(copyOfFirst))
+	assert.NotEqual(t, KeyFingerprint(&first.PublicKey), KeyFingerprint(&second.PublicKey))
+	assert.Regexp(t, `^SHA256:[0-9a-f]{64}$`, KeyFingerprint(&first.PublicKey))
+}
+
+// gitd links a tailnet node to the key its requests authenticate with, and
+// revocation compares that link against pubkeys/. Both sides must therefore
+// produce the same fingerprint for the same key, whichever form it came in.
+func TestCertFingerprintMatchesTheKeyFingerprint(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	cert := createTestCertificate(t, &privKey.PublicKey, privKey)
+
+	fingerprint, err := CertFingerprint(cert)
+	require.NoError(t, err)
+	assert.Equal(t, KeyFingerprint(&privKey.PublicKey), fingerprint)
+
+	_, err = CertFingerprint(&x509.Certificate{PublicKey: "not-an-ecdsa-key"})
+	assert.Error(t, err, "a certificate gitd would never authenticate has no fingerprint")
+}
+
 // Tests that empty repositories return ErrUnauthorizedBootstrap for any valid P-256 certificate.
 func TestAuthenticator_EmptyRepository_AllowsAnyValidCert(t *testing.T) {
 	testCtx := gittest.NewContext(t)
@@ -486,6 +560,37 @@ func TestAuthenticator_EmptyRepository_AfterPush_RequiresAuthorizedKey(t *testin
 
 	_, err = auth.Authenticate(cert2)
 	assert.ErrorIs(t, err, ErrUnauthorized)
+}
+
+// The CA page hands out first-device join keys only while the repository is
+// empty, and must agree with hsproxy about when that window closes. Both read
+// it from HasBranch, so it has to flip exactly at the first push.
+func TestAuthenticator_HasBranchFlipsAtFirstPush(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	emptyRepo := testCtx.CreateEmptyTestRepo(t)
+	auth := NewAuthenticator(emptyRepo, 1*time.Minute)
+
+	hasBranch, err := auth.HasBranch()
+	require.NoError(t, err)
+	assert.False(t, hasBranch, "an empty repository is not bootstrapped")
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	_ = simulateBootstrapPush(t, emptyRepo, "alice", &privKey.PublicKey)
+
+	hasBranch, err = auth.HasBranch()
+	require.NoError(t, err)
+	assert.True(t, hasBranch, "the first push bootstraps the repository")
+}
+
+// An unreadable repository must surface as an error, so callers fail closed
+// instead of treating it as empty and handing out bootstrap credentials.
+func TestAuthenticator_HasBranchReportsUnreadableRepository(t *testing.T) {
+	auth := NewAuthenticator(filepath.Join(t.TempDir(), "missing"), 1*time.Minute)
+
+	_, err := auth.HasBranch()
+	assert.Error(t, err)
 }
 
 // Tests that multiple different certificates return ErrUnauthorizedBootstrap in bootstrap mode.

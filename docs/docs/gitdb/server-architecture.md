@@ -4,23 +4,30 @@ gitd is a Go-based Git server that provides authenticated access to repositories
 
 ## Overview
 
-gitd runs three HTTP servers. Git and CA ports default to 8443 and 8080;
-compose publishes them from `REPLYCANT_GIT_PORT` and `REPLYCANT_CA_PORT`,
-and gitd listens on the same values via `--addr` and `--ca-addr` so QR
-and `/config.json` advertise the host-facing Git port.
+gitd runs three HTTP servers. The Git listener is on the tailnet only, at
+`gitd.replycant.internal:8443`. The CA listener defaults to 8080
+(`--ca-addr`) and is the only one compose publishes.
 
 | Server | Default port | Protocol | Purpose |
 |--------|--------------|----------|---------|
-| Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP, native `/lfs`, media proxies |
+| Git Server | 8443 | HTTPS (mTLS) | Git Smart HTTP, native `/lfs`, `/pair`, media proxies |
 | CA Server | 8080 | HTTP | Certificate distribution for device onboarding |
 | Internal LFS | 8085 | HTTP | Read-only LFS for compose-network services |
 
-Only the Git and CA ports are published to the host. Media backends sit on the
-internal Docker network:
+**gitd publishes only the CA page**, on port 8080 (every interface unless
+`REPLYCANT_CA_BIND` narrows it). The Git listener is
+bound to an embedded `tsnet` node, so gitd is reachable only from inside the
+deployment's tailnet, at `https://gitd.replycant.internal:8443`. `hsproxy` is
+the other published port, and it binds to loopback. See
+[Connectivity](./connectivity.md) for the whole
+topology.
+
+Media backends sit on the internal Docker network:
 
 | Route | Implementation | Purpose |
 |-------|----------------|---------|
 | `/lfs` | in-process LFS store (`--lfs-dir`) | Git LFS object storage |
+| `/pair` | discovery client | Seals a pairing record (CA and control-plane hostname) for a device being onboarded |
 | `/decryptd` | reverse proxy to decryptd (`:8084`) | On-the-fly decryption of LFS objects |
 | `/transcoded` | reverse proxy to transcoded (`:8082`) | HLS transcoding for video playback |
 
@@ -85,10 +92,11 @@ The Git server handles all Git Smart HTTP operations with mTLS authentication.
 2. Server extracts P-256 public key from certificate
 3. Server validates key against authorized keys in `pubkeys/` directory
 4. If authorized and the path is under `/lfs`, the native LFS handler serves batch/upload/download from the file-backed store
-5. If authorized and the path matches `/decryptd/*` or `/transcoded/*`, the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
-6. Otherwise, request is proxied to `git-http-backend` via CGI
-7. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist on disk
-8. If validation succeeds, refs are updated; otherwise the push is rejected atomically
+5. If authorized and the path is `/pair`, gitd seals a pairing record and publishes it to the discovery API
+6. If authorized and the path matches `/decryptd/*` or `/transcoded/*`, the prefix is stripped and the request is proxied to that upstream, with server-side Basic auth injected when the configured upstream URL carries credentials
+7. Otherwise, request is proxied to `git-http-backend` via CGI
+8. On push (`git-receive-pack`), Git runs the `pre-receive` hook to verify referenced LFS objects exist on disk
+9. If validation succeeds, refs are updated; otherwise the push is rejected atomically
 
 ### CGI Environment
 
@@ -111,38 +119,34 @@ The CA server provides a simple way for devices to obtain the server's CA certif
 |----------|--------------|-------------|
 | `/` | `text/html` | HTML page with QR code and copyable text |
 | `/qr.png` | `image/png` | QR code image for scanning |
-| `/config.json` | `application/json` | Machine-readable config payload for browser discovery |
+| `/config.json` | `application/json` | Machine-readable copy of the QR payload, for tooling and the integration suites (same-origin only) |
 
 ### QR Code Data
 
 The QR code contains JSON with all information needed to configure a client:
 
+Each request mints a one-time join:
+
 ```json
 {
-  "url": "https://hostname:8443/",
-  "ca": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  "ca": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+  "headscale_url": "https://<ca-label>.s<NN>.tunnel.replycant.com",
+  "preauth_key": "hskey-..."
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `url` | Git server URL (mTLS endpoint) |
-| `ca` | PEM-encoded CA certificate for server validation |
+Clients always reach gitd at `https://gitd.replycant.internal:8443` once they
+are on the tailnet; that address is not carried in the QR.
 
-Clients derive every service endpoint as `{origin(url)}/{service}` (for example
-`https://hostname:8443/lfs` or `https://hostname:8443/decryptd`), so discovery
-never carries per-service fields and adding a service needs no protocol change.
-
-The `/config.json` endpoint returns the same `{ca, url}` payload as the QR JSON
-and includes `Access-Control-Allow-Origin: *` so browser onboarding flows can
-discover configuration programmatically.
+The `/config.json` endpoint returns the same payload as the QR JSON. It sends
+no CORS headers: the payload carries a live join key, so no other website may
+read it.
 
 ### Device Onboarding
 
-1. Open CA server URL in browser (e.g., `http://server:8080`)
-2. Scan QR code with mobile app, or copy values manually
-3. App extracts CA certificate and server URLs from QR data
-4. App configures certificate pinning and server endpoints
+1. Open `http://127.0.0.1:8080` on the host running gitd
+2. Scan the QR with the iOS app, which creates the library
+3. The first device joins the tailnet, then pushes to gitd over it
 
 ## Key Caching
 
@@ -187,13 +191,16 @@ gitd \
   --cert /path/to/server.crt \
   --key /path/to/server.key \
   --ca /path/to/ca.crt \
-  --hostname server.example.com \
   --lfs-dir /var/lib/replycant/lfs \
   --decryptd-url http://decryptd:8084 \
   --transcoded-url http://transcoded:8082 \
-  --addr :8443 \
-  --ca-addr :8080 \
-  --cache-ttl 5m
+  --tsnet-dir /data/tsnet \
+  --tsnet-control-url http://headscale:8080 \
+  --headscale-api-url http://headscale:8080 \
+  --headscale-api-key-file /data/tailnet/headscale.apikey \
+  --headscale-client-url https://<ca-label>.s<NN>.tunnel.replycant.com \
+  --tailnet-reconcile-marker /data/gitd/tailnet-reconcile.json \
+  --discovery-url https://discovery.replycant.com
 ```
 
 | Flag | Required | Default | Description |
@@ -202,14 +209,28 @@ gitd \
 | `--cert` | Yes | - | Server TLS certificate |
 | `--key` | Yes | - | Server TLS private key |
 | `--ca` | Yes | - | CA certificate for client trust |
-| `--hostname` | Yes | - | Hostname for QR code URL |
 | `--lfs-dir` | Yes | - | Directory for the native file-backed LFS object store |
 | `--lfs-internal-addr` | No | `:8085` | Read-only internal LFS listen address (empty disables) |
 | `--decryptd-url` | Yes | - | Internal upstream decryptd URL proxied at `/decryptd` |
 | `--transcoded-url` | Yes | - | Internal upstream transcoded URL proxied at `/transcoded` |
-| `--addr` | No | `:8443` | Git server listen address |
 | `--ca-addr` | No | `:8080` | CA distribution listen address |
 | `--cache-ttl` | No | `5m` | Key cache TTL |
+
+### Tailnet flags
+
+gitd serves Git only on the tailnet, as `gitd.replycant.internal:8443`; it has
+no host-port listener.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--tsnet-dir` | Yes | - | Tailnet node state directory |
+| `--tsnet-control-url` | Yes | - | headscale control URL as seen from the compose network |
+| `--headscale-api-url` | Yes | - | headscale API base URL, used to mint gitd's own tailnet key and the first device's key, and to remove device nodes on revocation |
+| `--headscale-api-key-file` | Yes | - | File holding the headscale API key, re-read on every call so a key replaced after a database wipe takes effect |
+| `--headscale-client-url` | Yes | - | headscale URL advertised to pairing devices, the tunnel hostname |
+| `--tailnet-reconcile-marker` | Yes | - | Writable file recording the `pubkeys/` set last reconciled with headscale and the key each device node uses. Losing it makes every device rejoin once |
+| `--headscale-user` | No | `replycant` | headscale user that paired devices register under |
+| `--discovery-url` | Yes | - | Discovery API base URL, with the slot prepended as a subdomain |
 
 ## Webapp Proxy mTLS Bridging
 
@@ -219,11 +240,13 @@ host:
 
 - Vite development middleware for browser-based webapp development
 - Electron desktop server for packaged desktop runtime
+- `desktop:dev` still serves the UI from Vite, but proxies `/api` through
+  Electron so the tailnet SOCKS pool is used
 
 `--git-base-url` and CA certificate flags remain optional for onboarding. The
-API app can boot unconfigured and receive runtime setup from the browser
-through `POST /api/setup/configure` after browser-side discovery via
-`POST /api/setup/discover`. The webapp proxy derives every runtime service base
+API app can boot unconfigured and receive runtime setup from the renderer
+through `POST /api/setup/configure` once the pairing record has arrived. The
+webapp proxy derives every runtime service base
 from the git origin: `{origin(gitBaseUrl)}/lfs`, `/decryptd`, and `/transcoded`.
 
 For browser clients, the proxy accepts per-request client key and client certificate headers on `/api/git/*`, `/api/lfs/*`, `/api/decryptd/*`, and `/api/transcoded/*`, uses browser-provided CA material for upstream TLS, and uses those headers to establish upstream mTLS. This keeps long-term key storage and trust bootstrap in the browser while avoiding persisted client private keys on the proxy host.

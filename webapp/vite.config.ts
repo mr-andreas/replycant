@@ -2,6 +2,7 @@ import { defineConfig, type Plugin, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { createApp } from "./server/app";
 import { loadProxyConfig } from "./server/config";
+import { resolveDevApiMode } from "./server/devApi";
 
 // Reads Vite CLI flags so explicit `vite --port` launches override env defaults.
 const resolveCliPort = (argv: string[]): number | undefined => {
@@ -23,11 +24,16 @@ const resolveCliPort = (argv: string[]): number | undefined => {
 };
 
 const devServerPort = resolveCliPort(process.argv) ?? Number(process.env.VITE_PORT ?? 5173);
+const devApi = resolveDevApiMode();
 
-// Mounts the shared API app so Vite dev serves UI and `/api/*` on one origin.
+// Mounts the shared API app so browser `npm run dev` serves UI and `/api/*`
+// on one origin. desktop:dev skips this and proxies `/api` to Electron.
 const devApiMiddlewarePlugin = (): Plugin => ({
   name: "replycant-dev-api-middleware",
   configureServer(server: ViteDevServer) {
+    if (devApi.mode === "proxy") {
+      return;
+    }
     server.middlewares.use(createApp(loadProxyConfig()));
   },
 });
@@ -43,5 +49,17 @@ export default defineConfig({
     host: true,
     allowedHosts: true,
     port: devServerPort,
+    ...(devApi.mode === "proxy"
+      ? {
+          proxy: {
+            "/api": {
+              target: devApi.target,
+              changeOrigin: false,
+              timeout: 0,
+              proxyTimeout: 0,
+            },
+          },
+        }
+      : {}),
   },
 });

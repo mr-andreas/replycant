@@ -295,7 +295,7 @@ struct RecoveryWizardTests {
             label: "test",
             uuid: "00000000-0000-0000-0000-000000000000",
             created: "2026-08-10T00:00:00Z",
-            discoveryURL: "http://replycant.local:8080",
+            headscaleURL: "https://0123456789abcdef.s1.tunnel.example.com",
             caSHA256: String(repeating: "a", count: 64),
             p256PrivateKeyPEM: """
             -----BEGIN EC PRIVATE KEY-----

@@ -1,7 +1,7 @@
 import git from "isomorphic-git";
 import webHttp from "isomorphic-git/http/web";
 import LightningFS from "@isomorphic-git/lightning-fs";
-import type { SyncEngineConfig, OnboardingAuthorizationProbe, MtlsHeadersProvider } from "./syncTypes";
+import type { SyncEngineConfig, MtlsHeadersProvider } from "./syncTypes";
 
 const DEFAULT_INITIAL_CLONE_DEPTH = 1;
 
@@ -286,77 +286,6 @@ export class GitTransport {
         stack: error instanceof Error ? error.stack : undefined,
       });
       return null;
-    }
-  }
-
-  // Separates onboarding wait states from fatal setup failures so QR
-  // authorization does not stall silently.
-  async probeOnboardingAuthorization(): Promise<OnboardingAuthorizationProbe> {
-    this.log("onboarding-probe-start", { url: this.config.gitRemoteUrl, branch: this.config.gitBranch });
-    try {
-      const refs = await git.listServerRefs({
-        http,
-        url: this.config.gitRemoteUrl,
-        prefix: this.localBranchRef,
-        headers: this.currentMtlsHeaders() ?? undefined,
-      });
-      const match = refs.find((r) => r.ref === this.localBranchRef);
-      if (match?.oid) {
-        this.log("onboarding-probe-authorized", { remoteHead: match.oid });
-        return { status: "authorized", remoteHead: match.oid };
-      }
-      const missingBranchMessage =
-        `Remote branch ${this.localBranchRef} is missing. ` +
-        "Push the initial commit before authorizing this key.";
-      this.log("onboarding-probe-missing-branch", {
-        refsCount: refs.length,
-        refs: refs.map((entry) => entry.ref),
-      });
-      return { status: "fatal_error", message: missingBranchMessage };
-    } catch (error) {
-      const message = errorMessage(error);
-      const normalized = message.toLowerCase();
-      this.log("onboarding-probe-failed", {
-        error: message,
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      if (
-        normalized.includes("401") ||
-        normalized.includes("unauthorized") ||
-        normalized.includes("authentication failed")
-      ) {
-        return { status: "pending_authorization" };
-      }
-      if (
-        normalized.includes("econnrefused") ||
-        normalized.includes("fetch failed") ||
-        normalized.includes("networkerror") ||
-        normalized.includes("socket hang up") ||
-        normalized.includes("timed out") ||
-        normalized.includes("enotfound")
-      ) {
-        return {
-          status: "transient_error",
-          message: `Cannot reach git server yet (${message}). Retrying...`,
-        };
-      }
-      if (normalized.includes("remoteRefs is undefined".toLowerCase())) {
-        return {
-          status: "fatal_error",
-          message:
-            "Git proxy returned a non-git response while checking authorization. Verify `/api/git` proxy routing and gitd.",
-        };
-      }
-      if (normalized.includes("git upstream protocol mismatch")) {
-        return {
-          status: "fatal_error",
-          message: "Git proxy protocol mismatch while checking authorization. Verify proxy target and gitd availability.",
-        };
-      }
-      return {
-        status: "fatal_error",
-        message: `Authorization check failed: ${message}`,
-      };
     }
   }
 

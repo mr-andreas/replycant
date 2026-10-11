@@ -335,7 +335,6 @@ export const useLibraryRuntime = ({
   const engineInitPromiseRef = useRef<Promise<GitdbWorkerClient> | null>(null);
   const startupRetryRef = useRef(false);
   const snapshotRef = useRef(snapshot);
-  const pollingAuthorizationRef = useRef(false);
   const bootstrapDoneRef = useRef(false);
   const mtlsHeadersRef = useRef<Record<string, string> | null>(mtlsHeaders);
   const agePrivateKeyRef = useRef<string | null>(agePrivateKeyBase64);
@@ -1016,43 +1015,6 @@ export const useLibraryRuntime = ({
       engineInitPromiseRef.current = null;
     };
   }, [initializeEngine, setupMode]);
-
-  useEffect(() => {
-    if (setupMode !== "qr" || pollingAuthorizationRef.current) return;
-    pollingAuthorizationRef.current = true;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      if (cancelled) return;
-      void (async () => {
-        try {
-          const engine = await initializeEngine();
-          const probe = await engine.probeOnboardingAuthorization();
-          if (cancelled) return;
-          if (probe.status === "authorized") {
-            setSetupError(null);
-            setSetupMode("rehydrating");
-            window.clearInterval(timer);
-            pollingAuthorizationRef.current = false;
-            return;
-          }
-          if (probe.status === "pending_authorization") {
-            setSetupError(null);
-            return;
-          }
-          setSetupError(probe.message);
-        } catch (error) {
-          setSetupError(
-            error instanceof Error ? `Authorization check failed: ${error.message}` : "Authorization check failed.",
-          );
-        }
-      })();
-    }, 2_500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      pollingAuthorizationRef.current = false;
-    };
-  }, [initializeEngine, setSetupError, setSetupMode, setupMode]);
 
   const handleSyncNow = useCallback(async () => {
     if (snapshotRef.current.isOffHead) {

@@ -5,6 +5,7 @@
 //  Created by Andreas on 2025-10-16.
 //
 
+import LibGit2
 import SwiftUI
 
 // Container view for development settings pages.
@@ -12,7 +13,11 @@ import SwiftUI
 struct SettingsView: View {
     let onWipeAndResync: () -> Void
     let showRecoveryWarning: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isShowingResetConfirmation = false
+    @State private var hasLoadedTailnet = false
+    @State private var isTailnetConfigured = false
+    @State private var tailnetReport: TailnetStatusReport?
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
 
     // Allows callers to surface repo-wide recovery readiness in the settings navigation row.
@@ -42,7 +47,14 @@ struct SettingsView: View {
                 } header: {
                     Text("Device Management")
                 }
-                
+
+                // Loaded here, not inside the section, because a zero-height
+                // List child never runs `.task` and a joined device then
+                // looks unpaired. Above Advanced because "can
+                // this device reach the library at all" is what a user
+                // checks first when a sync fails.
+                connectionSection
+
                 Section {
                     NavigationLink(destination: RepositorySettingsView()) {
                         Label("Repository", systemImage: "arrow.triangle.branch")
@@ -75,6 +87,18 @@ struct SettingsView: View {
                     }
                 }
             }
+            .task { await reloadTailnetStatus() }
+            .onChange(of: scenePhase) { _, phase in
+                // The first visit loads from .task. Later wakes have to
+                // read again, or a row captured before the lock stays green.
+                guard phase == .active, hasLoadedTailnet else { return }
+                Task { await reloadTailnetStatus() }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: .tailnetMembershipDidChange)
+            ) { _ in
+                Task { await reloadTailnetStatus() }
+            }
             .navigationTitle("Settings")
             .alert("Reset Local State?", isPresented: $isShowingResetConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -83,6 +107,50 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("This will remove local repository data and download it again from the server.")
+            }
+        }
+    }
+
+    /// Reads the connection again. During a wake rebuild there is no node,
+    /// so the existing presentation shows Unavailable instead of the
+    /// Connected row from before the phone locked.
+    private func reloadTailnetStatus() async {
+        isTailnetConfigured = await TailnetBootstrap.shared.isConfigured
+        tailnetReport = await TailnetBootstrap.shared.status()
+        hasLoadedTailnet = true
+    }
+
+    @ViewBuilder
+    private var connectionSection: some View {
+        switch TailnetConnectionSection.presentation(
+            hasLoaded: hasLoadedTailnet,
+            isConfigured: isTailnetConfigured,
+            report: tailnetReport
+        ) {
+        case .hidden:
+            EmptyView()
+        case .unavailable:
+            Section {
+                connectionLink(report: nil)
+            }
+        case .report(let report):
+            Section {
+                connectionLink(report: report)
+            }
+        }
+    }
+
+    /// One row on the settings list. The detail rows live on the page it
+    /// opens, because address, path, and peers are only useful once a
+    /// sync has already failed.
+    private func connectionLink(report: TailnetStatusReport?) -> some View {
+        let status = TailnetConnectionSection.status(of: report)
+        return NavigationLink(destination: ConnectionSettingsView(report: report)) {
+            HStack {
+                Label("Connection", systemImage: "network")
+                Spacer()
+                Text(status.text)
+                    .foregroundStyle(status.isHealthy ? Color.green : Color.orange)
             }
         }
     }

@@ -20,11 +20,19 @@ const (
 	repoPath = "/tmp/repo.git"
 	// seederIdentityDir stores the seeded identity used for provisioning additional devices.
 	seederIdentityDir = "/tmp/identity"
+	// caPath is the CA entrypoint.sh mints at startup. Every server
+	// certificate in the container chains to it.
+	caPath = "/tmp/pki/ca.crt"
+	// headscaleURL and pairURL are where the seeder mints its tailnet key and
+	// asks gitd to publish a pairing record, as seen from inside the container.
+	headscaleURL = "https://localhost:18085"
+	pairURL      = "https://gitd.replycant.internal:8443/pair"
 )
 
 // controlServer serializes mutating operations so reset/seed/provision never race on one repo.
 type controlServer struct {
-	mu sync.Mutex
+	mu     sync.Mutex
+	caPath string
 }
 
 // resetRequest captures caller intent for reseeding vs blank bootstrap repositories.
@@ -38,6 +46,10 @@ type provisionRequest struct {
 	DeviceUUID   string `json:"deviceUUID"`
 	PublicKeySSH string `json:"publicKeySSH"`
 	AgePublicKey string `json:"agePublicKey"`
+	// PairingSecret is set by a device that is waiting on discovery rather
+	// than minting its own tailnet key. The seeder then also asks gitd to
+	// publish that device's pairing record.
+	PairingSecret string `json:"pairingSecret,omitempty"`
 }
 
 // seedRequest configures deterministic media-history fixtures for sync and rewind integration tests.
@@ -161,16 +173,46 @@ func (s *controlServer) handleProvision(w http.ResponseWriter, r *http.Request) 
 	}
 	defer os.Remove(tempPath)
 
-	if _, err := runCommand(
-		"provisioner",
-		"--seeder-identity-dir="+seederIdentityDir,
-		"--new-identity-json="+tempPath,
-		"--bare-repo="+repoPath,
-	); err != nil {
+	if _, err := runCommand("provisioner", provisionerArgs(req, tempPath)...); err != nil {
 		writeJSON(w, http.StatusInternalServerError, controlResponse{OK: false, Error: err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, controlResponse{OK: true})
+}
+
+// provisionerArgs authorizes the identity at identityPath and, when the
+// request carries a pairing secret, approves that device's tailnet pairing.
+func provisionerArgs(req provisionRequest, identityPath string) []string {
+	args := []string{
+		"--seeder-identity-dir=" + seederIdentityDir,
+		"--new-identity-json=" + identityPath,
+		"--bare-repo=" + repoPath,
+	}
+	if secret := strings.TrimSpace(req.PairingSecret); secret != "" {
+		args = append(args,
+			"--pairing-secret="+secret,
+			"--ca-file="+caPath,
+			"--headscale-url="+headscaleURL,
+			"--pair-url="+pairURL,
+		)
+	}
+	return args
+}
+
+// handleCA hands host-side suites the CA they pin hsproxy and gitd against.
+// It is minted fresh each container start, so it cannot be baked into them.
+func (s *controlServer) handleCA(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, controlResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+	pem, err := os.ReadFile(s.caPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, controlResponse{OK: false, Error: fmt.Sprintf("read CA: %v", err)})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	_, _ = w.Write(pem)
 }
 
 // handleSeed appends deterministic media commits to the current seeded repository.
@@ -220,11 +262,13 @@ func (s *controlServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, controlResponse{OK: true})
 }
 
-// main boots the control API used by iOS integration tests to manage repo lifecycle.
+// main boots the control API the iOS and desktop integration suites use to
+// manage repo lifecycle from the host.
 func main() {
-	server := &controlServer{}
+	server := &controlServer{caPath: caPath}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealthz)
+	mux.HandleFunc("/ca", server.handleCA)
 	mux.HandleFunc("/reset", server.handleReset)
 	mux.HandleFunc("/provision", server.handleProvision)
 	mux.HandleFunc("/seed", server.handleSeed)

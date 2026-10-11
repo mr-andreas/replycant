@@ -1,4 +1,4 @@
-import { OnboardingAuthorizationProbe, SyncCommitSummary } from "./syncTypes";
+import { SyncCommitSummary } from "./syncTypes";
 
 // Defines the only repo-control surface gitdb internals use so callers cannot bypass module ownership.
 export interface GitRepoPort {
@@ -7,5 +7,4 @@ export interface GitRepoPort {
   rewindToCommitAndPausePolling(commitHash: string): Promise<void>;
   forwardToRemoteHeadAndResumePolling(): Promise<void>;
   hardResetToRemoteAfterPermission(): Promise<void>;
-  probeOnboardingAuthorization(): Promise<OnboardingAuthorizationProbe>;
 }

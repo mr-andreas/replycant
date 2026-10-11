@@ -32,4 +32,11 @@ struct OnboardingIntroFlowTests {
         #expect(OnboardingView.serverSetupGuideURL.absoluteString == "https://github.com/mr-andreas/replycant#getting-started")
         #expect(OnboardingStep.serverSetupGuide.title == "Server Setup")
     }
+
+    // The processing screen is shown before any setup step runs, and a
+    // hung tailnet join would otherwise leave a spinner with no copy.
+    @Test func processingStartsWithAJoiningMessage() {
+        #expect(!OnboardingView.startingSetupMessage.isEmpty)
+        #expect(OnboardingView.joiningNetworkMessage.contains("network"))
+    }
 }

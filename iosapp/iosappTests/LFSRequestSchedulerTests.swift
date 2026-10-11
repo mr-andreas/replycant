@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import LibGit2
 @testable import iosapp
 
 /// Coordinates explicit blocking in tests so queueing behavior is deterministic.
@@ -193,5 +194,48 @@ struct LFSRequestSchedulerTests {
             3
         }
         #expect(next == 3)
+    }
+
+    // Confirms a free slot reports no queue wait and inflight of one
+    // so a solo download can be told from a contended one.
+    @Test func recordsImmediateSlotAsZeroWaitAndInflightOne() async throws {
+        let scheduler = LFSRequestScheduler(maxConcurrent: 2)
+
+        let ran = try await scheduler.run(priority: .timelinePage, key: "solo") {
+            #expect(LFSDownloadLog.queue?.waitMs == 0)
+            #expect(LFSDownloadLog.queue?.inflight == 1)
+            return true
+        }
+        #expect(ran)
+    }
+
+    // Confirms a queued request keeps the wait clock and reports how
+    // many downloads were already running when its slot opened.
+    @Test func recordsQueuedWaitAndInflightAtStart() async throws {
+        let scheduler = LFSRequestScheduler(maxConcurrent: 1)
+        let gate = TestGate()
+
+        let first = Task {
+            try await scheduler.run(priority: .timelinePage, key: "first") {
+                await gate.wait()
+                return 1
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        let queued = Task {
+            try await scheduler.run(priority: .fullscreenCurrent, key: "queued") {
+                #expect(LFSDownloadLog.queue?.waitMs ?? 0 > 0)
+                #expect(LFSDownloadLog.queue?.inflight == 1)
+                return 2
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 20_000_000)
+        await gate.open()
+
+        _ = try await first.value
+        _ = try await queued.value
     }
 }

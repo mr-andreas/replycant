@@ -53,7 +53,8 @@ export const createApp = (
     });
   app.use(express.json());
 
-  // Parses and validates caserver config payloads so setup endpoints reject malformed input consistently.
+  // Validates the { ca, url } pair onboarding hands over once pairing has
+  // produced it, so the proxy never stores a malformed origin.
   const parseDiscoveredConfig = (value: unknown): DiscoveredServerConfig | null => {
     if (!value || typeof value !== "object") return null;
     const candidate = value as Record<string, unknown>;
@@ -81,61 +82,7 @@ export const createApp = (
     res.json({ status: "ok" });
   });
 
-  // Discovers setup config from caserver so browser onboarding can own durable setup state.
-  app.post("/api/setup/discover", async (req, res) => {
-    const rawServerUrl = typeof req.body?.serverUrl === "string" ? req.body.serverUrl.trim() : "";
-    if (!rawServerUrl) {
-      res.status(400).json({ error: "serverUrl is required." });
-      return;
-    }
-    let configUrl: URL;
-    try {
-      configUrl = new URL(rawServerUrl);
-    } catch {
-      res.status(400).json({ error: "serverUrl must be a valid URL." });
-      return;
-    }
-    const endpoint = new URL("./config.json", configUrl);
-    let response: globalThis.Response;
-    try {
-      response = await fetch(endpoint);
-    } catch (error) {
-      // Node fetch (undici) wraps the real cause in error.cause; surface
-      // it so users see "ENOTFOUND" / "ECONNREFUSED" instead of "fetch failed".
-      const rootCause =
-        error instanceof Error && error.cause instanceof Error
-          ? error.cause
-          : error instanceof Error
-            ? error
-            : null;
-      res.status(502).json({
-        error: "Failed to fetch server configuration:",
-        detail: rootCause ? rootCause.message : String(error),
-      });
-      return;
-    }
-    if (!response.ok) {
-      res.status(502).json({
-        error: `Server configuration endpoint returned ${response.status}.`,
-      });
-      return;
-    }
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      res.status(502).json({ error: "Server configuration endpoint returned invalid JSON." });
-      return;
-    }
-    const parsed = parseDiscoveredConfig(payload);
-    if (!parsed) {
-      res.status(502).json({ error: "Server configuration endpoint returned an invalid payload." });
-      return;
-    }
-    res.json(parsed);
-  });
-
-  // Applies browser-owned setup configuration to runtime proxy state after discovery or reload.
+  // Applies browser-owned setup configuration to runtime proxy state after pairing or reload.
   app.post("/api/setup/configure", (req, res) => {
     const parsed = parseDiscoveredConfig(req.body);
     if (!parsed) {

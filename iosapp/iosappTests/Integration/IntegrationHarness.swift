@@ -5,15 +5,15 @@ import LibGit2
 // Prepares deterministic app, keychain, and repository state for real gitd integration tests.
 @MainActor
 enum IntegrationHarness {
-    // Captures transport and discovery details needed by tests after one harness preparation step.
+    // Captures the identity and paths tests need after one harness preparation step.
     struct PreparedContext {
-        let discovery: IntegrationEnvironment.DiscoveryConfig
         let provisionIdentity: IntegrationEnvironment.ProvisionIdentity
         let repositoryPath: String
 
-        // Exposes the mtls remote URL expected by libgit2 transport registration.
+        // gitd's tailnet name in the scheme libgit2's transport is registered
+        // for. It only resolves through the node the harness joined.
         var mtlsRemoteURL: String {
-            MTLSTransport.convertToMTLSScheme(discovery.url)
+            MTLSTransport.convertToMTLSScheme(TailnetConfiguration.gitdURL)
         }
     }
 
@@ -27,7 +27,8 @@ enum IntegrationHarness {
         try await prepare(seedContainerRepo: false, provisionDevice: false)
     }
 
-    // Sets up a seeded repo without provisioning so auth-deny tests can verify unauthorized push behavior.
+    // Sets up a seeded repo without provisioning, and without joining, so
+    // tests can check that an unknown device is kept off the tailnet.
     static func prepareSeededWithoutProvisioning() async throws -> PreparedContext {
         try await prepare(seedContainerRepo: true, provisionDevice: false)
     }
@@ -35,13 +36,6 @@ enum IntegrationHarness {
     // Resets app-local state so integration tests can emulate uninstall/reinstall before recovery.
     static func resetLocalInstallState() async throws {
         try await wipeLocalState()
-    }
-
-    // Creates one unique path under tmp for isolated repositories used in failing-auth push tests.
-    static func makeTemporaryRepositoryPath(prefix: String) -> String {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
-            .path
     }
 
     // Clones the integration remote into the app repository path and aligns singleton caches to that clone.
@@ -58,7 +52,15 @@ enum IntegrationHarness {
     }
 
     // Clears app caches and filesystem state so each integration test starts as a fresh install.
+    //
+    // The tailnet node's state goes too. Each test resets pubkeys/, so a node
+    // kept from the previous test would belong to a key gitd has just revoked.
     private static func wipeLocalState() async throws {
+        await TailnetBootstrap.shared.leave()
+        let tailnetState = TailnetBootstrap.stateDirectory
+        if FileManager.default.fileExists(atPath: tailnetState.path) {
+            try FileManager.default.removeItem(at: tailnetState)
+        }
         RepositoryManager.shared.clearRepository()
         GitDBManager.shared.clearGitDB()
         try await ManifestLoaderManager.shared.deleteDatabaseFile()
@@ -71,12 +73,24 @@ enum IntegrationHarness {
         UserDefaults.standard.removeObject(forKey: "hasCompletedOnboarding")
     }
 
-    // Prepares repository control state, onboarding config, and mTLS credentials for one test scenario.
+    // Prepares repository control state, server trust, mTLS credentials, and
+    // tailnet membership for one test scenario.
+    //
+    // A provisioned device mints its own tailnet key through hsproxy, as a
+    // paired device does once its key is on main. The first device has no
+    // key to mint with yet, so it takes the CA page's single-use key instead.
     private static func prepare(seedContainerRepo: Bool, provisionDevice: Bool) async throws -> PreparedContext {
         try await wipeLocalState()
         try await IntegrationEnvironment.resetRepository(seed: seedContainerRepo)
-        let discovery = try await IntegrationEnvironment.discoverConfig()
-        try ServerConfigurationManager.shared.configure(url: discovery.url, caCertificate: discovery.ca)
+
+        let firstDevice = seedContainerRepo ? nil : try await IntegrationEnvironment.firstDeviceConfig()
+        let ca: String
+        if let firstDevice {
+            ca = firstDevice.ca
+        } else {
+            ca = try await IntegrationEnvironment.harnessCA()
+        }
+        try ServerConfigurationManager.shared.configure(url: TailnetConfiguration.gitdURL, caCertificate: ca)
 
         let provisionIdentity = try generateProvisionIdentity()
         try configureTransportFromStoredIdentity()
@@ -84,9 +98,19 @@ enum IntegrationHarness {
         if provisionDevice {
             try await IntegrationEnvironment.provision(identity: provisionIdentity)
         }
+        if let firstDevice {
+            try await TailnetBootstrap.shared.joinAndPersist(
+                headscaleURL: firstDevice.headscaleURL,
+                preauthKey: firstDevice.preauthKey
+            )
+        } else if provisionDevice {
+            try await TailnetBootstrap.shared.joinAndPersist(
+                headscaleURL: IntegrationEnvironment.headscaleURL,
+                preauthKey: nil
+            )
+        }
 
         return PreparedContext(
-            discovery: discovery,
             provisionIdentity: provisionIdentity,
             repositoryPath: RepositoryManager.shared.repositoryPath()
         )
@@ -130,7 +154,7 @@ enum IntegrationHarnessError: Error, CustomStringConvertible {
         case .missingClientIdentity:
             return "client identity is missing after generation"
         case .missingPinnedCA:
-            return "pinned CA is missing after discovery configuration"
+            return "pinned CA is missing after server trust configuration"
         }
     }
 }

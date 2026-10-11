@@ -35,6 +35,11 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphonesimulator --show-sdk-version
 
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
       - name: Cache screenshot Swift package checkouts
         uses: actions/cache@v4
         with:

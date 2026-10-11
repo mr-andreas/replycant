@@ -31,7 +31,7 @@ struct TestLFSServerConcurrencyTests {
         try await withThrowingTaskGroup(of: Void.self) { group in
             for fixture in fixtures {
                 group.addTask {
-                    let client = GitLFS(serverURL: serverURL)
+                    let client = GitLFS(serverURL: serverURL, router: .passthroughForTests())
                     let downloaded = try await client.downloadData(
                         oid: fixture.oid,
                         size: Int64(fixture.data.count)

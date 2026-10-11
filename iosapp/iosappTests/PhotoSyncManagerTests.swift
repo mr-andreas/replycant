@@ -465,6 +465,16 @@ final class MockUploadedMediaCache: UploadedMediaCaching {
 @MainActor
 @Suite("PhotoSyncManager Tests", .serialized, .sharedAppState)
 struct PhotoSyncManagerTests {
+
+    // A 0-of-0 determinate bar is a silent spinner. The preparing phase
+    // has to keep the file label as the headline so the user can see
+    // that access or the library scan is still running.
+    @Test func preparingSyncKeepsThePhaseAsTheHeadline() {
+        #expect(PhotoSyncStatusCopy.headline(current: 0, total: 0, file: "Asking for photo access...")
+            == "Asking for photo access...")
+        #expect(PhotoSyncStatusCopy.headline(current: 3, total: 10, file: "IMG.HEIC")
+            == "Uploading 3 of 10")
+    }
     
     // MARK: - Test Setup Helpers
     
@@ -1214,6 +1224,17 @@ struct PhotoSyncManagerTests {
     
     // MARK: - Cancellation Tests
     
+    // Waits on the clock so a test can outlast the tailnet join that
+    // startSync performs before the first file is uploaded.
+    func waitUntil(seconds: Double, condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return condition()
+    }
+
     // Waits for a condition to become true by polling with Task.yield()
     // This avoids timing-based tests that can be flaky
     func waitForCondition(maxIterations: Int = 100, condition: () -> Bool) async {
@@ -1771,6 +1792,129 @@ struct PhotoSyncManagerTests {
                 }
             }
         }
+    }
+
+    // An upload started on Wi-Fi has to stop, including the file in
+    // flight, when the phone moves onto mobile data. Restarting later is
+    // safe because already-uploaded items are skipped.
+    @Test("Upload started on Wi-Fi stops when the network becomes metered")
+    func testUploadStopsWhenNetworkBecomesMetered() async throws {
+        let repoPath = try setupDocumentsRepo()
+        defer { cleanupTestEnvironment(at: repoPath) }
+
+        UserDefaults.standard.set("http://localhost:8080/lfs", forKey: "gitServerURL")
+
+        let asset = createTestAsset(id: "IMG_001", filename: "photo1.jpg", mediaType: .image, creationDate: Date())
+        let mockLibrary = createMockLibrary(assets: [asset], withThumbnails: false)
+        let mockManifest = MockManifestManager()
+        mockManifest.holdUploadsUntilCancel = true
+        var uploadStarted = false
+        mockManifest.addLFSDataStartHook = { uploadStarted = true }
+        let network = ControllableNetworkCost(isMetered: false)
+
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: mockLibrary,
+            manifestManager: mockManifest,
+            networkCost: network
+        )
+
+        await syncManager.startSync()
+        let started = await waitUntil(seconds: 20) { uploadStarted }
+        if !started {
+            Issue.record("Upload did not start. State: \(String(describing: syncManager.syncState))")
+            return
+        }
+
+        network.subject.send(true)
+        let stopped = await waitUntil(seconds: 2) { !syncManager.isSyncing }
+        #expect(stopped)
+
+        #expect(syncManager.isSyncing == false)
+        guard case .failed(let error) = syncManager.syncState else {
+            Issue.record("Expected the upload to fail closed with a pause message")
+            return
+        }
+        #expect(error is UploadPausedOnMobileDataError)
+        #expect(error.localizedDescription == "Upload paused because the phone switched to mobile data. Press Start Upload to continue.")
+        #expect(mockManifest.cancelActiveUploadCalls == 1)
+        #expect(mockManifest.createCommitCalls.isEmpty)
+    }
+
+    // A run the user already confirmed on mobile data must keep going if
+    // the path changes, including a later return to mobile data.
+    @Test("Upload started on mobile data keeps going when the network changes")
+    func testUploadStartedOnMeteredNetworkIgnoresNetworkChanges() async throws {
+        let repoPath = try setupDocumentsRepo()
+        defer { cleanupTestEnvironment(at: repoPath) }
+
+        UserDefaults.standard.set("http://localhost:8080/lfs", forKey: "gitServerURL")
+
+        let asset = createTestAsset(id: "IMG_001", filename: "photo1.jpg", mediaType: .image, creationDate: Date())
+        let mockLibrary = createMockLibrary(assets: [asset], withThumbnails: false)
+        let mockManifest = MockManifestManager()
+        mockManifest.holdUploadsUntilCancel = true
+        var uploadStarted = false
+        mockManifest.addLFSDataStartHook = { uploadStarted = true }
+        let network = ControllableNetworkCost(isMetered: true)
+
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: mockLibrary,
+            manifestManager: mockManifest,
+            networkCost: network
+        )
+
+        await syncManager.startSync()
+        let started = await waitUntil(seconds: 20) { uploadStarted }
+        if !started {
+            Issue.record("Upload did not start. State: \(String(describing: syncManager.syncState))")
+            return
+        }
+
+        network.subject.send(false)
+        network.subject.send(true)
+        for _ in 0..<40 {
+            await Task.yield()
+        }
+
+        #expect(syncManager.isSyncing == true)
+        #expect(mockManifest.cancelActiveUploadCalls == 0)
+
+        syncManager.cancelSync()
+        await waitForCondition(maxIterations: 300) { !syncManager.isSyncing }
+    }
+
+    // A metered transition while nothing is uploading must not invent a
+    // failure the user never started.
+    @Test("Metered network change while idle leaves the upload idle")
+    func testMeteredChangeWhileIdleDoesNotChangeState() async {
+        let network = ControllableNetworkCost(isMetered: false)
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: MockPhotoLibraryProvider(),
+            manifestManager: MockManifestManager(),
+            networkCost: network
+        )
+
+        #expect(syncManager.isOnMeteredNetwork == false)
+        network.subject.send(true)
+        for _ in 0..<40 {
+            await Task.yield()
+        }
+
+        #expect(syncManager.syncState == .idle)
+        #expect(syncManager.isOnMeteredNetwork == true)
+    }
+}
+
+// Lets upload tests flip between Wi-Fi and mobile data without a real path.
+final class ControllableNetworkCost: NetworkCostProviding {
+    let subject: CurrentValueSubject<Bool, Never>
+    var isMetered: Bool { subject.value }
+    var isMeteredPublisher: AnyPublisher<Bool, Never> {
+        subject.eraseToAnyPublisher()
+    }
+
+    init(isMetered: Bool) {
+        subject = CurrentValueSubject(isMetered)
     }
 }
 

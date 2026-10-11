@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -130,14 +131,25 @@ func LoadLocalIdentity(repoRoot string) (LocalIdentity, error) {
 	return local, nil
 }
 
-// BuildPublicKeyQrPayload keeps cross-device onboarding tied to the discovered server CA trust root.
-func BuildPublicKeyQrPayload(identity Identity, caHash string) (string, error) {
+// BuildPublicKeyQrPayload encodes the request a new device shows to an
+// already-authorized one.
+//
+// The new device cannot reach the server yet, so it has no trust anchor to
+// name. Instead it carries a pairing secret: the scanner hands it to gitd,
+// which seals the device's join record under it. See pkg/pairing for why that
+// is safe. A blank secret is refused because no record could ever reach the
+// device.
+func BuildPublicKeyQrPayload(identity Identity, pairingSecret string) (string, error) {
+	secret := strings.TrimSpace(pairingSecret)
+	if secret == "" {
+		return "", errors.New("a device QR needs a pairing secret")
+	}
 	payload := map[string]string{
-		"pubkey":     identity.PublicKeySSH,
-		"age_pubkey": identity.AgePublicKey,
-		"name":       identity.DeviceName,
-		"uuid":       identity.DeviceUUID,
-		"ca_hash":    caHash,
+		"pubkey":         identity.PublicKeySSH,
+		"age_pubkey":     identity.AgePublicKey,
+		"name":           identity.DeviceName,
+		"uuid":           identity.DeviceUUID,
+		"pairing_secret": secret,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

@@ -45,7 +45,7 @@ test("capture electron timeline for README", async () => {
   try {
     const page = await electronApp.firstWindow();
     await routeDemoThumbnails(page, encryptedByOid);
-    await setupOnboardingBypass(page);
+    await setupOnboardingBypass(page, { stubDesktopBridge: false });
 
     await page.goto(`${RENDERER_URL}/`);
     await unlockBypassIdentity(page);

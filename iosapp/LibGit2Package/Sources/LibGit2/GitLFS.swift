@@ -2,6 +2,25 @@ import Foundation
 import CryptoKit
 import Security
 
+/// Queueing facts from `LFSRequestScheduler` so one download log line
+/// can tell a slow transfer from time spent waiting for a slot.
+public struct LFSDownloadQueueTrace: Sendable {
+    public var waitMs: Int
+    public var inflight: Int
+
+    public init(waitMs: Int, inflight: Int) {
+        self.waitMs = waitMs
+        self.inflight = inflight
+    }
+}
+
+/// Carries scheduler queue facts into `GitLFS.downloadData` without
+/// threading them through EncryptedLFS. Absent when a caller downloads
+/// without going through the scheduler.
+public enum LFSDownloadLog {
+    @TaskLocal public static var queue: LFSDownloadQueueTrace?
+}
+
 public enum LFSError: Error {
     case invalidFileURL
     case fileReadError(String)
@@ -84,8 +103,23 @@ public final class GitLFS: NSObject {
     // delegate until invalidation; using `self` would leak the client.
     private let authDelegate: MTLSURLSessionAuthDelegate
     // One long-lived session per client so concurrent timeline downloads
-    // do not create/invalidate sessions that CFNetwork still holds.
-    private let session: URLSession
+    // do not create/invalidate sessions that CFNetwork still holds. Built
+    // on first use rather than at init, and rebuilt when the tailnet node
+    // changes: launch does not wait for the join to finish, so a client
+    // created during it would otherwise stay unproxied for good.
+    private let baseConfiguration: URLSessionConfiguration
+    private let router: TailnetSessionRouter
+    /// How long a request waits for the node. The library is visible before
+    /// the join finishes, and an uncached thumbnail requested then has to
+    /// wait instead of failing and staying blank. Matches the launch join
+    /// bound so the two give up together.
+    private let routingTimeout: Duration
+    /// Where this client's transfers report whether gitd answered, so the
+    /// connection banner follows real LFS traffic.
+    private let reachability: ServerReachability
+    private let sessionLock = NSLock()
+    private var cachedSession: URLSession?
+    private var cachedSessionGeneration: UInt64 = 0
     private let uploadTaskLock = NSLock()
     private var activeUploadTasks: [ObjectIdentifier: URLSessionTask] = [:]
     
@@ -95,7 +129,10 @@ public final class GitLFS: NSObject {
         authToken: String? = nil,
         clientIdentity: SecIdentity? = nil,
         pinnedCA: SecCertificate? = nil,
-        sessionConfiguration: URLSessionConfiguration = .default
+        sessionConfiguration: URLSessionConfiguration = .default,
+        router: TailnetSessionRouter = .shared,
+        routingTimeout: Duration = .seconds(10),
+        reachability: ServerReachability = .shared
     ) {
         var cleanURL = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
         var extractedUsername: String?
@@ -130,12 +167,11 @@ public final class GitLFS: NSObject {
         // ImageDiskCacheManager and cache writes raced session teardown.
         let configuration = sessionConfiguration.copy() as! URLSessionConfiguration
         configuration.urlCache = nil
-        self.session = URLSession(
-            configuration: configuration,
-            delegate: self.authDelegate,
-            delegateQueue: nil
-        )
-        
+        self.baseConfiguration = configuration
+        self.router = router
+        self.routingTimeout = routingTimeout
+        self.reachability = reachability
+
         super.init()
         
         if username != nil {
@@ -146,7 +182,54 @@ public final class GitLFS: NSObject {
     // Releases the shared session when the client is discarded so the
     // auth delegate is not retained for the rest of the process lifetime.
     deinit {
-        session.finishTasksAndInvalidate()
+        cachedSession?.finishTasksAndInvalidate()
+    }
+
+    /// The session for the next request, routed the way the router says now.
+    ///
+    /// Waits for the node first. Launch shows the library before the join
+    /// finishes, so a thumbnail requested in that window would otherwise
+    /// fail and stay blank. Throws the router's `notConnectedYet` rather
+    /// than dialling directly if the node never arrives: gitd's name does
+    /// not resolve off the tailnet, and on a network that does resolve it
+    /// the request could reach an unintended host. Callers that can wait
+    /// longer than this timeout, such as a fullscreen photo, match that
+    /// error and try again. A replaced session is finished rather than
+    /// cancelled, so transfers already running on it complete.
+    private func currentSession() async throws -> URLSession {
+        guard await router.waitUntilRouted(timeout: routingTimeout) else {
+            throw TailnetSessionRouter.RoutingError.notConnectedYet
+        }
+        // The lock stays in a synchronous function. Taking it across the
+        // wait above would pin a thread for the whole join.
+        return try cachedOrNewSession()
+    }
+
+    /// Reuses the session built for the current node, or builds one.
+    ///
+    /// Called only after a node is installed. A node that disappears
+    /// between that check and this one still refuses to dial directly.
+    private func cachedOrNewSession() throws -> URLSession {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+
+        let generation = router.generation
+        if let cachedSession, cachedSessionGeneration == generation {
+            return cachedSession
+        }
+        let configuration = baseConfiguration.copy() as! URLSessionConfiguration
+        if !router.applySynchronously(to: configuration) {
+            throw TailnetSessionRouter.RoutingError.notConnectedYet
+        }
+        cachedSession?.finishTasksAndInvalidate()
+        let session = URLSession(
+            configuration: configuration,
+            delegate: authDelegate,
+            delegateQueue: nil
+        )
+        cachedSession = session
+        cachedSessionGeneration = generation
+        return session
     }
 
     // Cancels in-flight PUT tasks so sync abort stops uploads without
@@ -300,8 +383,11 @@ public final class GitLFS: NSObject {
             }
         }
 
+        let session = try await currentSession()
+        let serverReachability = reachability
         let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Swift.Error>) in
             delegate.completion = { error, response in
+                Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error {
                     continuation.resume(throwing: error)
                     return
@@ -313,7 +399,7 @@ public final class GitLFS: NSObject {
                 continuation.resume(returning: response)
             }
 
-            let task = self.session.uploadTask(withStreamedRequest: request)
+            let task = session.uploadTask(withStreamedRequest: request)
             task.delegate = delegate
             uploadTask = task
             self.trackUpload(task)
@@ -390,8 +476,11 @@ public final class GitLFS: NSObject {
             }
         }
         
+        let session = try await currentSession()
+        let serverReachability = reachability
         let (_, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
-            let task = self.session.uploadTask(with: request, from: data) { data, response, error in
+            let task = session.uploadTask(with: request, from: data) { data, response, error in
+                Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
@@ -420,8 +509,8 @@ public final class GitLFS: NSObject {
     
     // Downloads one LFS object through this instance's URL loading
     // configuration so mocked transports are honored. Emits a single
-    // compact log line on success with status, byte count, TTFB, and
-    // total elapsed time.
+    // compact log line on success with transfer timing, throughput,
+    // and any scheduler wait so a slow body can be told from a queue.
     @available(iOS 13.0, macOS 10.15, *)
     public func downloadData(oid: String, size: Int64, progressHandler: ((Int64, Int64) -> Void)? = nil) async throws -> Data {
         let downloadInfo = try await requestBatchDownload(oid: oid, size: size)
@@ -469,19 +558,21 @@ public final class GitLFS: NSObject {
             pinnedCA: pinnedCA
         )
 
+        let session = try await currentSession()
         let requestStart = DispatchTime.now()
+        let serverReachability = reachability
 
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
-                let task = self.session.dataTask(with: request) {
+                delegate.whenFinished(continuation)
+                let task = session.dataTask(with: request) {
                     data, response, error in
-                    if let error = error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(
-                            returning: (data ?? Data(), response)
-                        )
-                    }
+                    Self.noteServerOutcome(serverReachability, error: error, response: response)
+                    delegate.completeTask(
+                        data: data,
+                        response: response,
+                        error: error
+                    )
                 }
                 task.delegate = delegate
                 task.resume()
@@ -508,6 +599,15 @@ public final class GitLFS: NSObject {
         }
 
         let ttfb = delegate.ttfbMs.map { " ttfb=\($0)ms" } ?? ""
+        let elapsedMs = max(totalMs, 1)
+        let rate = " rate=\(data.count * 1000 / elapsedMs)B/s"
+        let proto = delegate.networkProtocolName.map { " proto=\($0)" } ?? ""
+        let reused = delegate.isReusedConnection.map {
+            " reused=\($0 ? "1" : "0")"
+        } ?? ""
+        let queue = LFSDownloadLog.queue.map {
+            " wait=\($0.waitMs)ms inflight=\($0.inflight)"
+        } ?? ""
         let href = downloadAction.href
         let displayURL = href.count > 72
             ? href.prefix(72) + "..." : href
@@ -515,6 +615,10 @@ public final class GitLFS: NSObject {
             + " status=\(httpResponse.statusCode)"
             + " bytes=\(data.count)"
             + "\(ttfb) total=\(totalMs)ms"
+            + rate
+            + proto
+            + reused
+            + queue
             + " url=\(displayURL)")
         return data
     }
@@ -565,10 +669,13 @@ public final class GitLFS: NSObject {
         let encoder = JSONEncoder()
         request.httpBody = try encoder.encode(batchRequest)
 
+        let session = try await currentSession()
+        let serverReachability = reachability
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
-                let task = self.session.dataTask(with: request) {
+                let task = session.dataTask(with: request) {
                     data, response, error in
+                    Self.noteServerOutcome(serverReachability, error: error, response: response)
                     if let error = error {
                         continuation.resume(throwing: error)
                     } else {
@@ -646,8 +753,11 @@ public final class GitLFS: NSObject {
         request.httpBody = try encoder.encode(batchRequest)
         
         print("LFS: Sending batch request...")
+        let session = try await currentSession()
+        let serverReachability = reachability
         let (data, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
-            let task = self.session.dataTask(with: request) { data, response, error in
+            let task = session.dataTask(with: request) { data, response, error in
+                Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
@@ -679,6 +789,25 @@ public final class GitLFS: NSObject {
         
         print("LFS: Batch request successful")
         return object
+    }
+
+    /// Tells the connection banner what this transfer learned.
+    ///
+    /// Any HTTP response means the server was reached, whatever status it
+    /// sent. Only a transport failure with no response means it was not,
+    /// and a cancelled transfer is neither.
+    private static func noteServerOutcome(
+        _ reachability: ServerReachability,
+        error: Error?,
+        response: URLResponse?
+    ) {
+        if response is HTTPURLResponse {
+            reachability.recordResponse()
+            return
+        }
+        if let error {
+            reachability.recordFailure(error)
+        }
     }
 }
 
@@ -747,15 +876,44 @@ private class UploadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelegate
     }
 }
 
-// Captures URLSession task metrics so the download path can report TTFB
-// alongside total elapsed time in one compact log line.
+// Captures URLSession task metrics so the download path can report TTFB,
+// protocol, and connection reuse alongside wall time in one log line.
+// Waits for both the body and the metrics callback because metrics
+// usually arrive after the completion handler, and proto/reused would
+// otherwise be missing from the line we print.
 private class DownloadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelegate {
     private let progressHandler: ((Int64, Int64) -> Void)?
+    private let lock = NSLock()
+    private var pending: CheckedContinuation<(Data, URLResponse?), Error>?
+    private var taskResult: Result<(Data, URLResponse?), Error>?
+    private var didCollectMetrics = false
     private(set) var ttfbMs: Int?
+    private(set) var networkProtocolName: String?
+    private(set) var isReusedConnection: Bool?
 
     init(progressHandler: ((Int64, Int64) -> Void)?, clientIdentity: SecIdentity?, pinnedCA: SecCertificate?) {
         self.progressHandler = progressHandler
         super.init(clientIdentity: clientIdentity, pinnedCA: pinnedCA)
+    }
+
+    func whenFinished(
+        _ continuation: CheckedContinuation<(Data, URLResponse?), Error>
+    ) {
+        lock.lock()
+        pending = continuation
+        finishIfReadyLocked()
+        lock.unlock()
+    }
+
+    func completeTask(data: Data?, response: URLResponse?, error: Error?) {
+        lock.lock()
+        if let error {
+            taskResult = .failure(error)
+        } else {
+            taskResult = .success((data ?? Data(), response))
+        }
+        finishIfReadyLocked()
+        lock.unlock()
     }
 
     func urlSession(
@@ -763,10 +921,30 @@ private class DownloadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelega
         task: URLSessionTask,
         didFinishCollecting metrics: URLSessionTaskMetrics
     ) {
-        guard let tx = metrics.transactionMetrics.last,
-              let reqStart = tx.requestStartDate,
-              let respStart = tx.responseStartDate else { return }
-        ttfbMs = Int(respStart.timeIntervalSince(reqStart) * 1000)
+        lock.lock()
+        if let tx = metrics.transactionMetrics.last {
+            if let reqStart = tx.requestStartDate,
+               let respStart = tx.responseStartDate {
+                ttfbMs = Int(respStart.timeIntervalSince(reqStart) * 1000)
+            }
+            networkProtocolName = tx.networkProtocolName
+            isReusedConnection = tx.isReusedConnection
+        }
+        didCollectMetrics = true
+        finishIfReadyLocked()
+        lock.unlock()
+    }
+
+    private func finishIfReadyLocked() {
+        guard didCollectMetrics, let taskResult, let pending else { return }
+        self.pending = nil
+        self.taskResult = nil
+        switch taskResult {
+        case .success(let value):
+            pending.resume(returning: value)
+        case .failure(let error):
+            pending.resume(throwing: error)
+        }
     }
 
     func urlSession(

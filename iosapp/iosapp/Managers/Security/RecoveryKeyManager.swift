@@ -39,7 +39,6 @@ final class RecoveryKeyManager {
         case noMatchingRecoveryKey
         case alreadyConfiguredDevice
         case missingClientIdentity
-        case missingPinnedCA
         case malformedRecoveryAgeKey
         case recoveryKeyNotAuthorized
 
@@ -58,8 +57,6 @@ final class RecoveryKeyManager {
                 return "Recovery is only available on fresh installs. Reinstall the app and try again."
             case .missingClientIdentity:
                 return "Device identity is missing."
-            case .missingPinnedCA:
-                return "Server trust configuration is missing."
             case .malformedRecoveryAgeKey:
                 return "Recovery key age secret is malformed."
             case .recoveryKeyNotAuthorized:
@@ -78,8 +75,13 @@ final class RecoveryKeyManager {
 
     // Discovery already pinned the CA, so a 401 while presenting the recovery
     // identity means the server no longer lists this key, not a transport fault.
+    // On a tailnet, hsproxy refusing to mint (403) is the same verdict, reached
+    // after the chain was verified against the bundle's CA hash.
     static func mapRecoveryAuthError(_ error: Swift.Error) -> Swift.Error {
-        MTLSTransportError.indicatesHTTPStatus(401, in: error)
+        if case HeadscaleControlShim.ShimError.keyRefused(403) = error {
+            return Error.recoveryKeyNotAuthorized
+        }
+        return MTLSTransportError.indicatesHTTPStatus(401, in: error)
             ? Error.recoveryKeyNotAuthorized
             : error
     }
@@ -122,9 +124,15 @@ final class RecoveryKeyManager {
         password: String,
         repository: Repository,
         gitDB: GitDatabase,
-        serverConfiguration: ServerConfigurationManager.Configuration
+        serverConfiguration: ServerConfigurationManager.Configuration,
+        tailnetConfiguration: TailnetConfiguration? = TailnetConfigurationManager.shared.load()
     ) async throws -> CreatedRecoveryKey {
-        guard !serverConfiguration.url.isEmpty, !serverConfiguration.caCertificate.isEmpty else {
+        // The bundle names the control plane, the only endpoint a phone with
+        // nothing else can reach, so a device that has not joined a tailnet
+        // cannot write one.
+        guard !serverConfiguration.url.isEmpty,
+              !serverConfiguration.caCertificate.isEmpty,
+              let tailnetConfiguration else {
             throw Error.invalidServerConfiguration
         }
 
@@ -164,7 +172,7 @@ final class RecoveryKeyManager {
             label: label,
             uuid: uuid,
             created: ISO8601DateFormatter().string(from: Date()),
-            discoveryURL: normalizeDiscoveryURL(fromGitURL: serverConfiguration.url),
+            headscaleURL: tailnetConfiguration.headscaleURL,
             caSHA256: pinnedHash,
             p256PrivateKeyPEM: p256Key.pemRepresentation,
             agePrivateKey: try Bech32.encode(hrp: "age-secret-key-", data: recoveryAgeIdentity.rawRepresentation).uppercased()
@@ -207,9 +215,7 @@ final class RecoveryKeyManager {
     func recover(
         input: String,
         password: String,
-        discoveryURLOverride: String? = nil,
         repositoryPath: String = (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path as NSString).appendingPathComponent("replycant-git-db"),
-        session: URLSession = .shared,
         progress: ((String, Double) -> Void)? = nil
     ) async throws -> RecoveryResult {
         let repositoryExists = Repository.exists(at: repositoryPath)
@@ -224,22 +230,7 @@ final class RecoveryKeyManager {
         let envelope = try RecoveryBundle.parseEnvelope(from: input)
         let plaintext = try RecoveryBundle.decrypt(envelope: envelope, password: password)
 
-        let discoveryURL = discoveryURLOverride ?? plaintext.discoveryURL
-        progress?("Requesting local network access...", 10)
-        try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(endpointURLs: [discoveryURL])
-
-        progress?("Resolving server discovery...", 15)
-        let discovered = try await ServerConfigurationManager.shared.discoverAndConfigure(
-            discoveryURLString: discoveryURL,
-            expectedCAHash: plaintext.caSHA256,
-            session: session
-        )
-
-        guard let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
-            throw Error.missingPinnedCA
-        }
-
-        progress?("Preparing temporary recovery identity...", 25)
+        progress?("Preparing temporary recovery identity...", 10)
         let temporaryIdentity = try ClientIdentityManager.shared.makeTemporaryIdentity(
             privateKeyPEM: plaintext.p256PrivateKeyPEM,
             commonName: "recovery-\(plaintext.uuid.prefix(8))"
@@ -248,12 +239,97 @@ final class RecoveryKeyManager {
             try? ClientIdentityManager.shared.deleteTemporaryIdentity()
         }
 
+        do {
+            return try await recoverOverTailnet(
+                plaintext: plaintext,
+                temporaryIdentity: temporaryIdentity,
+                repositoryPath: repositoryPath,
+                progress: progress
+            )
+        } catch {
+            // Recovery refuses to start on a configured device, so a half
+            // finished attempt must not leave configuration behind, or the
+            // user could never retry.
+            await TailnetBootstrap.shared.leave()
+            ServerConfigurationManager.shared.clearConfiguration()
+            throw Self.mapRecoveryAuthError(error)
+        }
+    }
+
+    // gitd is reachable only over the tailnet, so recovery starts from the
+    // control plane the bundle names. hsproxy authorizes the recovery
+    // identity like any device and sends the CA in its chain, which the
+    // bundle's hash picks out and from then on is pinned.
+    private func recoverOverTailnet(
+        plaintext: RecoveryBundle.Plaintext,
+        temporaryIdentity: SecIdentity,
+        repositoryPath: String,
+        progress: ((String, Double) -> Void)?
+    ) async throws -> RecoveryResult {
+        progress?("Joining your library's network...", 15)
+        let ca = try await TailnetBootstrap.shared.joinForRecovery(
+            headscaleURL: plaintext.headscaleURL,
+            caSHA256: plaintext.caSHA256,
+            clientIdentity: temporaryIdentity
+        )
+        try ServerConfigurationManager.shared.configure(
+            url: TailnetConfiguration.gitdURL,
+            caCertificate: ServerConfigurationManager.pemString(fromDER: SecCertificateCopyData(ca) as Data)
+        )
+
+        return try await enroll(
+            plaintext: plaintext,
+            serverURL: TailnetConfiguration.gitdURL,
+            pinnedCA: ca,
+            temporaryIdentity: temporaryIdentity,
+            repositoryPath: repositoryPath,
+            progress: progress,
+            afterPush: {
+                // hsproxy checks the identity on every control connection, and
+                // the recovery key is usually revoked straight after, so the
+                // node has to reconnect as this device before that happens.
+                progress?("Reconnecting as this device...", 78)
+                try await TailnetBootstrap.shared.joinAndPersist(
+                    headscaleURL: plaintext.headscaleURL,
+                    preauthKey: nil
+                )
+                // The rejoin reuses this device's node key moments after the
+                // recovery node stopped. gitd can still be sending to that
+                // process, so the first handshake is lost and the next
+                // request, usually revoking the used key, fails. Waiting
+                // here is what makes that request succeed. A timeout is
+                // logged rather than thrown: the key is already pushed, and
+                // throwing would wipe the configuration this recovery just
+                // created.
+                let reachable = await TailnetBootstrap.shared.waitUntilGitdReachable()
+                if !reachable {
+                    logError(
+                        "gitd was not reachable after rejoining as this device",
+                        context: "Recovery"
+                    )
+                }
+            }
+        )
+    }
+
+    // Clones as the recovery identity, enrolls this device's keys, and hands
+    // the transport back to the device identity. `afterPush` runs once this
+    // device's key is on the server, the first moment it is authorized.
+    private func enroll(
+        plaintext: RecoveryBundle.Plaintext,
+        serverURL: String,
+        pinnedCA: SecCertificate,
+        temporaryIdentity: SecIdentity,
+        repositoryPath: String,
+        progress: ((String, Double) -> Void)?,
+        afterPush: () async throws -> Void
+    ) async throws -> RecoveryResult {
         try MTLSTransport.shared.configure(clientIdentity: temporaryIdentity, pinnedCA: pinnedCA)
 
         progress?("Cloning with recovery identity...", 35)
         do {
             try await RepositoryBootstrap.clone(
-                serverURL: discovered.url,
+                serverURL: serverURL,
                 repositoryPath: repositoryPath
             ) { message, cloneProgress in
                 progress?(message, RepositoryBootstrap.scaled(cloneProgress, into: 35...70))
@@ -299,6 +375,7 @@ final class RecoveryKeyManager {
         } catch {
             throw Self.mapRecoveryAuthError(error)
         }
+        try await afterPush()
 
         progress?("Building media index...", 80)
         try await RepositoryBootstrap.hydrateIndex(
@@ -316,7 +393,7 @@ final class RecoveryKeyManager {
         return RecoveryResult(
             usedRecoveryLabel: plaintext.label,
             usedRecoveryUUID: plaintext.uuid,
-            discoveredServerURL: discovered.url
+            discoveredServerURL: serverURL
         )
     }
 
@@ -357,22 +434,6 @@ final class RecoveryKeyManager {
         let replaced = lower.replacingOccurrences(of: " ", with: "-")
         let safe = replaced.replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
         return safe.isEmpty ? "recovery" : safe
-    }
-
-    // Converts gitd origin into caserver discovery URL used by recovery bootstrap.
-    private func normalizeDiscoveryURL(fromGitURL gitURL: String) -> String {
-        guard var components = URLComponents(string: gitURL), let host = components.host else {
-            return gitURL
-        }
-        components.scheme = components.scheme == "mtls+https" ? "http" : "http"
-        components.user = nil
-        components.password = nil
-        components.host = host
-        components.port = 8080
-        components.path = ""
-        components.query = nil
-        components.fragment = nil
-        return components.url?.absoluteString ?? gitURL
     }
 
     // Formats a CryptoKit P-256 public key into SSH ecdsa-sha2-nistp256 form for gitd auth lookup.

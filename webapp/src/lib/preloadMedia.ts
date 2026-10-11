@@ -22,8 +22,9 @@ interface PreloadMediaOptions {
 const base64ToBytes = (encoded: string): Uint8Array =>
   Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
 
-// Infers image MIME from magic bytes so object URLs decode in Firefox after
-// ciphertext responses lose their Content-Type at the decrypt boundary.
+// Sets an image MIME from magic bytes so Chromium can paint and decode the
+// object URL. Decryption drops the response Content-Type, and blob URLs are
+// not sniffed.
 const sniffImageMimeType = (bytes: ArrayBuffer): string => {
   const u8 = new Uint8Array(bytes);
   if (u8.length >= 3 && u8[0] === 0xff && u8[1] === 0xd8 && u8[2] === 0xff) {

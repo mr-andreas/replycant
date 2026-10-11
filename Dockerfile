@@ -1,5 +1,5 @@
 # Build for alpine
-FROM golang:1.25.5-alpine3.23 AS alpine-builder
+FROM golang:1.26.6-alpine3.23 AS alpine-builder
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ COPY . .
 RUN go install ./...
 
 # Build for debian
-FROM golang:1.25.5-trixie AS debian-builder
+FROM golang:1.26.6-trixie AS debian-builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
@@ -20,10 +20,18 @@ COPY . .
 RUN go install ./...
 
 # Run gitd on debian, as the git binary bundled with alpine does not contain git-http-backend.
+#
+# hsproxy, tunnel-agent and headscale-config ship in the same image because they
+# share gitd's repository, certificates or tailnet constants, and keeping one
+# image means an operator cannot end up running mismatched versions of them.
 FROM debian:trixie AS gitd
-RUN apt-get update && apt-get install -y git
+RUN apt-get update && apt-get install -y git \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=debian-builder /go/bin/gitd /usr/local/bin/gitd
 COPY --from=debian-builder /go/bin/lfs-prereceive /usr/local/bin/lfs-prereceive
+COPY --from=debian-builder /go/bin/hsproxy /usr/local/bin/hsproxy
+COPY --from=debian-builder /go/bin/tunnel-agent /usr/local/bin/tunnel-agent
+COPY --from=debian-builder /go/bin/headscale-config /usr/local/bin/headscale-config
 ENTRYPOINT ["/usr/local/bin/gitd"]
 EXPOSE 8443
 EXPOSE 8080

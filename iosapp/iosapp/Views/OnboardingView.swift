@@ -7,14 +7,15 @@ import LibGit2
 struct OnboardingView: View {
     let onComplete: () -> Void
     static let connectToExistingStepOneInstruction = "On your other device, go to Settings → Link a New Device and scan this code"
-    static let connectToExistingStepOneContinueLabel = "Next"
     static let connectToExistingStepOneWaitingLabel = "Waiting for your other device to scan..."
     static let connectToExistingRecoveryShortcutLabel = "I have a recovery key"
     static let connectToExistingPasteBackupLabel = "Paste backup text"
-    static let connectToExistingStepTwoHint = "Your other device should now be showing a green-bordered QR code. You can also scan a recovery QR here."
     static let connectToExistingRecoveryScanHint = "Scan your saved recovery QR, or paste backup text."
     static let serverSetupGuideText = "Before you continue, set up a Replycant server and make sure it's reachable from this device. Follow the guide below, then return here to scan your server QR code."
     static let serverSetupGuideURL = URL(string: "https://github.com/mr-andreas/replycant#getting-started")!
+    static let startingSetupMessage = "Starting setup..."
+    static let joiningNetworkMessage = "Joining your library's network..."
+    static let pairingTimedOutMessage = "Your other device didn't approve this one in time. Try again and scan the new code."
     
     @State private var currentStep: OnboardingStep
     @State private var introPageIndex: Int
@@ -27,7 +28,16 @@ struct OnboardingView: View {
     @State private var deviceUUID: String
     @State private var isConnectToExistingFlow: Bool
     @State private var recoveryInput: String?
-    @State private var connectScanIntent: ConnectScanIntent
+
+    // The secret this device published in its QR, and the task waiting for a
+    // record sealed under it.
+    //
+    // One secret per attempt: it is what an eavesdropper who photographed the
+    // QR would have, so it must not outlive the screen that showed it. The task
+    // is held so leaving the screen stops the poll rather than leaving it
+    // reading a slot nobody will write to.
+    @State private var pairingSecret: PairingRecord.Secret?
+    @State private var pairingWait: Task<Void, Never>?
 
     // Initializes the onboarding router so first-launch users see product context before setup actions.
     init(onComplete: @escaping () -> Void) {
@@ -41,7 +51,6 @@ struct OnboardingView: View {
         _deviceUUID = State(initialValue: "")
         _isConnectToExistingFlow = State(initialValue: false)
         _recoveryInput = State(initialValue: nil)
-        _connectScanIntent = State(initialValue: .pairing)
     }
 
     /// Preview-only initializer that parks the view at a specific step
@@ -66,9 +75,8 @@ struct OnboardingView: View {
         _devicePublicKeyQR = State(initialValue: devicePublicKeyQR)
         _deviceName = State(initialValue: deviceName)
         _deviceUUID = State(initialValue: "preview-uuid")
-        _isConnectToExistingFlow = State(initialValue: step == .showPublicKey || step == .scanConfig)
+        _isConnectToExistingFlow = State(initialValue: step == .showPublicKey || step == .scanRecovery)
         _recoveryInput = State(initialValue: nil)
-        _connectScanIntent = State(initialValue: .pairing)
     }
     
     var body: some View {
@@ -89,8 +97,8 @@ struct OnboardingView: View {
                     )
                 case .showPublicKey:
                     showPublicKeyView
-                case .scanConfig:
-                    scanConfigView
+                case .scanRecovery:
+                    scanRecoveryView
                 case .processing:
                     processingView
                 case .error:
@@ -100,7 +108,7 @@ struct OnboardingView: View {
                         initialInput: recoveryInput,
                         onCompleted: onComplete,
                         onCancel: { currentStep = .showPublicKey },
-                        onScanAgain: { currentStep = .scanConfig }
+                        onScanAgain: { currentStep = .scanRecovery }
                     )
                 }
             }
@@ -277,7 +285,7 @@ struct OnboardingView: View {
             message: errorMessage,
             onRetry: {
                 if isConnectToExistingFlow {
-                    currentStep = .showPublicKey
+                    startConnectToExisting()
                 } else {
                     currentStep = .scanQR
                 }
@@ -294,7 +302,7 @@ struct OnboardingView: View {
     private var showPublicKeyView: some View {
         ScrollView {
             VStack(spacing: 16) {
-                PairingStepIndicator(step: 1, of: 2, phase: .sendKey)
+                PairingStepIndicator(step: 1, phase: .sendKey)
                     .padding(.top, 16)
 
                 Text("Show this to your other device")
@@ -330,16 +338,6 @@ struct OnboardingView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.horizontal)
 
-                Button(action: startPairingScan) {
-                    HStack {
-                        Image(systemName: "arrow.right.circle")
-                        Text(Self.connectToExistingStepOneContinueLabel)
-                    }
-                }
-                .buttonStyle(PairingPrimaryButtonStyle(disabled: devicePublicKeyQR == nil))
-                .disabled(devicePublicKeyQR == nil)
-                .padding(.horizontal)
-
                 Button(action: startRecoveryScan) {
                     Text(Self.connectToExistingRecoveryShortcutLabel)
                 }
@@ -350,26 +348,18 @@ struct OnboardingView: View {
         }
     }
 
-    // Wraps the scanner so it can accept either the other device's
-    // server-config QR or a recovery QR from the same camera step.
-    private var scanConfigView: some View {
+    // Scans a saved recovery QR for a user who has no other device left to
+    // pair from, with paste as the fallback for text backups.
+    private var scanRecoveryView: some View {
         QRCodeScannerView(
-            onScan: handleConnectScanned,
+            onScan: handleRecoveryScanned,
             onCancel: { currentStep = .showPublicKey },
-            validationMode: .connectOrRecovery
+            validationMode: .recoveryBundle
         )
-        .safeAreaInset(edge: .top) {
-            if connectScanIntent == .pairing {
-                PairingStepIndicator(step: 2, of: 2, phase: .shareConfig)
-                    .padding(.top, 12)
-            }
-        }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 12) {
                 PairingHintBox(
-                    message: connectScanIntent == .recovery
-                        ? Self.connectToExistingRecoveryScanHint
-                        : Self.connectToExistingStepTwoHint,
+                    message: Self.connectToExistingRecoveryScanHint,
                     phase: .shareConfig
                 )
                 Button(action: startRecoveryPaste) {
@@ -393,6 +383,7 @@ struct OnboardingView: View {
 
     // Starts create-library onboarding at server setup guidance so users can bootstrap immediately.
     private func startCreateLibrary() {
+        stopWaitingForTailnetAuthorization()
         isConnectToExistingFlow = false
         currentStep = .serverSetupGuide
     }
@@ -403,6 +394,7 @@ struct OnboardingView: View {
         currentStep = .processing
         isProcessing = true
         progress = 0
+        progressMessage = Self.startingSetupMessage
         
         Task {
             do {
@@ -431,81 +423,33 @@ struct OnboardingView: View {
         }
     }
     
-    // Routes a connect-flow scan to pairing or recovery so one camera step
-    // can restore access without a separate recovery entry point.
-    private func handleConnectScanned(_ scanned: String) {
-        switch QRScanValidation.connectPayloadKind(code: scanned) {
-        case .serverConfig:
-            handleConfigScanned(scanned)
-        case .recoveryBundle:
-            recoveryInput = scanned
-            currentStep = .recover
-        case nil:
-            errorMessage = "Unsupported QR code. Expected server configuration or a recovery key."
-            currentStep = .error
-        }
+    // Hands a scanned recovery QR to the recovery wizard. The pairing wait
+    // stops first, or a late record could reconfigure the app underneath it.
+    private func handleRecoveryScanned(_ scanned: String) {
+        stopWaitingForTailnetAuthorization()
+        recoveryInput = scanned
+        currentStep = .recover
     }
 
-    // Continues the existing-device pairing dance after this device's key QR
-    // has been shown for the other device to scan.
-    private func startPairingScan() {
-        connectScanIntent = .pairing
-        currentStep = .scanConfig
-    }
-
-    // Jumps from the device-key screen to the same scanner when the user
-    // already has a recovery QR instead of another paired device.
+    // Opens the recovery scanner for a user who has a recovery QR instead
+    // of another paired device.
     private func startRecoveryScan() {
-        connectScanIntent = .recovery
-        currentStep = .scanConfig
+        currentStep = .scanRecovery
     }
 
     // Opens the paste path so recovery still works when the backup is
     // text rather than a QR code.
     private func startRecoveryPaste() {
+        stopWaitingForTailnetAuthorization()
         recoveryInput = nil
         currentStep = .recover
     }
 
-    // Handles the config QR scanned from Device A during "Connect to Existing" flow.
-    private func handleConfigScanned(_ jsonString: String) {
-        currentStep = .processing
-        isProcessing = true
-        progress = 0
-        
-        Task {
-            do {
-                try await performConnectToExisting(configJSON: jsonString)
-                
-                await MainActor.run {
-                    isProcessing = false
-                    progressMessage = "Setup complete!"
-                    progress = 100
-                }
-                
-                // Brief delay to show completion
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-                
-                await MainActor.run {
-                    onComplete()
-                }
-                
-            } catch {
-                await MainActor.run {
-                    isProcessing = false
-                    errorMessage = error.localizedDescription
-                    currentStep = .error
-                }
-            }
-        }
-    }
-    
     // Initiates connect-to-existing with both mTLS and age public keys so Device A can grant encryption access.
     private func startConnectToExisting() {
         log("=== STARTING CONNECT TO EXISTING FLOW ===", context: "Onboarding")
         isConnectToExistingFlow = true
         recoveryInput = nil
-        connectScanIntent = .pairing
         currentStep = .showPublicKey
         
         Task {
@@ -528,20 +472,22 @@ struct OnboardingView: View {
                 
                 // Build QR code JSON.
                 let agePublicKey = try ClientIdentityManager.shared.agePublicKey()
-                let json: [String: String] = [
-                    "pubkey": publicKey,
-                    "age_pubkey": agePublicKey,
-                    "name": name,
-                    "uuid": uuid
-                ]
-                
-                guard let jsonData = try? JSONSerialization.data(withJSONObject: json),
-                      let jsonString = String(data: jsonData, encoding: .utf8) else {
-                    throw OnboardingError.repositoryError("Failed to create QR code")
-                }
-                
+
+                // A fresh secret every time the QR is generated, so a photo of
+                // an abandoned attempt's code cannot be used against this one.
+                let secret = PairingRecord.createSecret()
+                let jsonString = try TailnetPairing.deviceQRPayload(
+                    publicKeySSH: publicKey,
+                    agePublicKey: agePublicKey,
+                    deviceName: name,
+                    deviceUUID: uuid,
+                    pairingSecret: secret.encoded
+                )
+
                 await MainActor.run {
                     devicePublicKeyQR = jsonString
+                    pairingSecret = secret
+                    startWaitingForTailnetAuthorization(secret: secret)
                 }
                 
                 log("Generated device key QR for \(name) (\(uuid))", context: "Onboarding")
@@ -555,6 +501,117 @@ struct OnboardingView: View {
         }
     }
     
+    // MARK: - Tailnet Pairing
+
+    // Waits for the deployment to authorize this device, then adopts what it
+    // sent.
+    //
+    // This is the only way in: the device has no CA to trust, no tailnet
+    // credential, and no route to gitd, so it cannot ask for anything and
+    // instead waits to be handed a sealed record.
+    private func startWaitingForTailnetAuthorization(secret: PairingRecord.Secret) {
+        pairingWait?.cancel()
+        pairingWait = Task {
+            do {
+                let payload = try await TailnetPairing.awaitAuthorization(
+                    secretEncoded: secret.encoded,
+                    slot: secret.slot
+                )
+                if Task.isCancelled { return }
+
+                await MainActor.run {
+                    currentStep = .processing
+                    isProcessing = true
+                    progress = 0
+                    progressMessage = Self.startingSetupMessage
+                }
+                try await performTailnetConnect(payload: payload)
+
+                await MainActor.run {
+                    isProcessing = false
+                    progressMessage = "Setup complete!"
+                    progress = 100
+                }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run { onComplete() }
+            } catch is CancellationError {
+                // Expected: the user moved on to recovery or another screen.
+            } catch let error as DiscoveryClient.DiscoveryError where error == .timedOut {
+                await MainActor.run {
+                    errorMessage = Self.pairingTimedOutMessage
+                    currentStep = .error
+                }
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    errorMessage = error.localizedDescription
+                    currentStep = .error
+                }
+            }
+        }
+    }
+
+    // Stops the wait once it can no longer complete, so an abandoned attempt
+    // does not keep polling a slot in the background.
+    private func stopWaitingForTailnetAuthorization() {
+        pairingWait?.cancel()
+        pairingWait = nil
+        pairingSecret = nil
+    }
+
+    // Joins the tailnet from an authorized record and clones over it. A
+    // tailnet node dials through its own userspace stack, so the device never
+    // touches the local network and iOS never asks for that permission.
+    private func performTailnetConnect(payload: PairingRecord.Payload) async throws {
+        log("=== PERFORMING TAILNET CONNECT (JOIN + CLONE) ===", context: "Onboarding")
+
+        updateProgress(10, message: Self.joiningNetworkMessage)
+        let serverURL = try await TailnetPairing.adopt(
+            payload: payload,
+            onProgress: { message in
+                Task { @MainActor in
+                    self.progressMessage = message
+                }
+            }
+        )
+
+        updateProgress(30, message: "Configuring secure transport...")
+        guard let identity = ClientIdentityManager.shared.loadSecIdentity() else {
+            throw OnboardingError.repositoryError(
+                "No identity found. The key should have been generated at first boot.")
+        }
+        guard let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
+            throw OnboardingError.repositoryError("Failed to load CA certificate")
+        }
+        try MTLSTransport.shared.configure(clientIdentity: identity, pinnedCA: pinnedCA)
+
+        updateProgress(40, message: "Cloning repository...")
+        let repoPath = RepositoryManager.shared.repositoryPath()
+        log("Cloning from \(serverURL) to \(repoPath)", context: "Onboarding")
+        try await RepositoryBootstrap.clone(
+            serverURL: serverURL,
+            repositoryPath: repoPath
+        ) { message, phaseProgress in
+            Task { @MainActor in
+                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 40...80)
+                self.progressMessage = message
+            }
+        }
+
+        updateProgress(80, message: "Building media index...")
+        try await RepositoryBootstrap.hydrateIndex(
+            resetDatabase: false
+        ) { message, phaseProgress in
+            Task { @MainActor in
+                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 80...99)
+                self.progressMessage = message
+            }
+        }
+
+        updateProgress(100, message: "Setup complete!")
+        log("Tailnet connect completed successfully", context: "Onboarding")
+    }
+
     // MARK: - Bootstrap Setup
     
     // Performs bootstrap setup and commits both identity keys and initial KEK epoch metadata in one atomic push.
@@ -562,17 +619,7 @@ struct OnboardingView: View {
         log("=== PERFORMING BOOTSTRAP SETUP (CREATE + PUSH) ===", context: "Onboarding")
         // Step 1: Parse and store server configuration
         updateProgress(10, message: "Configuring server...")
-        try ServerConfigurationManager.shared.configure(fromQRCodeString: qrCodeJSON)
-
-        // Step 2: Trigger local-network permission before the first push.
-        updateProgress(20, message: "Requesting local network access...")
-        guard let configuration = ServerConfigurationManager.shared.loadConfiguration() else {
-            throw OnboardingError.repositoryError("Server configuration missing after QR scan")
-        }
-        try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(
-            gitServerURL: configuration.url,
-            lfsServerURL: ServerConfigurationManager.shared.loadLFSURL()
-        )
+        try await adoptServerConfigQR(qrCodeJSON)
         
         // Step 3: Configure mTLS transport for libgit2 push/pull
         updateProgress(30, message: "Configuring secure transport...")
@@ -650,74 +697,32 @@ struct OnboardingView: View {
         progressMessage = message
     }
     
-    // MARK: - Connect to Existing Setup
-    
-    // Performs the connect-to-existing flow: configure server, configure mTLS, clone repo.
-    // The device identity was already generated at first boot.
-    // We use that identity for authentication since its public key was added by Device A.
-    private func performConnectToExisting(configJSON: String) async throws {
-        log("=== PERFORMING CONNECT TO EXISTING (CLONE) ===", context: "Onboarding")
-        // Step 1: Parse and store server configuration
-        updateProgress(10, message: "Configuring server...")
-        try ServerConfigurationManager.shared.configure(fromQRCodeString: configJSON)
-
-        // Step 2: Trigger local-network permission before the first clone.
-        updateProgress(20, message: "Requesting local network access...")
-        guard let configuration = ServerConfigurationManager.shared.loadConfiguration() else {
-            throw OnboardingError.repositoryError("Server configuration missing after QR scan")
+    /// Installs the CA from the first-device QR and brings the node up
+    /// before any gitd request.
+    ///
+    /// Ordered this way because gitd's MagicDNS name does not resolve until
+    /// the node is up, and the join itself needs the CA already pinned.
+    private func adoptServerConfigQR(_ json: String) async throws {
+        guard let payload = QRScanValidation.parseServerConfig(json) else {
+            throw OnboardingError.repositoryError(
+                "Invalid QR code. Expected server configuration.")
         }
-        try await LocalNetworkPermissionManager.shared.requestPermissionIfNeeded(
-            gitServerURL: configuration.url,
-            lfsServerURL: ServerConfigurationManager.shared.loadLFSURL()
+        try ServerConfigurationManager.shared.configure(
+            url: TailnetConfiguration.gitdURL,
+            caCertificate: payload.ca
         )
-        
-        // Step 3: Verify we have the identity that was generated at first boot
-        // This is critical - we must use the same key whose public part was shared via QR
-        guard let identity = ClientIdentityManager.shared.loadSecIdentity() else {
-            throw OnboardingError.repositoryError("No identity found. The key should have been generated at first boot.")
-        }
-        
-        // Step 4: Configure mTLS transport for libgit2 clone
-        updateProgress(30, message: "Configuring secure transport...")
-        guard let pinnedCA = ServerConfigurationManager.shared.loadSecCertificate() else {
-            throw OnboardingError.repositoryError("Failed to load CA certificate")
-        }
-        try MTLSTransport.shared.configure(clientIdentity: identity, pinnedCA: pinnedCA)
-        
-        // Step 5: Clone repository and hydrate local index.
-        let repoPath = RepositoryManager.shared.repositoryPath()
-
-        // Step 6: Clone repository (run on background to avoid blocking UI).
-        updateProgress(40, message: "Cloning repository...")
-        guard let serverURL = ServerConfigurationManager.shared.loadURL() else {
-            throw OnboardingError.noServerURL
-        }
-
-        log("Cloning from \(serverURL) to \(repoPath)", context: "Onboarding")
-        try await RepositoryBootstrap.clone(
-            serverURL: serverURL,
-            repositoryPath: repoPath
-        ) { message, phaseProgress in
-            Task { @MainActor in
-                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 40...80)
-                self.progressMessage = message
+        updateProgress(20, message: Self.joiningNetworkMessage)
+        try await TailnetBootstrap.shared.joinAndPersist(
+            headscaleURL: payload.headscaleURL,
+            preauthKey: payload.preauthKey,
+            onProgress: { message in
+                Task { @MainActor in
+                    self.progressMessage = message
+                }
             }
-        }
-
-        updateProgress(80, message: "Building media index...")
-        try await RepositoryBootstrap.hydrateIndex(
-            resetDatabase: false
-        ) { message, phaseProgress in
-            Task { @MainActor in
-                self.progress = RepositoryBootstrap.scaled(phaseProgress, into: 80...99)
-                self.progressMessage = message
-            }
-        }
-        
-        updateProgress(100, message: "Setup complete!")
-        log("Connect to existing setup completed successfully", context: "Onboarding")
+        )
     }
-    
+
     @MainActor
     private func getDeviceName() -> String {
         // Use device name or generate a unique identifier
@@ -731,14 +736,6 @@ struct OnboardingView: View {
 
 // MARK: - Supporting Types
 
-// Represents the onboarding router states used to control secure setup progression.
-// Distinguishes pairing vs recovery on the shared connect scanner so
-// step chrome and hint copy match why the user opened the camera.
-enum ConnectScanIntent {
-    case pairing
-    case recovery
-}
-
 // Names each first-launch screen so routing and titles stay explicit.
 // CaseIterable lets the screen gallery fail a test when a new step is
 // added without a corresponding canvas tile.
@@ -748,7 +745,7 @@ enum OnboardingStep: CaseIterable {
     case serverSetupGuide
     case scanQR
     case showPublicKey
-    case scanConfig
+    case scanRecovery
     case processing
     case error
     case recover
@@ -761,7 +758,7 @@ enum OnboardingStep: CaseIterable {
         case .serverSetupGuide: return "Server Setup"
         case .scanQR: return "Scan QR Code"
         case .showPublicKey: return "Your Device Key"
-        case .scanConfig: return "Scan Configuration"
+        case .scanRecovery: return "Scan Recovery Key"
         case .processing: return "Setting Up"
         case .error: return "Error"
         case .recover: return "Recover Access"
@@ -827,7 +824,7 @@ private enum OnboardingError: Error, LocalizedError {
 #Preview("Show Public Key") {
     OnboardingView(
         preview: .showPublicKey,
-        devicePublicKeyQR: "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\"}",
+        devicePublicKeyQR: "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\",\"pairing_secret\":\"preview\"}",
         deviceName: "preview-iphone"
     )
 }

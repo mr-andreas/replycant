@@ -54,7 +54,10 @@ enum RecoveryBundle {
         let label: String
         let uuid: String
         let created: String
-        let discoveryURL: String
+        // The only endpoint a phone with nothing but the bundle can reach:
+        // gitd sits behind the tailnet, and the control plane's TLS chain
+        // carries the CA the hash below pins.
+        let headscaleURL: String
         let caSHA256: String
         let p256PrivateKeyPEM: String
         let agePrivateKey: String
@@ -65,7 +68,7 @@ enum RecoveryBundle {
             case label
             case uuid
             case created
-            case discoveryURL = "discovery_url"
+            case headscaleURL = "headscale_url"
             case caSHA256 = "ca_sha256"
             case p256PrivateKeyPEM = "p256_private_key"
             case agePrivateKey = "age_private_key"
@@ -88,6 +91,22 @@ enum RecoveryBundle {
     // Names the optional deep-link query that unlocks the bundle so
     // testing and App Review can recover without typing the password.
     static let passwordQueryName = "pw"
+
+    #if DEBUG
+    // Appends the password and keep flag so a debug share can be pasted
+    // into a local recovery-key file and recover without a prompt or a
+    // revoke. Release builds have no path that puts a password in a link.
+    static func debugDeepLinkString(deepLink: String, password: String) -> String {
+        guard var components = URLComponents(string: deepLink) else {
+            return deepLink
+        }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: passwordQueryName, value: password))
+        items.append(URLQueryItem(name: keepKeyQueryName, value: "1"))
+        components.queryItems = items
+        return components.string ?? deepLink
+    }
+    #endif
 
     // Encrypts plaintext recovery metadata into a shareable envelope guarded by a user-chosen password.
     static func encrypt(plaintext: Plaintext, password: String) throws -> Envelope {

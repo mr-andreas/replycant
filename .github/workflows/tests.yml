@@ -113,13 +113,13 @@ jobs:
         run: npm run test
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox
+        run: npx playwright install --with-deps chromium
 
       - name: Run e2e tests
         run: npm run e2e
 
       - name: Run integration e2e tests
-        run: npm run e2e:integration
+        run: xvfb-run -a npm run e2e:integration
 
   ios-unit-tests:
     name: iOS unit tests
@@ -136,6 +136,11 @@ jobs:
         run: |
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
+
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Cache Swift package checkouts
         uses: actions/cache@v4
@@ -170,6 +175,11 @@ jobs:
         run: |
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
+
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
 
       - name: Cache Swift package checkouts
         uses: actions/cache@v4

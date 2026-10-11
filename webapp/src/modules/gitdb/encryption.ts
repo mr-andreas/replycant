@@ -102,7 +102,7 @@ export const parseEncryptedManifestHeader = (raw: Uint8Array): EncryptedManifest
 
 // Decrypts AES-GCM content encoded as <nonce><ciphertext><tag> combined bytes.
 // AAD must match the value supplied at seal time or authentication fails.
-const decryptAesGcmCombined = async (
+export const decryptAesGcmCombined = async (
   combined: Uint8Array,
   key: CryptoKey,
   additionalData?: Uint8Array,

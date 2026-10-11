@@ -43,6 +43,8 @@ wait_for_ready() {
 }
 
 # start_container builds and starts the shared integration stack for iOS tests.
+# Only the CA page, discovery, hsproxy and ctl are published: gitd is reached
+# over the tailnet, as on a real deployment.
 start_container() {
   require_local_daemon
   remove_stale_containers
@@ -52,8 +54,8 @@ start_container() {
     docker run --rm -d \
       --label replycant-integration=true \
       -p 18080:8080 \
-      -p 18443:18443 \
-      -p 18444:18444 \
+      -p 18082:18082 \
+      -p 18085:18085 \
       -p 18447:18447 \
       "$image"
   )"

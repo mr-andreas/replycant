@@ -13,6 +13,7 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     let item: TimelineItem
     private let timelineManager: TimelineManager
     private let onDismiss: () -> Void
+    private let networkCost: NetworkCostProviding
 
     private var _outerScrollView: UIScrollView!
     var outerScrollView: UIScrollView { _outerScrollView }
@@ -25,6 +26,7 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     private var hostController: UIHostingController<AnyView>?
     private var posterImageView: UIImageView?
     private var posterSpinner: UIActivityIndicatorView?
+    private var cellularPlayButton: UIButton?
     private var posterLoadTask: Task<Void, Never>?
     private var playerReadyObservation: NSKeyValueObservation?
     private var playerRateObservation: NSKeyValueObservation?
@@ -34,18 +36,27 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     private(set) var testingRestartPlaybackInvocationCount = 0
     private(set) var testingDidRequestSeekToStart = false
     private(set) var testingDidRequestPlayAfterRestart = false
+    private(set) var didStartVideoLoad = false
 #endif
 
-    init(item: TimelineItem, timelineManager: TimelineManager, onDismiss: @escaping () -> Void) {
+    init(
+        item: TimelineItem,
+        timelineManager: TimelineManager,
+        onDismiss: @escaping () -> Void,
+        networkCost: NetworkCostProviding = NetworkCostMonitor.shared
+    ) {
         self.item = item
         self.timelineManager = timelineManager
         self.onDismiss = onDismiss
+        self.networkCost = networkCost
         super.init(nibName: nil, bundle: nil)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    // Chooses autoplay or a mobile-data hold before any bytes are requested,
+    // so opening a video on cellular does not start the full-quality stream.
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -57,7 +68,11 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
 
         setupPosterView()
         loadPosterImage()
-        loadVideo()
+        if networkCost.isMetered {
+            resolveLocalOrHoldForConfirmation()
+        } else {
+            loadVideo()
+        }
     }
 
     // Restarts video when users return to this cached page so swipe-back always
@@ -122,8 +137,33 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     // Loads the fullscreen video stream while preserving existing dismissal
     // and error behavior from the previous playback implementation.
     private func loadVideo() {
+#if DEBUG
+        didStartVideoLoad = true
+#endif
         let loader = FullResolutionImageLoader(timelineManager: timelineManager)
         self.fullResLoader = loader
+        observeLoader(loader)
+        loader.loadOriginal(for: item, isVideo: true)
+    }
+
+    // Plays a Photos copy immediately on mobile data, and otherwise leaves
+    // the poster up until the user accepts the full-quality transfer.
+    private func resolveLocalOrHoldForConfirmation() {
+        let loader = FullResolutionImageLoader(timelineManager: timelineManager)
+        self.fullResLoader = loader
+        observeLoader(loader)
+        Task { [weak self] in
+            guard let self else { return }
+            let foundLocal = await loader.loadLocalVideoIfAvailable(for: self.item)
+            guard !foundLocal else { return }
+            self.showCellularPlayButton()
+        }
+    }
+
+    // Subscribes once per loader so a later confirmed stream replaces the
+    // unused local-only probe without embedding a stale player.
+    private func observeLoader(_ loader: FullResolutionImageLoader) {
+        cancellables.removeAll()
 
         loader.$player
             .receive(on: DispatchQueue.main)
@@ -144,8 +184,72 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
                 self.showError(error)
             }
             .store(in: &cancellables)
+    }
 
-        loader.loadOriginal(for: item, isVideo: true)
+    // Keeps the poster and hides the spinner so a remote video on mobile
+    // data looks paused until the user chooses to spend the data.
+    private func showCellularPlayButton() {
+        posterSpinner?.stopAnimating()
+        guard cellularPlayButton == nil else { return }
+
+        let button = UIButton(type: .system)
+        let symbol = UIImage.SymbolConfiguration(pointSize: 64, weight: .regular)
+        button.setImage(UIImage(systemName: "play.circle.fill", withConfiguration: symbol), for: .normal)
+        button.tintColor = .white
+        button.accessibilityIdentifier = "cellularPlayButton"
+        button.accessibilityLabel = "Play"
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(cellularPlayButtonTapped), for: .touchUpInside)
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            button.widthAnchor.constraint(equalToConstant: 88),
+            button.heightAnchor.constraint(equalToConstant: 88),
+        ])
+        cellularPlayButton = button
+    }
+
+    // Asks before streaming the original, because there is no transcode
+    // to shrink the video on a metered network.
+    @objc private func cellularPlayButtonTapped() {
+        presentCellularDataWarning()
+    }
+
+    // Names the original file size so the user can judge the transfer.
+    static func cellularWarningMessage(filesize: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        let size = formatter.string(fromByteCount: filesize)
+        return "Videos stream in their original quality because transcoding isn't available yet. Playing this video may use up to \(size) of data."
+    }
+
+    // Confirms the full-quality transfer before AVPlayer opens the stream.
+    private func presentCellularDataWarning() {
+        let alert = UIAlertController(
+            title: "Play over mobile data?",
+            message: Self.cellularWarningMessage(filesize: item.original.spec.filesize),
+            preferredStyle: .alert
+        )
+        // The button sits where the alert text is. Hiding it keeps the
+        // warning readable, and cancel puts it back.
+        cellularPlayButton?.isHidden = true
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            self?.cellularPlayButton?.isHidden = false
+        })
+        alert.addAction(UIAlertAction(title: "Play", style: .default) { [weak self] _ in
+            self?.confirmCellularPlayback()
+        })
+        present(alert, animated: true)
+    }
+
+    // Starts the stream only after the user accepts the data warning.
+    private func confirmCellularPlayback() {
+        cellularPlayButton?.removeFromSuperview()
+        cellularPlayButton = nil
+        posterSpinner?.startAnimating()
+        loadVideo()
     }
 
     // Hosts AVPlayer content and removes the poster only after AVFoundation
@@ -390,6 +494,20 @@ extension VideoPreviewViewController {
     // Allows tests to exercise swipe-back replay behavior directly.
     func testingRestartPlayback() {
         restartPlayback()
+    }
+
+    // Reports the mobile-data play affordance so tests can prove a remote
+    // video did not start streaming on its own.
+    var testingHasCellularPlayButton: Bool {
+        cellularPlayButton?.superview != nil
+    }
+
+    // Reports whether the full-quality stream was requested.
+    var testingDidStartVideoLoad: Bool { didStartVideoLoad }
+
+    // Simulates accepting the data warning without presenting an alert.
+    func testingConfirmCellularPlayback() {
+        confirmCellularPlayback()
     }
 }
 #endif

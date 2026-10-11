@@ -119,7 +119,7 @@ final class ManifestCryptoPerformanceTests: XCTestCase {
         let commitService = DefaultGitCommitService(
             repository: repository,
             deviceSpace: deviceSpace,
-            lfsClient: GitLFS(serverURL: "http://localhost")
+            lfsClient: GitLFS(serverURL: "http://localhost", router: .passthroughForTests())
         )
         let databaseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manifest-crypto-bench-db-\(UUID().uuidString).sqlite")
@@ -128,7 +128,7 @@ final class ManifestCryptoPerformanceTests: XCTestCase {
         let manager = DefaultManifestManager(
             repository: repository,
             deviceSpace: deviceSpace,
-            lfsClient: GitLFS(serverURL: "http://localhost"),
+            lfsClient: GitLFS(serverURL: "http://localhost", router: .passthroughForTests()),
             database: database,
             registry: registry
         )

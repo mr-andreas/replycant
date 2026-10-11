@@ -276,13 +276,18 @@ func TestNewMTLSHTTPClient(t *testing.T) {
 	dir := t.TempDir()
 	caPath, certPath, keyPath := writeTestMTLSMaterial(t, dir)
 
-	client, err := NewMTLSHTTPClient(caPath, certPath, keyPath)
+	client, err := NewMTLSHTTPClient(caPath, certPath, keyPath, "http://replycant:secret@127.0.0.1:9")
 	require.NoError(t, err)
 	transport, ok := client.Transport.(*http.Transport)
 	require.True(t, ok)
 	require.NotNil(t, transport.TLSClientConfig)
 	assert.Len(t, transport.TLSClientConfig.Certificates, 1)
-	require.NotNil(t, transport.DialContext)
+	require.NotNil(t, transport.Proxy)
+	req, err := http.NewRequest(http.MethodGet, "https://gitd.replycant.internal:8443/lfs", nil)
+	require.NoError(t, err)
+	proxy, err := transport.Proxy(req)
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:9", proxy.Host)
 }
 
 // writeTestMTLSMaterial creates a self-signed cert/key/CA bundle for client construction tests.

@@ -23,6 +23,8 @@ type FilterRuntime struct {
 	indexHashCache      map[string][32]byte
 	indexEncryptedCache map[string][]byte
 	lfsProcess          *gitcrypt.LFSFilterProcess
+	lfsExtraEnv         []string
+	lfsEnvReady         bool
 }
 
 // RunSmudgeOnce handles one-shot smudge mode for manual use and debugging.
@@ -251,8 +253,12 @@ func (r *FilterRuntime) SmudgeLFS(pathname string, input []byte, oneShot bool) (
 		return nil, fmt.Errorf("missing replycant LFS metadata on %s", pathname)
 	}
 	var encrypted []byte
+	env, envErr := r.lfsProxyEnvironment()
+	if envErr != nil {
+		return nil, envErr
+	}
 	if oneShot {
-		encrypted, err = gitcrypt.RunLFSSmudgeOneShot(r.repoRoot, pathname, cleanPointer)
+		encrypted, err = gitcrypt.RunLFSSmudgeOneShot(r.repoRoot, pathname, cleanPointer, env)
 	} else {
 		if err := r.ensureLFSProcess(); err != nil {
 			return nil, err
@@ -305,8 +311,12 @@ func (r *FilterRuntime) CleanLFS(pathname string, input []byte, oneShot bool) ([
 		return nil, err
 	}
 	var pointer []byte
+	env, envErr := r.lfsProxyEnvironment()
+	if envErr != nil {
+		return nil, envErr
+	}
 	if oneShot {
-		pointer, err = gitcrypt.RunLFSCleanOneShot(r.repoRoot, pathname, encrypted)
+		pointer, err = gitcrypt.RunLFSCleanOneShot(r.repoRoot, pathname, encrypted, env)
 	} else {
 		if err := r.ensureLFSProcess(); err != nil {
 			return nil, err
@@ -664,12 +674,31 @@ func (r *FilterRuntime) ensureLFSProcess() error {
 	if r.lfsProcess != nil {
 		return nil
 	}
-	process, err := gitcrypt.StartLFSFilterProcess(r.repoRoot)
+	env, err := r.lfsProxyEnvironment()
+	if err != nil {
+		return err
+	}
+	process, err := gitcrypt.StartLFSFilterProcess(r.repoRoot, env)
 	if err != nil {
 		return err
 	}
 	r.lfsProcess = process
 	return nil
+}
+
+// lfsProxyEnvironment starts the repository tailnet agent once per filter
+// process. git-lfs is a child process and cannot see the agent otherwise.
+func (r *FilterRuntime) lfsProxyEnvironment() ([]string, error) {
+	if r.lfsEnvReady {
+		return r.lfsExtraEnv, nil
+	}
+	proxyURL, err := ensureRepoProxy(r.repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	r.lfsExtraEnv = lfsProxyEnv(proxyURL)
+	r.lfsEnvReady = true
+	return r.lfsExtraEnv, nil
 }
 
 // isBinaryPath scopes LFS clean behavior to binary payload paths only.

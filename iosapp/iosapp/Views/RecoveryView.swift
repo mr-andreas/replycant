@@ -29,7 +29,6 @@ struct RecoveryView: View {
         case bundle
         case password
         case processing
-        case serverUnreachable
         case blocked
         case keyRejected
         case done
@@ -41,7 +40,6 @@ struct RecoveryView: View {
             switch self {
             case .bundle, .password: return "Recover Access"
             case .processing: return "Recovering"
-            case .serverUnreachable: return "Server Unreachable"
             case .blocked: return "Recovery Blocked"
             case .keyRejected: return "Recovery Key Rejected"
             case .done: return "Recovery Complete"
@@ -61,7 +59,6 @@ struct RecoveryView: View {
     @State private var progressMessage: String?
     @State private var progress: Double = 0
     @State private var errorMessage: String?
-    @State private var manualDiscoveryURL = ""
     @State private var isBusy = false
     @State private var completedRecovery: RecoveryKeyManager.RecoveryResult?
     @State private var didRevokeUsedKey = false
@@ -112,8 +109,6 @@ struct RecoveryView: View {
                     message: progressMessage ?? "Recovering...",
                     progress: progress
                 )
-            case .serverUnreachable:
-                serverUnreachableStepView
             case .blocked:
                 blockedStepView
             case .keyRejected:
@@ -247,55 +242,6 @@ struct RecoveryView: View {
 
                 Button(Self.cancelCtaLabel) {
                     onCancel()
-                }
-                .buttonStyle(PairingTertiaryButtonStyle())
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 40)
-        }
-    }
-
-    // Keeps discovery retry focused on one action when the pinned server cannot be reached.
-    private var serverUnreachableStepView: some View {
-        VStack(spacing: 20) {
-            Spacer()
-
-            PairingStepIndicator(step: 3, phase: .sendKey)
-
-            Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 60))
-                .foregroundStyle(.orange)
-
-            Text("Discovery server unreachable")
-                .font(.title3)
-                .fontWeight(.semibold)
-                .multilineTextAlignment(.center)
-
-            TextField("http://server:8080", text: $manualDiscoveryURL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .pairingFieldBackground()
-                .padding(.horizontal)
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
-            }
-
-            Spacer()
-
-            VStack(spacing: 12) {
-                Button("Retry recovery") {
-                    Task { await runRecovery() }
-                }
-                .disabled(manualDiscoveryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .buttonStyle(PairingPrimaryButtonStyle(disabled: manualDiscoveryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-
-                Button("Back") {
-                    currentStep = .password
                 }
                 .buttonStyle(PairingTertiaryButtonStyle())
             }
@@ -497,8 +443,7 @@ struct RecoveryView: View {
         do {
             let result = try await manager.recover(
                 input: input,
-                password: password,
-                discoveryURLOverride: manualDiscoveryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : manualDiscoveryURL
+                password: password
             ) { message, phaseProgress in
                 Task { @MainActor in
                     progressMessage = message
@@ -511,12 +456,6 @@ struct RecoveryView: View {
         } catch RecoveryBundle.Error.wrongPassword {
             errorMessage = Self.wrongPasswordMessage
             currentStep = .password
-        } catch ConfigurationError.discoveryFetchFailed {
-            errorMessage = "Discovery endpoint unreachable. Enter a new discovery URL and retry."
-            if manualDiscoveryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                manualDiscoveryURL = "http://replycant.local:8080"
-            }
-            currentStep = .serverUnreachable
         } catch RecoveryKeyManager.Error.alreadyConfiguredDevice {
             currentStep = .blocked
         } catch RecoveryKeyManager.Error.recoveryKeyNotAuthorized {

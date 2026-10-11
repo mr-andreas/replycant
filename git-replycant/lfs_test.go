@@ -70,7 +70,7 @@ func TestLFSFilterProcessPktline(t *testing.T) {
 	fakeBin := buildFakeGitLFSTestBinary(t)
 	t.Setenv("PATH", filepath.Dir(fakeBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	process, err := gitcrypt.StartLFSFilterProcess(repoDir)
+	process, err := gitcrypt.StartLFSFilterProcess(repoDir, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = process.Close()
@@ -91,7 +91,7 @@ func TestLFSFilterProcessStderrDeadlock(t *testing.T) {
 	fakeBin := buildFakeGitLFSStderrFloodBinary(t)
 	t.Setenv("PATH", filepath.Dir(fakeBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	process, err := gitcrypt.StartLFSFilterProcess(repoDir)
+	process, err := gitcrypt.StartLFSFilterProcess(repoDir, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = process.Close()

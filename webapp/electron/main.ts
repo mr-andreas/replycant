@@ -3,17 +3,23 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join, resolve } from "node:path";
 import { startDesktopServer, DesktopServer } from "../server/desktopServer";
 import { registerIdentityKeyIpc } from "./registerIdentityKeyIpc";
+import { registerTailnetIpc } from "./registerTailnetIpc";
+import { createTailnetSupervisor, resolveSidecarPath, TailnetSupervisor } from "./tailnetSupervisor";
 
 const APP_NAME = "Replycant";
 
 let mainWindow: BrowserWindow | null = null;
 let desktopServer: DesktopServer | null = null;
+let tailnet: TailnetSupervisor | null = null;
 
 // Creates the desktop browser window with hardened defaults for untrusted web content.
 const createMainWindow = async (): Promise<void> => {
   if (!desktopServer) {
     desktopServer = await startDesktopServer({
       staticDir: resolve(app.getAppPath(), "dist"),
+      // The tailnet comes up only once pairing has produced credentials, so the
+      // pool asks on every acquire rather than being handed a fixed proxy.
+      getTailnetProxy: () => tailnet?.getProxy(),
     });
   }
   // Linux compositors handle window transparency inconsistently, which leaves
@@ -72,10 +78,18 @@ const createMainWindow = async (): Promise<void> => {
 };
 
 // Ensures local resources are released before the process exits.
+//
+// The tailnet node goes down after the server so in-flight upstream requests
+// are not cut off mid-response by losing the proxy underneath them.
 const stopDesktopServer = async (): Promise<void> => {
-  if (!desktopServer) return;
-  await desktopServer.close();
-  desktopServer = null;
+  if (desktopServer) {
+    await desktopServer.close();
+    desktopServer = null;
+  }
+  if (tailnet) {
+    await tailnet.stop();
+    tailnet = null;
+  }
 };
 
 app.on("window-all-closed", () => {
@@ -104,6 +118,35 @@ app.whenReady().then(async () => {
   const storeDir = join(app.getPath("userData"), "replycant");
   mkdirSync(storeDir, { recursive: true });
   registerIdentityKeyIpc(ipcMain, { safeStorage, storeDir });
+
+  // The tsnet node keeps its machine key and peer state here, so it must
+  // outlive a single run for the device to stay the same tailnet node.
+  const tailnetStateDir = join(storeDir, "tsnet");
+  mkdirSync(tailnetStateDir, { recursive: true });
+  tailnet = createTailnetSupervisor({
+    binaryPath: resolveSidecarPath({
+      resourcesPath: process.resourcesPath,
+      // app.getAppPath() is dist-electron when the unpackaged main is
+      // launched from that directory. The sidecar lives next to the
+      // webapp package, one level above this compiled bundle.
+      projectRoot: resolve(import.meta.dirname, ".."),
+      packaged: app.isPackaged,
+    }),
+    logf: (message) => console.log(message),
+  });
+  registerTailnetIpc(ipcMain, {
+    supervisor: tailnet,
+    stateDir: tailnetStateDir,
+    discoveryBaseUrl: process.env.REPLYCANT_DISCOVERY_BASE_URL || undefined,
+    // Every window, not just the focused one: the connection panel is part of
+    // the app chrome and a background window showing a stale tailnet state
+    // would be worse than showing none.
+    broadcast: (channel, payload) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send(channel, payload);
+      }
+    },
+  });
   const lastPagePath = join(storeDir, "lastPage.json");
   ipcMain.on("lastPage:read", (event) => {
     try {

@@ -3,9 +3,11 @@ package auth
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -82,6 +84,18 @@ func (a *Authenticator) repoState() (hasBranch bool, mainHash plumbing.Hash, err
 	return true, ref.Hash(), nil
 }
 
+// Reports whether the repository has left bootstrap mode, using the same
+// definition Authenticate does. The CA page needs it to stop handing out
+// first-device join keys at exactly the moment hsproxy stops admitting
+// unknown certificates. An unreadable repository is an error, not "empty".
+func (a *Authenticator) HasBranch() (bool, error) {
+	hasBranch, _, err := a.repoState()
+	if err != nil && !hasBranch {
+		return false, err
+	}
+	return hasBranch, nil
+}
+
 // Validates that the client certificate contains an authorized P-256 public key.
 // Returns the username (filename without .pub extension) if authorized.
 // For empty repositories, returns ErrUnauthorizedBootstrap to signal that bootstrap mode
@@ -149,6 +163,48 @@ func (a *Authenticator) loadAuthorizedKeys(head plumbing.Hash) (map[string]*ecds
 	a.cacheExpiry = time.Now().Add(a.cacheTTL)
 
 	return keys, nil
+}
+
+// Lists every key pubkeys/ on main authorizes right now, keyed by file name
+// without .pub, bypassing any cache.
+//
+// Exists for tailnet revocation, which has to notice a removed key as soon as
+// a push lands and must read the set exactly the way authentication does, so
+// the tailnet and Git never disagree about who is a member. An empty repository
+// authorizes nobody by key and yields an empty set rather than an error.
+func ReadAuthorizedKeys(repoPath string) (map[string]*ecdsa.PublicKey, error) {
+	reader := &Authenticator{repoPath: repoPath}
+	hasBranch, head, err := reader.repoState()
+	if err != nil {
+		return nil, err
+	}
+	if !hasBranch {
+		return map[string]*ecdsa.PublicKey{}, nil
+	}
+	return reader.readKeysFromCommit(head)
+}
+
+// Identifies a key independently of the file it was committed under, so a
+// renamed .pub file is not mistaken for a revocation. Hashes the uncompressed
+// point, which is the same bytes the SSH encoding in pubkeys/ carries.
+func KeyFingerprint(key *ecdsa.PublicKey) string {
+	point := make([]byte, 0, 65)
+	point = append(point, 0x04)
+	point = append(point, key.X.FillBytes(make([]byte, 32))...)
+	point = append(point, key.Y.FillBytes(make([]byte, 32))...)
+	digest := sha256.Sum256(point)
+	return "SHA256:" + hex.EncodeToString(digest[:])
+}
+
+// Fingerprints the key a client certificate carries, in the same form as
+// KeyFingerprint, so a tailnet node seen authenticating with it can be
+// compared against pubkeys/ on main.
+func CertFingerprint(cert *x509.Certificate) (string, error) {
+	key, err := extractP256PublicKey(cert)
+	if err != nil {
+		return "", err
+	}
+	return KeyFingerprint(key), nil
 }
 
 // Reads all .pub files from the pubkeys/ tree of a specific main commit.

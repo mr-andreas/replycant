@@ -193,14 +193,24 @@ jobs:
           set -euo pipefail
           mkdir -p release
           cp docker-compose.yaml release/docker-compose.yaml
+          # Matched by image rather than by service name, because several
+          # services (hsproxy, tunnel-agent) run the gitd image.
           yq eval '
-            .services.gitd.image = strenv(REPLYCANT_GITD_IMAGE) |
-            .services.decryptd.image = strenv(REPLYCANT_DECRYPTD_IMAGE) |
-            .services.transcoded.image = strenv(REPLYCANT_TRANSCODED_IMAGE) |
-            del(.services.gitd.build) |
-            del(.services.decryptd.build) |
-            del(.services.transcoded.build)
+            (.services[] | select(.image == "${REPLYCANT_GITD_IMAGE:-gitd:local}")).image = strenv(REPLYCANT_GITD_IMAGE) |
+            (.services[] | select(.image == "${REPLYCANT_DECRYPTD_IMAGE:-decryptd:local}")).image = strenv(REPLYCANT_DECRYPTD_IMAGE) |
+            (.services[] | select(.image == "${REPLYCANT_TRANSCODED_IMAGE:-transcoded:local}")).image = strenv(REPLYCANT_TRANSCODED_IMAGE) |
+            del(.services[].build)
           ' -i release/docker-compose.yaml
+
+      # The file ships without the repository, so anything that still points
+      # at a local build or a repository file would fail on a user's machine.
+      - name: Check release docker-compose is self-contained
+        run: |
+          set -euo pipefail
+          if grep -nE ':local\}|^[[:space:]]+build:|^[[:space:]]+- \./' release/docker-compose.yaml; then
+            echo "release/docker-compose.yaml still depends on the source tree" >&2
+            exit 1
+          fi
 
       - name: Upload server release asset
         uses: actions/upload-artifact@v4
@@ -246,9 +256,16 @@ jobs:
               dist_dir="$(mktemp -d)"
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
                 go build -trimpath -o "${dist_dir}/${binary_name}" "${package_path}"
+              # git looks up this name to reach a replycant:: remote. It has
+              # to be the same binary: the helper starts the tailnet agent.
+              archive_contents=("${binary_name}")
+              if [[ "$binary_name" == "git-replycant" ]]; then
+                ln -s git-replycant "${dist_dir}/git-remote-replycant"
+                archive_contents+=("git-remote-replycant")
+              fi
               tar -C "$dist_dir" -czf \
                 "release/cli/${artifact_name}-v${VERSION}-${goos}-${goarch}.tar.gz" \
-                "${binary_name}"
+                "${archive_contents[@]}"
               rm -rf "$dist_dir"
             done
           done
@@ -280,6 +297,13 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: webapp/package-lock.json
+
+      # The desktop app now ships a Go tsnet sidecar, cross-built for whichever
+      # platform this runner packages for.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Install dependencies
         run: npm ci

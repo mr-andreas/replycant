@@ -1,4 +1,5 @@
 #if DEBUG
+import LibGit2
 import SwiftUI
 
 // Groups gallery tiles so section previews stay cheap when the full
@@ -47,9 +48,16 @@ struct GalleryScreen: Identifiable {
 // against the whole app at once instead of one file's previews.
 enum AppScreenGallery {
     private static let sampleDevicePublicKeyQR =
-        "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\"}"
-    private static let sampleConfigJSON =
-        "{\"url\":\"https://git.example.com\",\"ca\":\"-----BEGIN CERTIFICATE-----\\nMIIB...\\n-----END CERTIFICATE-----\"}"
+        "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\",\"pairing_secret\":\"preview\"}"
+
+    // A running node with a direct path so the Connection tile shows
+    // every row a joined device can see, without talking to a tailnet.
+    private static let sampleConnectionReport = try! TailnetStatusReport.decode(
+        Data(
+            #"{"BackendState":"Running","TailscaleIPs":["100.64.0.2"],"Self":{"Relay":"hel"},"Peer":{"n":{"HostName":"gitd","Online":true,"CurAddr":"192.0.2.10:41641"}}}"#
+                .utf8
+        )
+    )
 
     static let all: [GalleryScreen] =
         onboarding + linking + recoveryKeys + createRecoveryKey
@@ -140,8 +148,8 @@ enum AppScreenGallery {
                 deviceName: "preview-iphone"
             )
         },
-        tile("Onboarding / scanConfig", section: .onboarding) {
-            OnboardingView(preview: .scanConfig)
+        tile("Onboarding / scanRecovery", section: .onboarding) {
+            OnboardingView(preview: .scanRecovery)
         },
         tile("Onboarding / processing", section: .onboarding) {
             OnboardingView(
@@ -168,13 +176,6 @@ enum AppScreenGallery {
                 preview: .processing,
                 isProcessing: true,
                 progressMessage: "Adding device key..."
-            )
-        },
-        stacked("Link a new device / showConfig", section: .linking) {
-            DeviceLinkingView(
-                preview: .showConfig,
-                scannedDeviceName: "preview-iphone",
-                configJSON: sampleConfigJSON
             )
         },
         stacked("Link a new device / error", section: .linking) {
@@ -244,14 +245,6 @@ enum AppScreenGallery {
                 onCompleted: {},
                 onCancel: {},
                 previewStep: .processing
-            )
-        },
-        stacked("Recover access / serverUnreachable", section: .recovery) {
-            RecoveryView(
-                initialInput: nil,
-                onCompleted: {},
-                onCancel: {},
-                previewStep: .serverUnreachable
             )
         },
         stacked("Recover access / blocked", section: .recovery) {
@@ -392,6 +385,9 @@ enum AppScreenGallery {
         },
         stacked("Settings / cache", section: .settings) {
             CacheSettingsView(previewStats: .sample)
+        },
+        stacked("Settings / connection", section: .settings) {
+            ConnectionSettingsView(report: Self.sampleConnectionReport)
         }
     ]
 

@@ -2,11 +2,30 @@ import Foundation
 import Testing
 
 // Encapsulates host/container control endpoints so integration tests can run against real gitd safely.
+//
+// gitd publishes no host port, exactly as on a real deployment, so the suite
+// reaches it the way the app does: through hsproxy and a tailnet node. Only
+// the control plane, the first-device CA page and the harness's own control
+// API are published to the host.
 enum IntegrationEnvironment {
-    // Captures caserver discovery payload shared by app onboarding and integration harness setup.
-    struct DiscoveryConfig: Decodable {
+    // hsproxy as the simulator sees it. The container's server certificate
+    // names localhost, so this verifies like a real deployment's hostname.
+    static let headscaleURL = "https://localhost:18085"
+
+    // The first-device page's payload: the CA, where headscale is, and a
+    // single-use tailnet key. It is only served while the repository is
+    // empty, which is what lets the first device join before it has a key
+    // in pubkeys/.
+    struct FirstDeviceConfig: Decodable {
         let ca: String
-        let url: String
+        let headscaleURL: String
+        let preauthKey: String
+
+        enum CodingKeys: String, CodingKey {
+            case ca
+            case headscaleURL = "headscale_url"
+            case preauthKey = "preauth_key"
+        }
     }
 
     // Carries provisioning-only identity material sent to the container control plane.
@@ -67,23 +86,39 @@ enum IntegrationEnvironment {
         _ = try await postJSON(path: "/seed", body: request)
     }
 
-    // Reads the same caserver config payload consumed by onboarding QR flows.
-    static func discoverConfig() async throws -> DiscoveryConfig {
+    // The CA the container minted at startup. A paired device would have
+    // received it in its pairing record; the harness skips pairing and asks.
+    static func harnessCA() async throws -> String {
+        let url = try controlBaseURL().appendingPathComponent("ca")
+        let data = try await get(url, what: "harness CA")
+        guard let pem = String(data: data, encoding: .utf8), pem.contains("BEGIN CERTIFICATE") else {
+            throw IntegrationEnvironmentError.invalidResponse("harness CA is not a PEM certificate")
+        }
+        return pem
+    }
+
+    // Reads the same payload the first-device QR encodes.
+    static func firstDeviceConfig() async throws -> FirstDeviceConfig {
         guard let url = URL(string: "http://localhost:18080/config.json") else {
             throw IntegrationEnvironmentError.invalidURL
         }
+        let data = try await get(url, what: "first-device config")
+        do {
+            return try JSONDecoder().decode(FirstDeviceConfig.self, from: data)
+        } catch {
+            throw IntegrationEnvironmentError.invalidResponse("first-device config decode failed: \(error)")
+        }
+    }
+
+    private static func get(_ url: URL, what: String) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw IntegrationEnvironmentError.invalidResponse("discover config returned non-http response")
+            throw IntegrationEnvironmentError.invalidResponse("\(what) returned non-http response")
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            throw IntegrationEnvironmentError.invalidResponse("discover config returned status \(httpResponse.statusCode)")
+            throw IntegrationEnvironmentError.invalidResponse("\(what) returned status \(httpResponse.statusCode)")
         }
-        do {
-            return try JSONDecoder().decode(DiscoveryConfig.self, from: data)
-        } catch {
-            throw IntegrationEnvironmentError.invalidResponse("discover config decode failed: \(error)")
-        }
+        return data
     }
 
     // Sends a control-plane JSON command and validates common error response contracts.
