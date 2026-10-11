@@ -165,6 +165,14 @@ struct RecoveryShareBundle: Identifiable {
             items = [text]
         }
     }
+
+    #if DEBUG
+    // Shares only the deep link so a debug build can hand a pasteable
+    // recovery URL to a local key file without the QR card or header.
+    init(plainText: String) {
+        items = [plainText]
+    }
+    #endif
 }
 
 // Renders QR code plus essential metadata so image-only shares

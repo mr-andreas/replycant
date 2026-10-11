@@ -92,6 +92,22 @@ enum RecoveryBundle {
     // testing and App Review can recover without typing the password.
     static let passwordQueryName = "pw"
 
+    #if DEBUG
+    // Appends the password and keep flag so a debug share can be pasted
+    // into a local recovery-key file and recover without a prompt or a
+    // revoke. Release builds have no path that puts a password in a link.
+    static func debugDeepLinkString(deepLink: String, password: String) -> String {
+        guard var components = URLComponents(string: deepLink) else {
+            return deepLink
+        }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: passwordQueryName, value: password))
+        items.append(URLQueryItem(name: keepKeyQueryName, value: "1"))
+        components.queryItems = items
+        return components.string ?? deepLink
+    }
+    #endif
+
     // Encrypts plaintext recovery metadata into a shareable envelope guarded by a user-chosen password.
     static func encrypt(plaintext: Plaintext, password: String) throws -> Envelope {
         let encoder = JSONEncoder()

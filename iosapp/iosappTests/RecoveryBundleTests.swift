@@ -150,6 +150,26 @@ struct RecoveryBundleTests {
         )
     }
 
+    // Ensures a debug share link can be pasted into RecoveryKeys.md
+    // and recover in one step: the password survives encoding, keep
+    // is set, and the envelope is unchanged.
+    @Test func debugDeepLinkEmbedsPasswordKeepAndEnvelope() throws {
+        let password = "a b&c=d+e#f"
+        let envelope = try RecoveryBundle.encrypt(
+            plaintext: Self.samplePlaintext,
+            password: password
+        )
+        let deepLink = try RecoveryBundle.deepLinkString(for: envelope)
+        let debugLink = RecoveryBundle.debugDeepLinkString(
+            deepLink: deepLink,
+            password: password
+        )
+
+        #expect(RecoveryBundle.embeddedPassword(in: debugLink) == password)
+        #expect(RecoveryBundle.requestsKeepingRecoveryKey(in: debugLink))
+        #expect(try RecoveryBundle.parseEnvelope(from: debugLink) == envelope)
+    }
+
     // Verifies all supported input forms parse to the same envelope payload.
     @Test func parseAcceptsJSONURLAndBareBase64() throws {
         let envelope = try RecoveryBundle.encrypt(
