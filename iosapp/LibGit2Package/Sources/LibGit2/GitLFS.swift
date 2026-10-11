@@ -184,14 +184,16 @@ public final class GitLFS: NSObject {
     ///
     /// Waits for the node first. Launch shows the library before the join
     /// finishes, so a thumbnail requested in that window would otherwise
-    /// fail and stay blank. Throws rather than dialling directly if the
-    /// node never arrives: gitd's name does not resolve off the tailnet,
-    /// and on a network that does resolve it the request could reach an
-    /// unintended host. A replaced session is finished rather than
+    /// fail and stay blank. Throws the router's `notConnectedYet` rather
+    /// than dialling directly if the node never arrives: gitd's name does
+    /// not resolve off the tailnet, and on a network that does resolve it
+    /// the request could reach an unintended host. Callers that can wait
+    /// longer than this timeout, such as a fullscreen photo, match that
+    /// error and try again. A replaced session is finished rather than
     /// cancelled, so transfers already running on it complete.
     private func currentSession() async throws -> URLSession {
         guard await router.waitUntilRouted(timeout: routingTimeout) else {
-            throw LFSError.networkError("Not connected to your library's network yet")
+            throw TailnetSessionRouter.RoutingError.notConnectedYet
         }
         // The lock stays in a synchronous function. Taking it across the
         // wait above would pin a thread for the whole join.
@@ -212,7 +214,7 @@ public final class GitLFS: NSObject {
         }
         let configuration = baseConfiguration.copy() as! URLSessionConfiguration
         if !router.applySynchronously(to: configuration) {
-            throw LFSError.networkError("Not connected to your library's network yet")
+            throw TailnetSessionRouter.RoutingError.notConnectedYet
         }
         cachedSession?.finishTasksAndInvalidate()
         let session = URLSession(

@@ -319,7 +319,7 @@ struct GitLFSTailnetRoutingTests {
         let client = makeClient(router: router)
         TailnetRoutingLFSURLProtocol.reset()
 
-        await #expect(throws: LFSError.self) {
+        await #expect(throws: TailnetSessionRouter.RoutingError.notConnectedYet) {
             _ = try await client.downloadData(oid: "missing", size: 1)
         }
         #expect(TailnetRoutingLFSURLProtocol.requestCount == 0)

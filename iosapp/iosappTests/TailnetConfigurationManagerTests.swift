@@ -385,6 +385,59 @@ struct TailnetBootstrapTests {
         try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
         #expect(await probe.attempts == 2)
     }
+
+    // A fullscreen photo opened during the join is refused once the
+    // launch timeout passes. This wait is what lets that photo try
+    // again when the join later finishes, instead of stopping there.
+    @Test func waitUntilJoinedOutlastsTheLaunchTimeout() async throws {
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in
+                _ = await probe.begin()
+                await probe.waitForRelease()
+            }
+        )
+
+        let finished = FinishFlag()
+        let wait = Task {
+            try await bootstrap.waitUntilJoined(pollTimeout: .milliseconds(50))
+            await finished.mark()
+        }
+
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await probe.attempts == 1)
+        #expect(await finished.isSet == false)
+
+        await probe.release()
+        try await wait.value
+        #expect(await finished.isSet)
+    }
+
+    // A device that has not paired has nothing to join. Waiting would
+    // leave the photo spinner up for a connection that never comes.
+    @Test func waitUntilJoinedThrowsWhenTheDeviceHasNoTailnet() async {
+        let defaults = UserDefaults(suiteName: "replycant.tests.tailnet.\(UUID().uuidString)")!
+        let bootstrap = TailnetBootstrap(
+            configurations: TailnetConfigurationManager(defaults: defaults)
+        )
+
+        await #expect(throws: TailnetSessionRouter.RoutingError.notConnectedYet) {
+            try await bootstrap.waitUntilJoined()
+        }
+    }
+
+}
+
+/// Set when a join wait returns, so a test can see that several poll
+/// timeouts have passed without awaiting the wait itself.
+private actor FinishFlag {
+    private(set) var isSet = false
+
+    func mark() {
+        isSet = true
+    }
 }
 
 /// A clock tests can move forward without sleeping for the suspend threshold.

@@ -125,6 +125,26 @@ actor TailnetBootstrap {
         try await Self.wait(for: join, timeout: timeout)
     }
 
+    /// Keeps waiting until this device's node is up.
+    ///
+    /// A fullscreen photo opened during launch is refused once the LFS
+    /// client's own wait runs out. This is the wait that photo uses so it
+    /// can try again when the join finishes, including one that outlasts
+    /// the launch timeout. A device with no tailnet throws, because that
+    /// join will never happen.
+    func waitUntilJoined(pollTimeout: Duration = launchJoinTimeout) async throws {
+        guard isConfigured else {
+            throw TailnetSessionRouter.RoutingError.notConnectedYet
+        }
+        while true {
+            do {
+                return try await ensureJoinedIfConfigured(timeout: pollTimeout)
+            } catch BootstrapError.stillConnecting {
+                try Task.checkCancellation()
+            }
+        }
+    }
+
     /// Starts the one join callers wait on.
     ///
     /// Each join gets a generation. One that finishes after a newer join
