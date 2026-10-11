@@ -74,6 +74,32 @@ struct TailnetConnectionSectionTests {
         )
     }
 
+    // The Settings row and the Connection page share one wording, so a
+    // device that has not produced a report cannot look healthy on one
+    // surface and broken on the other.
+    @Test func namesAMissingReportUnavailable() {
+        let status = TailnetConnectionSection.status(of: nil)
+        #expect(status.text == "Unavailable")
+        #expect(status.isHealthy == false)
+    }
+
+    @Test func namesARunningNodeConnected() throws {
+        let status = TailnetConnectionSection.status(of: try Self.report())
+        #expect(status.text == "Connected")
+        #expect(status.isHealthy == true)
+    }
+
+    // NeedsLogin is the state a user has to quote when asking for help,
+    // so the row must show the backend name instead of a generic failure.
+    @Test func namesALoggedOutNodeByItsBackendState() throws {
+        let report = try TailnetStatusReport.decode(
+            Data(#"{"BackendState":"NeedsLogin"}"#.utf8)
+        )
+        let status = TailnetConnectionSection.status(of: report)
+        #expect(status.text == "NeedsLogin")
+        #expect(status.isHealthy == false)
+    }
+
     // The region is what makes a DERP hop distinct from a direct connection.
     @Test func namesTheServerPathWithoutCallingItTheHostedRelay() {
         #expect(TailnetConnectionSection.describe(.direct) == "Direct")

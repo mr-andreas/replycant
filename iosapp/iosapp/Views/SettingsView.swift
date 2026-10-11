@@ -131,20 +131,26 @@ struct SettingsView: View {
             EmptyView()
         case .unavailable:
             Section {
-                LabeledContent("Status") {
-                    Text("Unavailable")
-                        .foregroundStyle(.orange)
-                }
-            } header: {
-                Text("Connection")
+                connectionLink(report: nil)
             }
         case .report(let report):
             Section {
-                TailnetConnectionSection(report: report)
-            } header: {
-                Text("Connection")
-            } footer: {
-                Text(TailnetConnectionSection.footer)
+                connectionLink(report: report)
+            }
+        }
+    }
+
+    /// One row on the settings list. The detail rows live on the page it
+    /// opens, because address, path, and peers are only useful once a
+    /// sync has already failed.
+    private func connectionLink(report: TailnetStatusReport?) -> some View {
+        let status = TailnetConnectionSection.status(of: report)
+        return NavigationLink(destination: ConnectionSettingsView(report: report)) {
+            HStack {
+                Label("Connection", systemImage: "network")
+                Spacer()
+                Text(status.text)
+                    .foregroundStyle(status.isHealthy ? Color.green : Color.orange)
             }
         }
     }

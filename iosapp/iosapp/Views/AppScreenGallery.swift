@@ -1,4 +1,5 @@
 #if DEBUG
+import LibGit2
 import SwiftUI
 
 // Groups gallery tiles so section previews stay cheap when the full
@@ -48,6 +49,15 @@ struct GalleryScreen: Identifiable {
 enum AppScreenGallery {
     private static let sampleDevicePublicKeyQR =
         "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\",\"pairing_secret\":\"preview\"}"
+
+    // A running node with a direct path so the Connection tile shows
+    // every row a joined device can see, without talking to a tailnet.
+    private static let sampleConnectionReport = try! TailnetStatusReport.decode(
+        Data(
+            #"{"BackendState":"Running","TailscaleIPs":["100.64.0.2"],"Self":{"Relay":"hel"},"Peer":{"n":{"HostName":"gitd","Online":true,"CurAddr":"192.0.2.10:41641"}}}"#
+                .utf8
+        )
+    )
 
     static let all: [GalleryScreen] =
         onboarding + linking + recoveryKeys + createRecoveryKey
@@ -375,6 +385,9 @@ enum AppScreenGallery {
         },
         stacked("Settings / cache", section: .settings) {
             CacheSettingsView(previewStats: .sample)
+        },
+        stacked("Settings / connection", section: .settings) {
+            ConnectionSettingsView(report: Self.sampleConnectionReport)
         }
     ]
 
