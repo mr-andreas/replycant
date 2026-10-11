@@ -25,7 +25,7 @@ test.describe("App shell", () => {
   test("commit pane toggles open and closed", async ({ page }) => {
     await page.getByRole("button", { name: "Show settings and commits" }).click();
     await expect(page.locator("aside[aria-label='Commit history']")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sync & commits" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
     await page.getByRole("button", { name: "Hide settings and commits" }).click();
     await expect(page.locator("aside[aria-label='Commit history']")).toHaveCount(0);

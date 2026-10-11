@@ -57,17 +57,10 @@ const describeServerPath = (path: string, relay: string): string => {
   }
 };
 
-// Shows how this device is connected to its library's network.
-//
-// Before this, a device that could not reach the server gave the same
-// symptom - a failed sync - whether it was off the tailnet, on the tailnet but
-// unable to route, or on the tailnet with the server down. The user's only
-// recourse was to re-pair. This panel is what makes those distinguishable.
-//
-// It renders nothing on LAN deployments and in the browser build, because
-// there is no tailnet to describe and a panel claiming a broken connection
-// would send the user chasing a problem they do not have.
-export const TailnetStatusPanel = () => {
+// Reads the desktop bridge so the settings pane can hide Connectivity
+// when this device has no tailnet. A section for a network that is not
+// there would send the user chasing a problem they do not have.
+export const useTailnetStatus = (): TailnetStatusReport | null => {
   const [envelope, setEnvelope] = useState<TailnetStatusEnvelope | null>(null);
 
   useEffect(() => {
@@ -91,7 +84,7 @@ export const TailnetStatusPanel = () => {
     );
 
     // Subscribing as well as querying, because status changes every few
-    // seconds and the panel is expected to stay open.
+    // seconds and the pane is expected to stay open.
     const unsubscribe = bridge.onTailnetStatus?.((raw) => setEnvelope(toEnvelope(raw)));
     return () => {
       active = false;
@@ -102,13 +95,20 @@ export const TailnetStatusPanel = () => {
   if (!envelope?.running || !envelope.status) {
     return null;
   }
+  return envelope.status;
+};
 
-  const status = envelope.status;
+// Shows how this device is connected to its library's network.
+//
+// Before this, a device that could not reach the server gave the same
+// symptom - a failed sync - whether it was off the tailnet, on the tailnet but
+// unable to route, or on the tailnet with the server down. The user's only
+// recourse was to re-pair. This panel is what makes those distinguishable.
+export const TailnetStatusPanel = ({ status }: { status: TailnetStatusReport }) => {
   const connected = status.backendState === "Running";
 
   return (
     <section className="tailnet-status" aria-label="Library network">
-      <p className="commit-pane-section-label">Library network</p>
       <p className={`tailnet-status-state${connected ? " connected" : ""}`}>
         {connected ? "Connected" : "Disconnected"}
       </p>

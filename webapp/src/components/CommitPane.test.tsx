@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommitPane } from "./CommitPane";
 
 const buildProps = () => ({
@@ -23,7 +23,71 @@ const buildProps = () => ({
   onResetAndResync: vi.fn(),
 });
 
+// A running tailnet, so the pane has a connectivity section to show.
+const runningTailnet = {
+  running: true,
+  status: {
+    backendState: "Running",
+    tailnetIps: ["100.64.0.2"],
+    derpHome: "fra",
+    serverPath: "direct",
+    serverRelay: "",
+    peers: 2,
+    peersOnline: 1,
+    health: [] as string[],
+  },
+};
+
+afterEach(() => {
+  delete (window as unknown as { replycantDesktop?: unknown }).replycantDesktop;
+});
+
 describe("CommitPane", () => {
+  // The pane is a single-open accordion. Sync starts open so the sync
+  // controls stay reachable without an extra click.
+  it("opens Sync by default and keeps the other sections collapsed", () => {
+    render(<CommitPane {...buildProps()} />);
+
+    expect(screen.getByRole("button", { name: "Sync" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Commits" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Data management" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Connectivity" })).toBeNull();
+  });
+
+  // One open section keeps the collapsed headers visible at the bottom
+  // instead of pushing them below a long commit list.
+  it("opens one section at a time and collapses it again", () => {
+    render(<CommitPane {...buildProps()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Commits" }));
+    expect(screen.getByRole("button", { name: "Commits" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Sync" })).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Commits" }));
+    expect(screen.getByRole("button", { name: "Commits" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  // LAN deployments and the browser build have no tailnet, and an empty
+  // Connectivity section would describe a network that is not there.
+  it("hides Connectivity when this device is not on a tailnet", () => {
+    render(<CommitPane {...buildProps()} />);
+
+    expect(screen.queryByRole("button", { name: "Connectivity" })).toBeNull();
+  });
+
+  it("shows Connectivity when this device is on a tailnet", async () => {
+    (window as unknown as { replycantDesktop?: unknown }).replycantDesktop = {
+      tailnetStatus: vi.fn(async () => runningTailnet),
+      onTailnetStatus: vi.fn(() => () => {}),
+    };
+    render(<CommitPane {...buildProps()} />);
+
+    expect(await screen.findByRole("button", { name: "Connectivity" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
   it("renders the formatted timeline media count", () => {
     render(<CommitPane {...buildProps()} />);
 
@@ -67,15 +131,17 @@ describe("CommitPane", () => {
     const props = buildProps();
     render(<CommitPane {...props} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "Data management" }));
     fireEvent.click(screen.getByRole("button", { name: "Reset & Resync" }));
 
     expect(props.onResetAndResync).toHaveBeenCalledTimes(1);
   });
 
-  it("hides reset and resync when the database version is unrecoverable", () => {
+  it("hides data management when the database version is unrecoverable", () => {
     const props = buildProps();
     render(<CommitPane {...props} unrecoverableError="Create a new library to continue" />);
 
+    expect(screen.queryByRole("button", { name: "Data management" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reset & Resync" })).toBeNull();
   });
 

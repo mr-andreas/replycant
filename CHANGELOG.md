@@ -57,6 +57,7 @@
 #### Desktop app
 
 - show how this device reaches the library — connected or not, whether the server is reached directly or through a relay, and whether peers are online — in the settings pane
+- the settings pane is titled Settings and grouped into collapsible Sync, Commits, Connectivity, and Data management sections
 
 #### git-replycant
 
