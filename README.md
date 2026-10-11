@@ -82,10 +82,10 @@ hosted database.
 
 ### Zero-config hosting
 
-On a typical Linux host, download the Docker Compose file and run
-`docker compose up`. Replycant supplies sensible defaults for storage, ports,
-and local-network discovery. Open the discovery page and scan its QR code to
-connect the iOS app.
+Download the Docker Compose file and run `docker compose up`. Replycant supplies
+sensible defaults. No firewall openings are required as the server is exposed
+through a private tailscale VPN. Simply open the discovery page and scan its QR
+code in the iOS app to connect.
 
 ### Easy to back up
 
