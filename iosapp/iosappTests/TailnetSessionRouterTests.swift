@@ -232,6 +232,43 @@ struct TailnetSessionRouterPendingTests {
         #expect(configuration.connectionProxyDictionary?["stubProxyHost"] as? String == "127.0.0.1")
     }
 
+    // Thumbnails are requested as soon as the local library is on screen,
+    // which is before the join finishes. The wait is what lets that first
+    // request succeed instead of failing and leaving the image blank.
+    @Test func waitUntilRoutedReturnsImmediatelyWhenANodeIsInstalled() async {
+        let router = TailnetSessionRouter()
+        router.use(FakeNode())
+
+        let routed = await router.waitUntilRouted(timeout: .milliseconds(50))
+
+        #expect(routed == true)
+    }
+
+    // The node comes up on its own task. A request that started first has
+    // to resume when it arrives, not sit out the rest of the timeout.
+    @Test func waitUntilRoutedReturnsWhenANodeArrives() async {
+        let router = TailnetSessionRouter()
+        let wait = Task { await router.waitUntilRouted(timeout: .seconds(2)) }
+
+        try? await Task.sleep(for: .milliseconds(20))
+        router.use(FakeNode())
+
+        #expect(await wait.value == true)
+    }
+
+    // Clearing the node is a teardown, not a join. The wait has to time
+    // out so a request does not proceed with nothing to route through.
+    @Test func waitUntilRoutedTimesOutWhenTheNodeStaysAbsent() async {
+        let router = TailnetSessionRouter()
+        let wait = Task {
+            await router.waitUntilRouted(timeout: .milliseconds(80))
+        }
+
+        router.use(nil)
+
+        #expect(await wait.value == false)
+    }
+
     // Long-lived sessions compare generations to notice that the node they
     // were built for is gone or has arrived, so every change must bump it.
     @Test func everyRoutingChangeBumpsTheGeneration() {
@@ -260,18 +297,23 @@ struct TailnetSessionRouterPendingTests {
 struct GitLFSTailnetRoutingTests {
     private static let host = "tailnet-routing-lfs.local"
 
-    private func makeClient(router: TailnetSessionRouter) -> GitLFS {
+    private func makeClient(
+        router: TailnetSessionRouter,
+        routingTimeout: Duration = .milliseconds(50)
+    ) -> GitLFS {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [TailnetRoutingLFSURLProtocol.self]
         return GitLFS(
             serverURL: "https://\(Self.host)/lfs",
             sessionConfiguration: configuration,
-            router: router
+            router: router,
+            routingTimeout: routingTimeout
         )
     }
 
-    // A client created before the node is up fails fast with a clear error,
-    // then works once the node arrives without being recreated.
+    // A request issued before the node is up must not dial. It gives up
+    // after the routing wait, then works once the node is installed
+    // without the client being recreated.
     @Test func clientCreatedWhilePendingWorksOnceTheNodeArrives() async throws {
         let router = TailnetSessionRouter()
         let client = makeClient(router: router)
@@ -290,6 +332,27 @@ struct GitLFSTailnetRoutingTests {
         }
         #expect(TailnetRoutingLFSURLProtocol.requestCount > 0)
         #expect(node.cachedApplyCount == 1)
+    }
+
+    // The timeline asks for thumbnails during the join. Those requests
+    // have to wait for the node instead of failing and staying blank.
+    @Test func clientWaitsForTheNodeInsteadOfFailingImmediately() async throws {
+        let router = TailnetSessionRouter()
+        let client = makeClient(router: router, routingTimeout: .seconds(2))
+        TailnetRoutingLFSURLProtocol.reset()
+
+        let download = Task {
+            try await client.downloadData(oid: "missing", size: 1)
+        }
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(TailnetRoutingLFSURLProtocol.requestCount == 0)
+
+        router.use(FakeNode())
+
+        await #expect(throws: LFSError.self) {
+            _ = try await download.value
+        }
+        #expect(TailnetRoutingLFSURLProtocol.requestCount > 0)
     }
 
     // Re-pairing replaces the node, and a session still pointed at the old

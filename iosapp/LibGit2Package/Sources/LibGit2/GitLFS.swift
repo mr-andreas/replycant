@@ -109,6 +109,11 @@ public final class GitLFS: NSObject {
     // created during it would otherwise stay unproxied for good.
     private let baseConfiguration: URLSessionConfiguration
     private let router: TailnetSessionRouter
+    /// How long a request waits for the node. The library is visible before
+    /// the join finishes, and an uncached thumbnail requested then has to
+    /// wait instead of failing and staying blank. Matches the launch join
+    /// bound so the two give up together.
+    private let routingTimeout: Duration
     private let sessionLock = NSLock()
     private var cachedSession: URLSession?
     private var cachedSessionGeneration: UInt64 = 0
@@ -122,7 +127,8 @@ public final class GitLFS: NSObject {
         clientIdentity: SecIdentity? = nil,
         pinnedCA: SecCertificate? = nil,
         sessionConfiguration: URLSessionConfiguration = .default,
-        router: TailnetSessionRouter = .shared
+        router: TailnetSessionRouter = .shared,
+        routingTimeout: Duration = .seconds(10)
     ) {
         var cleanURL = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
         var extractedUsername: String?
@@ -159,6 +165,7 @@ public final class GitLFS: NSObject {
         configuration.urlCache = nil
         self.baseConfiguration = configuration
         self.router = router
+        self.routingTimeout = routingTimeout
 
         super.init()
         
@@ -175,12 +182,27 @@ public final class GitLFS: NSObject {
 
     /// The session for the next request, routed the way the router says now.
     ///
-    /// Throws rather than dialling directly while the node is not up: gitd's
-    /// name does not resolve off the tailnet, and on a network that does
-    /// resolve it the request could reach an unintended host. A
-    /// replaced session is finished rather than cancelled, so transfers
-    /// already running on it complete.
-    private func currentSession() throws -> URLSession {
+    /// Waits for the node first. Launch shows the library before the join
+    /// finishes, so a thumbnail requested in that window would otherwise
+    /// fail and stay blank. Throws rather than dialling directly if the
+    /// node never arrives: gitd's name does not resolve off the tailnet,
+    /// and on a network that does resolve it the request could reach an
+    /// unintended host. A replaced session is finished rather than
+    /// cancelled, so transfers already running on it complete.
+    private func currentSession() async throws -> URLSession {
+        guard await router.waitUntilRouted(timeout: routingTimeout) else {
+            throw LFSError.networkError("Not connected to your library's network yet")
+        }
+        // The lock stays in a synchronous function. Taking it across the
+        // wait above would pin a thread for the whole join.
+        return try cachedOrNewSession()
+    }
+
+    /// Reuses the session built for the current node, or builds one.
+    ///
+    /// Called only after a node is installed. A node that disappears
+    /// between that check and this one still refuses to dial directly.
+    private func cachedOrNewSession() throws -> URLSession {
         sessionLock.lock()
         defer { sessionLock.unlock() }
 
@@ -354,7 +376,7 @@ public final class GitLFS: NSObject {
             }
         }
 
-        let session = try currentSession()
+        let session = try await currentSession()
         let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Swift.Error>) in
             delegate.completion = { error, response in
                 if let error {
@@ -445,7 +467,7 @@ public final class GitLFS: NSObject {
             }
         }
         
-        let session = try currentSession()
+        let session = try await currentSession()
         let (_, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
             let task = session.uploadTask(with: request, from: data) { data, response, error in
                 if let error = error {
@@ -525,7 +547,7 @@ public final class GitLFS: NSObject {
             pinnedCA: pinnedCA
         )
 
-        let session = try currentSession()
+        let session = try await currentSession()
         let requestStart = DispatchTime.now()
 
         let (data, response): (Data, URLResponse?) =
@@ -634,7 +656,7 @@ public final class GitLFS: NSObject {
         let encoder = JSONEncoder()
         request.httpBody = try encoder.encode(batchRequest)
 
-        let session = try currentSession()
+        let session = try await currentSession()
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
                 let task = session.dataTask(with: request) {
@@ -716,7 +738,7 @@ public final class GitLFS: NSObject {
         request.httpBody = try encoder.encode(batchRequest)
         
         print("LFS: Sending batch request...")
-        let session = try currentSession()
+        let session = try await currentSession()
         let (data, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
             let task = session.dataTask(with: request) { data, response, error in
                 if let error = error {

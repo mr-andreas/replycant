@@ -30,6 +30,9 @@ public final class TailnetSessionRouter: @unchecked Sendable {
     private let lock = NSLock()
     private var node: TailnetNodeProviding?
     private var currentGeneration: UInt64 = 0
+    /// Requests that started before the node was installed. Resumed when a
+    /// node arrives, or with false once their own timeout elapses.
+    private var routingWaiters: [RoutingWaiter] = []
 
     /// Public so tests can use a private router instead of the shared one,
     /// which suites running in parallel also depend on.
@@ -52,7 +55,65 @@ public final class TailnetSessionRouter: @unchecked Sendable {
         lock.lock()
         self.node = node
         currentGeneration += 1
+        // A cleared node is a teardown. Waiters keep waiting until their
+        // timeout, because there is still nothing safe to dial through.
+        let ready = node == nil ? [] : routingWaiters
+        if node != nil {
+            routingWaiters.removeAll()
+        }
         lock.unlock()
+        ready.forEach { $0.resolve(true) }
+    }
+
+    /// Waits until a node is installed, or until `timeout` passes.
+    ///
+    /// The library is on screen before the join finishes, and the first
+    /// thumbnails are requested in that window. Waiting here is what keeps
+    /// those loads from failing and staying blank. Returns false, rather
+    /// than hanging, so an offline launch still fails the request.
+    public func waitUntilRouted(timeout: Duration) async -> Bool {
+        if hasNode { return true }
+
+        return await withCheckedContinuation { continuation in
+            let waiter = RoutingWaiter(continuation)
+            // A node installed between the check above and this one is
+            // resumed here. The lock lives in a synchronous function so
+            // the wait itself does not hold it.
+            if enqueue(waiter) {
+                waiter.resolve(true)
+                return
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                self.finish(waiter, routed: false)
+            }
+        }
+    }
+
+    /// Whether a node is installed. Read without waiting.
+    private var hasNode: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return node != nil
+    }
+
+    /// Registers a waiter, or reports that a node is already installed.
+    private func enqueue(_ waiter: RoutingWaiter) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if node != nil {
+            return true
+        }
+        routingWaiters.append(waiter)
+        return false
+    }
+
+    /// Drops one waiter and resumes it if a node has not already done so.
+    private func finish(_ waiter: RoutingWaiter, routed: Bool) {
+        lock.lock()
+        routingWaiters.removeAll { $0 === waiter }
+        lock.unlock()
+        waiter.resolve(routed)
     }
 
     private var currentNode: TailnetNodeProviding? {
@@ -101,5 +162,24 @@ public final class TailnetSessionRouter: @unchecked Sendable {
             return false
         }
         return node.applyCachedProxy(to: configuration)
+    }
+}
+
+/// Resumes one routing wait with whichever of the node and its timeout
+/// finishes first, exactly once.
+private final class RoutingWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ routed: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: routed)
     }
 }
