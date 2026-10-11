@@ -32,6 +32,10 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
     // the server to the onboarded CA. Reusing the shared delegate keeps that
     // logic identical to the Git and LFS clients.
     private let authDelegate: MTLSURLSessionAuthDelegate
+    /// Where a playback response or a dead connection is reported, so a
+    /// video that cannot start is also what tells the banner the library
+    /// is out of reach.
+    private let reachability: ServerReachability
     private let lock = NSLock()
     private var sessions: [Int: LoadingSession] = [:]
     private var tasks: [ObjectIdentifier: URLSessionDataTask] = [:]
@@ -76,6 +80,9 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         }
     }
 
+    /// Reports each playback response so a video that cannot start is
+    /// also what raises the connection banner.
+    ///
     /// - Parameters:
     ///   - httpURL: The real `https://` gitd `/decryptd` URL.
     ///   - headers: DEK and chunk-size headers for every request.
@@ -87,12 +94,14 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         headers: [String: String],
         mimeType: String,
         clientIdentity: SecIdentity?,
-        pinnedCA: SecCertificate?
+        pinnedCA: SecCertificate?,
+        reachability: ServerReachability = .shared
     ) {
         self.httpURL = httpURL
         self.headers = headers
         self.uniformTypeIdentifier = UTType(mimeType: mimeType)?.identifier ?? UTType.mpeg4Movie.identifier
         self.authDelegate = MTLSURLSessionAuthDelegate(clientIdentity: clientIdentity, pinnedCA: pinnedCA)
+        self.reachability = reachability
         super.init()
     }
 
@@ -286,6 +295,9 @@ extension DirectPlayResourceLoader: URLSessionDataDelegate {
             completionHandler(.cancel)
             return
         }
+        if response is HTTPURLResponse {
+            reachability.recordResponse()
+        }
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -326,6 +338,7 @@ extension DirectPlayResourceLoader: URLSessionDataDelegate {
             return
         }
         if let error {
+            reachability.recordFailure(error)
             logger.error("Network error: \(error.localizedDescription, privacy: .public)")
             loadingSession.loadingRequest.finishLoading(with: error)
         } else {

@@ -37,7 +37,7 @@ struct ContentView: View {
     @State private var showRecoveryFlow = false
     @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
-    @StateObject private var tailnetJoinIndicator = TailnetJoinIndicator()
+    @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
     init(previewState: PreviewState? = nil) {

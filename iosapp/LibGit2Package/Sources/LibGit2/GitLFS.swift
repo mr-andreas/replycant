@@ -114,6 +114,9 @@ public final class GitLFS: NSObject {
     /// wait instead of failing and staying blank. Matches the launch join
     /// bound so the two give up together.
     private let routingTimeout: Duration
+    /// Where this client's transfers report whether gitd answered, so the
+    /// connection banner follows real LFS traffic.
+    private let reachability: ServerReachability
     private let sessionLock = NSLock()
     private var cachedSession: URLSession?
     private var cachedSessionGeneration: UInt64 = 0
@@ -128,7 +131,8 @@ public final class GitLFS: NSObject {
         pinnedCA: SecCertificate? = nil,
         sessionConfiguration: URLSessionConfiguration = .default,
         router: TailnetSessionRouter = .shared,
-        routingTimeout: Duration = .seconds(10)
+        routingTimeout: Duration = .seconds(10),
+        reachability: ServerReachability = .shared
     ) {
         var cleanURL = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
         var extractedUsername: String?
@@ -166,6 +170,7 @@ public final class GitLFS: NSObject {
         self.baseConfiguration = configuration
         self.router = router
         self.routingTimeout = routingTimeout
+        self.reachability = reachability
 
         super.init()
         
@@ -379,8 +384,10 @@ public final class GitLFS: NSObject {
         }
 
         let session = try await currentSession()
+        let serverReachability = reachability
         let response = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Swift.Error>) in
             delegate.completion = { error, response in
+                Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error {
                     continuation.resume(throwing: error)
                     return
@@ -470,8 +477,10 @@ public final class GitLFS: NSObject {
         }
         
         let session = try await currentSession()
+        let serverReachability = reachability
         let (_, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
             let task = session.uploadTask(with: request, from: data) { data, response, error in
+                Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
@@ -551,12 +560,14 @@ public final class GitLFS: NSObject {
 
         let session = try await currentSession()
         let requestStart = DispatchTime.now()
+        let serverReachability = reachability
 
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
                 delegate.whenFinished(continuation)
                 let task = session.dataTask(with: request) {
                     data, response, error in
+                    Self.noteServerOutcome(serverReachability, error: error, response: response)
                     delegate.completeTask(
                         data: data,
                         response: response,
@@ -659,10 +670,12 @@ public final class GitLFS: NSObject {
         request.httpBody = try encoder.encode(batchRequest)
 
         let session = try await currentSession()
+        let serverReachability = reachability
         let (data, response): (Data, URLResponse?) =
             try await withCheckedThrowingContinuation { continuation in
                 let task = session.dataTask(with: request) {
                     data, response, error in
+                    Self.noteServerOutcome(serverReachability, error: error, response: response)
                     if let error = error {
                         continuation.resume(throwing: error)
                     } else {
@@ -741,8 +754,10 @@ public final class GitLFS: NSObject {
         
         print("LFS: Sending batch request...")
         let session = try await currentSession()
+        let serverReachability = reachability
         let (data, response): (Data, URLResponse?) = try await withCheckedThrowingContinuation { continuation in
             let task = session.dataTask(with: request) { data, response, error in
+                Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
@@ -774,6 +789,25 @@ public final class GitLFS: NSObject {
         
         print("LFS: Batch request successful")
         return object
+    }
+
+    /// Tells the connection banner what this transfer learned.
+    ///
+    /// Any HTTP response means the server was reached, whatever status it
+    /// sent. Only a transport failure with no response means it was not,
+    /// and a cancelled transfer is neither.
+    private static func noteServerOutcome(
+        _ reachability: ServerReachability,
+        error: Error?,
+        response: URLResponse?
+    ) {
+        if response is HTTPURLResponse {
+            reachability.recordResponse()
+            return
+        }
+        if let error {
+            reachability.recordFailure(error)
+        }
     }
 }
 

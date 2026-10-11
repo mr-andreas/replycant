@@ -299,7 +299,8 @@ struct GitLFSTailnetRoutingTests {
 
     private func makeClient(
         router: TailnetSessionRouter,
-        routingTimeout: Duration = .milliseconds(50)
+        routingTimeout: Duration = .milliseconds(50),
+        reachability: ServerReachability = ServerReachability()
     ) -> GitLFS {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [TailnetRoutingLFSURLProtocol.self]
@@ -307,7 +308,8 @@ struct GitLFSTailnetRoutingTests {
             serverURL: "https://\(Self.host)/lfs",
             sessionConfiguration: configuration,
             router: router,
-            routingTimeout: routingTimeout
+            routingTimeout: routingTimeout,
+            reachability: reachability
         )
     }
 
@@ -374,10 +376,41 @@ struct GitLFSTailnetRoutingTests {
         #expect(second.cachedApplyCount == 1)
         #expect(first.cachedApplyCount == 1)
     }
+
+    // A transfer that dies before gitd answers is the evidence the banner
+    // uses. The node itself stays Running, so the failure has to be
+    // reported from the request.
+    @Test func aTimedOutRequestMarksTheServerUnreachable() async throws {
+        let router = TailnetSessionRouter()
+        router.use(FakeNode())
+        let reachability = ServerReachability()
+        let client = makeClient(router: router, reachability: reachability)
+        TailnetRoutingLFSURLProtocol.reset(failure: URLError(.timedOut))
+
+        _ = try? await client.downloadData(oid: "missing", size: 1)
+
+        #expect(reachability.isReachable == false)
+    }
+
+    // An HTTP error still means the server was reached. A missing object
+    // must not leave the banner up.
+    @Test func anHTTPErrorStillMeansTheServerWasReached() async throws {
+        let router = TailnetSessionRouter()
+        router.use(FakeNode())
+        let reachability = ServerReachability()
+        reachability.recordFailure(URLError(.timedOut))
+        let client = makeClient(router: router, reachability: reachability)
+        TailnetRoutingLFSURLProtocol.reset()
+
+        _ = try? await client.downloadData(oid: "missing", size: 1)
+
+        #expect(reachability.isReachable == true)
+    }
 }
 
-/// Answers every request with a 404, and counts requests so a test can tell
-/// whether a client reached the network at all.
+/// Answers every request with a 404, or a transport error when a test
+/// asks for one, and counts requests so a test can tell whether a client
+/// reached the network at all.
 private final class TailnetRoutingLFSURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var count = 0
@@ -388,9 +421,12 @@ private final class TailnetRoutingLFSURLProtocol: URLProtocol {
         return count
     }
 
-    static func reset() {
+    private static var failure: URLError?
+
+    static func reset(failure: URLError? = nil) {
         lock.lock()
         count = 0
+        self.failure = failure
         lock.unlock()
     }
 
@@ -405,7 +441,12 @@ private final class TailnetRoutingLFSURLProtocol: URLProtocol {
     override func startLoading() {
         Self.lock.lock()
         Self.count += 1
+        let failure = Self.failure
         Self.lock.unlock()
+        if let failure {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 404,

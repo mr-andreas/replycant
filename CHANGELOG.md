@@ -41,6 +41,7 @@
 
 #### iOS app
 
+- the connection problems banner now appears whenever the phone loses its network or cannot reach your library, not only while connecting at launch
 - photos opened before the app finished connecting to your library now load once the connection is up instead of spinning forever
 - after the phone has been locked for a while, photo upload and sync connect again instead of failing while Settings still says the device is connected
 - setup and photo upload now say what they are doing instead of showing a silent spinner
