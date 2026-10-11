@@ -52,6 +52,7 @@ struct iosappApp: App {
         // This registers the mtls+https:// scheme with libgit2, enabling push/pull
         // with client certificate authentication.
         initializeMTLSTransport()
+        startTailnetJoin()
 
         // Rebuild disk cache indices from previous sessions so
         // cached thumbnails and originals are available immediately.
@@ -184,6 +185,18 @@ struct iosappApp: App {
             log("mTLS transport configured successfully", context: "App")
         } catch {
             logError("Failed to configure mTLS transport: \(error.localizedDescription)", context: "App")
+        }
+    }
+
+    /// Starts the tailnet join before the first frame.
+    ///
+    /// The join waits on relay handshakes. ContentView awaits the same join
+    /// and reports its outcome; starting it here overlaps that wait with
+    /// SwiftUI's first render instead of beginning it afterwards. A device
+    /// with nothing stored returns immediately.
+    private func startTailnetJoin() {
+        Task {
+            try? await TailnetBootstrap.shared.ensureJoinedIfConfigured()
         }
     }
 }

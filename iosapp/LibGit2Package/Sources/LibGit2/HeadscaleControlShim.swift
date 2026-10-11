@@ -55,11 +55,19 @@ public final class HeadscaleControlShim {
     private let trust: Trust
     private var verifiedCAStorage: SecCertificate?
     private let clientIdentity: SecIdentity
+    private let preDialCount: Int
+    private let preDialMaxAge: Duration
     private let queue: DispatchQueue
     private let logger: ((String) -> Void)?
 
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: (local: NWConnection, upstream: NWConnection?)] = [:]
+    /// Upstreams dialled at start and not yet handed to a loopback client.
+    /// Oldest first, which is the order they were opened.
+    private var preDialled: [Upstream] = []
+    /// Every upstream still open, so a state callback can find its own
+    /// record without the connection retaining that record.
+    private var upstreams: [ObjectIdentifier: Upstream] = [:]
     private let lock = NSLock()
 
     /// - Parameters:
@@ -71,12 +79,22 @@ public final class HeadscaleControlShim {
     ///   - clientIdentity: the device identity. hsproxy authorizes by public
     ///     key against the deployment's authorized-key list, so this is the
     ///     same identity used for gitd and revocation reaches both at once.
+    ///   - preDialCount: how many upstream connections to open as soon as the
+    ///     listener is ready, so the relay handshakes overlap the Go node
+    ///     starting instead of sitting on the join. Two covers the control
+    ///     connections tsnet opens on a launch.
+    ///   - preDialMaxAge: how long an unused pre-dialled connection may be
+    ///     handed out. Kept under hsproxy's wait for the first request line,
+    ///     so a connection that sat idle is not served to a client that
+    ///     would then find it already closed.
     public init(
         upstreamHost: String,
         upstreamPort: UInt16,
         trust: Trust,
         clientIdentity: SecIdentity,
-        logger: ((String) -> Void)? = nil
+        logger: ((String) -> Void)? = nil,
+        preDialCount: Int = 2,
+        preDialMaxAge: Duration = .seconds(10)
     ) {
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
@@ -87,6 +105,8 @@ public final class HeadscaleControlShim {
         self.clientIdentity = clientIdentity
         self.queue = DispatchQueue(label: "com.replycant.headscale-shim")
         self.logger = logger
+        self.preDialCount = preDialCount
+        self.preDialMaxAge = preDialMaxAge
     }
 
     /// The control URL to hand TailscaleKit, valid only after `start()`.
@@ -133,6 +153,9 @@ public final class HeadscaleControlShim {
                     resumed = true
                     if let boundPort = listener.port?.rawValue {
                         self?.controlURL = "http://127.0.0.1:\(boundPort)"
+                        // Dial before resuming so the handshakes are in
+                        // flight by the time the caller starts the node.
+                        self?.beginPreDials()
                         continuation.resume()
                     } else {
                         continuation.resume(throwing: ShimError.listenerFailed("listener bound without a port"))
@@ -171,11 +194,19 @@ public final class HeadscaleControlShim {
         lock.lock()
         let open = connections
         connections.removeAll()
+        let pending = preDialled
+        preDialled.removeAll()
+        upstreams.removeAll()
         lock.unlock()
 
         for (_, pair) in open {
+            pair.upstream?.stateUpdateHandler = nil
             pair.local.cancel()
             pair.upstream?.cancel()
+        }
+        for upstream in pending {
+            upstream.connection.stateUpdateHandler = nil
+            upstream.connection.cancel()
         }
     }
 
@@ -225,12 +256,47 @@ public final class HeadscaleControlShim {
         return key
     }
 
-    // Bridges one accepted loopback connection to a fresh mTLS connection.
-    //
-    // One upstream per inbound connection rather than a pool: the control
-    // protocol holds its stream open for the lifetime of the session, so
-    // reusing a connection is not possible and pooling would only add a way
-    // for two sessions to interfere.
+    /// Opens the launch connections before tsnet asks for them.
+    ///
+    /// tsnet dials twice during a cold start, and each dial otherwise waits
+    /// out its own relay handshake after the Go node has already started.
+    /// Opening them here overlaps those handshakes with that startup. Later
+    /// connections are not replaced: only the launch pays this cost.
+    private func beginPreDials() {
+        guard preDialCount > 0 else { return }
+        for _ in 0..<preDialCount {
+            _ = dialUpstream(reserve: true)
+        }
+        let delay = Self.seconds(preDialMaxAge)
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.expireUnusedPreDials()
+        }
+    }
+
+    /// Drops pre-dialled connections hsproxy may already have given up on.
+    ///
+    /// hsproxy only waits so long for the first request line. A connection
+    /// opened at launch and never used would be closed by then, and handing
+    /// it to tsnet would fail the join.
+    private func expireUnusedPreDials() {
+        lock.lock()
+        let unused = preDialled
+        preDialled.removeAll()
+        for upstream in unused {
+            upstreams.removeValue(forKey: ObjectIdentifier(upstream.connection))
+        }
+        lock.unlock()
+        for upstream in unused {
+            upstream.connection.stateUpdateHandler = nil
+            upstream.connection.cancel()
+        }
+    }
+
+    /// Hands a loopback client the oldest pre-dialled upstream still young
+    /// enough to use, or dials a new one when none is.
+    ///
+    /// One upstream per inbound connection: the control protocol holds its
+    /// stream open for the session, so a used connection cannot be shared.
     private func accept(_ local: NWConnection) {
         let key = ObjectIdentifier(local)
         lock.lock()
@@ -246,71 +312,163 @@ public final class HeadscaleControlShim {
             }
         }
         local.start(queue: queue)
-        connect(local: local, key: key)
+        let upstream = takePreDialled() ?? dialUpstream(reserve: false)
+        bind(local, key: key, to: upstream)
     }
 
-    // Bridges the loopback connection to hsproxy through the hosted relay.
-    //
-    // There is one path. The node cannot reach peers until this session has
-    // brought it up, so a second route inside the tailnet would only add a
-    // fallback to wait through.
-    private func connect(local: NWConnection, key: ObjectIdentifier) {
-        let upstream = NWConnection(
+    /// Takes the oldest pre-dialled upstream younger than `preDialMaxAge`.
+    ///
+    /// Older ones are cancelled rather than handed out: the far side may
+    /// have closed them, and a client put on a dead connection fails.
+    private func takePreDialled() -> Upstream? {
+        let limit = Self.seconds(preDialMaxAge)
+        let now = Date()
+        lock.lock()
+        var chosen: Upstream?
+        var discarded: [Upstream] = []
+        var kept: [Upstream] = []
+        for upstream in preDialled {
+            if chosen != nil {
+                kept.append(upstream)
+            } else if now.timeIntervalSince(upstream.dialledAt) < limit {
+                chosen = upstream
+            } else {
+                discarded.append(upstream)
+            }
+        }
+        preDialled = kept
+        for upstream in discarded {
+            upstreams.removeValue(forKey: ObjectIdentifier(upstream.connection))
+        }
+        lock.unlock()
+        for upstream in discarded {
+            upstream.connection.stateUpdateHandler = nil
+            upstream.connection.cancel()
+        }
+        return chosen
+    }
+
+    /// Opens one mTLS connection to hsproxy.
+    ///
+    /// `reserve` parks it for the next loopback client. The state handler is
+    /// installed before the connection starts, on this shim's queue, so a
+    /// ready connection and the client that binds it cannot miss each other.
+    private func dialUpstream(reserve: Bool) -> Upstream {
+        let connection = NWConnection(
             host: NWEndpoint.Host(upstreamHost),
             port: NWEndpoint.Port(rawValue: upstreamPort) ?? .https,
             using: mtlsParameters(serverName: upstreamHost)
         )
+        let upstream = Upstream(connection: connection)
+        connection.stateUpdateHandler = { [weak self] state in
+            self?.handle(state, of: upstream)
+        }
+        lock.lock()
+        upstreams[ObjectIdentifier(connection)] = upstream
+        if reserve {
+            preDialled.append(upstream)
+        }
+        lock.unlock()
+        connection.start(queue: queue)
+        return upstream
+    }
 
+    /// Attaches a loopback client to an upstream, relaying immediately when
+    /// the handshake already finished.
+    private func bind(_ local: NWConnection, key: ObjectIdentifier, to upstream: Upstream) {
         lock.lock()
         let stillOpen = connections[key] != nil
         if stillOpen {
-            connections[key] = (local, upstream)
+            connections[key] = (local, upstream.connection)
         }
         lock.unlock()
         guard stillOpen else {
-            upstream.cancel()
+            forget(upstream)
             return
         }
-
-        // Only touched on the shim's serial queue, which every state callback
-        // runs on.
-        var reportedWaiting = false
-        upstream.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                self.logger?("headscale shim: connected to \(self.upstreamHost):\(self.upstreamPort)")
-                self.pump(from: local, to: upstream, teardown: { self.teardown(key) })
-                self.pump(from: upstream, to: local, teardown: { self.teardown(key) })
-            case .failed(let error):
-                // Almost always the CA check rejecting the far side, which
-                // is the case worth being able to find in a log.
-                self.logger?("headscale shim: upstream failed: \(error)")
-                self.teardown(key)
-            case .cancelled:
-                self.teardown(key)
-            case .waiting(let error):
-                // The only sign that the relay is stuck instead of moving
-                // bytes. Logged once so a long wait is visible without a
-                // line per state update.
-                guard !reportedWaiting else { break }
-                reportedWaiting = true
-                self.logger?("headscale shim: route to \(self.upstreamHost):\(self.upstreamPort) waiting: \(error)")
-            default:
-                break
-            }
+        upstream.bound = (local, key)
+        if upstream.isReady {
+            startPumps(upstream)
         }
-
-        upstream.start(queue: queue)
     }
 
-    // Closes both halves of one relayed connection and forgets it.
+    /// Relays once both halves exist. Ready can arrive before the client
+    /// does, or after, and either order has to start the copy exactly once.
+    private func startPumps(_ upstream: Upstream) {
+        guard !upstream.pumpsStarted, let bound = upstream.bound else { return }
+        upstream.pumpsStarted = true
+        let key = bound.key
+        pump(from: bound.local, to: upstream.connection, teardown: { [weak self] in
+            self?.teardown(key)
+        })
+        pump(from: upstream.connection, to: bound.local, teardown: { [weak self] in
+            self?.teardown(key)
+        })
+    }
+
+    /// Reacts to an upstream's state. An unused failure is dropped from the
+    /// pre-dial list; a bound one takes its loopback client down with it.
+    private func handle(_ state: NWConnection.State, of upstream: Upstream) {
+        switch state {
+        case .ready:
+            if !upstream.didLogReady {
+                upstream.didLogReady = true
+                logger?("headscale shim: connected to \(upstreamHost):\(upstreamPort)")
+            }
+            upstream.isReady = true
+            startPumps(upstream)
+        case .failed(let error):
+            // Almost always the CA check rejecting the far side, which is
+            // the case worth being able to find in a log.
+            logger?("headscale shim: upstream failed: \(error)")
+            if let key = upstream.bound?.key {
+                teardown(key)
+            } else {
+                forget(upstream)
+            }
+        case .cancelled:
+            if let key = upstream.bound?.key {
+                teardown(key)
+            } else {
+                forget(upstream)
+            }
+        case .waiting(let error):
+            // The only sign that the relay is stuck instead of moving
+            // bytes. Logged once so a long wait is visible without a
+            // line per state update.
+            guard !upstream.reportedWaiting else { return }
+            upstream.reportedWaiting = true
+            logger?("headscale shim: route to \(upstreamHost):\(upstreamPort) waiting: \(error)")
+        default:
+            break
+        }
+    }
+
+    /// Forgets an upstream that never served a client, and closes it.
+    private func forget(_ upstream: Upstream) {
+        lock.lock()
+        preDialled.removeAll { $0 === upstream }
+        upstreams.removeValue(forKey: ObjectIdentifier(upstream.connection))
+        lock.unlock()
+        upstream.connection.stateUpdateHandler = nil
+        upstream.connection.cancel()
+    }
+
+    /// Closes both halves of one relayed connection and forgets it.
     private func teardown(_ key: ObjectIdentifier) {
         lock.lock()
         let pair = connections.removeValue(forKey: key)
+        let upstream = pair?.upstream.flatMap { upstreams.removeValue(forKey: ObjectIdentifier($0)) }
         lock.unlock()
+        upstream?.connection.stateUpdateHandler = nil
         pair?.local.cancel()
         pair?.upstream?.cancel()
+    }
+
+    /// Seconds in a duration, for the queue's timeout API.
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds) + TimeInterval(components.attoseconds) / 1e18
     }
 
     // Copies bytes one direction until either side closes.
@@ -444,5 +602,25 @@ public final class HeadscaleControlShim {
 
     private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// An upstream connection to hsproxy, dialled ahead of the client that
+    /// will use it or when that client arrives.
+    ///
+    /// Kept separate from the loopback connection so the relay handshake can
+    /// finish while the tailnet node is still starting. Fields other than the
+    /// connection are touched only on the shim's serial queue.
+    private final class Upstream {
+        let connection: NWConnection
+        let dialledAt = Date()
+        var isReady = false
+        var pumpsStarted = false
+        var didLogReady = false
+        var reportedWaiting = false
+        var bound: (local: NWConnection, key: ObjectIdentifier)?
+
+        init(connection: NWConnection) {
+            self.connection = connection
+        }
     }
 }

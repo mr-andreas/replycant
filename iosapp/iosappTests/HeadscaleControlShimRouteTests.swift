@@ -135,7 +135,10 @@ struct HeadscaleControlShimRouteTests {
             upstreamHost: "127.0.0.1",
             upstreamPort: relay.port,
             trust: .pinned(try Self.deploymentCA()),
-            clientIdentity: try Self.deviceIdentity()
+            clientIdentity: try Self.deviceIdentity(),
+            // Pre-dialling would reach the relay before the mint request
+            // does, so this test could not tell the two apart.
+            preDialCount: 0
         )
         try await shim.start()
         defer { shim.stop() }
@@ -147,5 +150,108 @@ struct HeadscaleControlShimRouteTests {
 
         #expect(await relay.waitForAccept(atLeast: 1, within: 5),
                 "the key request must reach hsproxy through the shim")
+    }
+
+    // The two control connections tsnet opens are dialled only after the Go
+    // node starts. Opening them when the shim starts lets those handshakes
+    // overlap that startup instead of adding to the join.
+    @Test func startOpensUpstreamConnectionsBeforeAnyClient() async throws {
+        let relay = try await RecordingListener.started()
+        defer { relay.stop() }
+
+        let shim = try Self.shim(relay: relay)
+        try await shim.start()
+        defer { shim.stop() }
+
+        #expect(await relay.waitForAccept(atLeast: 2, within: 5),
+                "the shim must dial its upstreams before any client connects")
+    }
+
+    // A loopback client has to take a connection that was already dialled.
+    // Dialling a fresh one per client would put the handshake back on the
+    // join, which is the delay this exists to avoid.
+    @Test func loopbackConnectionsUseThePreDialledUpstreams() async throws {
+        let relay = try await RecordingListener.started()
+        defer { relay.stop() }
+
+        let shim = try Self.shim(relay: relay)
+        try await shim.start()
+        defer { shim.stop() }
+
+        #expect(await relay.waitForAccept(atLeast: 2, within: 5))
+
+        let clients = ClientHold()
+        defer { clients.stop() }
+        clients.connect(to: try #require(shim.port))
+        clients.connect(to: try #require(shim.port))
+
+        // Long enough for a fresh dial to be accepted if the shim ignored
+        // the pre-dialled connections and opened new ones.
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(relay.acceptCount == 2)
+
+        clients.connect(to: try #require(shim.port))
+        #expect(await relay.waitForAccept(atLeast: 3, within: 5),
+                "a client past the pre-dialled pair must open a new upstream")
+    }
+
+    // hsproxy closes a connection that sends nothing within its request
+    // deadline. Handing that connection to a later client would fail the
+    // join, so an unused pre-dial past its age has to be replaced.
+    @Test func staleUpstreamsAreNotHandedOut() async throws {
+        let relay = try await RecordingListener.started()
+        defer { relay.stop() }
+
+        let shim = try Self.shim(relay: relay, preDialMaxAge: .milliseconds(200))
+        try await shim.start()
+        defer { shim.stop() }
+
+        #expect(await relay.waitForAccept(atLeast: 2, within: 5))
+        try await Task.sleep(for: .milliseconds(400))
+
+        let clients = ClientHold()
+        defer { clients.stop() }
+        clients.connect(to: try #require(shim.port))
+
+        #expect(await relay.waitForAccept(atLeast: 3, within: 5),
+                "a client must not be given an upstream older than preDialMaxAge")
+    }
+
+    private static func shim(
+        relay: RecordingListener,
+        preDialCount: Int = 2,
+        preDialMaxAge: Duration = .seconds(10)
+    ) throws -> HeadscaleControlShim {
+        HeadscaleControlShim(
+            upstreamHost: "127.0.0.1",
+            upstreamPort: relay.port,
+            trust: .pinned(try deploymentCA()),
+            clientIdentity: try deviceIdentity(),
+            preDialCount: preDialCount,
+            preDialMaxAge: preDialMaxAge
+        )
+    }
+
+    // Holds loopback clients open. Dropping them would close the connection
+    // before the shim had bound it to an upstream, and the test would be
+    // watching a disconnect rather than a dial.
+    private final class ClientHold {
+        private var connections: [NWConnection] = []
+        private let queue = DispatchQueue(label: "com.replycant.route-test-client")
+
+        func connect(to port: UInt16) {
+            let connection = NWConnection(
+                host: NWEndpoint.Host("127.0.0.1"),
+                port: NWEndpoint.Port(rawValue: port) ?? .http,
+                using: .tcp
+            )
+            connection.start(queue: queue)
+            connections.append(connection)
+        }
+
+        func stop() {
+            connections.forEach { $0.cancel() }
+            connections.removeAll()
+        }
     }
 }
