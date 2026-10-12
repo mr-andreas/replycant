@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+#### Desktop app
+
+- the Windows release job no longer fails sidecar path checks that assumed macOS path separators
+
 ## 0.3.0 - 2026-10-11
 
 ### Breaking changes
