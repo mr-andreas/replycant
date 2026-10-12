@@ -1,6 +1,7 @@
 import Foundation
 import LibGit2
 import GitDB
+import GRDB
 
 // Unifies manifest reads, git writes, and git-to-database sync so callers do not manage consistency steps manually.
 // Declares write APIs locally to preserve main-actor isolation instead of inheriting a nonisolated protocol.
@@ -104,76 +105,157 @@ final class DefaultManifestManager: ManifestManager {
     }
 
     // Counts timeline-eligible originals so sparse timeline rendering can compute total scrollable length.
-    func countTimelineOriginals() async throws -> Int {
+    func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
         let table = try await database.tableName(for: OriginalManifest.self)
+        let (whereSQL, arguments) = timelineScopeClause(scope)
         return try await database.queryCount(sql: """
             SELECT COUNT(*)
             FROM \(table)
-            WHERE takenAt IS NOT NULL
-        """)
+            WHERE \(whereSQL)
+        """, arguments: arguments)
     }
 
     // Loads timeline rows by offset so random-position jumps can bootstrap sparse timeline content.
-    func loadTimelinePage(offset: Int, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(offset: Int, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
         let table = try await database.tableName(for: OriginalManifest.self)
         let safeOffset = max(0, offset)
+        let (whereSQL, arguments) = timelineScopeClause(scope, extra: [limit, safeOffset])
         return try await database.query(OriginalManifest.self, sql: """
             SELECT data
             FROM \(table)
-            WHERE takenAt IS NOT NULL
+            WHERE \(whereSQL)
             ORDER BY takenAt ASC, id ASC
             LIMIT ? OFFSET ?
-        """, arguments: [limit, safeOffset])
+        """, arguments: arguments)
     }
 
     // Loads timeline rows older than a cursor so sequential scrolling can extend toward history.
-    func loadTimelinePage(before: TimelineCursor, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(before: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
         let table = try await database.tableName(for: OriginalManifest.self)
         let timestamp = before.date.timeIntervalSince1970
+        let (whereSQL, arguments) = timelineScopeClause(
+            scope,
+            extra: [timestamp, timestamp, before.id, limit]
+        )
         let rows = try await database.query(OriginalManifest.self, sql: """
             SELECT data
             FROM \(table)
-            WHERE takenAt IS NOT NULL
+            WHERE \(whereSQL)
             AND (takenAt < ? OR (takenAt = ? AND id < ?))
             ORDER BY takenAt DESC, id DESC
             LIMIT ?
-        """, arguments: [timestamp, timestamp, before.id, limit])
+        """, arguments: arguments)
         return Array(rows.reversed())
     }
 
     // Loads timeline rows newer than a cursor so sequential scrolling can extend toward the present.
-    func loadTimelinePage(after: TimelineCursor, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(after: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
         let table = try await database.tableName(for: OriginalManifest.self)
         let timestamp = after.date.timeIntervalSince1970
+        let (whereSQL, arguments) = timelineScopeClause(
+            scope,
+            extra: [timestamp, timestamp, after.id, limit]
+        )
         return try await database.query(OriginalManifest.self, sql: """
             SELECT data
             FROM \(table)
-            WHERE takenAt IS NOT NULL
+            WHERE \(whereSQL)
             AND (takenAt > ? OR (takenAt = ? AND id > ?))
             ORDER BY takenAt ASC, id ASC
             LIMIT ?
-        """, arguments: [timestamp, timestamp, after.id, limit])
+        """, arguments: arguments)
     }
 
     // Aggregates month buckets directly in SQL so timeline jump UI can render only months that contain media.
-    func loadTimelineMonthCounts() async throws -> [TimelineMonthCount] {
+    func loadTimelineMonthCounts(scope: TimelineScope) async throws -> [TimelineMonthCount] {
         let table = try await database.tableName(for: OriginalManifest.self)
+        let (whereSQL, arguments) = timelineScopeClause(scope)
         let rows = try await database.queryIntRows(sql: """
             SELECT
                 CAST(strftime('%Y', takenAt, 'unixepoch', 'localtime') AS INTEGER),
                 CAST(strftime('%m', takenAt, 'unixepoch', 'localtime') AS INTEGER),
                 COUNT(*)
             FROM \(table)
-            WHERE takenAt IS NOT NULL
+            WHERE \(whereSQL)
             GROUP BY 1, 2
             ORDER BY 1, 2
-        """, columnCount: 3)
+        """, columnCount: 3, arguments: arguments)
         return rows.map { row in
             TimelineMonthCount(year: row[0], month: row[1], count: row[2])
         }
+    }
+
+    // Reads coordinates without manifest JSON so the map can cluster
+    // every placed photo, including libraries too large to decode at once.
+    func loadGeotaggedPoints() async throws -> [MapMediaPoint] {
+        let table = try await database.tableName(for: OriginalManifest.self)
+        let rows = try await database.queryColumns(sql: """
+            SELECT id, latitude, longitude, takenAt
+            FROM \(table)
+            WHERE takenAt IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL
+        """, columnCount: 4)
+        return rows.compactMap { row in
+            guard row.count == 4,
+                  case .text(let id) = row[0],
+                  case .double(let latitude) = row[1],
+                  case .double(let longitude) = row[2],
+                  case .double(let takenAt) = row[3] else {
+                return nil
+            }
+            return MapMediaPoint(
+                id: id,
+                latitude: latitude,
+                longitude: longitude,
+                takenAt: Date(timeIntervalSince1970: takenAt)
+            )
+        }
+    }
+
+    // Loads the manifests for the photos currently drawn as map tiles.
+    func loadOriginals(ids: [String]) async throws -> [OriginalManifest] {
+        guard !ids.isEmpty else { return [] }
+        let table = try await database.tableName(for: OriginalManifest.self)
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+        return try await database.query(OriginalManifest.self, sql: """
+            SELECT data
+            FROM \(table)
+            WHERE id IN (\(placeholders))
+        """, arguments: QueryArguments(ids))
+    }
+
+    // Builds the shared predicate for timeline reads. A place grid is the
+    // same query with a bounding box added, so paging and month counts
+    // stay correct without a second index of ids.
+    private func timelineScopeClause(
+        _ scope: TimelineScope,
+        extra: [(any DatabaseValueConvertible)?] = []
+    ) -> (String, QueryArguments) {
+        let clause: String
+        var values: [(any DatabaseValueConvertible)?]
+        switch scope {
+        case .all:
+            clause = "takenAt IS NOT NULL"
+            values = []
+        case .geotagged:
+            clause = "takenAt IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL"
+            values = []
+        case .area(let bounds):
+            clause = """
+            takenAt IS NOT NULL AND latitude >= ? AND latitude <= ? \
+            AND longitude >= ? AND longitude <= ?
+            """
+            values = [
+                bounds.minLatitude,
+                bounds.maxLatitude,
+                bounds.minLongitude,
+                bounds.maxLongitude,
+            ]
+        }
+        values.append(contentsOf: extra)
+        return (clause, QueryArguments(values))
     }
 
     // Loads thumbnail manifests by original refs in one batch to keep sparse grid fetches efficient.

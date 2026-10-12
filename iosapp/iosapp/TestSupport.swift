@@ -983,14 +983,14 @@ class MockManifestLoader: ManifestLoaderProtocol {
     }
 
     // Counts timeline-visible originals in test fixtures so sparse timeline tests can size virtual ranges.
-    func countTimelineOriginals() async throws -> Int {
-        timelineOriginals().count
+    func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
+        timelineOriginals(scope: scope).count
     }
 
     // Returns timeline originals by offset for sparse timeline tests without requiring a real database.
-    func loadTimelinePage(offset: Int, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(offset: Int, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
-        let sorted = timelineOriginals()
+        let sorted = timelineOriginals(scope: scope)
         guard offset < sorted.count else { return [] }
         let start = max(0, offset)
         let end = min(sorted.count, start + limit)
@@ -998,9 +998,9 @@ class MockManifestLoader: ManifestLoaderProtocol {
     }
 
     // Returns originals older than cursor for sparse sequential-scroll tests in mock-driven flows.
-    func loadTimelinePage(before: TimelineCursor, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(before: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
-        let filtered = timelineOriginals().filter {
+        let filtered = timelineOriginals(scope: scope).filter {
             guard let date = $0.spec.takenAt else { return false }
             return (date, $0.id) < (before.date, before.id)
         }
@@ -1008,9 +1008,9 @@ class MockManifestLoader: ManifestLoaderProtocol {
     }
 
     // Returns originals newer than cursor for sparse sequential-scroll tests in mock-driven flows.
-    func loadTimelinePage(after: TimelineCursor, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(after: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
-        let filtered = timelineOriginals().filter {
+        let filtered = timelineOriginals(scope: scope).filter {
             guard let date = $0.spec.takenAt else { return false }
             return (date, $0.id) > (after.date, after.id)
         }
@@ -1018,10 +1018,10 @@ class MockManifestLoader: ManifestLoaderProtocol {
     }
 
     // Aggregates mock originals by year/month so month-sidebar tests can use the same query contract as production.
-    func loadTimelineMonthCounts() async throws -> [TimelineMonthCount] {
+    func loadTimelineMonthCounts(scope: TimelineScope) async throws -> [TimelineMonthCount] {
         var grouped: [TimelineYearMonth: Int] = [:]
         let calendar = Calendar.current
-        for original in timelineOriginals() {
+        for original in timelineOriginals(scope: scope) {
             guard let date = original.spec.takenAt else { continue }
             let components = calendar.dateComponents([.year, .month], from: date)
             guard let year = components.year, let month = components.month else { continue }
@@ -1040,6 +1040,27 @@ class MockManifestLoader: ManifestLoaderProtocol {
             }
     }
 
+    // Supplies map coordinates from fixtures so previews can cluster without SQL.
+    func loadGeotaggedPoints() async throws -> [MapMediaPoint] {
+        timelineOriginals(scope: .geotagged).compactMap { original in
+            guard let location = original.spec.location, let takenAt = original.spec.takenAt else {
+                return nil
+            }
+            return MapMediaPoint(
+                id: original.id,
+                latitude: location.latitude,
+                longitude: location.longitude,
+                takenAt: takenAt
+            )
+        }
+    }
+
+    // Resolves fixture originals by id for map tiles that only need a few photos.
+    func loadOriginals(ids: [String]) async throws -> [OriginalManifest] {
+        let wanted = Set(ids)
+        return originals.filter { wanted.contains($0.id) }
+    }
+
     // Resolves thumbnails by originalRef for sparse grid tests that expect O(1)-like batch lookup behavior.
     func loadThumbnailsByOriginalRefs(_ refs: [String]) async throws -> [String : ThumbnailSetManifest] {
         guard !refs.isEmpty else { return [:] }
@@ -1052,9 +1073,9 @@ class MockManifestLoader: ManifestLoaderProtocol {
     }
 
     // Produces a deterministic timeline-sorted original list mirroring database ordering semantics.
-    private func timelineOriginals() -> [OriginalManifest] {
+    private func timelineOriginals(scope: TimelineScope) -> [OriginalManifest] {
         return originals
-            .filter { $0.spec.takenAt != nil }
+            .filter { scope.contains($0) }
             .sorted {
                 let leftDate = $0.spec.takenAt ?? .distantPast
                 let rightDate = $1.spec.takenAt ?? .distantPast

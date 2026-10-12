@@ -30,8 +30,6 @@ struct TimelineView: View {
     }
 
     @StateObject private var timelineManager: TimelineManager
-    @State private var selectedItem: SelectedTimelineItem?
-    @State private var showMonthSidebar = false
     private let previewState: PreviewState?
 
     // Allows previews to render TimelineView states without repository and LFS dependencies.
@@ -53,69 +51,89 @@ struct TimelineView: View {
         // NavigationStack keeps timeline content in the primary column on iPad;
         // NavigationView would park it in a collapsed sidebar with an empty detail pane.
         NavigationStack {
-            VStack {
-                if timelineManager.isLoading {
-                    loadingView
-                } else if let error = timelineManager.errorMessage {
-                    errorView(error)
-                } else if timelineManager.totalCount == 0 {
-                    emptyView
-                } else {
-                    timelineList
-                }
-            }
-            .fullScreenCover(item: $selectedItem) { selected in
-                FullScreenMediaView(initialItemId: selected.id, timelineManager: timelineManager)
-            }
+            TimelineGridScreen(
+                timelineManager: timelineManager,
+                previewState: previewState,
+                emptyTitle: "No photos uploaded yet",
+                emptyMessage: "Upload some photos to see them in your timeline"
+            )
             .navigationTitle("Timeline")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showMonthSidebar.toggle()
-                    } label: {
-                        Image(systemName: showMonthSidebar ? "calendar.badge.minus" : "calendar")
-                    }
-                    .accessibilityIdentifier("toggleTimelineMonthSidebarButton")
-                    .accessibilityLabel(showMonthSidebar ? "Hide timeline month sidebar" : "Show timeline month sidebar")
+        }
+    }
+}
+
+// The timeline grid, including its viewer and month sidebar, so a place
+// can show the same browsing flow for one cluster's photos.
+struct TimelineGridScreen: View {
+    @ObservedObject var timelineManager: TimelineManager
+    var previewState: TimelineView.PreviewState?
+    var emptyTitle: String
+    var emptyMessage: String
+    @State private var selectedItem: SelectedTimelineItem?
+    @State private var showMonthSidebar = false
+
+    var body: some View {
+        VStack {
+            if timelineManager.isLoading {
+                loadingView
+            } else if let error = timelineManager.errorMessage {
+                errorView(error)
+            } else if timelineManager.totalCount == 0 {
+                emptyView
+            } else {
+                timelineList
+            }
+        }
+        .fullScreenCover(item: $selectedItem) { selected in
+            FullScreenMediaView(initialItemId: selected.id, timelineManager: timelineManager)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showMonthSidebar.toggle()
+                } label: {
+                    Image(systemName: showMonthSidebar ? "calendar.badge.minus" : "calendar")
                 }
+                .accessibilityIdentifier("toggleTimelineMonthSidebarButton")
+                .accessibilityLabel(showMonthSidebar ? "Hide timeline month sidebar" : "Show timeline month sidebar")
             }
-            .onAppear {
-                guard let previewState else { return }
-                switch previewState {
-                case .loading:
-                    timelineManager.errorMessage = nil
-                    timelineManager.isLoading = true
-                case .error(let message):
-                    timelineManager.isLoading = false
-                    timelineManager.errorMessage = message
-                case .empty:
-                    timelineManager.isLoading = false
-                    timelineManager.errorMessage = nil
-                }
+        }
+        .onAppear {
+            guard let previewState else { return }
+            switch previewState {
+            case .loading:
+                timelineManager.errorMessage = nil
+                timelineManager.isLoading = true
+            case .error(let message):
+                timelineManager.isLoading = false
+                timelineManager.errorMessage = message
+            case .empty:
+                timelineManager.isLoading = false
+                timelineManager.errorMessage = nil
             }
-            .refreshable {
-                guard Self.shouldLoadTimeline(
-                    previewState: previewState,
-                    isRunningForPreviews: ContentView.isRunningForPreviews(
-                        environment: ProcessInfo.processInfo.environment
-                    )
-                ) else { return }
-                TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
-                await timelineManager.loadTimeline(force: true)
-            }
-            .task {
-                guard Self.shouldLoadTimeline(
-                    previewState: previewState,
-                    isRunningForPreviews: ContentView.isRunningForPreviews(
-                        environment: ProcessInfo.processInfo.environment
-                    )
-                ) else { return }
-                TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
-                await timelineManager.loadTimeline()
-            }
+        }
+        .refreshable {
+            guard TimelineView.shouldLoadTimeline(
+                previewState: previewState,
+                isRunningForPreviews: ContentView.isRunningForPreviews(
+                    environment: ProcessInfo.processInfo.environment
+                )
+            ) else { return }
+            TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
+            await timelineManager.loadTimeline(force: true)
+        }
+        .task {
+            guard TimelineView.shouldLoadTimeline(
+                previewState: previewState,
+                isRunningForPreviews: ContentView.isRunningForPreviews(
+                    environment: ProcessInfo.processInfo.environment
+                )
+            ) else { return }
+            TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
+            await timelineManager.loadTimeline()
         }
     }
 
@@ -123,7 +141,7 @@ struct TimelineView: View {
         VStack(spacing: 20) {
             ProgressView()
                 .scaleEffect(1.5)
-            
+
             Text("Loading timeline...")
                 .font(.headline)
                 .foregroundColor(.secondary)
@@ -133,22 +151,22 @@ struct TimelineView: View {
             AppSignposts.event("TimelineLoadingVisible")
         }
     }
-    
+
     private func errorView(_ error: String) -> some View {
         VStack(spacing: 20) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 50))
                 .foregroundColor(.red)
-            
+
             Text("Failed to load timeline")
                 .font(.headline)
-            
+
             Text(error)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
-            
+
             Button("Retry") {
                 Task {
                     await timelineManager.loadTimeline()
@@ -158,18 +176,18 @@ struct TimelineView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    
+
     private var emptyView: some View {
         VStack(spacing: 20) {
             Image(systemName: "photo.on.rectangle.angled")
                 .font(.system(size: 60))
                 .foregroundColor(.secondary)
-            
-            Text("No photos uploaded yet")
+
+            Text(emptyTitle)
                 .font(.headline)
                 .foregroundColor(.secondary)
-            
-            Text("Upload some photos to see them in your timeline")
+
+            Text(emptyMessage)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -177,7 +195,7 @@ struct TimelineView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    
+
     // Presents a sparse UICollectionView-backed grid so 80k timeline items remain randomly seekable.
     private var timelineList: some View {
         HStack(spacing: 0) {

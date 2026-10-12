@@ -34,6 +34,14 @@ public struct ManifestMutation {
     }
 }
 
+// One cell from a column projection. Null stays distinct so callers can
+// skip rows that have no coordinate instead of treating them as zero.
+public enum ManifestQueryValue: Equatable, Sendable {
+    case text(String)
+    case double(Double)
+    case null
+}
+
 // Distinguishes incremental database updates from full cache replacement events.
 public enum ManifestDatabaseChange {
     case incremental(ManifestMutation)
@@ -315,6 +323,25 @@ public actor ManifestDatabase {
         }
     }
 
+    // Projects mixed text and numeric columns so callers can read indexed
+    // fields, such as coordinates, without decoding manifest JSON.
+    public func queryColumns(
+        sql: String,
+        columnCount: Int,
+        arguments: QueryArguments = QueryArguments()
+    ) throws -> [[ManifestQueryValue]] {
+        guard columnCount > 0 else { return [] }
+        try ensureRegisteredTables()
+        return try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
+            return rows.map { row in
+                (0..<columnCount).map { columnIndex in
+                    Self.queryValue(from: row, at: columnIndex)
+                }
+            }
+        }
+    }
+
     // Executes one query that projects integer columns for aggregate/index-style reads without decoding manifests.
     public func queryIntRows(
         sql: String,
@@ -371,6 +398,23 @@ public actor ManifestDatabase {
             try db.execute(sql: "DELETE FROM sync_metadata")
         }
         changes.send(.fullReplace)
+    }
+
+    // Reads one projected cell from its stored SQLite type. The typed row
+    // subscript crashes when the requested type does not match, so coordinates
+    // have to be read as the value SQLite actually stored.
+    private static func queryValue(from row: Row, at index: Int) -> ManifestQueryValue {
+        let value: (any DatabaseValueConvertible)? = row[index]
+        switch value {
+        case let text as String:
+            return .text(text)
+        case let double as Double:
+            return .double(double)
+        case let int as Int64:
+            return .double(Double(int))
+        default:
+            return .null
+        }
     }
 
     // Resolves the generated table name for one registered manifest type.

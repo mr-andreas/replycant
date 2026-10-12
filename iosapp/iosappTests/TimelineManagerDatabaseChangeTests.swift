@@ -14,7 +14,13 @@ struct TimelineManagerDatabaseChangeTests {
     }
 
     // Builds one timeline-visible original fixture with deterministic ordering fields for sparse-window assertions.
-    private func makeOriginal(id: String, guessedTakenAt: Date, sha256: String, name: String? = nil) -> OriginalManifest {
+    private func makeOriginal(
+        id: String,
+        guessedTakenAt: Date,
+        sha256: String,
+        name: String? = nil,
+        location: OriginalManifest.Spec.Location? = nil
+    ) -> OriginalManifest {
         OriginalManifest(
             id: id,
             localID: "local-\(id)",
@@ -29,7 +35,7 @@ struct TimelineManagerDatabaseChangeTests {
             modifiedAt: nil,
             duration: nil,
             mimeType: "image/jpeg",
-            location: nil,
+            location: location,
             isFavorite: false,
             isHidden: false,
             burstIdentifier: nil,
@@ -279,5 +285,42 @@ struct TimelineManagerDatabaseChangeTests {
         #expect(manager.loadedItems.isEmpty)
         #expect(manager.item(at: 0) == nil)
         #expect(manager.totalCount == 5)
+    }
+
+    // A place grid's offsets describe only photos inside the tapped area.
+    // A sync that adds a photo somewhere else must not slide that window.
+    @Test func incrementalAdditionOutsideAreaDoesNotShiftOffset() {
+        let bounds = GeoBounds(
+            minLatitude: 59,
+            maxLatitude: 60,
+            minLongitude: 18,
+            maxLongitude: 19
+        )
+        let manager = TimelineManager(scope: .area(bounds), notificationCenter: NotificationCenter())
+        let inside = makeOriginal(
+            id: "inside",
+            guessedTakenAt: Date(timeIntervalSince1970: 30),
+            sha256: "sha-inside",
+            location: .init(latitude: 59.3, longitude: 18.1, altitude: nil)
+        )
+        manager.seedLoadedRegionForTesting(
+            offset: 2,
+            items: [TimelineItem(original: inside)],
+            totalCount: 3
+        )
+
+        let outside = makeOriginal(
+            id: "outside",
+            guessedTakenAt: Date(timeIntervalSince1970: 1),
+            sha256: "sha-outside",
+            location: .init(latitude: 40.7, longitude: -74, altitude: nil)
+        )
+        manager.applyDatabaseChange(
+            .incremental(ManifestMutation(added: [outside], updated: [], removed: [])),
+            refreshedTotalCount: 3
+        )
+
+        #expect(manager.item(at: 2)?.id == "inside")
+        #expect(manager.totalCount == 3)
     }
 }

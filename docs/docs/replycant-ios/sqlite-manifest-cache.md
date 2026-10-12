@@ -59,3 +59,13 @@ The shared sqlite file stays open for the process lifetime. Reset and wipe paths
 The cache is disposable: git can rebuild it. `ManifestRegistry.schemaVersion` is stored in SQLite's `user_version`. Opening a file with any other value erases it in place. The erase clears the synced commit, and the next launch hydrates the index from the local repository, showing the same progress as the first index build.
 
 Bump the version when registered columns, indexes, or the base table layout change. It is separate from `cacheFormatVersion`, which tracks the repository's `gitdb/version`.
+
+## Places map
+
+Original manifests project nullable `latitude` and `longitude`, indexed where a coordinate exists. Timeline reads take a scope:
+
+- the whole library, which is every original with `takenAt`
+- geotagged originals, for the map
+- one lat/lon box, for the place a map tile opened
+
+The map reads `id`, `latitude`, `longitude`, and `takenAt` without decoding manifest JSON, and clusters those points on device. A tile's box is the scope of the timeline grid it opens, so the grid, the month sidebar, and the viewer all stay inside that place. The place title comes from reverse geocoding the cluster center.

@@ -194,13 +194,13 @@ class MockManifestManager: ManifestManager {
     }
 
     // Returns timeline count from loaded fixture manifests so sparse timeline paths can be exercised in tests.
-    func countTimelineOriginals() async throws -> Int {
-        timelineOriginals().count
+    func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
+        timelineOriginals(scope: scope).count
     }
 
     // Returns offset pages from fixture manifests to satisfy sparse timeline protocol conformance in tests.
-    func loadTimelinePage(offset: Int, limit: Int) async throws -> [OriginalManifest] {
-        let sorted = timelineOriginals()
+    func loadTimelinePage(offset: Int, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        let sorted = timelineOriginals(scope: scope)
         guard limit > 0, offset < sorted.count else { return [] }
         let start = max(0, offset)
         let end = min(sorted.count, start + limit)
@@ -208,9 +208,9 @@ class MockManifestManager: ManifestManager {
     }
 
     // Returns originals older than a cursor from fixture manifests for sparse backward paging tests.
-    func loadTimelinePage(before: TimelineCursor, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(before: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
-        let filtered = timelineOriginals().filter {
+        let filtered = timelineOriginals(scope: scope).filter {
             guard let date = $0.spec.guessedTakenAt else { return false }
             return (date, $0.id) < (before.date, before.id)
         }
@@ -218,9 +218,9 @@ class MockManifestManager: ManifestManager {
     }
 
     // Returns originals newer than a cursor from fixture manifests for sparse forward paging tests.
-    func loadTimelinePage(after: TimelineCursor, limit: Int) async throws -> [OriginalManifest] {
+    func loadTimelinePage(after: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
         guard limit > 0 else { return [] }
-        let filtered = timelineOriginals().filter {
+        let filtered = timelineOriginals(scope: scope).filter {
             guard let date = $0.spec.guessedTakenAt else { return false }
             return (date, $0.id) > (after.date, after.id)
         }
@@ -228,10 +228,10 @@ class MockManifestManager: ManifestManager {
     }
 
     // Aggregates fixture originals by month so tests depending on month-jump APIs keep protocol parity.
-    func loadTimelineMonthCounts() async throws -> [TimelineMonthCount] {
+    func loadTimelineMonthCounts(scope: TimelineScope) async throws -> [TimelineMonthCount] {
         var grouped: [TimelineYearMonth: Int] = [:]
         let calendar = Calendar.current
-        for original in timelineOriginals() {
+        for original in timelineOriginals(scope: scope) {
             guard let date = original.spec.guessedTakenAt else { continue }
             let components = calendar.dateComponents([.year, .month], from: date)
             guard let year = components.year, let month = components.month else { continue }
@@ -250,6 +250,18 @@ class MockManifestManager: ManifestManager {
             }
     }
 
+    // Satisfies the map point query for protocol conformance. Upload tests do not cluster.
+    func loadGeotaggedPoints() async throws -> [MapMediaPoint] {
+        []
+    }
+
+    // Satisfies id lookup for protocol conformance. Upload tests do not draw map tiles.
+    func loadOriginals(ids: [String]) async throws -> [OriginalManifest] {
+        let wanted = Set(ids)
+        let manifests: [OriginalManifest] = loadedManifests.values.compactMap { $0 as? OriginalManifest }
+        return manifests.filter { wanted.contains($0.id) }
+    }
+
     // Resolves thumbnails by originalRef from fixture manifests so sparse timeline thumbnail lookups work in tests.
     func loadThumbnailsByOriginalRefs(_ refs: [String]) async throws -> [String : ThumbnailSetManifest] {
         guard !refs.isEmpty else { return [:] }
@@ -263,10 +275,11 @@ class MockManifestManager: ManifestManager {
     }
 
     // Produces deterministic timeline ordering from fixture manifests to mirror database-backed sort semantics.
-    private func timelineOriginals() -> [OriginalManifest] {
+    private func timelineOriginals(scope: TimelineScope) -> [OriginalManifest] {
         let manifests: [OriginalManifest] = loadedManifests.values.compactMap { $0 as? OriginalManifest }
         return manifests
             .filter { $0.spec.guessedTakenAt != nil }
+            .filter { scope == .all || scope.contains($0) }
             .sorted {
                 let leftDate = $0.spec.guessedTakenAt ?? .distantPast
                 let rightDate = $1.spec.guessedTakenAt ?? .distantPast

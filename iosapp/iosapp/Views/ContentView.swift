@@ -111,11 +111,18 @@ struct ContentView: View {
                             .tag(0)
                             .accessibilityIdentifier("timelineTab")
 
+                        PlacesMapView()
+                            .tabItem {
+                                Label("Map", systemImage: "map")
+                            }
+                            .tag(1)
+                            .accessibilityIdentifier("mapTab")
+
                         PhotoSyncView()
                             .tabItem {
                                 Label("Upload", systemImage: "photo.on.rectangle.angled")
                             }
-                            .tag(1)
+                            .tag(2)
                             .accessibilityIdentifier("uploadTab")
 
                         SettingsView(onWipeAndResync: {
@@ -125,7 +132,7 @@ struct ContentView: View {
                                 Label("Settings", systemImage: "gearshape")
                             }
                             .badge(showRecoveryWarning ? "!" : nil)
-                            .tag(2)
+                            .tag(3)
                             .accessibilityIdentifier("settingsTab")
                     }
                     .toolbarBackground(.ultraThinMaterial, for: .tabBar)

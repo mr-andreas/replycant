@@ -59,6 +59,10 @@ final class TimelineManager: ObservableObject {
     let monthSelection = TimelineMonthSelectionModel()
     @Published var scrollTargetIndex: Int?
 
+    // Tells the map to recluster after a sync changes which photos exist.
+    let contentDidChange = PassthroughSubject<Void, Never>()
+    private let scope: TimelineScope
+
     // Stores the most recent viewport index so month selection can be
     // flushed after dragging settles without relying on another scroll event.
     private var pendingMonthIndex: Int?
@@ -138,9 +142,11 @@ final class TimelineManager: ObservableObject {
     // unrelated suite repointing the server would otherwise wipe this
     // manager's loaded region and month selection mid-test.
     init(
+        scope: TimelineScope = .all,
         photoLibrary: PhotoLibraryProviding = PhotoLibraryManager(),
         notificationCenter: NotificationCenter = .default
     ) {
+        self.scope = scope
         self.photoLibrary = photoLibrary
         self.notificationCenter = notificationCenter
         observeLFSURLChanges()
@@ -264,7 +270,7 @@ final class TimelineManager: ObservableObject {
                 defer {
                     AppSignposts.end("TimelineCountItems", countSignpost)
                 }
-                totalCount = try await manifestManager.countTimelineOriginals()
+                totalCount = try await manifestManager.countTimelineOriginals(scope: scope)
                 updateMonthIndex(try await buildMonthIndex(loader: manifestManager))
             } catch {
                 throw error
@@ -291,6 +297,25 @@ final class TimelineManager: ObservableObject {
         }
         
         isLoading = false
+    }
+
+    // Returns every placed photo so the map can cluster without decoding manifests.
+    func loadGeotaggedPoints() async throws -> [MapMediaPoint] {
+        guard let manifestLoader else { return [] }
+        return try await manifestLoader.loadGeotaggedPoints()
+    }
+
+    // Loads the tile photos for the clusters currently on screen, including
+    // their thumbnails, and keeps them in the shared thumbnail map.
+    func loadItems(ids: [String]) async throws -> [TimelineItem] {
+        guard let manifestLoader, !ids.isEmpty else { return [] }
+        let originals = try await manifestLoader.loadOriginals(ids: ids)
+        let refs = originals.map { originalRef(for: $0) }
+        let thumbnails = try await manifestLoader.loadThumbnailsByOriginalRefs(refs)
+        thumbnailMap.merge(thumbnails) { _, new in new }
+        return originals.map { original in
+            TimelineItem(original: original, thumbnail: thumbnailMap[originalRef(for: original)])
+        }
     }
 
     // Returns one loaded timeline item when the requested global index is currently present in memory.
@@ -380,13 +405,13 @@ final class TimelineManager: ObservableObject {
             let distanceToNewerEdge = index - regionEnd
 
             if distanceToOlderEdge > 0, distanceToOlderEdge <= pageSize, let olderCursor {
-                let originals = try await manifestLoader.loadTimelinePage(before: olderCursor, limit: pageSize)
+                let originals = try await manifestLoader.loadTimelinePage(before: olderCursor, limit: pageSize, scope: scope)
                 try await prepend(originals: originals, loader: manifestLoader)
                 return
             }
 
             if distanceToNewerEdge > 0, distanceToNewerEdge <= pageSize, let newerCursor {
-                let originals = try await manifestLoader.loadTimelinePage(after: newerCursor, limit: pageSize)
+                let originals = try await manifestLoader.loadTimelinePage(after: newerCursor, limit: pageSize, scope: scope)
                 try await append(originals: originals, loader: manifestLoader)
                 return
             }
@@ -419,7 +444,7 @@ final class TimelineManager: ObservableObject {
         isLoadingPage = true
         defer { isLoadingPage = false }
         do {
-            let originals = try await manifestLoader.loadTimelinePage(before: olderCursor, limit: pageSize)
+            let originals = try await manifestLoader.loadTimelinePage(before: olderCursor, limit: pageSize, scope: scope)
             try await prepend(originals: originals, loader: manifestLoader)
         } catch {
             errorMessage = error.localizedDescription
@@ -433,7 +458,7 @@ final class TimelineManager: ObservableObject {
         isLoadingPage = true
         defer { isLoadingPage = false }
         do {
-            let originals = try await manifestLoader.loadTimelinePage(after: newerCursor, limit: pageSize)
+            let originals = try await manifestLoader.loadTimelinePage(after: newerCursor, limit: pageSize, scope: scope)
             try await append(originals: originals, loader: manifestLoader)
         } catch {
             errorMessage = error.localizedDescription
@@ -696,13 +721,14 @@ final class TimelineManager: ObservableObject {
             return
         }
         do {
-            let refreshedTotalCount = try await manifestLoader.countTimelineOriginals()
+            let refreshedTotalCount = try await manifestLoader.countTimelineOriginals(scope: scope)
             applyDatabaseChange(change, refreshedTotalCount: refreshedTotalCount)
             updateMonthIndex(try await buildMonthIndex(loader: manifestLoader))
             if refreshedTotalCount == 0 {
                 monthSelection.currentYearMonth = nil
             }
             scheduleDiskCacheWarming()
+            contentDidChange.send(())
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -728,9 +754,9 @@ final class TimelineManager: ObservableObject {
         var shouldReconfigureVisibleCells = false
 
         let addedOriginals = mutation.added.compactMap { $0 as? OriginalManifest }
-            .filter { $0.spec.takenAt != nil }
+            .filter { scope.contains($0) }
         let removedOriginals = mutation.removed.compactMap { $0 as? OriginalManifest }
-            .filter { $0.spec.takenAt != nil }
+            .filter { scope.contains($0) }
         let removedOriginalIds = Set(removedOriginals.map(\.id))
 
         let updatedOriginals = mutation.updated.compactMap { $0 as? OriginalManifest }
@@ -905,7 +931,7 @@ final class TimelineManager: ObservableObject {
         let pageLoadStart = DispatchTime.now().uptimeNanoseconds
         let originals: [OriginalManifest]
         do {
-            originals = try await loader.loadTimelinePage(offset: offset, limit: pageSize)
+            originals = try await loader.loadTimelinePage(offset: offset, limit: pageSize, scope: scope)
         } catch {
             let pageLoadEnd = DispatchTime.now().uptimeNanoseconds
             loadTimelinePageMs = Double(pageLoadEnd - pageLoadStart) / 1_000_000
@@ -990,7 +1016,7 @@ final class TimelineManager: ObservableObject {
 
     // Builds month entries with cumulative offsets so sidebar navigation can convert month taps into global indices.
     private func buildMonthIndex(loader: ManifestLoaderProtocol) async throws -> [TimelineMonthEntry] {
-        let monthCounts = try await loader.loadTimelineMonthCounts()
+        let monthCounts = try await loader.loadTimelineMonthCounts(scope: scope)
         return Self.monthEntries(from: monthCounts)
     }
 
@@ -1032,6 +1058,9 @@ final class TimelineManager: ObservableObject {
     /// disk caches with the newest thumbnails. Called after initial
     /// timeline load and after each database change (sync/upload).
     private func scheduleDiskCacheWarming() {
+        // The map and place screens share this manager. Warming their
+        // subsets would repeat the full timeline's cache work.
+        guard scope == .all else { return }
         guard let manifestLoader, let repository, let lfsClient,
               totalCount > 0 else { return }
 
@@ -1073,12 +1102,12 @@ final class TimelineManager: ObservableObject {
         isTop: Bool
     ) async {
         do {
-            let total = try await loader.countTimelineOriginals()
+            let total = try await loader.countTimelineOriginals(scope: scope)
             guard total > 0 else { return }
             let offset = max(0, total - itemCount)
             let limit = min(itemCount, total)
             let originals = try await loader.loadTimelinePage(
-                offset: offset, limit: limit
+                offset: offset, limit: limit, scope: scope
             )
             guard !Task.isCancelled else { return }
 
