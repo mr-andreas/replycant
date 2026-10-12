@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createTailnetSupervisor, resolveSidecarPath } from "./tailnetSupervisor";
 import { TailnetSidecar, TailnetSidecarConfig, TailnetStatus } from "../server/tailnetSidecar";
@@ -32,29 +32,35 @@ const makeSidecar = (socksAddr: string): TailnetSidecar & { stop: ReturnType<typ
 });
 
 describe("resolveSidecarPath", () => {
+  // Windows spawn will not find an extensionless file, and electron-builder
+  // does not rename resources per platform. Assertions go through path.join
+  // so the separators match whichever OS runs the suite.
+  const sidecarName = process.platform === "win32" ? "replycant-tsnet.exe" : "replycant-tsnet";
+
   // electron-builder puts extraResources under process.resourcesPath, and this
   // is the first native binary the desktop app ships, so getting the packaged
   // layout wrong would break every release while working in development.
   it("resolves inside the resources directory when packaged", () => {
+    const resourcesPath = "/Applications/Replycant.app/Contents/Resources";
     const path = resolveSidecarPath({
-      resourcesPath: "/Applications/Replycant.app/Contents/Resources",
+      resourcesPath,
       projectRoot: "/src/webapp",
       packaged: true,
     });
-    expect(path).toContain("/Applications/Replycant.app/Contents/Resources");
-    expect(path).toContain("replycant-tsnet");
-    expect(path).not.toContain("/src/webapp");
+    expect(path).toBe(join(resourcesPath, sidecarName));
+    expect(path).not.toContain(join("src", "webapp"));
   });
 
   // Development builds have no resources directory, so the locally built
   // binary in the source tree is used instead.
   it("resolves inside the source tree when unpackaged", () => {
+    const projectRoot = "/src/webapp";
     const path = resolveSidecarPath({
       resourcesPath: "/unused",
-      projectRoot: "/src/webapp",
+      projectRoot,
       packaged: false,
     });
-    expect(path).toContain("/src/webapp/sidecar/build/replycant-tsnet");
+    expect(path).toBe(join(projectRoot, "sidecar", "build", sidecarName));
     expect(path).not.toContain("dist-electron");
   });
 
@@ -68,8 +74,8 @@ describe("resolveSidecarPath", () => {
       projectRoot,
       packaged: false,
     });
-    expect(path).toContain("/src/webapp/sidecar/build/replycant-tsnet");
-    expect(path).not.toContain("dist-electron/sidecar");
+    expect(path).toBe(join(projectRoot, "sidecar", "build", sidecarName));
+    expect(path).not.toContain(join("dist-electron", "sidecar"));
   });
 
   // Windows spawn will not find an extensionless file, and electron-builder
@@ -80,8 +86,7 @@ describe("resolveSidecarPath", () => {
       projectRoot: "/src",
       packaged: true,
     });
-    const expected = process.platform === "win32" ? "replycant-tsnet.exe" : "replycant-tsnet";
-    expect(path.endsWith(expected)).toBe(true);
+    expect(path.endsWith(sidecarName)).toBe(true);
   });
 });
 
