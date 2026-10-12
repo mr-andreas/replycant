@@ -74,6 +74,19 @@ public actor ManifestDatabase {
         encoder.dateEncodingStrategy = .millisecondsSince1970
         decoder.dateDecodingStrategy = .millisecondsSince1970
 
+        // A schema mismatch means the tables on disk were built for a
+        // different registration. Erase before creating tables so the
+        // replacement shape is applied to an empty file, and record the
+        // new version immediately so the rebuilt cache is not erased again.
+        let schemaSignpost = ManifestDatabaseSignposts.begin("ManifestSchemaVersion")
+        do {
+            try Self.reconcileSchemaVersion(dbQueue: dbQueue, expected: registry.schemaVersion)
+            ManifestDatabaseSignposts.end("ManifestSchemaVersion", schemaSignpost)
+        } catch {
+            ManifestDatabaseSignposts.end("ManifestSchemaVersion", schemaSignpost)
+            throw error
+        }
+
         let migrateSignpost = ManifestDatabaseSignposts.begin("ManifestMigrate")
         do {
             try Self.migrate(dbQueue: dbQueue)
@@ -97,6 +110,28 @@ public actor ManifestDatabase {
     public static func defaultDatabaseURL() -> URL {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return documentsURL.appendingPathComponent(Constants.databaseFilename)
+    }
+
+    // Drops a cache whose user_version does not match the registry so the
+    // next hydration rebuilds every table from git. Equal versions are
+    // left untouched, including a fresh file that is already at 0.
+    private static func reconcileSchemaVersion(dbQueue: DatabaseQueue, expected: Int) throws {
+        let current = try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
+        }
+        guard current != expected else { return }
+        try dbQueue.erase()
+        // user_version cannot be set inside a transaction, and it cannot
+        // take a bound parameter, so the integer is interpolated.
+        try dbQueue.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA user_version = \(expected)")
+        }
+    }
+
+    // Reports whether a commit has been mirrored so launch can rebuild a
+    // cache that was erased or never finished hydrating.
+    public func isHydrated() throws -> Bool {
+        try readSyncedCommitHash() != nil
     }
 
     // Creates required metadata tables that are independent of registered manifest kinds.

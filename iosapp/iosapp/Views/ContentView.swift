@@ -267,7 +267,22 @@ struct ContentView: View {
             let gitInitDuration = gitInitEndTime - gitInitStartTime
             log("Git.initialize() completed in \(String(format: "%.3f", gitInitDuration)) seconds", context: "Git")
 
-            checkRepositoryStatus()
+            // The hydration check opens (and maybe erases) the cache before
+            // the tabs appear, so a schema wipe does not start periodic sync
+            // against a database that is about to be rebuilt.
+            let repoDir = RepositoryManager.shared.repositoryPath()
+            let repoExists = Repository.exists(at: repoDir)
+            let needsRebuild = await manifestCacheNeedsRebuild(repoExists: repoExists)
+            if needsRebuild {
+                isResyncing = true
+                resyncProgress = 0
+                resyncProgressMessage = "Building media index..."
+            }
+            isRepoInitialized = repoExists
+            AppSignposts.event("RepositoryStatusChecked")
+            if needsRebuild {
+                await rebuildManifestIndex()
+            }
             if canAutoResync {
                 await performResync(shouldWipeLocalState: false)
             }
@@ -438,6 +453,56 @@ struct ContentView: View {
     // Detects Xcode Canvas so launch and repository tasks can stay inert in previews.
     static func isRunningForPreviews(environment: [String: String]) -> Bool {
         environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+    }
+
+    // A schema change erases the SQL cache but leaves the git checkout.
+    // That is the launch state that rebuilds the index locally instead of
+    // cloning again or showing an empty library.
+    static func shouldRebuildIndexOnLaunch(isRepoInitialized: Bool, isHydrated: Bool) -> Bool {
+        isRepoInitialized && !isHydrated
+    }
+
+    // Opens the cache, which discards it when its schema version is stale,
+    // then reports whether launch still needs to hydrate from git.
+    private func manifestCacheNeedsRebuild(repoExists: Bool) async -> Bool {
+        guard repoExists else { return false }
+        do {
+            let database = try ManifestLoaderManager.shared.getDatabase()
+            let hydrated = try await database.isHydrated()
+            return Self.shouldRebuildIndexOnLaunch(isRepoInitialized: true, isHydrated: hydrated)
+        } catch {
+            logError("Could not read manifest cache: \(error.localizedDescription)", context: "Git")
+            return false
+        }
+    }
+
+    // Rebuilds the local media index from the git checkout after a schema
+    // wipe or an interrupted hydration, without cloning from the server.
+    private func rebuildManifestIndex() async {
+        PeriodicSyncManager.shared.stop()
+        isResyncing = true
+        UIApplication.shared.isIdleTimerDisabled = true
+        resyncProgressMessage = "Building media index..."
+        defer {
+            UIApplication.shared.isIdleTimerDisabled = false
+            isResyncing = false
+            updatePeriodicSyncLifecycle()
+        }
+
+        do {
+            try await RepositoryBootstrap.hydrateIndex(resetDatabase: false) { message, phaseProgress in
+                Task { @MainActor in
+                    self.resyncProgress = phaseProgress
+                    self.resyncProgressMessage = message
+                }
+            }
+            resyncProgress = 100
+            resyncProgressMessage = "Index rebuilt"
+            errorMessage = nil
+        } catch {
+            logError("Failed to rebuild manifest index: \(error.localizedDescription)", context: "Git")
+            errorMessage = error.localizedDescription
+        }
     }
 
     // Encodes when a missing repository should auto-clone from server credentials instead of showing onboarding.

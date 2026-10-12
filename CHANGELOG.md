@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+#### iOS app
+
+- after an update that changes the local index, the app rebuilds it from the library on launch
+
 ### Fixes
 
 #### iOS app

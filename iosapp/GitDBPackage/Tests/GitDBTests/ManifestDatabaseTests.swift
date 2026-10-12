@@ -205,6 +205,134 @@ struct ManifestDatabaseTests {
         #expect(try await database.readCacheFormatVersion() == 1)
     }
 
+    // A cache built by this version of the app must survive relaunch, so
+    // reopening the same file with the same schema version keeps rows and
+    // the commit they were hydrated from.
+    @Test func reopeningWithSameSchemaVersionKeepsRowsAndSyncedCommit() async throws {
+        let url = temporaryDatabaseURL()
+        let registry = makeVersionedRegistry(schemaVersion: 1, includeLatitude: false)
+        let database = try ManifestDatabase(databaseURL: url, registry: registry)
+        let manifest = TestOriginalManifest(id: "img-1", guessedTakenAt: Date(), sha256: "sha-1")
+        try await database.applyMutation(added: [manifest], updated: [], removed: [], commitHash: "commit-a")
+        try await database.close()
+
+        let reopened = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 1, includeLatitude: false))
+        let table = try await reopened.tableName(for: TestOriginalManifest.self)
+        #expect(try await reopened.queryCount(sql: "SELECT COUNT(*) FROM \(table)") == 1)
+        #expect(try await reopened.readSyncedCommitHash() == "commit-a")
+        #expect(try await reopened.isHydrated() == true)
+        try await reopened.close()
+    }
+
+    // Shipping a newer schema must discard the old cache instead of
+    // querying columns that were never created. The replacement version
+    // has to stick, or the next launch would wipe the rebuilt cache too.
+    @Test func reopeningWithHigherSchemaVersionErasesCacheAndStoresNewVersion() async throws {
+        let url = temporaryDatabaseURL()
+        let database = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 1, includeLatitude: false))
+        let manifest = TestOriginalManifest(id: "img-1", guessedTakenAt: Date(), sha256: "sha-1")
+        try await database.applyMutation(added: [manifest], updated: [], removed: [], commitHash: "commit-a")
+        try await database.close()
+
+        let upgraded = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 2, includeLatitude: false))
+        let table = try await upgraded.tableName(for: TestOriginalManifest.self)
+        #expect(try await upgraded.queryCount(sql: "SELECT COUNT(*) FROM \(table)") == 0)
+        #expect(try await upgraded.readSyncedCommitHash() == nil)
+        #expect(try await upgraded.isHydrated() == false)
+
+        let replacement = TestOriginalManifest(id: "img-2", guessedTakenAt: Date(), sha256: "sha-2")
+        try await upgraded.applyMutation(added: [replacement], updated: [], removed: [], commitHash: "commit-b")
+        try await upgraded.close()
+
+        let kept = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 2, includeLatitude: false))
+        #expect(try await kept.queryCount(sql: "SELECT COUNT(*) FROM \(table)") == 1)
+        #expect(try await kept.readSyncedCommitHash() == "commit-b")
+        try await kept.close()
+    }
+
+    // An older build opening a newer cache must not read a schema it does
+    // not understand, so a downgrade wipes and records its own version.
+    @Test func reopeningWithLowerSchemaVersionErasesCacheAndStoresNewVersion() async throws {
+        let url = temporaryDatabaseURL()
+        let database = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 3, includeLatitude: false))
+        let manifest = TestOriginalManifest(id: "img-1", guessedTakenAt: Date(), sha256: "sha-1")
+        try await database.applyMutation(added: [manifest], updated: [], removed: [], commitHash: "commit-a")
+        try await database.close()
+
+        let downgraded = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 1, includeLatitude: false))
+        let table = try await downgraded.tableName(for: TestOriginalManifest.self)
+        #expect(try await downgraded.queryCount(sql: "SELECT COUNT(*) FROM \(table)") == 0)
+        #expect(try await downgraded.isHydrated() == false)
+        try await downgraded.applyMutation(added: [manifest], updated: [], removed: [], commitHash: "commit-b")
+        try await downgraded.close()
+
+        let kept = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 1, includeLatitude: false))
+        #expect(try await kept.queryCount(sql: "SELECT COUNT(*) FROM \(table)") == 1)
+        #expect(try await kept.readSyncedCommitHash() == "commit-b")
+        try await kept.close()
+    }
+
+    // Adding a column is why the version exists: a cache created before
+    // the column must be queryable on it after the version bump, which
+    // only works once the old table has been thrown away and recreated.
+    @Test func reopeningWithNewColumnAfterVersionBumpMakesColumnQueryable() async throws {
+        let url = temporaryDatabaseURL()
+        let database = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 1, includeLatitude: false))
+        let manifest = TestOriginalManifest(id: "img-1", guessedTakenAt: Date(), sha256: "sha-1")
+        try await database.replaceAll(manifests: [manifest], commitHash: "commit-a")
+        try await database.close()
+
+        let upgraded = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 2, includeLatitude: true))
+        let table = try await upgraded.tableName(for: TestOriginalManifest.self)
+        #expect(try await upgraded.queryCount(sql: "SELECT COUNT(*) FROM \(table)") == 0)
+        #expect(try await upgraded.queryCount(sql: "SELECT COUNT(latitude) FROM \(table)") == 0)
+        #expect(try await upgraded.isHydrated() == false)
+        try await upgraded.close()
+    }
+
+    // Launch rebuilds the index only when git still has the library but
+    // the cache has not been hydrated, including right after a version wipe.
+    @Test func isHydratedIsFalseUntilACommitIsSyncedAndFalseAfterErase() async throws {
+        let url = temporaryDatabaseURL()
+        let database = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 1, includeLatitude: false))
+        #expect(try await database.isHydrated() == false)
+        let manifest = TestOriginalManifest(id: "img-1", guessedTakenAt: Date(), sha256: "sha-1")
+        try await database.replaceAll(manifests: [manifest], commitHash: "commit-a")
+        #expect(try await database.isHydrated() == true)
+        try await database.close()
+
+        let erased = try ManifestDatabase(databaseURL: url, registry: makeVersionedRegistry(schemaVersion: 2, includeLatitude: false))
+        #expect(try await erased.isHydrated() == false)
+        try await erased.close()
+    }
+
+    // Keeps schema-version fixtures out of the shared test registry so
+    // unrelated tests stay on the default version.
+    private func makeVersionedRegistry(schemaVersion: Int, includeLatitude: Bool) -> ManifestRegistry {
+        let registry = ManifestRegistry(schemaVersion: schemaVersion)
+        registry.register(TestOriginalManifest.self) { reg in
+            reg.column("guessedTakenAt", type: .real, nullable: true)
+            reg.column("sha256", type: .text)
+            if includeLatitude {
+                reg.column("latitude", type: .real, nullable: true)
+            }
+            reg.extractColumns { manifest in
+                [
+                    "guessedTakenAt": manifest.spec.guessedTakenAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                    "sha256": .string(manifest.spec.sha256),
+                ]
+            }
+        }
+        return registry
+    }
+
+    // Gives each schema-version case its own file so reopening cannot
+    // observe another test's rows.
+    private func temporaryDatabaseURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("manifest-schema-\(UUID().uuidString).sqlite")
+    }
+
     // Closing releases the GRDB queue so wipe paths can unlink the
     // sqlite file without leaving a live descriptor on a deleted vnode.
     @Test func closePreventsFurtherReads() async throws {

@@ -14,6 +14,12 @@ final class ManifestLoaderManager {
         "ManifestLoaderManager.databaseDidInvalidate"
     )
 
+    // Bump when registered columns, indexes, or the base manifest tables
+    // change. Opening a cache with a different version erases it, and
+    // launch rebuilds it from the git repository.
+    // 2 adds Original latitude and longitude so the map can query location.
+    static let manifestCacheSchemaVersion = 2
+
     private var database: GitDB.ManifestDatabase?
     private var registry: GitDB.ManifestRegistry?
     private let notificationCenter: NotificationCenter
@@ -35,7 +41,7 @@ final class ManifestLoaderManager {
         if let registry {
             return registry
         }
-        let registry = GitDB.ManifestRegistry()
+        let registry = GitDB.ManifestRegistry(schemaVersion: Self.manifestCacheSchemaVersion)
         registerSchema(in: registry)
         self.registry = registry
         return registry
@@ -113,7 +119,10 @@ final class ManifestLoaderManager {
             reg.column("sha256", type: .text)
             reg.column("isFavorite", type: .integer)
             reg.column("isHidden", type: .integer)
+            reg.column("latitude", type: .real, nullable: true)
+            reg.column("longitude", type: .real, nullable: true)
             reg.index(on: ["takenAt", "id"], where: "takenAt IS NOT NULL")
+            reg.index(on: ["latitude", "longitude"], where: "latitude IS NOT NULL")
             reg.index(on: ["mediaType"])
             reg.index(on: ["sha256"])
             reg.extractColumns { manifest in
@@ -124,6 +133,8 @@ final class ManifestLoaderManager {
                     "sha256": .string(manifest.spec.sha256),
                     "isFavorite": .int(manifest.spec.isFavorite ? 1 : 0),
                     "isHidden": .int(manifest.spec.isHidden ? 1 : 0),
+                    "latitude": manifest.spec.location.map { .double($0.latitude) } ?? .null,
+                    "longitude": manifest.spec.location.map { .double($0.longitude) } ?? .null,
                 ]
             }
         }

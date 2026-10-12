@@ -80,7 +80,14 @@ public final class ManifestRegistry: @unchecked Sendable {
     private var byKind: [String: Registration] = [:]
     private let lock = NSLock()
 
-    public init() {}
+    // Identifies the registered table shape. The cache is rebuilt from
+    // git, so a mismatch discards the file instead of migrating it.
+    // Callers bump this when columns, indexes, or base tables change.
+    public let schemaVersion: Int
+
+    public init(schemaVersion: Int = 0) {
+        self.schemaVersion = schemaVersion
+    }
 
     // Registers one manifest type so sync and storage can decode and persist it generically.
     public func register<T: Manifest>(_ type: T.Type, configure: (ManifestRegistrationBuilder<T>) -> Void) {

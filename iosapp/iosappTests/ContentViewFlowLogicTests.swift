@@ -66,6 +66,15 @@ struct ContentViewFlowLogicTests {
         )
     }
 
+    // A schema wipe leaves the git library in place and the SQL cache empty,
+    // which is the only launch state that should rebuild the index.
+    @Test func shouldRebuildIndexOnLaunchOnlyWhenRepositoryExistsAndCacheIsUnhydrated() {
+        #expect(ContentView.shouldRebuildIndexOnLaunch(isRepoInitialized: true, isHydrated: false))
+        #expect(ContentView.shouldRebuildIndexOnLaunch(isRepoInitialized: true, isHydrated: true) == false)
+        #expect(ContentView.shouldRebuildIndexOnLaunch(isRepoInitialized: false, isHydrated: false) == false)
+        #expect(ContentView.shouldRebuildIndexOnLaunch(isRepoInitialized: false, isHydrated: true) == false)
+    }
+
     // Keeps the Settings badge visible only while no recovery key exists so
     // users are nudged before a lockout, then cleared after a key is created.
     @Test func shouldShowRecoveryWarningWhenNoRecoveryKeyExists() {

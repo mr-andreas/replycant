@@ -53,3 +53,9 @@ The shared sqlite file stays open for the process lifetime. Reset and wipe paths
 - Index rebuilds (`hydrateIndex(resetDatabase:)`) truncate tables in place and keep the live connection.
 - Full wipes close the GRDB queue before unlinking the file.
 - Every holder of the shared database, including `GitDBManager`, rebinds when `ManifestLoaderManager` broadcasts invalidation.
+
+## Schema version
+
+The cache is disposable: git can rebuild it. `ManifestRegistry.schemaVersion` is stored in SQLite's `user_version`. Opening a file with any other value erases it in place. The erase clears the synced commit, and the next launch hydrates the index from the local repository, showing the same progress as the first index build.
+
+Bump the version when registered columns, indexes, or the base table layout change. It is separate from `cacheFormatVersion`, which tracks the repository's `gitdb/version`.
