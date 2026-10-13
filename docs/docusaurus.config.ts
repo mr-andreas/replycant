@@ -119,7 +119,7 @@ const config: Config = {
           items: [
             {
               label: 'Getting Started',
-              to: '/docs/getting-started',
+              to: '/docs/getting-started/start-a-server',
             },
             {
               label: 'GitDB',
