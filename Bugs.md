@@ -55,6 +55,8 @@ The grid is oldest-first and the first layout scrolls to the bottom so the newes
 
 ## 3. Photo details show a UTI as the format
 
+**Status:** fixed
+
 **Area:** iOS app, photo details
 **Found:** 2026-10-13, simulator, recovered small-repo library
 

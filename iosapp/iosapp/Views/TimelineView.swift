@@ -4,6 +4,7 @@ import GitDB
 import AVKit
 import UIKit
 import Combine
+import UniformTypeIdentifiers
 
 private struct SelectedTimelineItem: Identifiable {
     let id: String
@@ -928,6 +929,17 @@ struct FullScreenMediaRepresentable: UIViewControllerRepresentable {
 
 struct MediaInfoContent: View {
     let item: TimelineItem
+
+    // Uploads store a UTI in mimeType. Details show the file extension
+    // so an already-uploaded library reads HEIC instead of public.heic,
+    // without changing the stored value.
+    static func displayFormat(for storedType: String) -> String {
+        let type = UTType(mimeType: storedType) ?? UTType(storedType)
+        guard let fileExtension = type?.preferredFilenameExtension else {
+            return storedType
+        }
+        return fileExtension.uppercased()
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -980,7 +992,7 @@ struct MediaInfoContent: View {
                             Text("Format:")
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text(mimeType)
+                            Text(MediaInfoContent.displayFormat(for: mimeType))
                         }
                     }
                     
