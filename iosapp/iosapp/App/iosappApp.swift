@@ -90,6 +90,9 @@ struct iosappApp: App {
         ContentView()
             .onOpenURL { url in
                 RecoveryDeepLinkRouter.shared.handle(url: url)
+                #if DEBUG
+                DebugBootstrapLinkRouter.shared.handle(url: url)
+                #endif
             }
             .onChange(of: scenePhase) { _, phase in
                 handleScenePhase(phase)

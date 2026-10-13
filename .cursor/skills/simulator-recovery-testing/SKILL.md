@@ -91,8 +91,40 @@ is already configured or a local repo exists, and the app lands on
    `Revoke used key`. Revoking deletes the key from the server and
    makes that entry in `RecoveryKeys.md` dead.
 
-QR images are not supported. The simulator has no camera, and the share
-text always includes the deep link.
+Recovery QR images are not used. The simulator has no camera, and the
+share text always includes the deep link. A debug build can still
+bootstrap a new library without a camera; see below.
+
+## Bootstrapping a new library
+
+A debug build accepts the first-device join without a camera, so an
+agent can create a library on a fresh local stack and land in the
+timeline with no taps. Release builds ignore the link.
+
+Do not reuse a RecoveryKeys checkout. Bootstrapping pushes the first
+commit and closes that server's join window.
+
+1. Bring up a fresh stack with an empty data dir, as in Bringing a
+   stack up, pointed at that empty dir.
+2. Bundled simulator credentials must not be present, the same check
+   as recovery. Uninstall the app so the install is unconfigured.
+3. Build and launch scheme `iosapp`.
+4. Mint one join payload. Each `/config.json` request mints a
+   single-use preauth key, so fetch it once and open it once. The
+   payload is a live credential: never echo it.
+
+```bash
+PAYLOAD=$(curl -sf <ca>/config.json | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=""))')
+xcrun simctl openurl <udid> "replycant://debug-bootstrap?payload=$PAYLOAD"
+```
+
+5. The app joins and pushes on its own. The timeline appearing is
+   success. A 410 from `/config.json` means the library is already
+   set up.
+
+A debug build also shows Paste QR image on the scanner. That path is
+for a copied QR image and needs a tap. If iOS asks to allow the paste,
+tap Allow. Setup continues from the tap that raised the prompt.
 
 ## Recording a feature walkthrough
 

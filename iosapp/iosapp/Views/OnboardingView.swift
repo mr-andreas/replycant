@@ -39,6 +39,12 @@ struct OnboardingView: View {
     @State private var pairingSecret: PairingRecord.Secret?
     @State private var pairingWait: Task<Void, Never>?
 
+    #if DEBUG
+    // Observes a join link opened before this screen existed, so a
+    // simulator can bootstrap without waiting on the camera step.
+    @ObservedObject private var debugBootstrapRouter = DebugBootstrapLinkRouter.shared
+    #endif
+
     // Initializes the onboarding router so first-launch users see product context before setup actions.
     init(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete
@@ -123,8 +129,30 @@ struct OnboardingView: View {
                     }
                 }
             }
+            #if DEBUG
+            .onAppear {
+                consumeDebugBootstrapIfAvailable()
+            }
+            .onChange(of: debugBootstrapRouter.pendingPayload) { _, _ in
+                consumeDebugBootstrapIfAvailable()
+            }
+            #endif
         }
     }
+
+    #if DEBUG
+    // Starts bootstrap from a debug link unless setup is already running.
+    // A link that arrives mid-setup is discarded: acting on it would spend
+    // a second single-use key against a join that is already in flight.
+    private func consumeDebugBootstrapIfAvailable() {
+        guard let payload = debugBootstrapRouter.consumePendingPayload() else {
+            return
+        }
+        guard currentStep != .processing else { return }
+        stopWaitingForTailnetAuthorization()
+        handleQRCodeScanned(payload)
+    }
+    #endif
     
     // Explains core app benefits before users choose create/connect onboarding paths.
     private var introView: some View {

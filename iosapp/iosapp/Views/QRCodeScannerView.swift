@@ -1,5 +1,8 @@
 import SwiftUI
 import AVFoundation
+#if DEBUG
+import UIKit
+#endif
 
 // Scans the QR codes onboarding, device linking and recovery exchange.
 // Uses AVFoundation's metadata detection; each validation mode accepts one
@@ -147,6 +150,21 @@ struct QRCodeScannerView: View {
                 ProgressView("Requesting camera access...")
             }
         }
+        #if DEBUG
+        .overlay(alignment: .bottom) {
+            // The camera overlay is the only place a rejection is drawn,
+            // and the simulator never gets that far. Show the same text
+            // when a pasted image is rejected before the camera is up.
+            if !isAuthorized, let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .padding(.bottom, 24)
+            }
+        }
+        #endif
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -154,6 +172,11 @@ struct QRCodeScannerView: View {
                     onCancel()
                 }
             }
+            #if DEBUG
+            ToolbarItem(placement: .primaryAction) {
+                DebugPasteQRButton(onImageData: acceptPastedImage)
+            }
+            #endif
         }
         .onAppear {
             checkCameraAuthorization()
@@ -193,6 +216,21 @@ struct QRCodeScannerView: View {
         }
     }
     
+    #if DEBUG
+    // Feeds a pasted QR through the same validation as the camera, so a
+    // simulator can supply the code the lens cannot see.
+    private func acceptPastedImage(_ data: Data?) {
+        let decoded = data.flatMap { QRImageDecoder.decode(imageData: $0) }
+        DispatchQueue.main.async {
+            guard let decoded else {
+                reportValidationFailure("Clipboard image is not a QR code.")
+                return
+            }
+            _ = handleScan(decoded)
+        }
+    }
+    #endif
+
     // Validates scanned payloads off the metadata queue and returns whether scanning should stop.
     private func handleScan(_ code: String) -> Bool {
         log("Scanned code: \(code.prefix(100))...", context: "QRScanner")
@@ -411,6 +449,20 @@ extension CameraPreviewUIView: AVCaptureMetadataOutputObjectsDelegate {
         log("Detected QR code", context: "QRScanner")
     }
 }
+
+#if DEBUG
+// Reads a copied QR in a debug build. The system paste control ignores
+// injected taps, so an agent could not use it to bootstrap a simulator.
+private struct DebugPasteQRButton: View {
+    let onImageData: (Data?) -> Void
+
+    var body: some View {
+        Button("Paste QR image") {
+            onImageData(UIPasteboard.general.image?.pngData())
+        }
+    }
+}
+#endif
 
 #Preview("Scanning") {
     NavigationStack {
