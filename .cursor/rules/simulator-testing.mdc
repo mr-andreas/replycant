@@ -1,0 +1,12 @@
+---
+description: Recover a library or bootstrap a new one in the iOS simulator
+alwaysApply: true
+---
+
+# Simulator Testing
+
+To run the iOS app in a simulator, follow the `simulator-testing` skill.
+For real data, recover from a key in the gitignored `RecoveryKeys.md`.
+For a new library, bootstrap against a throwaway stack. Both need a
+fresh install, so uninstall the app first. Never echo a recovery link,
+password, or join payload anywhere.

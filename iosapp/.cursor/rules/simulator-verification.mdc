@@ -16,7 +16,7 @@ agent's only runtime evidence.
 - Build and launch with XcodeBuildMCP against the already-booted
   simulator. Do not use raw `xcodebuild` with a hardcoded device.
 - Verify against a recovered library. If the simulator is not recovered
-  yet, follow the `simulator-recovery-testing` skill. Once recovered,
+  yet, follow the `simulator-testing` skill. Once recovered,
   rebuild and relaunch is enough. Do not uninstall, since that forces
   a fresh recovery.
 - Confirm the change with `screenshot` or `snapshot_ui`. If it broke

@@ -1,17 +1,19 @@
 ---
-name: simulator-recovery-testing
-description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md; covers the fresh-install requirement, the recovery deep link flow, and recording a video walkthrough of a feature under test.
+name: simulator-testing
+description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md or bootstrapping a new library on a throwaway stack; covers the fresh-install requirement, both entry flows, and recording a video walkthrough of a feature under test.
 ---
 
-# Simulator Recovery Testing
+# Simulator Testing
 
-Use this skill to recover the iOS app in a simulator from a key in the
-gitignored `RecoveryKeys.md` at the repo root. Recovery is the way to load
-real data into a simulator for development.
+Use this skill to load the iOS app in a simulator. Recover from a key
+in the gitignored `RecoveryKeys.md` at the repo root when the goal is
+real data. Bootstrap a new library on a throwaway stack when the goal
+is an empty first-device setup.
 
-Read this skill before building or launching the iOS app against real data.
-A request like "run the app in the simulator" still needs this flow when
-the goal is a recovered library rather than the empty onboarding path.
+Read this skill before building or launching the iOS app against real
+data or a fresh library. A request like "run the app in the simulator"
+still needs recovery when the goal is a recovered library rather than
+the empty onboarding path.
 
 ## Inputs
 
@@ -19,7 +21,7 @@ the goal is a recovered library rather than the empty onboarding path.
   matches the scenario under test. Ask the user when more than one key
   could apply.
 - File format is documented in
-  `.cursor/skills/simulator-recovery-testing/RecoveryKeys.example.md`.
+  `.cursor/skills/simulator-testing/RecoveryKeys.example.md`.
   One `## heading` per key, then `Description`, `Server`, `Path`,
   `Password`, and `Link`.
 
@@ -102,10 +104,25 @@ agent can create a library on a fresh local stack and land in the
 timeline with no taps. Release builds ignore the link.
 
 Do not reuse a RecoveryKeys checkout. Bootstrapping pushes the first
-commit and closes that server's join window.
+commit and closes that server's join window. This stack is throwaway:
+it uses its own compose project name and data dir so it cannot touch
+the default `replycant` project or a key's `Path:`.
 
-1. Bring up a fresh stack with an empty data dir, as in Bringing a
-   stack up, pointed at that empty dir.
+Run the commands from the repo root.
+
+1. Bring the throwaway stack up:
+
+```bash
+P=replycant-sim-bootstrap
+D=/tmp/replycant-sim-bootstrap
+mkdir -p "$D/data" "$D/lfs"
+REPLYCANT_DATA_DIR="$D/data" REPLYCANT_LFS_DIR="$D/lfs" \
+REPLYCANT_CA_PORT=18080 REPLYCANT_HSPROXY_PORT=18443 \
+docker compose -p "$P" up -d
+```
+
+The CA URL is `http://127.0.0.1:18080`.
+
 2. Bundled simulator credentials must not be present, the same check
    as recovery. Uninstall the app so the install is unconfigured.
 3. Build and launch scheme `iosapp`.
@@ -114,17 +131,34 @@ commit and closes that server's join window.
    payload is a live credential: never echo it.
 
 ```bash
-PAYLOAD=$(curl -sf <ca>/config.json | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=""))')
+PAYLOAD=$(curl -sf http://127.0.0.1:18080/config.json | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read(),safe=""))')
 xcrun simctl openurl <udid> "replycant://debug-bootstrap?payload=$PAYLOAD"
 ```
 
 5. The app joins and pushes on its own. The timeline appearing is
    success. A 410 from `/config.json` means the library is already
-   set up.
+   set up; reset the throwaway stack below and start again. If setup
+   ends on the Error screen, mint a fresh payload and open the link
+   again. The previous preauth key may already be spent.
 
 A debug build also shows Paste QR image on the scanner. That path is
 for a copied QR image and needs a tap. If iOS asks to allow the paste,
 tap Allow. Setup continues from the tap that raised the prompt.
+
+### Reset
+
+Use this when `/config.json` returns 410, or when the run needs a
+clean library again. Afterward, bring the stack back up with the
+commands above and uninstall the app. The same command is the
+teardown when you are finished; do not bring the stack back up then.
+
+```bash
+docker compose -p replycant-sim-bootstrap down -v && rm -rf /tmp/replycant-sim-bootstrap
+```
+
+Always pass `-p replycant-sim-bootstrap` to `down`. Never point
+`REPLYCANT_DATA_DIR` at `./replycant-data` or at a `RecoveryKeys.md`
+`Path:`.
 
 ## Recording a feature walkthrough
 
@@ -277,6 +311,8 @@ Do not wipe the data directory unless the keys are expendable.
 - Never tap `Revoke used key`
 - Never wipe a key's `replycant-data` as part of bringing the stack up
 - Never write `RecoveryKeys.md` or `recordings/` into git
+- Reset only the throwaway stack `replycant-sim-bootstrap`, never the
+  default compose project
 
 ## Final output to user
 
