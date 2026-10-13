@@ -13,6 +13,19 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
  Create as many sidebars as you want.
  */
 const sidebars: SidebarsConfig = {
+  gettingStartedSidebar: [
+    {
+      type: 'category',
+      label: 'Getting Started',
+      link: {type: 'doc', id: 'getting-started/index'},
+      items: [
+        'getting-started/start-a-server',
+        'getting-started/clone-your-library',
+        'getting-started/import-media',
+        'getting-started/back-up-your-library',
+      ],
+    },
+  ],
   gitdbSidebar: [
     {
       type: 'category',

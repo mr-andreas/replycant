@@ -70,6 +70,12 @@ const config: Config = {
       items: [
         {
           type: 'docSidebar',
+          sidebarId: 'gettingStartedSidebar',
+          position: 'left',
+          label: 'Getting Started',
+        },
+        {
+          type: 'docSidebar',
           sidebarId: 'gitdbSidebar',
           position: 'left',
           label: 'GitDB',
@@ -111,6 +117,10 @@ const config: Config = {
         {
           title: 'Documentation',
           items: [
+            {
+              label: 'Getting Started',
+              to: '/docs/getting-started',
+            },
             {
               label: 'GitDB',
               to: '/docs/gitdb',
