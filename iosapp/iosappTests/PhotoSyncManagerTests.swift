@@ -1474,6 +1474,19 @@ struct PhotoSyncManagerTests {
             Issue.record("Expected failed state with accessDenied error")
         }
     }
+
+    // The Upload tab prints localizedDescription, so a denied library
+    // must tell the user where to turn Photos access back on.
+    @Test("Denied photo access explains how to turn Photos access back on")
+    func testAuthDeniedMessage() {
+        let denied = PhotoLibraryError.accessDenied.localizedDescription
+        #expect(denied.localizedCaseInsensitiveContains("Photos"))
+        #expect(denied.localizedCaseInsensitiveContains("Settings"))
+        #expect(!denied.contains("PhotoLibraryError"))
+
+        let unavailable = PhotoLibraryError.assetDataUnavailable.localizedDescription
+        #expect(!unavailable.contains("PhotoLibraryError"))
+    }
     
     @Test("Asset data unavailable error")
     func testAssetDataUnavailable() async throws {

@@ -3,9 +3,20 @@ import Photos
 import AVFoundation
 import UIKit
 
-enum PhotoLibraryError: Error {
+// Upload shows this description directly, so a denied library or an
+// unreadable asset has to say what happened instead of a type name.
+enum PhotoLibraryError: LocalizedError {
     case accessDenied
     case assetDataUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .accessDenied:
+            return "Replycant can't read your photo library. Turn on Photos access for Replycant in Settings."
+        case .assetDataUnavailable:
+            return "This photo or video couldn't be read from the photo library."
+        }
+    }
 }
 
 // Captures stable PhotoKit identity and timestamps so sync can skip already-uploaded media quickly.

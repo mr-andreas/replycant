@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+#### iOS app
+
+- upload says when Photos access is off instead of showing an internal error
+
 ## 0.3.1 - 2026-10-12
 
 ### Fixes
