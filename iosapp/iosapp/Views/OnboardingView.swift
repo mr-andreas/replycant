@@ -1,5 +1,8 @@
 import SwiftUI
 import LibGit2
+#if DEBUG
+import UIKit
+#endif
 
 // Guides first-time users through secure library setup via QR code scanning.
 // Supports creating a new library or connecting to an existing one,
@@ -344,6 +347,15 @@ struct OnboardingView: View {
                     .padding(.horizontal, 32)
 
                 if let qrData = devicePublicKeyQR {
+                    #if DEBUG
+                    // Above the QR so a landscape simulator can tap it
+                    // without scrolling. A simulator cannot be scanned,
+                    // so this copies the key for the debug link.
+                    Button("Copy key") {
+                        UIPasteboard.general.string = qrData
+                    }
+                    .buttonStyle(PairingTertiaryButtonStyle())
+                    #endif
                     QRCodeDisplayView(
                         data: qrData,
                         title: ""

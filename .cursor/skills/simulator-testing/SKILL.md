@@ -1,6 +1,6 @@
 ---
 name: simulator-testing
-description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md or bootstrapping a new library on a throwaway stack; covers the fresh-install requirement, both entry flows, and recording a video walkthrough of a feature under test.
+description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md, bootstrapping a new library on a throwaway stack, or linking a second device; covers the fresh-install requirement, both entry flows, and recording a video walkthrough of a feature under test.
 ---
 
 # Simulator Testing
@@ -160,6 +160,88 @@ Always pass `-p replycant-sim-bootstrap` to `down`. Never point
 `REPLYCANT_DATA_DIR` at `./replycant-data` or at a `RecoveryKeys.md`
 `Path:`.
 
+## Linking a second device
+
+A second device cannot scan or be scanned: the simulator has no camera.
+Device B shows its public-key QR and, in a debug build, a `Copy key`
+button. Paste that text into
+`replycant://debug-link-device?payload=...` and open it on Device A.
+Debug builds grant access from that link. Release builds ignore it
+and do not show `Copy key`.
+
+Do not screenshot the QR and do not use `Paste QR image`. A landscape
+simulator clips the code, and the linking scanner is a sheet without
+a navigation bar, so that button is not shown there.
+
+Linking pushes a permanent `pubkeys/` commit. Prefer the throwaway
+bootstrap stack above. Never link against a key described as
+read-only, and ask before linking against any other `RecoveryKeys.md`
+library. The copied key holds the pairing secret: never print it,
+and delete the temp files as soon as the link is opened.
+
+### Preconditions
+
+- Two simulators are booted. Identify each by UDID. Both may be named
+  `iPhone 17 Pro Max`.
+- Device A is already configured, either recovered or bootstrapped,
+  and can reach its library.
+- Device B is a fresh install of the same debug build. The bundled
+  simulator credentials check applies to it too.
+- The Mac can reach the internet. gitd publishes the pairing record to
+  hosted discovery by default, so a local stack works the same way as
+  a remote one.
+
+### Driving two simulators
+
+The XcodeBuildMCP UI tools only target the session-default simulator.
+Keep that default on A. Drive B with `xcrun simctl` and AXe
+`--udid <B>` (`describe-ui`, `tap --label`).
+
+### Steps
+
+1. Build and launch on A as usual.
+2. Install that same `.app` on B. Take the path from
+   `get_sim_app_path`, then:
+
+```bash
+xcrun simctl uninstall <B> app.ios.replycant.com
+xcrun simctl install <B> <app>
+xcrun simctl launch <B> app.ios.replycant.com
+```
+
+3. On B, wait until `Skip` is on screen, tap it, then wait until
+   `Connect to an existing library` is on screen and tap that. Wait
+   until the screen says "Show this to your other device". That
+   replaces "Generating key...".
+4. On B, tap `Copy key`. It sits above the QR. Turn the pasteboard
+   text into a link without printing the JSON. The payload is a
+   live pairing secret. If the file does not start with `{`, tap
+   `Copy key` again.
+
+```bash
+P=/tmp/replycant-link-payload.txt
+U=/tmp/replycant-link-url.txt
+xcrun simctl pbpaste <B> > "$P"
+python3 - << 'PY'
+import pathlib, urllib.parse
+payload = pathlib.Path("/tmp/replycant-link-payload.txt").read_text().strip()
+if not payload.startswith("{"):
+    raise SystemExit("payload missing")
+url = "replycant://debug-link-device?payload=" + urllib.parse.quote(payload, safe="")
+pathlib.Path("/tmp/replycant-link-url.txt").write_text(url)
+print("url bytes", len(url))
+PY
+xcrun simctl openurl <A> "$(cat "$U")"
+rm -f "$P" "$U"
+```
+
+5. B reaches the timeline on its own. An empty library shows
+   "No photos uploaded yet", and that counts. B still waiting after
+   several minutes is a failure. Retry from step 3 so B shows a
+   fresh QR: each QR carries a one-time pairing secret, and B only
+   polls for 10 minutes. Do not open the link a second time while
+   the first grant is still running.
+
 ## Recording a feature walkthrough
 
 Record after recovery reaches the timeline, when the run exists to try
@@ -313,6 +395,7 @@ Do not wipe the data directory unless the keys are expendable.
 - Never write `RecoveryKeys.md` or `recordings/` into git
 - Reset only the throwaway stack `replycant-sim-bootstrap`, never the
   default compose project
+- Never embed or keep the device-link QR screenshot
 
 ## Final output to user
 
@@ -321,6 +404,7 @@ Report:
 - Which key heading was used (not the link or password)
 - Whether recovery completed, was rejected as revoked, or failed
 - Whether the local stack was started or live-patched
+- Whether a second device was linked, and which library received its key
 - The path to the walkthrough MP4, when one was recorded
 - Key frames embedded inline, since chat cannot play video. Use an
   absolute path with no `file://` prefix. A relative `recordings/`

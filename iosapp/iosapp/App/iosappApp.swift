@@ -92,6 +92,7 @@ struct iosappApp: App {
                 RecoveryDeepLinkRouter.shared.handle(url: url)
                 #if DEBUG
                 DebugBootstrapLinkRouter.shared.handle(url: url)
+                DebugDeviceLinkRouter.shared.handle(url: url)
                 #endif
             }
             .onChange(of: scenePhase) { _, phase in
