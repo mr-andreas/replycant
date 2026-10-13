@@ -4,6 +4,8 @@ sidebar_position: 3
 
 # Clone your library
 
+`git-replycant` authorizes this computer and creates a local Git working copy of the library.
+
 You need `git` and `git-lfs`. Download the `git-replycant` archive for your system from the [latest release](https://github.com/mr-andreas/replycant/releases/latest) and install it:
 
 ```bash

@@ -4,6 +4,8 @@ sidebar_position: 2
 
 # Start a server
 
+The server stores the library. The iOS app creates the library and links the first device.
+
 ## 1. Start the server
 
 ```bash

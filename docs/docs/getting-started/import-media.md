@@ -4,6 +4,8 @@ sidebar_position: 4
 
 # Import photos and videos
 
+`replycant-importer` reads a folder of photos and videos and adds them to a cloned library. The commits stay on this computer until you push them.
+
 Install `ffmpeg`, and use the clone from [Clone your library](./clone-your-library.md). The last argument is a name for this batch.
 
 ```bash

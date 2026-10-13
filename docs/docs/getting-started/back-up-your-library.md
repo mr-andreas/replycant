@@ -4,7 +4,9 @@ sidebar_position: 5
 
 # Back up your library
 
-On the backup computer, install the tools from [Clone your library](./clone-your-library.md), then clone with the photos included:
+A clone that includes the photos keeps a local copy of the history and the media. A periodic pull keeps that copy current.
+
+On the backup computer, install the tools from [Clone your library](./clone-your-library.md), then clone:
 
 ```bash
 $ git-replycant clone backup
