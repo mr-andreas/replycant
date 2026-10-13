@@ -47,8 +47,10 @@ private final class JoinScript: @unchecked Sendable {
 @MainActor
 @Suite(.serialized)
 struct ConnectionProblemsIndicatorTests {
+    // The limit only guards against a hang. A busy simulator can take
+    // longer than a couple of seconds to publish the banner.
     private func waitUntil(
-        timeout: Duration = .seconds(2),
+        timeout: Duration = .seconds(30),
         _ condition: @MainActor () -> Bool
     ) async {
         let start = ContinuousClock.now

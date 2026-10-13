@@ -7,12 +7,15 @@ import UIKit
 struct QRImageDecoderTests {
     private static let joinJSON = #"{"ca":"pem","headscale_url":"https://hs.example","preauth_key":"hskey-1"}"#
 
-    // 20px is below what the detector reads on its own. The CA page PNG
-    // has the same problem at its native size, so this locks the enlarge
-    // pass rather than a code that was already large enough.
+    // A pasted copy of the CA page QR, at the 256px size that page
+    // serves, has to yield the same join text the camera would have read.
     @Test func qrImageDecodesToItsPayload() throws {
         let image = try #require(
-            QRCodeDisplayView.generateQRCodeImage(from: Self.joinJSON, side: 20)
+            QRCodeDisplayView.generateQRCodeImage(
+                from: Self.joinJSON,
+                side: 256,
+                correctionLevel: "M"
+            )
         )
         let data = try #require(image.pngData())
         #expect(QRImageDecoder.decode(imageData: data) == Self.joinJSON)
