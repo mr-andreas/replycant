@@ -350,6 +350,7 @@ struct TimelineCollectionView: UIViewRepresentable {
                 collectionView.layoutIfNeeded()
                 hasCommittedInitialPosition = true
                 lastStableContentOffsetY = collectionView.contentOffset.y
+                publishViewportMonth(in: collectionView, force: true)
                 AppSignposts.event("TimelineGridRestoredScroll")
                 return
             }
@@ -369,7 +370,27 @@ struct TimelineCollectionView: UIViewRepresentable {
             }
             hasCommittedInitialPosition = true
             lastStableContentOffsetY = collectionView.contentOffset.y
+            publishViewportMonth(in: collectionView, force: true)
             AppSignposts.event("TimelineGridFirstLayout")
+        }
+
+        // Index 0 publishes a month before the bottom anchor moves the
+        // viewport. A width change then lays out only the newest cell for
+        // one frame, and the rate limit keeps whichever month arrived
+        // first. A committed position publishes the visible top, and a
+        // one-cell layout is ignored so that frame cannot stick.
+        private func publishViewportMonth(
+            in collectionView: UICollectionView,
+            force: Bool
+        ) {
+            let visible = collectionView.indexPathsForVisibleItems.map(\.item)
+            if visible.count < 2, timelineManager.totalCount > 1 {
+                return
+            }
+            guard let top = topVisibleItemIndex(in: collectionView) else { return }
+            if !force, top == lastKnownTopVisibleIndex { return }
+            lastKnownTopVisibleIndex = top
+            timelineManager.updateCurrentMonth(for: top, force: force)
         }
 
         func handleCollectionWidthWillChange() {
@@ -403,6 +424,15 @@ struct TimelineCollectionView: UIViewRepresentable {
             timelineManager.savedContentOffset = collectionView.contentOffset
             timelineManager.savedGridWidth = collectionView.bounds.width
             lastStableContentOffsetY = collectionView.contentOffset.y
+            collectionView.layoutIfNeeded()
+            publishViewportMonth(in: collectionView, force: true)
+            // The width-change layout pass can finish with only the newest
+            // cell in existence. Publish again after that pass so the
+            // settled top row replaces it.
+            DispatchQueue.main.async { [weak collectionView] in
+                guard let collectionView else { return }
+                self.publishViewportMonth(in: collectionView, force: true)
+            }
         }
 
         // Updates persisted offset and active month with a low-cost visible-index lookup suitable for per-frame callbacks.
@@ -415,15 +445,16 @@ struct TimelineCollectionView: UIViewRepresentable {
             guard let collectionView = scrollView as? UICollectionView else { return }
             timelineManager.savedGridWidth = collectionView.bounds.width
             guard !isProgrammaticMonthJumpInFlight else { return }
-            let topIndex = topVisibleItemIndex(in: collectionView)
-            if let topIndex,
+            let visibleCount = collectionView.indexPathsForVisibleItems.count
+            let layoutSettled = visibleCount >= 2 || timelineManager.totalCount <= 1
+            let topIndex = layoutSettled ? topVisibleItemIndex(in: collectionView) : nil
+            if layoutSettled,
+               let topIndex,
                let attributes = collectionView.layoutAttributesForItem(at: IndexPath(item: topIndex, section: 0)) {
                 timelineManager.savedViewportAnchorIndex = topIndex
                 timelineManager.savedViewportAnchorOffsetFromItemTop = scrollView.contentOffset.y - attributes.frame.minY
             }
-            guard topIndex != lastKnownTopVisibleIndex else { return }
-            lastKnownTopVisibleIndex = topIndex
-            timelineManager.updateCurrentMonth(for: topIndex)
+            publishViewportMonth(in: collectionView, force: false)
         }
 
         // Flags dragging start so sidebar can avoid expensive animation during active grid interaction.
@@ -437,6 +468,9 @@ struct TimelineCollectionView: UIViewRepresentable {
             if !decelerate {
                 timelineManager.setGridScrolling(false)
                 flushPendingReconfigure()
+                if let collectionView = scrollView as? UICollectionView {
+                    publishViewportMonth(in: collectionView, force: true)
+                }
             }
         }
 
@@ -444,6 +478,9 @@ struct TimelineCollectionView: UIViewRepresentable {
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
             timelineManager.setGridScrolling(false)
             flushPendingReconfigure()
+            if let collectionView = scrollView as? UICollectionView {
+                publishViewportMonth(in: collectionView, force: true)
+            }
         }
 
         // Clears drag flag after programmatic scroll animation finishes so sidebar can settle smoothly.
@@ -452,9 +489,7 @@ struct TimelineCollectionView: UIViewRepresentable {
             timelineManager.setGridScrolling(false)
             flushPendingReconfigure()
             if let collectionView = scrollView as? UICollectionView {
-                let topIndex = topVisibleItemIndex(in: collectionView)
-                lastKnownTopVisibleIndex = topIndex
-                timelineManager.updateCurrentMonth(for: topIndex)
+                publishViewportMonth(in: collectionView, force: true)
             }
         }
 
@@ -477,11 +512,33 @@ struct TimelineCollectionView: UIViewRepresentable {
             timelineManager.scrollTargetIndex = nil
         }
 
-        // Finds the top visible global index using visible index paths to avoid expensive layout-attribute scans.
+        // The first row the user can see. Cells that only intersect the
+        // collection view under the status and navigation bars are still
+        // "visible" to UIKit, and taking the lowest index highlights the
+        // month peeking out above the bar instead of the top row.
         private func topVisibleItemIndex(in collectionView: UICollectionView) -> Int? {
-            return collectionView.indexPathsForVisibleItems.min(by: { lhs, rhs in
-                lhs.item < rhs.item
-            })?.item
+            let visible = collectionView.indexPathsForVisibleItems
+            guard !visible.isEmpty else { return nil }
+            let probeY = collectionView.contentOffset.y
+                + collectionView.adjustedContentInset.top
+                + 8
+            var containing: (index: Int, minY: CGFloat)?
+            var nearestBelow: (index: Int, minY: CGFloat)?
+            for indexPath in visible {
+                guard let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else {
+                    continue
+                }
+                if frame.minY <= probeY && frame.maxY > probeY {
+                    if containing == nil || frame.minY < containing!.minY {
+                        containing = (indexPath.item, frame.minY)
+                    }
+                } else if frame.minY > probeY {
+                    if nearestBelow == nil || frame.minY < nearestBelow!.minY {
+                        nearestBelow = (indexPath.item, frame.minY)
+                    }
+                }
+            }
+            return containing?.index ?? nearestBelow?.index ?? visible.map(\.item).min()
         }
 
         // Captures the first visible item and its vertical offset so layout-width changes can preserve the same viewport anchor.

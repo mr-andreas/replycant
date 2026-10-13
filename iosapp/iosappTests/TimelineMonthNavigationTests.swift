@@ -165,6 +165,32 @@ struct TimelineMonthNavigationTests {
         try await waitForMonth(february, manager: manager)
     }
 
+    // Launch publishes the newest item's month before the bottom anchor
+    // lands on the visible top row. That correction arrives inside the
+    // rate-limit window, so it has to be forced or the sidebar keeps the
+    // stale month (June highlighted over an August viewport).
+    @Test func forcedMonthUpdateReplacesStaleMonthWithinRateLimit() async throws {
+        let manager = makeIsolatedManager()
+        let augustDate = Date(timeIntervalSince1970: 1_722_470_400) // 2024-08-01
+        let juneDate = Date(timeIntervalSince1970: 1_780_272_000) // 2026-06-01
+        let august = TimelineYearMonth(year: 2024, month: 8)
+        let june = TimelineYearMonth(year: 2026, month: 6)
+        manager.seedLoadedRegionForTesting(
+            offset: 0,
+            items: [
+                TimelineItem(original: makeOriginal(id: "aug-item", takenAt: augustDate)),
+                TimelineItem(original: makeOriginal(id: "jun-item", takenAt: juneDate))
+            ],
+            totalCount: 2
+        )
+
+        manager.updateCurrentMonth(for: 1)
+        try await waitForMonth(june, manager: manager)
+
+        manager.updateCurrentMonth(for: 0, force: true)
+        try await waitForMonth(august, manager: manager)
+    }
+
     // Ensures the latest month selection is flushed when scrolling settles so sidebar and viewport end in sync.
     @Test func setGridScrollingFalseFlushesPendingMonthUpdate() async throws {
         let manager = makeIsolatedManager()

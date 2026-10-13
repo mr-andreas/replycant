@@ -7,6 +7,7 @@
 #### iOS app
 
 - upload says when Photos access is off instead of showing an internal error
+- the month sidebar highlights the month of the photos at the top of the timeline
 
 ## 0.3.1 - 2026-10-12
 

@@ -32,6 +32,8 @@ Limited ("Select Photos") access is not the same failure. The callback form of `
 
 ## 2. Month sidebar highlights the wrong month
 
+**Status:** fixed
+
 **Area:** iOS app, Timeline month sidebar
 **Found:** 2026-10-13, simulator, recovered small-repo library
 
