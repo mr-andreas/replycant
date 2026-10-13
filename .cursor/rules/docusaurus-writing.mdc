@@ -1,0 +1,89 @@
+---
+description: Write Docusaurus pages for human readers - short, task-first, plain language
+globs: docs/docs/**/*.md,docs/docs/**/*.mdx
+alwaysApply: false
+---
+
+# Writing Docusaurus Docs
+
+Write for a person trying to get something done or understand how a part
+of Replycant works. They are skimming, not reading the source.
+
+## One page, one job
+
+Pick one type per page. If a page needs two, split it and link.
+
+- **Tutorial**: takes a newcomer to one working result. Ordered steps,
+  no detours.
+- **How-to guide**: solves one task for someone who knows the basics.
+  Title starts with a verb: "Back up your library".
+- **Reference**: formats, fields, flags, schemas. Complete and dry.
+- **Explanation**: how a part works and why it is built that way.
+  Architecture pages are this type.
+
+## Open with the point
+
+- Start with one or two sentences: what this is and why the reader
+  cares. Never "This document describes...".
+- List prerequisites before the first step.
+- Common path first. Alternatives, edge cases, and internals after.
+
+## Write plainly
+
+- Address the reader as "you". Active voice, present tense.
+- Short sentences, paragraphs of at most four sentences.
+- Define a term or acronym on first use, or link to where it is defined.
+- Cut filler: "simply", "just", "easy", "basically", "note that",
+  "it is important to".
+- Describe how things work now. Explain why a design exists, but leave
+  change history ("previously", "we switched") to the changelog.
+
+## Structure for skimming
+
+- One `#` title per page. Sentence-case headings: "Clone without LFS
+  filters", not "Clone Without LFS Filters".
+- A reader should find their section from the headings alone. Stop
+  at `###`.
+- Numbered lists for steps done in order, one action per step. Bullets
+  for everything else.
+- Tables only for reference data whose cells are a few words. Rationale
+  goes in prose.
+- Bold for UI labels the reader taps: **Settings**, **Link a New
+  Device**. Code formatting for commands, paths, flags, and values.
+
+## Commands and examples
+
+- Every command is copy-pasteable and works as written. Show the
+  expected output when it lets the reader confirm success.
+- Always set a language on code blocks. Add `title="path/to/file"` when
+  the block is a file's contents.
+- Use obvious placeholders like `<library-dir>` and `example.com`, and
+  say what to substitute.
+- One real example beats a paragraph of abstract description.
+
+## Docusaurus specifics
+
+- Set `sidebar_position` in front matter when page order matters.
+- Link with relative paths to the `.md` file, e.g.
+  `[Recovery keys](./encryption.md#recovery-keys)`, so the build catches
+  broken links. Link text names the destination, never "here".
+- Admonitions (`:::tip`, `:::note`, `:::warning`, `:::danger`) are rare:
+  at most one or two per page. Use `:::warning` and `:::danger` only for
+  data loss or security risk.
+- Diagrams follow `diagrams.mdc`.
+
+## Keep it short
+
+- Cut what the reader does not need for the task or the concept. Detail
+  only a code reviewer needs belongs in code comments or ADRs.
+- Link to other pages instead of repeating them.
+- No "Overview", "Introduction", "Summary", or "Related documentation"
+  sections by default. Link inline where the reader needs it. End a
+  tutorial with "Next steps" when there is an obvious next page.
+- If a page needs a table of contents to navigate, split it.
+
+## Before finishing
+
+- Run `npm run build` in `docs/`. `onBrokenLinks` is `throw`, so broken
+  links fail the build.
+- Reread as a newcomer: could they follow this without opening the code?
