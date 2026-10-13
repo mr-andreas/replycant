@@ -322,5 +322,10 @@ Report:
 - Whether recovery completed, was rejected as revoked, or failed
 - Whether the local stack was started or live-patched
 - The path to the walkthrough MP4, when one was recorded
-- Key frames embedded inline as `![step](recordings/<name>-NN.png)`,
-  since chat cannot play video
+- Key frames embedded inline, since chat cannot play video. Use an
+  absolute path with no `file://` prefix. A relative `recordings/`
+  link is not loaded. Percent-encode spaces in the path
+  (`External%201TB`). The file stays in `recordings/`; do not copy it
+  into the repo.
+
+  `![step](/absolute/path/to/recordings/<name>-NN.png)`
