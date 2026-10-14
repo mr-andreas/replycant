@@ -4,38 +4,53 @@ sidebar_position: 5
 
 # Back up your library
 
-A clone that includes the photos keeps a local copy of the history and the media. A periodic pull keeps that copy current.
+Keep a full copy of your photos on another computer, so you still have them if the server is lost. A clone that includes the photos holds the whole library, and a scheduled pull keeps it current.
 
-On the backup computer, install the tools from [Clone your library](./clone-your-library.md), then clone:
+You need:
 
-```bash
-$ git-replycant clone backup
-Generated new local identity in /home/you/backup/.git/replycant
-Open http://127.0.0.1:54321 to view the pairing QR code.
-Waiting for a paired device to approve this one...
-Joined the tailnet. Waiting for repository authorization...
-Authorization confirmed. Proceeding with clone.
-From replycant::https://gitd.replycant.internal:8443
- * [new branch]      main       -> origin/main
-...
-Clone complete and filters configured in /home/you/backup
-```
+- `git`, `git-lfs`, and `git-replycant` installed on the backup computer, as in [Clone your library](./clone-your-library.md)
+- an encrypted disk with free space for about twice the size of your library
+- the iPhone you connected in [Start a server](./start-a-server.md)
 
-Approve the QR code the same way: **Settings**, **Link a New Device**.
+## Set up the backup
 
-```bash
-$ git pull --ff-only
-Updating a1b2c3d..e4f5a6b
-Fast-forward
- ...
-```
+1. In your home folder, clone the library with the photos:
 
-Run that on a schedule:
+   ```bash
+   cd ~
+   git-replycant clone backup
+   ```
 
-```bash
-0 * * * * cd /path/to/backup && git pull --ff-only
-```
+2. Open the address it prints in a browser. On the iPhone, tap **Settings**, then **Link a New Device**, and scan the QR code.
+
+   The clone downloads the photos and finishes:
+
+   ```text
+   Joined the tailnet. Waiting for repository authorization...
+   Authorization confirmed. Proceeding with clone.
+   ...
+   Clone complete and filters configured in /home/you/backup
+   ```
+
+3. Check that a pull works:
+
+   ```bash
+   cd ~/backup && git pull --ff-only
+   ```
+
+   ```text
+   Already up to date.
+   ```
+
+4. Run `crontab -e` and add these two lines to pull every hour. Cron starts with a short `PATH`, so the first line lets it find `git-replycant` and `git-lfs`.
+
+   ```text
+   PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
+   0 * * * * cd ~/backup && git pull --ff-only
+   ```
+
+## What the backup holds
 
 ![What a backup clone stores](./back-up-your-library/backup-contents.drawio.svg)
 
-The working tree holds the photos decrypted, so keep the clone on an encrypted disk. The copy takes about twice the size of the library.
+The `.git` folder holds the full history and the encrypted photos. The rest of the folder holds the same photos decrypted, which is why the backup needs an encrypted disk and about twice the space of the library.

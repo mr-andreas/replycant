@@ -4,32 +4,48 @@ sidebar_position: 2
 
 # Start a server
 
-The server stores the library. The iOS app creates the library and links the first device.
+Run your own Replycant server and create your photo library on it with the iPhone app. The server stores the library, and the iPhone becomes its first device.
 
-## 1. Start the server
+You need:
 
-```bash
-$ curl -fsSL -o docker-compose.yaml \
-    https://github.com/mr-andreas/replycant/releases/latest/download/docker-compose.yaml
-$ docker compose up -d
-[+] Running 10/10
- ✔ Container replycant-gitd-1        Started
- ✔ Container replycant-decryptd-1    Started
- ...
-```
+- a computer with Docker and Docker Compose, to run the server
+- an iPhone
 
-## 2. Install the iOS app
+## Create your library
 
-[iOS app on the App Store](https://apps.apple.com/se/app/replycant/id6760653798)
+1. Download the Compose file and start the server:
 
-## 3. Create the library
+   ```bash
+   mkdir replycant && cd replycant
+   curl -fsSL -o docker-compose.yaml \
+     https://github.com/mr-andreas/replycant/releases/latest/download/docker-compose.yaml
+   docker compose up -d
+   ```
 
-Open `http://localhost:8080`. In the app, tap **Create a new library** and scan the QR code.
+   Compose reports each container as it starts:
 
-On a server with no browser, open `http://<server>:8080` from another computer on the same network.
+   ```text
+   [+] Running 10/10
+    ✔ Container replycant-gitd-1        Started
+    ✔ Container replycant-decryptd-1    Started
+    ...
+   ```
 
-## Desktop app
+2. Install [Replycant from the App Store](https://apps.apple.com/se/app/replycant/id6760653798) on your iPhone.
+3. Open `http://localhost:8080` in a browser on the server. If the server has no browser, open `http://<server-address>:8080` from another computer on the same network, with the server's IP address or hostname in place of `<server-address>`.
+4. In the app, tap **Create a new library** and scan the QR code on the page.
 
-Download the desktop app from the [latest release](https://github.com/mr-andreas/replycant/releases/latest): a `.dmg` on macOS, an `.AppImage` or `.deb` on Linux, or the Windows installer.
+Your library is ready, and the iPhone is connected to it.
 
-Enter a device name and click **Generate keypair**. On the iPhone, open **Settings**, **Link a New Device**, and scan the code.
+## Link the desktop app
+
+To browse your library on a Mac, Windows, or Linux computer:
+
+1. Download the desktop app from the [latest release](https://github.com/mr-andreas/replycant/releases/latest): the `.dmg` on macOS, the `.AppImage` or `.deb` on Linux, or the Windows installer.
+2. Open the app, enter a name for this computer, and click **Generate keypair**.
+3. On the iPhone, tap **Settings**, then **Link a New Device**, and scan the QR code the desktop app shows.
+
+## Next steps
+
+- To add photos from a computer, [clone your library](./clone-your-library.md) and then [import photos and videos](./import-media.md).
+- To keep a copy of your photos on another computer, [back up your library](./back-up-your-library.md).
