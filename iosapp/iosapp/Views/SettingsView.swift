@@ -146,11 +146,14 @@ struct SettingsView: View {
     private func connectionLink(report: TailnetStatusReport?) -> some View {
         let status = TailnetConnectionSection.status(of: report)
         return NavigationLink(destination: ConnectionSettingsView(report: report)) {
-            HStack {
-                Label("Connection", systemImage: "network")
-                Spacer()
+            // LabeledContent stacks the title and status at accessibility
+            // sizes. An HStack squeezes the status into a narrow column
+            // that draws on top of the title.
+            LabeledContent {
                 Text(status.text)
                     .foregroundStyle(status.isHealthy ? Color.green : Color.orange)
+            } label: {
+                Label("Connection", systemImage: "network")
             }
         }
     }
