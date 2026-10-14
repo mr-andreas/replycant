@@ -69,7 +69,9 @@ struct TimelineMonthRow: View, Equatable {
             && lhs.isHighlighted == rhs.isHighlighted
     }
 
-    // Renders one tappable month with highlight-only background drawing to reduce offscreen render cost.
+    // Renders one tappable month with highlight-only background drawing
+    // to reduce offscreen render cost. The label stays on one line
+    // because this strip is a fixed width and cannot grow with Dynamic Type.
     var body: some View {
         Button {
             onTap()
@@ -77,6 +79,8 @@ struct TimelineMonthRow: View, Equatable {
             Text(label)
                 .font(.caption.weight(isHighlighted ? .bold : .regular))
                 .foregroundStyle(isHighlighted ? Color.accentColor : .primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -112,6 +116,8 @@ struct TimelineMonthSidebar: View {
                         Text(String(group.year))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                             .padding(.horizontal, 4)
 
                         ForEach(group.entries) { entry in
@@ -132,6 +138,9 @@ struct TimelineMonthSidebar: View {
                 .padding(.horizontal, 4)
             }
             .frame(width: 64)
+            // A fixed-width index, like the tab bar. Accessibility sizes
+            // would otherwise wrap each month into a column of letters.
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .background(Color(.systemBackground), ignoresSafeAreaEdges: [.top, .bottom])
             .accessibilityIdentifier("timelineMonthSidebar")
             .onAppear {
