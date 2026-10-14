@@ -20,6 +20,40 @@ struct TimelineInitialBottomAnchor {
     }
 }
 
+// Decides how far a month tap can scroll. The last rows cannot reach
+// the top of the viewport, and an animated scroll that does not move
+// never reports completion, so the caller has to skip it.
+struct TimelineMonthJumpAnchor {
+    struct Placement: Equatable {
+        let targetY: CGFloat
+        let moves: Bool
+    }
+
+    // Half a point matches the initial-scroll "already there" check so
+    // layout rounding does not start a no-op animation.
+    private static let movementThreshold: CGFloat = 0.5
+
+    // Puts the tapped item at the top of the viewport, clamped to the
+    // range UIKit will actually scroll.
+    static func placement(
+        itemMinY: CGFloat,
+        currentOffsetY: CGFloat,
+        contentHeight: CGFloat,
+        viewportHeight: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat
+    ) -> Placement {
+        let minOffset = -topInset
+        let maxOffset = max(minOffset, contentHeight - viewportHeight + bottomInset)
+        let desired = itemMinY - topInset
+        let targetY = min(max(desired, minOffset), maxOffset)
+        return Placement(
+            targetY: targetY,
+            moves: abs(currentOffsetY - targetY) > movementThreshold
+        )
+    }
+}
+
 // Renders the photo timeline grid while requesting sparse pages as cells come into view.
 struct TimelineView: View {
     // Defines deterministic preview modes so canvas rendering never depends on repository setup.
@@ -502,17 +536,25 @@ struct TimelineCollectionView: UIViewRepresentable {
             }
         }
 
-        // Clears drag flag after programmatic scroll animation finishes so sidebar can settle smoothly.
+        // Ends a programmatic scroll. A month jump keeps the tapped month
+        // highlighted: the last month cannot reach the top, and republishing
+        // the viewport month would snap the sidebar back to the earlier
+        // month still visible there. Hand scrolling clears the flag in
+        // scrollViewWillBeginDragging and tracks the viewport again.
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+            let wasMonthJump = isProgrammaticMonthJumpInFlight
             isProgrammaticMonthJumpInFlight = false
             timelineManager.setGridScrolling(false)
             flushPendingReconfigure()
-            if let collectionView = scrollView as? UICollectionView {
+            if !wasMonthJump, let collectionView = scrollView as? UICollectionView {
                 publishViewportMonth(in: collectionView, force: true)
             }
         }
 
-        // Scrolls the collection view to one target global index so month taps land at the top of the viewport.
+        // Scrolls as close to the tapped month as the content allows. A
+        // jump that cannot move is skipped: UIKit does not call the
+        // animation-end callback when the offset is unchanged, and leaving
+        // the in-flight flag set would block later viewport month updates.
         private func scrollToTarget(index: Int) {
             guard let collectionView else { return }
             guard index >= 0, index < timelineManager.totalCount else {
@@ -526,9 +568,28 @@ struct TimelineCollectionView: UIViewRepresentable {
                 timelineManager.scrollTargetIndex = nil
                 return
             }
-            isProgrammaticMonthJumpInFlight = true
-            collectionView.scrollToItem(at: indexPath, at: .top, animated: true)
+            collectionView.layoutIfNeeded()
+            guard let attributes = collectionView.layoutAttributesForItem(at: indexPath) else {
+                isProgrammaticMonthJumpInFlight = false
+                timelineManager.scrollTargetIndex = nil
+                return
+            }
+            let inset = collectionView.adjustedContentInset
+            let placement = TimelineMonthJumpAnchor.placement(
+                itemMinY: attributes.frame.minY,
+                currentOffsetY: collectionView.contentOffset.y,
+                contentHeight: collectionView.contentSize.height,
+                viewportHeight: collectionView.bounds.height,
+                topInset: inset.top,
+                bottomInset: inset.bottom
+            )
             timelineManager.scrollTargetIndex = nil
+            guard placement.moves else { return }
+            isProgrammaticMonthJumpInFlight = true
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: placement.targetY),
+                animated: true
+            )
         }
 
         // The first row the user can see. Cells that only intersect the

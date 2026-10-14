@@ -13,6 +13,7 @@
 
 #### iOS app
 
+- tapping a month in the sidebar keeps that month selected
 - upload says when Photos access is off instead of showing an internal error
 - the month sidebar highlights the month of the photos at the top of the timeline
 - photo details show HEIC, JPEG, or MOV instead of a type identifier
