@@ -33,6 +33,10 @@
 # churn about this working copy, not repo content, so it stays local.
 /MISTAKES.md
 
+# Local iOS bug-hunt notes. Reports are written while driving a recovered
+# library, so the file stays on this machine.
+/Bugs.md
+
 # TailscaleKit is built from a pinned commit by `make ios-tailscalekit`, not
 # committed: the xcframework is 70 MB and this repository's history is public
 # and permanent. The pinned commit in the Makefile is the real dependency.

@@ -128,7 +128,7 @@ is fixed.
 ...
 ```
 
-`Bugs.md` is tracked in a public repo. A report must not include photo
+`Bugs.md` is gitignored. A report must not include photo
 descriptions, GPS coordinates, device IDs, original filenames, recovery
 links, passwords, join payloads, or device-link pairing payloads. Refer
 to a recovered library by its key heading only.
