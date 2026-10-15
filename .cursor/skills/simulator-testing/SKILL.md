@@ -1,6 +1,6 @@
 ---
 name: simulator-testing
-description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md, bootstrapping a new library on a throwaway stack, or linking a second device; covers the fresh-install requirement, both entry flows, and recording a video walkthrough of a feature under test.
+description: Test the iOS app in a simulator by recovering from a key in RecoveryKeys.md, bootstrapping a new library on a throwaway stack, seeding that library with photos and videos, or linking a second device; covers the fresh-install requirement, both entry flows, and recording a video walkthrough of a feature under test.
 ---
 
 # Simulator Testing
@@ -8,7 +8,8 @@ description: Test the iOS app in a simulator by recovering from a key in Recover
 Use this skill to load the iOS app in a simulator. Recover from a key
 in the gitignored `RecoveryKeys.md` at the repo root when the goal is
 real data. Bootstrap a new library on a throwaway stack when the goal
-is an empty first-device setup.
+is an empty first-device setup. Seed that library when the timeline
+needs a chosen number of photos and videos.
 
 Read this skill before building or launching the iOS app against real
 data or a fresh library. A request like "run the app in the simulator"
@@ -159,6 +160,253 @@ docker compose -p replycant-sim-bootstrap down -v && rm -rf /tmp/replycant-sim-b
 Always pass `-p replycant-sim-bootstrap` to `down`. Never point
 `REPLYCANT_DATA_DIR` at `./replycant-data` or at a `RecoveryKeys.md`
 `Path:`.
+
+## Seeding media
+
+Use this when the throwaway library needs photos and videos. Pick the
+count for the thing under test:
+
+- 0 for an empty timeline or onboarding. Stop after bootstrap. "No
+  photos uploaded yet" is success.
+- 10 for behavior on a handful of items. Generation and import take
+  seconds.
+- 10000 for scrolling, timeline and grid performance, hydration, pull
+  cost, and location clusters. Generation and import take minutes.
+
+These are guidance. Seed only `replycant-sim-bootstrap`. Never seed a
+`RecoveryKeys.md` library.
+
+The library has to be empty first, because this path uploads into the
+one the app just created. Run Reset, bring the stack back up, uninstall
+the app, and run debug-bootstrap above. Continue once the timeline is
+on screen.
+
+### Build the CLI
+
+Run from the repo root. The remote-helper symlink has to sit next to
+`git-replycant` and on `PATH`, because clone refuses to pair without
+it. Rebuild when the source under test has changed. Keep the rest of
+this section in that shell so `PATH` and the background clone stay
+together.
+
+```bash
+B=/tmp/replycant-sim-bin
+mkdir -p "$B"
+go build -o "$B/git-replycant" ./git-replycant
+go build -o "$B/replycant-importer" ./replycant-importer
+ln -sf git-replycant "$B/git-remote-replycant"
+export PATH="$B:$PATH"
+```
+
+### Link the Mac clone
+
+The clone is a second device. `git-replycant clone` serves the same
+public-key JSON the iOS `Copy key` button copies, at
+`http://127.0.0.1:18990/payload.json`. Open that JSON in
+`replycant://debug-link-device?payload=...` on the bootstrapped
+simulator. A debug build grants access. Release builds ignore the link.
+
+The Mac needs the internet. The grant is published to hosted discovery,
+the same way linking a second device is. The payload is a pairing
+secret: write it only to the temp files below, and delete them as soon
+as the link is open. Never print it, and never open the QR page.
+
+The clone lives under `/tmp/replycant-sim-bootstrap`, so Reset removes
+it. Leave the clone running until `wait` returns. It waits up to 10
+minutes to be approved, then fetches. "Clone complete" in the log is
+success. If the payload page never appears, the clone failed; read the
+log and start this step again.
+
+```bash
+D=/tmp/replycant-sim-bootstrap
+R=$D/import
+mkdir -p "$D"
+git-replycant clone --no-lfs --device-name sim-seeder \
+  --qr-addr 127.0.0.1:18990 "$R" >"$D/clone.log" 2>&1 &
+CLONE=$!
+ok=
+for _ in $(seq 1 40); do
+  curl -sf http://127.0.0.1:18990/payload.json \
+    -o /tmp/replycant-link-payload.txt && ok=1 && break
+  sleep 0.5
+done
+test -n "$ok"
+python3 - << 'PY'
+import pathlib, urllib.parse
+payload = pathlib.Path("/tmp/replycant-link-payload.txt").read_text().strip()
+if not payload.startswith("{"):
+    raise SystemExit("payload missing")
+url = "replycant://debug-link-device?payload=" + urllib.parse.quote(payload, safe="")
+pathlib.Path("/tmp/replycant-link-url.txt").write_text(url)
+print("url bytes", len(url))
+PY
+xcrun simctl openurl <udid> "$(cat /tmp/replycant-link-url.txt)"
+rm -f /tmp/replycant-link-payload.txt /tmp/replycant-link-url.txt
+wait "$CLONE"
+```
+
+Do not open the link a second time while the first grant is still
+running. If `wait` fails, start this step again so the clone offers a
+new payload.
+
+### Generate the files
+
+`ffmpeg` is already required by the importer. Photos get their date and
+GPS from EXIF, which ffmpeg cannot write, so install `exiftool` when it
+is missing:
+
+```bash
+command -v exiftool >/dev/null || brew install exiftool
+```
+
+One script writes the batch. `$N` is the count and `$PREFIX` is a short
+word with no spaces (`seed` the first time). The prefix is stored in
+every file, so a later batch is not byte-for-byte the same and the
+importer does not skip it as a duplicate.
+
+The mix is fixed for a given count:
+
+- Item `i` is a video when `i % 10 == 9`. The rest are photos, about
+  one video in ten.
+- Item `i` has no location when `i % 5 == 0` or `i % 50 == 19`. About
+  four in five items are geotagged, and the second clause leaves some
+  videos with no location. The video at index 9 stays geotagged, so a
+  10-item seed still has a located video.
+- A located item sits on Stockholm, Paris, New York, Tokyo, or Sydney,
+  shifted by a fraction of a degree, so each city is a tight cluster.
+- Item `i` is dated now minus `i` hours, which spreads the batch across
+  many days.
+
+Photos are one `ffmpeg` pass of `testsrc2`. Each frame differs, so none
+are duplicates. One `exiftool` run then sets `DateTimeOriginal` on every
+photo and GPS on the located ones. Videos are 2-second clips, encoded
+in parallel, with `creation_time` and, when located, a `location` tag.
+The importer reads that tag.
+
+```bash
+M=/tmp/replycant-sim-media
+N=10
+PREFIX=seed
+rm -rf "$M"
+mkdir -p "$M"
+python3 - "$M" "$N" "$PREFIX" << 'PY'
+import os, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+
+media, count, prefix = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+cities = [
+    (59.3293, 18.0686),    # Stockholm
+    (48.8566, 2.3522),     # Paris
+    (40.7128, -74.0060),   # New York
+    (35.6762, 139.6503),   # Tokyo
+    (-33.8688, 151.2093),  # Sydney
+]
+
+def located(i):
+    return i % 5 != 0 and i % 50 != 19
+
+def place(i):
+    lat, lon = cities[i % len(cities)]
+    shift = ((i * 37) % 100) / 1000 - 0.05
+    return lat + shift, lon + shift
+
+now = datetime.now(timezone.utc)
+items = []
+for i in range(count):
+    taken = now - timedelta(hours=i)
+    loc = place(i) if located(i) else None
+    items.append((i, i % 10 == 9, loc, taken))
+
+def stamp(path, taken):
+    t = taken.timestamp()
+    os.utime(path, (t, t))
+
+photos = [it for it in items if not it[1]]
+videos = [it for it in items if it[1]]
+
+if photos:
+    pattern = os.path.join(media, f".frames-{prefix}-%05d.jpg")
+    subprocess.check_call([
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=1",
+        "-frames:v", str(len(photos)), "-q:v", "5", pattern,
+    ])
+    args = []
+    for n, (i, _, loc, taken) in enumerate(photos, start=1):
+        src = os.path.join(media, f".frames-{prefix}-{n:05d}.jpg")
+        dst = os.path.join(media, f"photo-{prefix}-{i:05d}.jpg")
+        os.rename(src, dst)
+        args += [
+            dst,
+            f"-ImageDescription={prefix}",
+            f"-DateTimeOriginal={taken.strftime('%Y:%m:%d %H:%M:%S')}",
+        ]
+        if loc:
+            lat, lon = loc
+            args += [
+                f"-GPSLatitude={abs(lat):.6f}",
+                f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}",
+                f"-GPSLongitude={abs(lon):.6f}",
+                f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}",
+            ]
+        args.append("-execute")
+    argfile = os.path.join(media, "exif.args")
+    with open(argfile, "w") as fh:
+        fh.write("\n".join(args) + "\n")
+    subprocess.check_call([
+        "exiftool", "-q", "-@", argfile,
+        "-common_args", "-overwrite_original",
+    ])
+    os.remove(argfile)
+    for i, _, _, taken in photos:
+        stamp(os.path.join(media, f"photo-{prefix}-{i:05d}.jpg"), taken)
+
+def make_video(item):
+    i, _, loc, taken = item
+    dst = os.path.join(media, f"video-{prefix}-{i:05d}.mp4")
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=1:duration=2",
+        "-t", "2", "-an",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-metadata", f"creation_time={taken.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        "-metadata", f"title={prefix}-{i}",
+    ]
+    if loc:
+        lat, lon = loc
+        cmd += ["-metadata", f"location={lat:+.4f}{lon:+.4f}/"]
+    cmd.append(dst)
+    subprocess.check_call(cmd)
+    stamp(dst, taken)
+
+if videos:
+    workers = min(len(videos), os.cpu_count() or 1)
+    with ThreadPoolExecutor(workers) as pool:
+        list(pool.map(make_video, videos))
+
+geo = sum(1 for it in items if it[2] is not None)
+print(f"photos {len(photos)} videos {len(videos)} geotagged {geo}")
+PY
+```
+
+### Import
+
+Push as the files are committed. The importer's final push runs because
+`--push-every` is set, including when the batch is smaller than 200.
+The app pulls about every 2 seconds, so the timeline fills on its own.
+
+```bash
+replycant-importer "$R" "$M" sim-seeder --push-every 200
+```
+
+Success is the importer exiting 0 and the timeline showing the items,
+checked by screenshot. For 10000, note how long generation and import
+took and how long the timeline took to catch up.
+
+To add another batch, run Generate and Import again with a new `$M`
+contents and a different `$PREFIX`. Leave the clone in place. Wiping
+the library means Reset, then this section from the start.
 
 ## Linking a second device
 
@@ -395,6 +643,8 @@ Do not wipe the data directory unless the keys are expendable.
 - Never write `RecoveryKeys.md` or `recordings/` into git
 - Reset only the throwaway stack `replycant-sim-bootstrap`, never the
   default compose project
+- Seed only `replycant-sim-bootstrap`, never a `RecoveryKeys.md` library
+- Never print a clone pairing payload, and never open its QR page
 - Never embed or keep the device-link QR screenshot
 
 ## Final output to user
@@ -405,6 +655,8 @@ Report:
 - Whether recovery completed, was rejected as revoked, or failed
 - Whether the local stack was started or live-patched
 - Whether a second device was linked, and which library received its key
+- When media was seeded: the count, the photo / video / geotagged split,
+  and how long generation and import took
 - The path to the walkthrough MP4, when one was recorded
 - Key frames embedded inline, since chat cannot play video. Use an
   absolute path with no `file://` prefix. A relative `recordings/`
