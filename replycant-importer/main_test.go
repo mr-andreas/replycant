@@ -1051,7 +1051,8 @@ func TestImportProgressUsesConcreteTotal(t *testing.T) {
 	}
 }
 
-// TestErrorContinue verifies one bad file does not prevent importing good files.
+// TestErrorContinue verifies one bad file does not prevent importing good files,
+// and that the bad file still fails the run.
 func TestErrorContinue(t *testing.T) {
 	repo := initTempRepo(t)
 	srcDir := t.TempDir()
@@ -1061,12 +1062,13 @@ func TestErrorContinue(t *testing.T) {
 	}
 
 	imp, stderr, _, _ := newTestImporter(t, nil)
-	if err := imp.run(context.Background(), CLI{
+	err := imp.run(context.Background(), CLI{
 		Repo:        repo,
 		Source:      srcDir,
 		DeviceSpace: "device-a",
-	}); err != nil {
-		t.Fatalf("run failed: %v", err)
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
+		t.Fatalf("expected the broken file to fail the run, got %v", err)
 	}
 
 	originals, _ := listManifestPaths(t, repo, "device-a")
@@ -1075,6 +1077,85 @@ func TestErrorContinue(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "error importing") {
 		t.Fatalf("expected stderr to contain import error, got: %s", stderr.String())
+	}
+}
+
+// TestFailedCommitFailsTheRun verifies a rejected batch is counted and
+// reported, while a later batch is still committed. The commit error wraps
+// a context cancellation that belongs to git, not to this run.
+func TestFailedCommitFailsTheRun(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "a.jpg"), "red")
+	writeTinyJPEGColor(t, filepath.Join(srcDir, "b.jpg"), "blue")
+
+	imp, stderr, _, _ := newTestImporter(t, nil)
+	firstCommitStarted := make(chan struct{})
+	var failedCommit atomic.Bool
+	var uploads atomic.Int32
+	baseRun := imp.runCmd
+	baseUpload := imp.uploadObjects
+	imp.runCmd = func(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+		if name == "git" && gitSubcommand(args) == "commit" && failedCommit.CompareAndSwap(false, true) {
+			close(firstCommitStarted)
+			return nil, fmt.Errorf("git commit refused: %w", context.Canceled)
+		}
+		return baseRun(ctx, dir, name, args...)
+	}
+	imp.uploadObjects = func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error {
+		if uploads.Add(1) == 2 {
+			select {
+			case <-firstCommitStarted:
+			case <-time.After(10 * time.Second):
+				return fmt.Errorf("timed out waiting for the first commit")
+			}
+		}
+		return baseUpload(ctx, objects, open)
+	}
+
+	err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+		Workers:     2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
+		t.Fatalf("expected a one-file failure, got %v", err)
+	}
+	if !strings.Contains(stderr.String(), "error importing") {
+		t.Fatalf("expected the rejected batch on stderr, got %s", stderr.String())
+	}
+	originals, _ := listManifestPaths(t, repo, "device-a")
+	if len(originals) != 1 {
+		t.Fatalf("expected the other file to stay committed, got %d originals", len(originals))
+	}
+}
+
+// TestWrappedCancelWhileRunningIsReported verifies an upload error that
+// wraps context.Canceled is a real failure while this run is still live.
+// Treating every wrapped cancellation as "the user hit Ctrl+C" dropped
+// files and still exited 0.
+func TestWrappedCancelWhileRunningIsReported(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
+
+	imp, stderr, _, _ := newTestImporter(t, nil)
+	imp.uploadObjects = func(ctx context.Context, objects []lfsclient.Object, open lfsclient.OpenFunc) error {
+		return fmt.Errorf("upload LFS objects: %w", context.Canceled)
+	}
+
+	err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+		Workers:     1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
+		t.Fatalf("expected the cancelled upload to fail the run, got %v", err)
+	}
+	if !strings.Contains(stderr.String(), "error importing") {
+		t.Fatalf("expected the upload failure on stderr, got %s", stderr.String())
 	}
 }
 
@@ -1816,8 +1897,8 @@ func TestCommitFailureUnstagesBatch(t *testing.T) {
 		Source:      srcDir,
 		DeviceSpace: "device-a",
 	})
-	if err != nil {
-		t.Fatalf("run failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
+		t.Fatalf("expected the rejected commit to fail the run, got %v", err)
 	}
 
 	deleted := strings.TrimSpace(mustRun(t, repo, "git", "ls-files", "-d"))
@@ -1860,8 +1941,8 @@ func TestCommitFailureDoesNotBlockLaterRebase(t *testing.T) {
 		DeviceSpace: "device-a",
 		PushEvery:   1,
 		Workers:     1,
-	}); err != nil {
-		t.Fatalf("first run failed: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "failed to import") {
+		t.Fatalf("expected the rejected commit to fail the first run, got %v", err)
 	}
 
 	_ = advanceRemoteWithForeignCommit(t, remoteURL(t, repo))

@@ -325,6 +325,10 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 	defer stopQueueOnCancel()
 	commitCh := make(chan *preparedImport, workers*2)
 	progress := &progressTotal{}
+	// Per-file failures are logged and the run still finishes the files that
+	// worked, but a silent success hid missing photos. This count becomes
+	// the run's error after the final push.
+	var failed atomic.Int64
 	var workerWG sync.WaitGroup
 	var commitWG sync.WaitGroup
 	var walkWG sync.WaitGroup
@@ -375,10 +379,14 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 			commitStart := i.now()
 			if err := i.gitCommit(flushCtx, repoAbs, batch); err != nil {
 				for _, prepared := range batch {
-					if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					// A wrapped context error from git is not this run being
+					// cancelled. Only the flush context means the user asked
+					// to stop, and those files are not failures to report.
+					if flushCtx.Err() == nil {
 						logMu.Lock()
 						fmt.Fprintf(i.stderr, "error importing %s: %v\n", prepared.sourceName, err)
 						logMu.Unlock()
+						failed.Add(1)
 					}
 					if prepared.reservedSHA != "" {
 						i.shaMu.Lock()
@@ -433,10 +441,14 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 				}
 				prepared, skipped, err := i.prepareFile(workCtx, repoAbs, cli.DeviceSpace, job.path, knownSHAs, knownPathSizes)
 				if err != nil {
-					if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					// Same rule as the commit loop: an upload that failed
+					// with a wrapped cancellation is a lost file while this
+					// run is still going.
+					if workCtx.Err() == nil {
 						logMu.Lock()
 						fmt.Fprintf(i.stderr, "error importing %s: %v\n", job.path, err)
 						logMu.Unlock()
+						failed.Add(1)
 					}
 					continue
 				}
@@ -501,6 +513,9 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 			}
 			return fmt.Errorf("final push failed: %w", err)
 		}
+	}
+	if n := failed.Load(); n > 0 {
+		return fmt.Errorf("%d file(s) failed to import; rerun the importer to import them", n)
 	}
 	if walkErr != nil {
 		return walkErr

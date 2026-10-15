@@ -25,6 +25,7 @@
 
 #### replycant-importer
 
+- the importer reports files it failed to import and exits with an error instead of succeeding
 - videos now keep their GPS location
 
 ## 0.3.1 - 2026-10-12

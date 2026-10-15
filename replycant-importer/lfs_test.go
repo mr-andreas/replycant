@@ -82,7 +82,8 @@ func TestUploadFailureSkipsFileWithoutCommit(t *testing.T) {
 		DeviceSpace: "device-a",
 		Workers:     1,
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 file(s) failed to import")
 	assert.Equal(t, before, commitCount(t, repo))
 	assert.Contains(t, stderr.String(), "injected upload failure")
 	originals, _ := listManifestPaths(t, repo, "device-a")
