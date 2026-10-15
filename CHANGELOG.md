@@ -17,6 +17,10 @@
 - the month sidebar highlights the month of the photos at the top of the timeline
 - photo details show HEIC, JPEG, or MOV instead of a type identifier
 
+#### replycant-importer
+
+- videos now keep their GPS location
+
 ## 0.3.1 - 2026-10-12
 
 ### Fixes

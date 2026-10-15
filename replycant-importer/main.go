@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -158,6 +159,7 @@ type mediaMeta struct {
 	duration     *float64
 	mimeType     string
 	creationTime string
+	location     *OriginalLocation
 }
 
 // thumbSpec defines one thumbnail output size requirement.
@@ -945,7 +947,7 @@ func (i *importer) prepareFile(ctx context.Context, repoPath, deviceSpace, sourc
 	}
 	createdAt := i.now().UTC().Format(time.RFC3339)
 	takenAt := meta.creationTime
-	location := (*OriginalLocation)(nil)
+	location := meta.location
 	orientation := 1
 	if mediaType == "photo" {
 		extractFn := i.extractPhotoMetadata
@@ -1434,7 +1436,9 @@ func (i *importer) probeMedia(ctx context.Context, path string, mediaType string
 		Format struct {
 			Duration string `json:"duration"`
 			Tags     struct {
-				CreationTime string `json:"creation_time"`
+				CreationTime      string `json:"creation_time"`
+				Location          string `json:"location"`
+				QuickTimeLocation string `json:"com.apple.quicktime.location.ISO6709"`
 			} `json:"tags"`
 		} `json:"format"`
 	}
@@ -1463,6 +1467,12 @@ func (i *importer) probeMedia(ctx context.Context, path string, mediaType string
 		}
 	}
 	mm.creationTime = parseTimestamp(parsed.Format.Tags.CreationTime)
+	// The generic tag is the standard container location (MP4/MOV ©xyz).
+	// Some .mov files only store it under the QuickTime metadata key.
+	mm.location = parseISO6709(parsed.Format.Tags.Location)
+	if mm.location == nil {
+		mm.location = parseISO6709(parsed.Format.Tags.QuickTimeLocation)
+	}
 	if mediaType == "video" && (mm.width == 0 || mm.height == 0) {
 		return mediaMeta{}, fmt.Errorf("media dimensions missing")
 	}
@@ -1852,6 +1862,40 @@ func imageFormatFromPath(path string) (imagemeta.ImageFormat, bool) {
 	default:
 		return imagemeta.ImageFormatAuto, false
 	}
+}
+
+// iso6709Location matches the decimal-degree form used in video container
+// tags: latitude, longitude, an optional altitude, an optional CRS suffix,
+// and an optional trailing slash.
+var iso6709Location = regexp.MustCompile(
+	`^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)?(?:CRS[^/]*)?/?$`,
+)
+
+// parseISO6709 reads a container location tag. A missing or malformed value
+// returns nil so one bad tag cannot fail the import.
+func parseISO6709(v string) *OriginalLocation {
+	m := iso6709Location.FindStringSubmatch(strings.TrimSpace(v))
+	if m == nil {
+		return nil
+	}
+	lat, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || lat < -90 || lat > 90 {
+		return nil
+	}
+	lon, err := strconv.ParseFloat(m[2], 64)
+	if err != nil || lon < -180 || lon > 180 {
+		return nil
+	}
+	loc := &OriginalLocation{Latitude: lat, Longitude: lon}
+	if m[3] == "" {
+		return loc
+	}
+	alt, err := strconv.ParseFloat(m[3], 64)
+	if err != nil {
+		return nil
+	}
+	loc.Altitude = &alt
+	return loc
 }
 
 // parseTimestamp normalizes known timestamp formats to UTC RFC3339.

@@ -367,7 +367,7 @@ func TestVideoMetadataExtraction(t *testing.T) {
 	repo := initTempRepo(t)
 	srcDir := t.TempDir()
 	video := filepath.Join(srcDir, "with-meta.mp4")
-	makeTinyVideoWithCreationTime(t, video, "2024-06-15T10:30:00Z")
+	makeTinyVideoWithMetadata(t, video, "creation_time=2024-06-15T10:30:00Z")
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
@@ -390,6 +390,35 @@ func TestVideoMetadataExtraction(t *testing.T) {
 	if om.Spec.GuessedTakenAt == "" {
 		t.Fatalf("expected guessedTakenAt to be set")
 	}
+}
+
+// TestVideoLocationExtraction verifies a video's container location tag
+// is written onto the original manifest, so geotagged clips show on the map.
+func TestVideoLocationExtraction(t *testing.T) {
+	repo := initTempRepo(t)
+	srcDir := t.TempDir()
+	video := filepath.Join(srcDir, "with-location.mp4")
+	makeTinyVideoWithMetadata(t, video, "location=+59.3293+018.0686/")
+
+	imp, _, _, _ := newTestImporter(t, nil)
+	if err := imp.run(context.Background(), CLI{
+		Repo:        repo,
+		Source:      srcDir,
+		DeviceSpace: "device-a",
+	}); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	originals, _ := listManifestPaths(t, repo, "device-a")
+	if len(originals) != 1 {
+		t.Fatalf("expected 1 original, got %d", len(originals))
+	}
+	var om OriginalManifest
+	readYAML(t, originals[0], &om)
+	assertLocation(t, om.Spec.Location, &OriginalLocation{
+		Latitude:  59.3293,
+		Longitude: 18.0686,
+	})
 }
 
 // TestImageMetadataPropagation verifies extracted image metadata is written to manifests.
@@ -513,13 +542,17 @@ func TestImportPhotoOrientedDimensions(t *testing.T) {
 	}
 }
 
-// TestProbeMediaVideoRotationSwapsDimensions verifies video dimensions are display-oriented.
-func TestProbeMediaVideoRotationSwapsDimensions(t *testing.T) {
+// TestProbeMediaVideoMetadata verifies display-oriented dimensions and that
+// container location tags become a location, or none when the tag is absent
+// or unusable. A bad location must not fail the probe.
+func TestProbeMediaVideoMetadata(t *testing.T) {
+	alt := func(v float64) *float64 { return &v }
 	cases := []struct {
 		name    string
 		jsonOut string
 		wantW   int
 		wantH   int
+		wantLoc *OriginalLocation
 	}{
 		{
 			name: "side_data rotation -90 swaps",
@@ -548,6 +581,111 @@ func TestProbeMediaVideoRotationSwapsDimensions(t *testing.T) {
 			wantW: 1080,
 			wantH: 1920,
 		},
+		{
+			name: "generic location without altitude",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{"location":"+59.3293+018.0686/"}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+			wantLoc: &OriginalLocation{
+				Latitude:  59.3293,
+				Longitude: 18.0686,
+			},
+		},
+		{
+			name: "generic location with altitude and no trailing slash",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{"location":"+59.3293+018.0686+012.500"}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+			wantLoc: &OriginalLocation{
+				Latitude:  59.3293,
+				Longitude: 18.0686,
+				Altitude:  alt(12.5),
+			},
+		},
+		{
+			name: "quicktime location with altitude and crs suffix",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{"com.apple.quicktime.location.ISO6709":"+37.3349-122.0090+010.000CRSWGS_84/"}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+			wantLoc: &OriginalLocation{
+				Latitude:  37.3349,
+				Longitude: -122.0090,
+				Altitude:  alt(10),
+			},
+		},
+		{
+			name: "generic location wins when both tags are present",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{
+					"location":"+59.3293+018.0686/",
+					"com.apple.quicktime.location.ISO6709":"+37.3349-122.0090/"
+				}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+			wantLoc: &OriginalLocation{
+				Latitude:  59.3293,
+				Longitude: 18.0686,
+			},
+		},
+		{
+			name: "malformed generic location falls back to quicktime",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{
+					"location":"not-a-location",
+					"com.apple.quicktime.location.ISO6709":"+37.3349-122.0090+010.000/"
+				}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+			wantLoc: &OriginalLocation{
+				Latitude:  37.3349,
+				Longitude: -122.0090,
+				Altitude:  alt(10),
+			},
+		},
+		{
+			name: "southern and western hemisphere",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{"location":"-33.4489-070.6693/"}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+			wantLoc: &OriginalLocation{
+				Latitude:  -33.4489,
+				Longitude: -70.6693,
+			},
+		},
+		{
+			name: "malformed location is ignored",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{"location":"not-a-location"}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+		},
+		{
+			name: "out of range latitude is ignored",
+			jsonOut: `{
+				"streams":[{"codec_type":"video","width":64,"height":64,"duration":"1.0"}],
+				"format":{"duration":"1.0","tags":{"location":"+91.0000+018.0686/"}}
+			}`,
+			wantW: 64,
+			wantH: 64,
+		},
 	}
 
 	for _, tc := range cases {
@@ -567,7 +705,37 @@ func TestProbeMediaVideoRotationSwapsDimensions(t *testing.T) {
 			if meta.width != tc.wantW || meta.height != tc.wantH {
 				t.Fatalf("expected %dx%d, got %dx%d", tc.wantW, tc.wantH, meta.width, meta.height)
 			}
+			assertLocation(t, meta.location, tc.wantLoc)
 		})
+	}
+}
+
+// assertLocation checks latitude, longitude, and whether altitude is present.
+func assertLocation(t *testing.T, got, want *OriginalLocation) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Fatalf("expected no location, got lat %v lon %v", got.Latitude, got.Longitude)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatalf("expected location lat %v lon %v, got none", want.Latitude, want.Longitude)
+	}
+	if got.Latitude != want.Latitude || got.Longitude != want.Longitude {
+		t.Fatalf("expected lat %v lon %v, got lat %v lon %v", want.Latitude, want.Longitude, got.Latitude, got.Longitude)
+	}
+	if want.Altitude == nil {
+		if got.Altitude != nil {
+			t.Fatalf("expected no altitude, got %v", *got.Altitude)
+		}
+		return
+	}
+	if got.Altitude == nil {
+		t.Fatalf("expected altitude %v, got none", *want.Altitude)
+	}
+	if *got.Altitude != *want.Altitude {
+		t.Fatalf("expected altitude %v, got %v", *want.Altitude, *got.Altitude)
 	}
 }
 
@@ -2082,18 +2250,22 @@ func makeTinyVideo(t *testing.T, path string) {
 	}
 }
 
-// makeTinyVideoWithCreationTime creates an mp4 fixture with embedded creation_time.
-func makeTinyVideoWithCreationTime(t *testing.T, path string, creationTime string) {
+// makeTinyVideoWithMetadata creates an mp4 fixture carrying the given
+// ffmpeg metadata entries, each as "key=value".
+func makeTinyVideoWithMetadata(t *testing.T, path string, metadata ...string) {
 	t.Helper()
-	_, err := defaultRunCmd(context.Background(), "", "ffmpeg",
+	args := []string{
 		"-y",
 		"-loglevel", "error",
 		"-f", "lavfi",
 		"-i", "testsrc=size=64x64:rate=1:duration=1",
 		"-pix_fmt", "yuv420p",
-		"-metadata", "creation_time="+creationTime,
-		path,
-	)
+	}
+	for _, entry := range metadata {
+		args = append(args, "-metadata", entry)
+	}
+	args = append(args, path)
+	_, err := defaultRunCmd(context.Background(), "", "ffmpeg", args...)
 	if err != nil {
 		t.Fatalf("create video fixture with metadata failed: %v", err)
 	}
