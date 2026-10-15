@@ -323,4 +323,41 @@ struct TimelineManagerDatabaseChangeTests {
         #expect(manager.item(at: 2)?.id == "inside")
         #expect(manager.totalCount == 3)
     }
+
+    // Sync inserts older photos before the sparse window and later deletes
+    // some of them. The grid keeps a photo on screen by asking for that
+    // photo's new global index, so the index has to move with the history.
+    @Test func indexOfLoadedItemTracksHistoryAddedAndRemovedBeforeWindow() {
+        let manager = makeIsolatedManager()
+        let visible = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
+        manager.seedLoadedRegionForTesting(
+            offset: 2,
+            items: [TimelineItem(original: visible)],
+            totalCount: 3
+        )
+
+        #expect(manager.index(ofItemId: "c") == 2)
+        #expect(manager.index(ofItemId: "missing") == nil)
+
+        let older = (0..<3).map { offset in
+            makeOriginal(
+                id: "old-\(offset)",
+                guessedTakenAt: Date(timeIntervalSince1970: TimeInterval(offset)),
+                sha256: "sha-old-\(offset)"
+            )
+        }
+        manager.applyDatabaseChange(
+            .incremental(ManifestMutation(added: older, updated: [], removed: [])),
+            refreshedTotalCount: 6
+        )
+        #expect(manager.index(ofItemId: "c") == 5)
+
+        manager.applyDatabaseChange(
+            .incremental(
+                ManifestMutation(added: [], updated: [], removed: [older[0], older[1]]),
+            ),
+            refreshedTotalCount: 4
+        )
+        #expect(manager.index(ofItemId: "c") == 3)
+    }
 }

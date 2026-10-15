@@ -375,7 +375,36 @@ struct TimelineCollectionView: UIViewRepresentable {
                     guard let self, let collectionView = self.collectionView else { return }
                     guard self.lastKnownTotalCount != updatedCount else { return }
                     self.lastKnownTotalCount = updatedCount
+                    // The cell still shows the photo from before this change.
+                    // The manager's index for that row has already moved, so
+                    // reading the manager here would anchor the wrong photo.
+                    let preserved = self.hasCommittedInitialPosition
+                        ? self.preservedVisibleItem(in: collectionView)
+                        : nil
                     collectionView.reloadData()
+                    collectionView.layoutIfNeeded()
+                    if let preserved,
+                       let newIndex = self.timelineManager.index(ofItemId: preserved.itemId) {
+                        // The oldest row sits at the same offset a tab reselect
+                        // asks for. Restoring it has to stay there; the grid
+                        // would otherwise send that offset to the newest row.
+                        let grid = collectionView as? InitialLayoutCollectionView
+                        let wasRedirecting = grid?.redirectsTopAnchorsToBottom ?? false
+                        grid?.redirectsTopAnchorsToBottom = false
+                        let restored = self.restoreVisibleTopAnchor(
+                            (IndexPath(item: newIndex, section: 0), preserved.offsetFromItemTop),
+                            in: collectionView
+                        )
+                        grid?.redirectsTopAnchorsToBottom = wasRedirecting
+                        if restored {
+                            collectionView.layoutIfNeeded()
+                            self.timelineManager.savedContentOffset = collectionView.contentOffset
+                            self.timelineManager.savedViewportAnchorIndex = newIndex
+                            self.timelineManager.savedViewportAnchorOffsetFromItemTop = preserved.offsetFromItemTop
+                            self.lastStableContentOffsetY = collectionView.contentOffset.y
+                            self.publishViewportMonth(in: collectionView, force: true)
+                        }
+                    }
                     self.performInitialScrollIfNeeded()
                 }
                 .store(in: &cancellables)
@@ -678,6 +707,20 @@ struct TimelineCollectionView: UIViewRepresentable {
                 }
             }
             return containing?.index ?? nearestBelow?.index ?? visible.map(\.item).min()
+        }
+
+        // The photo at the top of the viewport, read from the cell rather
+        // than the manager. Sync updates the manager before this reload, so
+        // the cell is the last record of which photo the person was seeing.
+        private func preservedVisibleItem(
+            in collectionView: UICollectionView
+        ) -> (itemId: String, offsetFromItemTop: CGFloat)? {
+            guard let anchor = visibleTopAnchor(in: collectionView),
+                  let cell = collectionView.cellForItem(at: anchor.indexPath) as? TimelineCollectionCell,
+                  let itemId = cell.currentItemId else {
+                return nil
+            }
+            return (itemId, anchor.offsetFromItemTop)
         }
 
         // Captures the first visible item and its vertical offset so layout-width changes can preserve the same viewport anchor.

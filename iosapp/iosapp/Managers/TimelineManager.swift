@@ -326,6 +326,16 @@ final class TimelineManager: ObservableObject {
         return loadedItems[index - loadedOffset]
     }
 
+    // Maps a photo the grid is already showing back to its global index.
+    // Older history synced in above the window moves that index, and the
+    // grid needs the new one to keep the same photo on screen.
+    func index(ofItemId id: String) -> Int? {
+        guard let position = loadedItems.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+        return loadedOffset + position
+    }
+
     var canLoadOlder: Bool {
         loadedOffset > 0
     }
