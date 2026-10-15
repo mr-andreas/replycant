@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Tile placement is superseded by ADR-0032.
 
 ## Context
 

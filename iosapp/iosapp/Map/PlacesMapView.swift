@@ -84,7 +84,8 @@ struct PlacesMapView: View {
                         coordinate: CLLocationCoordinate2D(
                             latitude: cluster.latitude,
                             longitude: cluster.longitude
-                        )
+                        ),
+                        anchor: .bottom
                     ) {
                         Button {
                             selection = PlaceSelection(
@@ -186,15 +187,24 @@ struct PlacesMapView: View {
 }
 
 // Draws one place tile. The count is the number of photos the place grid
-// will show, matching the Apple Photos map.
+// will show, matching the Apple Photos map. The pointer underneath marks
+// the exact spot the photo was taken, so the tile does not drift as the
+// map zooms.
 struct MapClusterTile: View {
-    // Shared with the clusterer so a tile is kept inside its cell.
+    // Shared with the clusterer as the on-screen size of one place.
     static let size: CGFloat = 84
 
     let count: Int
     let image: UIImage?
 
     var body: some View {
+        VStack(spacing: 0) {
+            photo
+            MapClusterPointer()
+        }
+    }
+
+    private var photo: some View {
         ZStack(alignment: .bottomLeading) {
             Group {
                 if let image {
@@ -223,5 +233,29 @@ struct MapClusterTile: View {
                 .strokeBorder(.white, lineWidth: 3)
         }
         .shadow(color: .black.opacity(0.28), radius: 4, y: 2)
+    }
+}
+
+// The tail under a place tile. Its tip is what the map anchors, so the
+// photo stays tied to the place it was taken.
+private struct MapClusterPointer: View {
+    var body: some View {
+        MapClusterPointerShape()
+            .fill(.white)
+            .frame(width: 18, height: 10)
+            .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
+    }
+}
+
+// A downward triangle. The flat edge meets the tile and the point is
+// the location.
+private struct MapClusterPointerShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }

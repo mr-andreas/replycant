@@ -33,8 +33,8 @@ struct MapClustererTests {
         #expect(Set(zoomedIn.map(\.representativeId)) == ["older", "newer"])
     }
 
-    // The tile photo is the newest member. The pin itself sits at the
-    // members' centroid so a tile shows the place, not only that photo.
+    // The tile photo is the newest member, and the pin is that photo's
+    // own spot, so the pointer marks where the picture was taken.
     @Test func representativeIsTheNewestMember() {
         let center = CLLocationCoordinate2D(latitude: 59.33, longitude: 18.06)
         let probe = mapRect(center: center, latitudeDelta: 1, viewSize: viewSize)
@@ -49,11 +49,10 @@ struct MapClustererTests {
             visibleMapRect: rect,
             viewSize: viewSize
         )
-        let centroid = mapCentroid([older, middle, newer])
         #expect(clusters.count == 1)
         #expect(clusters[0].representativeId == "newer")
-        #expect(abs(clusters[0].latitude - centroid.latitude) < 1e-6)
-        #expect(abs(clusters[0].longitude - centroid.longitude) < 1e-6)
+        #expect(abs(clusters[0].latitude - newer.latitude) < 1e-9)
+        #expect(abs(clusters[0].longitude - newer.longitude) < 1e-9)
     }
 
     // The place grid uses the members' own bounds, so the tile count
@@ -234,38 +233,52 @@ struct MapClustererTests {
         #expect(abs(exponent - exponent.rounded()) < 1e-6)
     }
 
-    // Photos on either side of a cell edge must not draw tiles on top
-    // of each other, or there is nowhere to pinch the map.
-    @Test func tilesOnEitherSideOfABoundaryStayATileApart() {
+    // A photo pressed against a cell edge stays where it was taken.
+    // The tile is not pushed inward, even when that lets neighbors overlap.
+    @Test func photoNearACellEdgeStaysAtItsOwnCoordinate() {
         let center = CLLocationCoordinate2D(latitude: 59.33, longitude: 18.06)
         let probe = mapRect(center: center, latitudeDelta: 0.5, viewSize: viewSize)
-        let cell = MapClusterer.cellMapSize(visibleMapRect: probe, viewSize: viewSize)
-        let anchor = MKMapPoint(center)
-        let boundary = MKMapPoint(
-            x: (floor(anchor.x / cell) + 1) * cell,
-            y: (floor(anchor.y / cell) + 0.5) * cell
+        let rect = centeredOnCell(probe, around: center)
+        let cell = MapClusterer.cellMapSize(visibleMapRect: rect, viewSize: viewSize)
+        let origin = cellOrigin(containing: center, cell: cell)
+        let edge = point(at: origin, dx: 0.99, dy: 0.01, cell: cell, id: "edge", takenAt: 1)
+        let clusters = MapClusterer.clusters(from: [edge], visibleMapRect: rect, viewSize: viewSize)
+        #expect(clusters.count == 1)
+        #expect(abs(clusters[0].latitude - edge.latitude) < 1e-9)
+        #expect(abs(clusters[0].longitude - edge.longitude) < 1e-9)
+    }
+
+    // Zooming splits and merges groups, but the photo drawn on a tile
+    // keeps pointing at the same spot the whole way.
+    @Test func newestPhotoKeepsItsCoordinateAcrossZoomLevels() {
+        let center = CLLocationCoordinate2D(latitude: 59.33, longitude: 18.06)
+        let coarseRect = centeredOnCell(
+            mapRect(center: center, latitudeDelta: 0.5, viewSize: viewSize),
+            around: center
         )
-        let rect = MKMapRect(
-            x: boundary.x - probe.width / 2,
-            y: boundary.y - probe.height / 2,
-            width: probe.width,
-            height: probe.height
+        let fineRect = scaled(coarseRect, by: 0.5)
+        let cell = MapClusterer.cellMapSize(visibleMapRect: coarseRect, viewSize: viewSize)
+        let origin = cellOrigin(containing: center, cell: cell)
+        let older = point(at: origin, dx: 0.25, dy: 0.25, cell: cell, id: "older", takenAt: 1)
+        let newer = point(at: origin, dx: 0.75, dy: 0.75, cell: cell, id: "newer", takenAt: 2)
+        let coarse = MapClusterer.clusters(
+            from: [older, newer],
+            visibleMapRect: coarseRect,
+            viewSize: viewSize
         )
-        let left = point(
-            at: MKMapPoint(x: boundary.x - cell, y: boundary.y - cell * 0.5),
-            dx: 0.99, dy: 0, cell: cell, id: "left", takenAt: 1
+        let fine = MapClusterer.clusters(
+            from: [older, newer],
+            visibleMapRect: fineRect,
+            viewSize: viewSize
         )
-        let right = point(
-            at: MKMapPoint(x: boundary.x, y: boundary.y - cell * 0.5),
-            dx: 0.01, dy: 0, cell: cell, id: "right", takenAt: 2
-        )
-        let clusters = MapClusterer.clusters(from: [left, right], visibleMapRect: rect, viewSize: viewSize)
-        #expect(clusters.count == 2)
-        let scale = Double(viewSize.width) / rect.width
-        let first = MKMapPoint(CLLocationCoordinate2D(latitude: clusters[0].latitude, longitude: clusters[0].longitude))
-        let second = MKMapPoint(CLLocationCoordinate2D(latitude: clusters[1].latitude, longitude: clusters[1].longitude))
-        let distance = hypot((first.x - second.x) * scale, (first.y - second.y) * scale)
-        #expect(distance >= Double(MapClusterTile.size))
+        let split = fine.first { $0.representativeId == "newer" }
+        #expect(coarse.count == 1)
+        #expect(fine.count == 2)
+        #expect(coarse[0].representativeId == "newer")
+        #expect(abs(coarse[0].latitude - newer.latitude) < 1e-9)
+        #expect(abs(coarse[0].longitude - newer.longitude) < 1e-9)
+        #expect(abs((split?.latitude ?? 0) - newer.latitude) < 1e-9)
+        #expect(abs((split?.longitude ?? 0) - newer.longitude) < 1e-9)
     }
 
     // Different groups never share a box, so each tile's count stays
@@ -371,18 +384,6 @@ struct MapClustererTests {
     ) -> MapMediaPoint {
         let coordinate = MKMapPoint(x: origin.x + dx * cell, y: origin.y + dy * cell).coordinate
         return point(id, latitude: coordinate.latitude, longitude: coordinate.longitude, takenAt: takenAt)
-    }
-
-    private func mapCentroid(_ points: [MapMediaPoint]) -> CLLocationCoordinate2D {
-        var x = 0.0
-        var y = 0.0
-        for item in points {
-            let mapPoint = MKMapPoint(CLLocationCoordinate2D(latitude: item.latitude, longitude: item.longitude))
-            x += mapPoint.x
-            y += mapPoint.y
-        }
-        let count = Double(points.count)
-        return MKMapPoint(x: x / count, y: y / count).coordinate
     }
 
     private func scaled(_ rect: MKMapRect, by factor: Double) -> MKMapRect {

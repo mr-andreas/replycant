@@ -6,7 +6,7 @@
 
 #### iOS app
 
-- a Map tab groups photos by place, each group shows one of its own photos, and tapping a place shows only those photos
+- a Map tab groups photos by place, each group shows one of its own photos and points at the exact spot that photo was taken, and tapping a place shows only those photos
 - after an update that changes the local index, the app rebuilds it from the library on launch
 
 ### Fixes

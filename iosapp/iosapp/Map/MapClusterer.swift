@@ -1,8 +1,9 @@
 import CoreLocation
 import MapKit
 
-// One map tile: the newest photo, how many photos it stands for, where
-// the tile is drawn, and the box the place grid queries.
+// One map tile: the newest photo, how many photos it stands for, the
+// spot that photo was taken, and the box the place grid queries. The
+// spot is exact, so tiles near a cell edge may overlap.
 struct MapCluster: Equatable {
     let count: Int
     let representativeId: String
@@ -17,13 +18,14 @@ struct MapCluster: Equatable {
 // MapKit clustering would need one annotation per photo, which does not
 // scale to a full library.
 enum MapClusterer {
-    // Space between neighboring tiles, on top of the tiles themselves,
-    // so a dense area still has somewhere to pinch.
+    // Extra room past one tile when a cell is sized, so a zoomed-in
+    // view is not filled edge to edge by a single tile.
     static let tileGap: CGFloat = 8
 
     // Clusters photos into world-aligned cells, then draws the cells
     // that meet the screen. A cell's count and photo come from every
-    // member, so a pan can only show or hide a whole group.
+    // member, so a pan can only show or hide a whole group. The tile
+    // is pinned to the photo it shows, which can overlap a neighbor.
     static func clusters(
         from points: [MapMediaPoint],
         visibleMapRect: MKMapRect,
@@ -35,13 +37,6 @@ enum MapClusterer {
         guard !rects.isEmpty else { return [] }
         let cell = cellMapSize(visibleMapRect: visibleMapRect, viewSize: viewSize, tileSize: tileSize)
         guard cell > 0, cell.isFinite else { return [] }
-        let pointsPerMapPoint = Double(viewSize.width) / visibleMapRect.width
-        let onScreen = cell * pointsPerMapPoint
-        // Half a tile plus the gap, but never more than half the cell,
-        // so a tile is pushed off a cell edge it would otherwise cover.
-        let insetScreen = min(Double(tileSize) / 2 + Double(tileGap), onScreen / 2)
-        let inset = insetScreen / pointsPerMapPoint
-
         struct Bucket {
             var count: Int
             var representative: MapMediaPoint
@@ -49,8 +44,6 @@ enum MapClusterer {
             var maxLatitude: Double
             var minLongitude: Double
             var maxLongitude: Double
-            var sumX: Double
-            var sumY: Double
             var originX: Double
             var originY: Double
         }
@@ -70,8 +63,6 @@ enum MapClusterer {
                 bucket.maxLatitude = max(bucket.maxLatitude, point.latitude)
                 bucket.minLongitude = min(bucket.minLongitude, point.longitude)
                 bucket.maxLongitude = max(bucket.maxLongitude, point.longitude)
-                bucket.sumX += mapPoint.x
-                bucket.sumY += mapPoint.y
                 if isNewer(point, than: bucket.representative) {
                     bucket.representative = point
                 }
@@ -84,8 +75,6 @@ enum MapClusterer {
                     maxLatitude: point.latitude,
                     minLongitude: point.longitude,
                     maxLongitude: point.longitude,
-                    sumX: mapPoint.x,
-                    sumY: mapPoint.y,
                     originX: indexX * cell,
                     originY: indexY * cell
                 )
@@ -103,16 +92,11 @@ enum MapClusterer {
                 return rects.contains { $0.intersects(cellRect) }
             }
             .map { bucket in
-                let count = Double(bucket.count)
-                let clamped = MKMapPoint(
-                    x: min(max(bucket.sumX / count, bucket.originX + inset), bucket.originX + cell - inset),
-                    y: min(max(bucket.sumY / count, bucket.originY + inset), bucket.originY + cell - inset)
-                ).coordinate
                 return MapCluster(
                     count: bucket.count,
                     representativeId: bucket.representative.id,
-                    latitude: clamped.latitude,
-                    longitude: clamped.longitude,
+                    latitude: bucket.representative.latitude,
+                    longitude: bucket.representative.longitude,
                     bounds: GeoBounds(
                         minLatitude: bucket.minLatitude,
                         maxLatitude: bucket.maxLatitude,
