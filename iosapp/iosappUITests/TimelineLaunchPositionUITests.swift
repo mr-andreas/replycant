@@ -68,4 +68,62 @@ final class TimelineLaunchPositionUITests: XCTestCase {
             "Newest fixture should not be covered by the tab bar"
         )
     }
+
+    // Switching back from another tab is a different gesture from re-tapping
+    // the current one, and it has to leave the photos the user was looking at.
+    func testSwitchingBackToTimelineKeepsPosition() throws {
+        UITestFixtures.waitForTimelineLoad(app, timeout: 15)
+        scrollUntilOldestFixtureIsHittable()
+
+        let settingsTab = app.tabBars.buttons["Settings"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 5), "Expected Settings tab")
+        settingsTab.tap()
+
+        app.tabBars.buttons["Timeline"].tap()
+        UITestFixtures.waitForTimelineLoad(app, timeout: 10)
+
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            XCTAssertNotNil(
+                hittableTimelinePhoto("o-01"),
+                "Returning to Timeline from another tab should keep the current photos on screen"
+            )
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+    }
+
+    // The cell and its image view share an identifier, so a single query is
+    // ambiguous and reports itself as not hittable. One of the matches is
+    // the photo the user can tap.
+    private func hittableTimelinePhoto(_ name: String) -> XCUIElement? {
+        app.descendants(matching: .any)
+            .matching(identifier: "timelinePhoto_\(name)")
+            .allElementsBoundByIndex
+            .first { $0.isHittable }
+    }
+
+    // Moves off the launch position, which is already the newest row, so a
+    // later tap has somewhere to scroll back from. A full swipe reaches the
+    // top and keeps pulling, and that refresh reloads the grid at the newest
+    // row, so the drag is short and held.
+    private func scrollUntilOldestFixtureIsHittable() {
+        let timelineGrid = app.collectionViews["timelineGrid"]
+        let start = timelineGrid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.50))
+        let end = timelineGrid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.62))
+        for _ in 0..<6 {
+            if hittableTimelinePhoto("o-01") != nil {
+                return
+            }
+            start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        let details = app.descendants(matching: .any)
+            .matching(identifier: "timelinePhoto_o-01")
+            .allElementsBoundByIndex
+            .map { "hittable=\($0.isHittable) frame=\($0.frame)" }
+            .joined(separator: "; ")
+        XCTAssertNotNil(
+            hittableTimelinePhoto("o-01"),
+            "Oldest fixture should be reachable by scrolling toward older photos (\(details))"
+        )
+    }
 }

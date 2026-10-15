@@ -13,6 +13,7 @@
 
 #### iOS app
 
+- tapping the Timeline tab or the status bar jumps to the newest photos instead of the oldest
 - tapping a month in the sidebar keeps that month selected
 - month names in the sidebar stay on one line at large text sizes
 - the Connection status in Settings stays readable at large text sizes

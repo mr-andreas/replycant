@@ -18,6 +18,36 @@ struct TimelineInitialBottomAnchor {
         let maxOffset = max(minOffset, contentHeight - viewportHeight + bottomInset)
         return maxOffset
     }
+
+    // A tab reselect or status-bar tap asks for the top. The oldest photos
+    // are there, so the request is carried to the newest row. Nil means the
+    // original request should stand: the person is dragging, a month jump
+    // asked for this offset, or the content is too short to scroll.
+    static func newestOffsetReplacingTopAnchor(
+        requestedY: CGFloat,
+        currentY: CGFloat,
+        contentHeight: CGFloat,
+        viewportHeight: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        redirects: Bool,
+        isUserDriven: Bool
+    ) -> CGFloat? {
+        guard redirects, !isUserDriven else { return nil }
+        let minY = -topInset
+        guard requestedY <= minY + 0.5 else { return nil }
+        let targetY = targetYOffset(
+            contentHeight: contentHeight,
+            viewportHeight: viewportHeight,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+        // Already on the newest row: stay there so the request cannot
+        // continue on to the oldest row.
+        let y = abs(currentY - targetY) > 0.5 ? targetY : currentY
+        guard y > minY + 0.5 else { return nil }
+        return y
+    }
 }
 
 // Decides how far a month tap can scroll. The last rows cannot reach
@@ -402,6 +432,7 @@ struct TimelineCollectionView: UIViewRepresentable {
                 collectionView.setContentOffset(restoredOffset, animated: false)
                 collectionView.layoutIfNeeded()
                 hasCommittedInitialPosition = true
+                (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
                 lastStableContentOffsetY = collectionView.contentOffset.y
                 publishViewportMonth(in: collectionView, force: true)
                 AppSignposts.event("TimelineGridRestoredScroll")
@@ -422,6 +453,7 @@ struct TimelineCollectionView: UIViewRepresentable {
                 collectionView.layoutIfNeeded()
             }
             hasCommittedInitialPosition = true
+            (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             lastStableContentOffsetY = collectionView.contentOffset.y
             publishViewportMonth(in: collectionView, force: true)
             AppSignposts.event("TimelineGridFirstLayout")
@@ -513,6 +545,7 @@ struct TimelineCollectionView: UIViewRepresentable {
         // Flags dragging start so sidebar can avoid expensive animation during active grid interaction.
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             isProgrammaticMonthJumpInFlight = false
+            (scrollView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             timelineManager.setGridScrolling(true)
         }
 
@@ -536,6 +569,27 @@ struct TimelineCollectionView: UIViewRepresentable {
             }
         }
 
+        // Tab reselect and status-bar taps ask for the top. The timeline is
+        // oldest-first, so the end someone is trying to reach is the newest
+        // row. Returning false keeps UIKit from also scrolling to the top.
+        // This is not a month jump: the sidebar should follow the viewport
+        // to the newest month when the animation ends.
+        func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+            let inset = scrollView.adjustedContentInset
+            let targetY = TimelineInitialBottomAnchor.targetYOffset(
+                contentHeight: scrollView.contentSize.height,
+                viewportHeight: scrollView.bounds.height,
+                topInset: inset.top,
+                bottomInset: inset.bottom
+            )
+            guard abs(scrollView.contentOffset.y - targetY) > 0.5 else { return false }
+            scrollView.setContentOffset(
+                CGPoint(x: scrollView.contentOffset.x, y: targetY),
+                animated: true
+            )
+            return false
+        }
+
         // Ends a programmatic scroll. A month jump keeps the tapped month
         // highlighted: the last month cannot reach the top, and republishing
         // the viewport month would snap the sidebar back to the earlier
@@ -544,6 +598,7 @@ struct TimelineCollectionView: UIViewRepresentable {
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
             let wasMonthJump = isProgrammaticMonthJumpInFlight
             isProgrammaticMonthJumpInFlight = false
+            (scrollView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             timelineManager.setGridScrolling(false)
             flushPendingReconfigure()
             if !wasMonthJump, let collectionView = scrollView as? UICollectionView {
@@ -586,6 +641,10 @@ struct TimelineCollectionView: UIViewRepresentable {
             timelineManager.scrollTargetIndex = nil
             guard placement.moves else { return }
             isProgrammaticMonthJumpInFlight = true
+            // The oldest month sits at the top. That offset is also what a
+            // tab reselect asks for, and the grid would otherwise send it
+            // to the newest row.
+            (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = false
             collectionView.setContentOffset(
                 CGPoint(x: collectionView.contentOffset.x, y: placement.targetY),
                 animated: true
@@ -723,7 +782,51 @@ final class InitialLayoutCollectionView: UICollectionView {
     var onDidLayoutSubviews: (() -> Void)?
     var onBoundsWidthWillChange: (() -> Void)?
     var onBoundsWidthChanged: ((CGFloat) -> Void)?
+    // Stays off until the grid has anchored, so the first layout can still
+    // place the newest row itself. Month jumps turn it off again so the
+    // oldest month can land at the top. A finger drag reaches the top
+    // through the tracking path, which is not redirected.
+    var redirectsTopAnchorsToBottom = false
     private var lastKnownBoundsWidth: CGFloat = 0
+
+    // Tab reselect and the status bar scroll to the top. The oldest photos
+    // are there, so the request is carried to the newest row instead.
+    override func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
+        if let redirected = newestOffset(replacingTopAnchor: contentOffset) {
+            super.setContentOffset(redirected, animated: true)
+            return
+        }
+        super.setContentOffset(contentOffset, animated: animated)
+    }
+
+    // Some system scroll-to-top paths reveal the zero rect instead of
+    // setting an offset. That is the same request as a jump to the top.
+    override func scrollRectToVisible(_ rect: CGRect, animated: Bool) {
+        let top = CGPoint(x: contentOffset.x, y: rect.minY - adjustedContentInset.top)
+        if rect.minY <= 1, let redirected = newestOffset(replacingTopAnchor: top) {
+            super.setContentOffset(redirected, animated: true)
+            return
+        }
+        super.scrollRectToVisible(rect, animated: animated)
+    }
+
+    // A programmatic jump to the top is the system scroll-to-top gesture.
+    // Dragging and deceleration move the same distance in small steps, and
+    // those have to be able to reach the oldest photos.
+    private func newestOffset(replacingTopAnchor contentOffset: CGPoint) -> CGPoint? {
+        let inset = adjustedContentInset
+        guard let y = TimelineInitialBottomAnchor.newestOffsetReplacingTopAnchor(
+            requestedY: contentOffset.y,
+            currentY: self.contentOffset.y,
+            contentHeight: contentSize.height,
+            viewportHeight: bounds.height,
+            topInset: inset.top,
+            bottomInset: inset.bottom,
+            redirects: redirectsTopAnchorsToBottom,
+            isUserDriven: isTracking || isDragging || isDecelerating
+        ) else { return nil }
+        return CGPoint(x: contentOffset.x, y: y)
+    }
 
     // Emits width changes so parent coordinator can invalidate flow layout after sidebar show/hide resizes the grid.
     override func layoutSubviews() {
