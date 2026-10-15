@@ -14,6 +14,7 @@
 #### iOS app
 
 - the timeline keeps the photos on screen in place while sync adds older photos
+- a full-screen photo that fails to load now shows the error and a retry button instead of spinning forever
 - tapping the Timeline tab or the status bar jumps to the newest photos instead of the oldest
 - tapping a month in the sidebar keeps that month selected
 - month names in the sidebar stay on one line at large text sizes

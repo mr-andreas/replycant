@@ -32,6 +32,9 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
     private var detailsScrollView: UIScrollView!
     private var metadataHostController: UIHostingController<MediaInfoContent>?
     private var spinner: UIActivityIndicatorView!
+    private var loadErrorLabel: UILabel!
+    private var retryButton: UIButton!
+    private var loadErrorStack: UIStackView!
     private let fallbackScrollView = UIScrollView()
     private var detailsTogglePanRecognizer: UIPanGestureRecognizer!
     // Captures whether the panel was already shown when a toggle pan began so
@@ -74,6 +77,7 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
         setupImageView()
         setupDetailsPanel()
         setupSpinner()
+        setupLoadError()
         setupDoubleTapGesture()
         setupDetailsGestures()
 
@@ -151,6 +155,39 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
         spinner.startAnimating()
+    }
+
+    // A failed original used to leave this spinner running, because the
+    // loader's error was never read. The message and the button are how
+    // someone tries again after the server comes back.
+    private func setupLoadError() {
+        loadErrorLabel = UILabel()
+        loadErrorLabel.textColor = .white
+        loadErrorLabel.font = .preferredFont(forTextStyle: .body)
+        loadErrorLabel.textAlignment = .center
+        loadErrorLabel.numberOfLines = 0
+        loadErrorLabel.accessibilityIdentifier = "fullScreenLoadError"
+
+        retryButton = UIButton(type: .system)
+        retryButton.setTitle("Retry", for: .normal)
+        retryButton.setTitleColor(.white, for: .normal)
+        retryButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        retryButton.accessibilityIdentifier = "fullScreenRetry"
+        retryButton.addTarget(self, action: #selector(retryLoad), for: .touchUpInside)
+
+        loadErrorStack = UIStackView(arrangedSubviews: [loadErrorLabel, retryButton])
+        loadErrorStack.axis = .vertical
+        loadErrorStack.alignment = .center
+        loadErrorStack.spacing = 12
+        loadErrorStack.translatesAutoresizingMaskIntoConstraints = false
+        loadErrorStack.isHidden = true
+        view.addSubview(loadErrorStack)
+        NSLayoutConstraint.activate([
+            loadErrorStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            loadErrorStack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            loadErrorStack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+            loadErrorStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+        ])
     }
 
     private func setupDoubleTapGesture() {
@@ -285,6 +322,13 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
                 self.applyLoadedImage(image)
             }
             .store(in: &cancellables)
+        loader.$errorMessage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                guard let self, let message, !message.isEmpty else { return }
+                self.showLoadError(message)
+            }
+            .store(in: &cancellables)
         loader.loadOriginal(for: item, isVideo: false)
     }
 
@@ -293,7 +337,20 @@ final class ImagePreviewViewController: UIViewController, MediaPreviewControllab
     private func applyLoadedImage(_ image: UIImage) {
         imageView.image = image
         spinner.stopAnimating()
+        loadErrorStack.isHidden = true
         applyFittedImageLayout()
+    }
+
+    private func showLoadError(_ message: String) {
+        spinner.stopAnimating()
+        loadErrorLabel.text = message
+        loadErrorStack.isHidden = false
+    }
+
+    @objc private func retryLoad() {
+        loadErrorStack.isHidden = true
+        spinner.startAnimating()
+        fullResLoader?.loadOriginal(for: item, isVideo: false)
     }
 
     private func panelHeight(for viewSize: CGSize) -> CGFloat {

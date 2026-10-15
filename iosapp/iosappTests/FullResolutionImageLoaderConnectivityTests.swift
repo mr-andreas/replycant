@@ -1,6 +1,7 @@
 import Foundation
 import LibGit2
 import Testing
+import Combine
 @testable import iosapp
 
 // A fullscreen photo requested before the tailnet join finishes is
@@ -67,6 +68,84 @@ struct FullResolutionImageLoaderConnectivityTests {
             try await task.value
         }
         #expect(attempts == 1)
+    }
+
+    // The full-screen viewer retries by calling loadOriginal again. A
+    // failure has to leave the loader idle with an error, and the next
+    // call has to actually start instead of being swallowed.
+    @Test func failedLoadStaysIdleSoItCanBeRetried() async {
+        let manager = TimelineManager(notificationCenter: NotificationCenter())
+        let loader = FullResolutionImageLoader(timelineManager: manager)
+        var starts = 0
+        let cancellable = loader.$isLoading
+            .receive(on: DispatchQueue.main)
+            .sink { isLoading in
+                if isLoading { starts += 1 }
+            }
+
+        loader.loadOriginal(for: makePhotoWithoutRepository(), isVideo: false)
+        await waitUntilSettled(loader)
+        await waitUntil { starts == 1 }
+        #expect(loader.errorMessage != nil)
+        #expect(loader.isLoading == false)
+        #expect(starts == 1)
+
+        loader.loadOriginal(for: makePhotoWithoutRepository(), isVideo: false)
+        await waitUntilSettled(loader)
+        await waitUntil { starts == 2 }
+        #expect(loader.errorMessage != nil)
+        #expect(loader.isLoading == false)
+        #expect(starts == 2)
+        _ = cancellable
+    }
+}
+
+// A photo with no local copy and no repository. Loading it fails before
+// any network call, which is the state the Retry button has to recover from.
+private func makePhotoWithoutRepository() -> TimelineItem {
+    let manifest = OriginalManifest(
+        id: "photo-1",
+        localID: nil,
+        sha256: "sha-photo-1",
+        path: "file-photo-1",
+        filesize: 1024,
+        name: "photo-1",
+        deviceSpace: "device-space-1",
+        mediaType: "photo",
+        width: 100,
+        height: 100,
+        modifiedAt: nil,
+        duration: nil,
+        mimeType: "image/jpeg",
+        location: nil,
+        isFavorite: false,
+        isHidden: false,
+        burstIdentifier: nil,
+        createdAt: Date(),
+        takenAt: Date(),
+        clientCTime: nil,
+        guessedTakenAt: Date()
+    )
+    return TimelineItem(original: manifest)
+}
+
+@MainActor
+private func waitUntilSettled(_ loader: FullResolutionImageLoader) async {
+    for _ in 0..<120 {
+        if loader.errorMessage != nil && !loader.isLoading {
+            return
+        }
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+@MainActor
+private func waitUntil(_ condition: () -> Bool) async {
+    for _ in 0..<120 {
+        if condition() { return }
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(10))
     }
 }
 
