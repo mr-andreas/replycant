@@ -66,10 +66,10 @@ struct PlacesMapView: View {
         }
         .task {
             await timelineManager.loadTimeline()
-            await reloadPoints(resetCamera: true)
+            await reloadPoints()
         }
         .onReceive(timelineManager.contentDidChange) { _ in
-            Task { await reloadPoints(resetCamera: false) }
+            Task { await reloadPoints() }
         }
     }
 
@@ -114,12 +114,13 @@ struct PlacesMapView: View {
         }
     }
 
-    // Reloads coordinates after the first open and after a sync. The
-    // camera is framed once so a later upload does not yank the map.
-    private func reloadPoints(resetCamera: Bool) async {
+    // Reloads coordinates after the first open, a tab return, and a
+    // sync. The camera is framed only the first time, so a tab switch
+    // or a later upload keeps the zoom the person chose.
+    private func reloadPoints() async {
         guard let loaded = try? await timelineManager.loadGeotaggedPoints() else { return }
         points = loaded
-        if resetCamera || !didFrame {
+        if !didFrame {
             camera = Self.cameraFraming(loaded)
             didFrame = true
         }
