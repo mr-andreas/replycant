@@ -668,6 +668,10 @@ private func startHTTPRequest(context: StreamContext) -> Int32 {
         guard let identity = MTLSTransport.shared.getClientIdentity(),
               let ca = MTLSTransport.shared.getPinnedCA() else {
             logError("No mTLS credentials configured", context: "MTLSTransport")
+            git_error_set_str(
+                Int32(GIT_ERROR_NET.rawValue),
+                "This device has no server credentials."
+            )
             return -1
         }
         
@@ -681,6 +685,10 @@ private func startHTTPRequest(context: StreamContext) -> Int32 {
         // loopback query against an already-running node, not a round trip.
         if !TailnetSessionRouter.shared.applySynchronously(to: config) {
             logError("Tailnet proxy could not be installed; refusing to dial directly", context: "MTLSTransport")
+            git_error_set_str(
+                Int32(GIT_ERROR_NET.rawValue),
+                "Not connected to your library's network."
+            )
             return -1
         }
         context.subtransportContext.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)

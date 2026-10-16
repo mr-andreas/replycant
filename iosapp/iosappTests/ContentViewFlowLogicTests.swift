@@ -66,6 +66,40 @@ struct ContentViewFlowLogicTests {
         )
     }
 
+    // A kill during pairing saves the server before the tailnet exists, so
+    // launch must drop that leftover and show setup again. A kill later,
+    // once the tailnet is saved, still has a path back through resync.
+    @Test func isAbandonedPairingOnlyWhenServerSavedWithoutATailnet() {
+        #expect(
+            ContentView.isAbandonedPairing(
+                isRepoInitialized: false,
+                isServerConfigured: true,
+                isTailnetConfigured: false
+            )
+        )
+        #expect(
+            ContentView.isAbandonedPairing(
+                isRepoInitialized: false,
+                isServerConfigured: true,
+                isTailnetConfigured: true
+            ) == false
+        )
+        #expect(
+            ContentView.isAbandonedPairing(
+                isRepoInitialized: true,
+                isServerConfigured: true,
+                isTailnetConfigured: false
+            ) == false
+        )
+        #expect(
+            ContentView.isAbandonedPairing(
+                isRepoInitialized: false,
+                isServerConfigured: false,
+                isTailnetConfigured: false
+            ) == false
+        )
+    }
+
     // A schema wipe leaves the git library in place and the SQL cache empty,
     // which is the only launch state that should rebuild the index.
     @Test func shouldRebuildIndexOnLaunchOnlyWhenRepositoryExistsAndCacheIsUnhydrated() {

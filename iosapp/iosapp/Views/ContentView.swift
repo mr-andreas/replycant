@@ -279,6 +279,21 @@ struct ContentView: View {
             // against a database that is about to be rebuilt.
             let repoDir = RepositoryManager.shared.repositoryPath()
             let repoExists = Repository.exists(at: repoDir)
+            // A kill during pairing saves the server before the tailnet
+            // exists. That leftover makes launch try a resync that can
+            // never reach gitd, and it also blocks recovery. Dropping it
+            // returns the device to setup.
+            if Self.isAbandonedPairing(
+                isRepoInitialized: repoExists,
+                isServerConfigured: ServerConfigurationManager.shared.isConfigured,
+                isTailnetConfigured: TailnetConfigurationManager.shared.load() != nil
+            ) {
+                log(
+                    "Clearing server configuration from an unfinished pairing",
+                    context: "Git"
+                )
+                ServerConfigurationManager.shared.clearConfiguration()
+            }
             let needsRebuild = await manifestCacheNeedsRebuild(repoExists: repoExists)
             if needsRebuild {
                 isResyncing = true
@@ -523,6 +538,17 @@ struct ContentView: View {
             return false
         }
         return isConfigured && hasIdentity
+    }
+
+    // A pairing that saved the server but never joined the tailnet cannot
+    // resync: the device does not know the tailnet, and the pairing secret
+    // was single-use. Launch clears that leftover and shows setup again.
+    static func isAbandonedPairing(
+        isRepoInitialized: Bool,
+        isServerConfigured: Bool,
+        isTailnetConfigured: Bool
+    ) -> Bool {
+        !isRepoInitialized && isServerConfigured && !isTailnetConfigured
     }
 
     // Keeps the Settings badge tied to missing recovery keys so users are
