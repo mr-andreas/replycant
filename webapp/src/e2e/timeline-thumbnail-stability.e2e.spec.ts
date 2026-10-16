@@ -148,6 +148,13 @@ test.describe("Timeline thumbnail stability", () => {
       { timeout: 10_000, message: "timeline preload should request enough unique thumbnails to churn the cache" },
     ).toBeGreaterThan(40);
 
+    // The URL count can pass before the tiles on the jumped-to screen have
+    // finished loading. Resizing then only proves those requests were slow.
+    await expect.poll(
+      async () => (await visibleMediaState(timeline)).loadedImages,
+      { timeout: 10_000, message: "jumped-to viewport should have loaded thumbnails before resize" },
+    ).toBeGreaterThan(6);
+
     mediaDelayMs = 2_000;
     await startEmptyTileMonitor(timeline);
     await page.setViewportSize({ width: 760, height: 700 });
