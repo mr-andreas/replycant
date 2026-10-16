@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+#### iOS app
+
+- hiding the month sidebar while viewing the oldest photos no longer jumps the timeline
+
 ## 0.4.0 - 2026-10-15
 
 ### Features

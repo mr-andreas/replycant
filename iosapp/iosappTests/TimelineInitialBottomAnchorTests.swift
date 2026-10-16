@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import iosapp
 
 // Verifies startup anchoring math keeps timeline launch pinned to the newest rows.
@@ -114,5 +115,56 @@ struct TimelineInitialBottomAnchorTests {
             isUserDriven: false
         )
         #expect(offset == nil)
+    }
+
+    // A saved anchor on the oldest row uses the top offset, the same place a
+    // tab reselect asks for. Restoring that anchor has to stay put, or hiding
+    // the month sidebar jumps the timeline to the newest photos.
+    @Test @MainActor func restoreContentOffsetKeepsTheOldestRow() {
+        let layout = UICollectionViewFlowLayout()
+        layout.itemSize = CGSize(width: 140, height: 140)
+        layout.minimumInteritemSpacing = 0
+        layout.minimumLineSpacing = 0
+        let frame = CGRect(x: 0, y: 0, width: 440, height: 956)
+        let grid = InitialLayoutCollectionView(frame: frame, collectionViewLayout: layout)
+        let source = OldestRowGridSource(count: 30)
+        grid.dataSource = source
+        grid.register(UICollectionViewCell.self, forCellWithReuseIdentifier: OldestRowGridSource.reuseID)
+        grid.contentInsetAdjustmentBehavior = .never
+        grid.redirectsTopAnchorsToBottom = true
+        let window = UIWindow(frame: frame)
+        window.addSubview(grid)
+        window.makeKeyAndVisible()
+        grid.layoutIfNeeded()
+
+        #expect(grid.contentSize.height > grid.bounds.height)
+        let top = -grid.adjustedContentInset.top
+        grid.restoreContentOffset(CGPoint(x: 0, y: top))
+        // A mistaken redirect animates toward the newest row. Spin so that
+        // jump shows up as a settled offset instead of a pending animation.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        #expect(
+            abs(grid.contentOffset.y - top) <= 0.5,
+            "offset \(grid.contentOffset.y) top \(top) size \(grid.contentSize)"
+        )
+    }
+}
+
+// Supplies a fixed number of empty cells so a grid can be laid out tall
+// enough to scroll without a timeline manager.
+private final class OldestRowGridSource: NSObject, UICollectionViewDataSource {
+    static let reuseID = "cell"
+    let count: Int
+
+    init(count: Int) {
+        self.count = count
+    }
+
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        count
+    }
+
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        collectionView.dequeueReusableCell(withReuseIdentifier: Self.reuseID, for: indexPath)
     }
 }

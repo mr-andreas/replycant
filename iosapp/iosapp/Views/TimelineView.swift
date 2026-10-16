@@ -385,17 +385,10 @@ struct TimelineCollectionView: UIViewRepresentable {
                     collectionView.layoutIfNeeded()
                     if let preserved,
                        let newIndex = self.timelineManager.index(ofItemId: preserved.itemId) {
-                        // The oldest row sits at the same offset a tab reselect
-                        // asks for. Restoring it has to stay there; the grid
-                        // would otherwise send that offset to the newest row.
-                        let grid = collectionView as? InitialLayoutCollectionView
-                        let wasRedirecting = grid?.redirectsTopAnchorsToBottom ?? false
-                        grid?.redirectsTopAnchorsToBottom = false
                         let restored = self.restoreVisibleTopAnchor(
                             (IndexPath(item: newIndex, section: 0), preserved.offsetFromItemTop),
                             in: collectionView
                         )
-                        grid?.redirectsTopAnchorsToBottom = wasRedirecting
                         if restored {
                             collectionView.layoutIfNeeded()
                             self.timelineManager.savedContentOffset = collectionView.contentOffset
@@ -757,13 +750,20 @@ struct TimelineCollectionView: UIViewRepresentable {
             return true
         }
 
-        // Clamps one vertical offset to UIKit's scroll range so width-change anchor restoration stays valid.
+        // Clamps one vertical offset to UIKit's scroll range so width-change
+        // anchor restoration stays valid. Goes through the grid's restore
+        // path so an anchor on the oldest row is not treated as a scroll-to-top.
         private func setContentOffsetY(_ y: CGFloat, in collectionView: UICollectionView) {
             let inset = collectionView.adjustedContentInset
             let minY = -inset.top
             let maxY = max(minY, collectionView.contentSize.height - collectionView.bounds.height + inset.bottom)
             let clampedY = min(max(y, minY), maxY)
-            collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: clampedY), animated: false)
+            let offset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
+            if let grid = collectionView as? InitialLayoutCollectionView {
+                grid.restoreContentOffset(offset)
+            } else {
+                collectionView.setContentOffset(offset, animated: false)
+            }
         }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -831,6 +831,12 @@ final class InitialLayoutCollectionView: UICollectionView {
     // through the tracking path, which is not redirected.
     var redirectsTopAnchorsToBottom = false
     private var lastKnownBoundsWidth: CGFloat = 0
+
+    // Restoring a saved anchor is not a scroll-to-top gesture, even when the
+    // anchor is the oldest row sitting at the top offset.
+    func restoreContentOffset(_ offset: CGPoint) {
+        super.setContentOffset(offset, animated: false)
+    }
 
     // Tab reselect and the status bar scroll to the top. The oldest photos
     // are there, so the request is carried to the newest row instead.
