@@ -14,6 +14,7 @@
 
 #### iOS app
 
+- the Map tab opens on the area where most photos were taken instead of the whole world
 - a device closed while joining a library now returns to setup instead of a resync screen that says "no error"
 - hiding the month sidebar while viewing the oldest photos no longer jumps the timeline
 

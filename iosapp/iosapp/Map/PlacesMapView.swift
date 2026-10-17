@@ -121,7 +121,11 @@ struct PlacesMapView: View {
         guard let loaded = try? await timelineManager.loadGeotaggedPoints() else { return }
         points = loaded
         if !didFrame {
-            camera = Self.cameraFraming(loaded)
+            if let region = MapInitialRegion.region(for: loaded) {
+                camera = .region(region)
+            } else {
+                camera = .automatic
+            }
             didFrame = true
         }
         if let lastRect, let lastSize {
@@ -159,31 +163,6 @@ struct PlacesMapView: View {
             itemsById[item.id] = item
         }
         tileImages.load(items)
-    }
-
-    // Frames every placed photo with a little margin, and keeps a single
-    // photo from zooming in so far that the map is useless.
-    private static func cameraFraming(_ points: [MapMediaPoint]) -> MapCameraPosition {
-        guard let first = points.first else { return .automatic }
-        var minLat = first.latitude
-        var maxLat = first.latitude
-        var minLon = first.longitude
-        var maxLon = first.longitude
-        for point in points.dropFirst() {
-            minLat = min(minLat, point.latitude)
-            maxLat = max(maxLat, point.latitude)
-            minLon = min(minLon, point.longitude)
-            maxLon = max(maxLon, point.longitude)
-        }
-        let span = MKCoordinateSpan(
-            latitudeDelta: max((maxLat - minLat) * 1.4, 0.08),
-            longitudeDelta: max((maxLon - minLon) * 1.4, 0.08)
-        )
-        let center = CLLocationCoordinate2D(
-            latitude: (minLat + maxLat) / 2,
-            longitude: (minLon + maxLon) / 2
-        )
-        return .region(MKCoordinateRegion(center: center, span: span))
     }
 }
 
