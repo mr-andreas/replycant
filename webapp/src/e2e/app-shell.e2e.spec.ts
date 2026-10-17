@@ -8,18 +8,19 @@ test.describe("App shell", () => {
     await expect(page.locator(".brand-wordmark")).toHaveText("Replycant", { timeout: 15_000 });
   });
 
-  test("loads with timeline view selected", async ({ page }) => {
+  test("loads with the timeline selected", async ({ page }) => {
     await expect(page.locator(".timeline-container")).toBeVisible();
-    await expect(page.getByRole("tab")).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Map" })).toHaveAttribute("aria-selected", "false");
     await expect(page.getByText("No media yet.")).toBeVisible();
   });
 
-  test("tab navigation is hidden until views ship", async ({ page }) => {
-    await expect(page.getByRole("tab")).toHaveCount(0);
+  test("opens the map from the switcher", async ({ page }) => {
+    await page.getByRole("tab", { name: "Map" }).click();
+    await expect(page.getByRole("tab", { name: "Map" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByText("Albums view is coming next.")).toHaveCount(0);
     await expect(page.getByText("Favorites view is coming next.")).toHaveCount(0);
-    await expect(page.locator(".timeline-container")).toBeVisible();
-    await expect(page.getByText("No media yet.")).toBeVisible();
+    await expect(page.getByText(/No photos with location|Couldn't load the map|Loading the map/)).toBeVisible();
   });
 
   test("commit pane toggles open and closed", async ({ page }) => {

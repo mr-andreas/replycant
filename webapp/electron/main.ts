@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, session, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { startDesktopServer, DesktopServer } from "../server/desktopServer";
 import { registerIdentityKeyIpc } from "./registerIdentityKeyIpc";
 import { registerTailnetIpc } from "./registerTailnetIpc";
 import { createTailnetSupervisor, resolveSidecarPath, TailnetSupervisor } from "./tailnetSupervisor";
+import { registerMapTileRequests } from "./mapTileRequests";
 
 const APP_NAME = "Replycant";
 
@@ -14,6 +15,7 @@ let tailnet: TailnetSupervisor | null = null;
 
 // Creates the desktop browser window with hardened defaults for untrusted web content.
 const createMainWindow = async (): Promise<void> => {
+  registerMapTileRequests(session.defaultSession, app.getVersion());
   if (!desktopServer) {
     desktopServer = await startDesktopServer({
       staticDir: resolve(app.getAppPath(), "dist"),

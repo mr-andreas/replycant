@@ -280,6 +280,36 @@ describe("Timeline", () => {
     });
   });
 
+  it("leaves the library scroll anchor alone when hash persistence is off", async () => {
+    const items = buildItems();
+    window.history.replaceState(null, "", "#k=item-4&o=8&t=2026-01-05T12:00:00Z");
+    const { container } = render(
+      <Timeline
+        itemCount={items.length}
+        loadedOffset={0}
+        loadedItems={items}
+        monthIndex={buildMonthIndex()}
+        onOpen={vi.fn()}
+        onLoadOlder={vi.fn()}
+        onLoadNewer={vi.fn()}
+        onSeekToIndex={vi.fn()}
+        mtlsHeaders={null}
+        showMonthSidebar={false}
+        persistAnchorInHash={false}
+      />,
+    );
+
+    emitResize(620);
+    const timeline = container.querySelector("main.timeline") as HTMLElement;
+    const originalHash = window.location.hash;
+    timeline.scrollTop = 320;
+    fireEvent.scroll(timeline);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe(originalHash);
+    });
+  });
+
   it("defers first-mount hash restore until loaded items arrive", async () => {
     const items = buildItems();
     window.history.replaceState(null, "", "#k=item-5&o=12&t=2026-01-06T12:00:00Z");

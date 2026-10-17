@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+#### Desktop app
+
+- browse your library on a map of places, and open the photos from one place
+
 ### Fixes
 
 - a git fetch or push no longer occasionally hangs for two minutes and fails while the repository's tailnet connection starts

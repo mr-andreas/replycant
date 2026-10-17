@@ -5,8 +5,8 @@ import { WindowControls } from "./WindowControls";
 
 // Defines shared shell controls so all library views keep one consistent header.
 interface LibraryHeaderProps {
-  activeView: "timeline" | "albums" | "favorites";
-  onSelectView: (view: "timeline" | "albums" | "favorites") => void;
+  activeView: "timeline" | "map" | "albums" | "favorites";
+  onSelectView: (view: "timeline" | "map" | "albums" | "favorites") => void;
   commitPaneOpen: boolean;
   onToggleCommitPane: () => void;
   showMonthToggle?: boolean;
@@ -17,6 +17,8 @@ interface LibraryHeaderProps {
 
 // Renders one reusable top bar for timeline and placeholder library views.
 export const LibraryHeader = ({
+  activeView,
+  onSelectView,
   commitPaneOpen,
   onToggleCommitPane,
   showMonthToggle = false,
@@ -30,7 +32,24 @@ export const LibraryHeader = ({
         <img src={logoUrl} alt="" aria-hidden="true" className="brand-logo" />
         <span className="brand-wordmark">Replycant</span>
       </div>
-      {/* Timeline/Albums/Favorites switcher is hidden until those views ship. */}
+      <div className="view-switcher" role="tablist" aria-label="Library">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === "timeline"}
+          onClick={() => onSelectView("timeline")}
+        >
+          Timeline
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === "map"}
+          onClick={() => onSelectView("map")}
+        >
+          Map
+        </button>
+      </div>
       <div className="header-actions">
         {showMonthToggle ? (
           <button

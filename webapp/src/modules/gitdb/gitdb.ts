@@ -6,7 +6,7 @@ import { ManifestDatabase, type DerivedStoreQueryRequest, type ManifestQueryIden
 import type { ManifestChangeListener, SyncCommitSummary, SyncEngineConfig, SyncListener, SyncSnapshot } from "./syncTypes";
 import type { LfsPointerFields } from "./encryption";
 import { runtimeConfig } from "../../lib/config";
-import { timelineMonthCountsStore } from "./timelineDerivedStores";
+import { mapPointsStore, timelineMonthCountsStore } from "./timelineDerivedStores";
 
 // Defines constructor dependencies so gitdb stays headless and testable outside React.
 export interface CreateGitdbOptions {
@@ -99,7 +99,7 @@ export const createGitdb = (options: CreateGitdbOptions = {}): GitdbClient => {
     if (syncEngine) return;
     manifestDb = new ManifestDatabase(
       registry.allRegistrations(),
-      [timelineMonthCountsStore],
+      [timelineMonthCountsStore, mapPointsStore],
       options.syncDatabaseName ?? "gitdb-manifests-v1",
     );
     const listener: SyncListener = (snapshot) => {

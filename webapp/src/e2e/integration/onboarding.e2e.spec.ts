@@ -8,5 +8,6 @@ test("pairs a fresh desktop install and opens the library", async ({
   provisionWebappIdentity,
 }) => {
   await pairDesktop(desktopPage, "e2e-integration", provisionWebappIdentity);
-  await expect(desktopPage.getByRole("tab")).toHaveCount(0);
+  await expect(desktopPage.getByRole("tab", { name: "Timeline" })).toHaveAttribute("aria-selected", "true");
+  await expect(desktopPage.getByRole("tab", { name: "Map" })).toBeVisible();
 });

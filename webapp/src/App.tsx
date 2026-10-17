@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CommitPane } from "./components/CommitPane";
 import { readHashParams, writeHashParam } from "./lib/hashState";
 import { CollectionPlaceholderView } from "./modules/library/CollectionPlaceholderView";
+import { MapView } from "./modules/map/MapView";
 import { useLibraryRuntime } from "./modules/library/useLibraryRuntime";
 import { OnboardingGate } from "./modules/onboarding/OnboardingGate";
 import { useOnboardingFlow } from "./modules/onboarding/useOnboardingFlow";
@@ -52,7 +53,7 @@ declare global {
 
 // Accepts only shipped view identifiers so corrupted storage falls back safely.
 const isLibraryView = (value: string): value is LibraryView =>
-  value === "timeline" || value === "albums" || value === "favorites";
+  value === "timeline" || value === "map" || value === "albums" || value === "favorites";
 
 // Restores desktop view selection so relaunch returns to the prior section.
 const readInitialActiveView = (): LibraryView => {
@@ -156,6 +157,16 @@ export const App = () => {
     <OnboardingGate flow={onboarding} snapshot={runtime.snapshot}>
       {activeView === "timeline" ? (
         <TimelineView
+          runtime={runtime}
+          mtlsHeaders={onboarding.mtlsHeaders}
+          activeView={activeView}
+          onSelectView={setActiveView}
+          commitPaneOpen={commitPaneOpen}
+          onToggleCommitPane={handleToggleCommitPane}
+          commitPane={commitPane}
+        />
+      ) : activeView === "map" ? (
+        <MapView
           runtime={runtime}
           mtlsHeaders={onboarding.mtlsHeaders}
           activeView={activeView}

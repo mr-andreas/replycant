@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Timeline
 
 The timeline is the main view of the webapp. It displays all media items in a flat, scrollable grid ordered by capture date (oldest at top, newest at bottom).

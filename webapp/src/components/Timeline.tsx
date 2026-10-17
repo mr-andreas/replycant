@@ -23,6 +23,9 @@ interface TimelineProps {
   monthSidebarInitialScrollTop?: number;
   onMonthSidebarScroll?: (scrollTop: number) => void;
   suspendHashSync?: boolean;
+  // The place grid must not read or write the library timeline's scroll
+  // anchor. A reload while a place is open then returns to the map.
+  persistAnchorInHash?: boolean;
   rightPane?: ReactNode;
 }
 
@@ -134,6 +137,7 @@ const TimelineInner = ({
   monthSidebarInitialScrollTop = 0,
   onMonthSidebarScroll,
   suspendHashSync = false,
+  persistAnchorInHash = true,
   rightPane,
 }: TimelineProps, ref: ForwardedRef<TimelineHandle>) => {
   const gridRef = useRef<SparseGridHandle | null>(null);
@@ -143,6 +147,7 @@ const TimelineInner = ({
   const [currentMonthKey, setCurrentMonthKey] = useState<string | null>(null);
   const [visibleRange, setVisibleRange] = useState<{ firstIndex: number; lastIndex: number } | null>(null);
   const [initialAnchor, setInitialAnchor] = useState<SparseGridAnchor | null>(() => {
+    if (!persistAnchorInHash) return null;
     const hashAnchor = parseHashAnchor();
     if (!hashAnchor) return null;
     return { itemKey: hashAnchor.itemKey, offsetPx: hashAnchor.offsetPx };
@@ -160,7 +165,7 @@ const TimelineInner = ({
         setCurrentMonthKey(monthKey);
       }
     }
-    if (suspendHashSync) return;
+    if (!persistAnchorInHash || suspendHashSync) return;
     if (hashWriteScheduledRef.current) return;
     hashWriteScheduledRef.current = true;
     requestAnimationFrame(() => {
@@ -172,10 +177,11 @@ const TimelineInner = ({
       params.delete("v");
       history.replaceState(null, "", `#${params.toString()}`);
     });
-  }, [itemCount, loadedItems, loadedOffset, monthIndex, suspendHashSync]);
+  }, [itemCount, loadedItems, loadedOffset, monthIndex, persistAnchorInHash, suspendHashSync]);
 
   // Re-applies hash anchors triggered by browser navigation.
   useEffect(() => {
+    if (!persistAnchorInHash) return;
     const handleHashChange = () => {
       const hashAnchor = parseHashAnchor();
       if (!hashAnchor) return;
@@ -184,7 +190,7 @@ const TimelineInner = ({
     };
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
-  }, []);
+  }, [persistAnchorInHash]);
 
   // Jumps to a month anchor so sidebar navigation lands immediately in the right bucket.
   const scrollToMonth = useCallback(

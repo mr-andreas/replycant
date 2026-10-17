@@ -12,6 +12,7 @@ import type {
   ManifestDatabaseChange,
   ManifestKindRegistration,
   ManifestMutation,
+  MapPointRow,
   MonthCountRow,
   RegisteredManifestRecord,
 } from "../gitdb";
@@ -269,6 +270,11 @@ export interface LibraryRuntimeState {
   loadOlderPage: () => void;
   loadNewerPage: () => void;
   seekToIndex: (index: number) => void;
+  // Bumps after each committed sync so the map and an open place reload
+  // coordinates without watching the whole manifest mutation.
+  manifestRevision: number;
+  loadMapPoints: () => Promise<MapPointRow[]>;
+  loadItemsByKeys: (keys: string[]) => Promise<TimelineItem[]>;
 }
 
 const consumeResetCloneDepthOverride = (): number | undefined => {
@@ -331,6 +337,7 @@ export const useLibraryRuntime = ({
   const [timelineWindow, setTimelineWindow] = useState<TimelineWindow>(EMPTY_WINDOW);
   const [rewindCommits, setRewindCommits] = useState<SyncCommitSummary[]>([]);
   const [rewindActionBusy, setRewindActionBusy] = useState<"rewind" | "forward" | null>(null);
+  const [manifestRevision, setManifestRevision] = useState(0);
   const engineRef = useRef<GitdbWorkerClient | null>(null);
   const engineInitPromiseRef = useRef<Promise<GitdbWorkerClient> | null>(null);
   const startupRetryRef = useRef(false);
@@ -656,6 +663,7 @@ export const useLibraryRuntime = ({
       fullReplaceInFlightRef.current = true;
       const shouldAttemptHashAnchorRestore = !firstFullReplaceDoneRef.current;
       firstFullReplaceDoneRef.current = true;
+      setManifestRevision((revision) => revision + 1);
       const startedAtMs = Date.now();
       logAppDebug("manifest-change-full-replace-start", {});
       const engine = engineRef.current;
@@ -723,6 +731,7 @@ export const useLibraryRuntime = ({
     }
 
     // Reloads only when mutations intersect the loaded span; otherwise adjusts offset in place.
+    setManifestRevision((revision) => revision + 1);
     const startedAtMs = Date.now();
     const engine = engineRef.current;
     if (!engine) return;
@@ -1242,6 +1251,29 @@ export const useLibraryRuntime = ({
     window.location.reload();
   }, []);
 
+  // Reads the coordinate projection so the map can cluster without
+  // pulling every original manifest into the window.
+  const loadMapPoints = useCallback(async (): Promise<MapPointRow[]> => {
+    const engine = await initializeEngine();
+    const rows = await engine.queryDerived<MapPointRow>("map_points", { type: "getAll" });
+    return Array.isArray(rows) ? rows : [];
+  }, [initializeEngine]);
+
+  // Loads timeline rows for specific originals, in the caller's order,
+  // so a place page and a map tile share the timeline's thumbnail path.
+  const loadItemsByKeys = useCallback(async (keys: string[]): Promise<TimelineItem[]> => {
+    if (keys.length === 0) return [];
+    const engine = await initializeEngine();
+    const records: RegisteredManifestRecord[] = [];
+    for (const key of keys) {
+      const found = await engine.query(ORIGINAL_IDENTITY, { type: "get", key }) as RegisteredManifestRecord[];
+      if (found.length > 0) records.push(found[0]);
+    }
+    const items = await buildPageItems(engine, records);
+    const order = new Map(keys.map((key, index) => [key, index]));
+    return items.slice().sort((left, right) => (order.get(left.key) ?? 0) - (order.get(right.key) ?? 0));
+  }, [buildPageItems, initializeEngine]);
+
   // Exposes timeline paging through a generic sparse-grid data contract.
   const timelineDataSource = useMemo<SparseGridDataSource<TimelineItem>>(() => ({
     itemCount: timelineItemCount,
@@ -1272,6 +1304,9 @@ export const useLibraryRuntime = ({
     loadOlderPage,
     loadNewerPage,
     seekToIndex,
+    manifestRevision,
+    loadMapPoints,
+    loadItemsByKeys,
   }), [
     handleJumpToCommit,
     handleChangeSyncInterval,
@@ -1290,5 +1325,8 @@ export const useLibraryRuntime = ({
     timelineMonthIndex,
     timelineWindow,
     wipeReplycantState,
+    manifestRevision,
+    loadMapPoints,
+    loadItemsByKeys,
   ]);
 };

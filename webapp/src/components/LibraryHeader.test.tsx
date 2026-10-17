@@ -29,11 +29,12 @@ describe("LibraryHeader", () => {
     vi.useRealTimers();
   });
 
-  it("renders brand assets without the view switcher while only timeline ships", () => {
+  it("renders the timeline and map switcher", () => {
+    const onSelectView = vi.fn();
     const { container } = render(
       <LibraryHeader
         activeView="timeline"
-        onSelectView={vi.fn()}
+        onSelectView={onSelectView}
         commitPaneOpen={false}
         onToggleCommitPane={vi.fn()}
       />,
@@ -41,9 +42,11 @@ describe("LibraryHeader", () => {
 
     expect(screen.getByText("Replycant")).toBeInTheDocument();
     expect(container.querySelector(".brand-logo")).toBeTruthy();
-    expect(screen.queryByRole("tab")).toBeNull();
-    expect(container.querySelector(".view-switcher")).toBeNull();
-    expect(container.querySelector(".sync-progress")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Timeline" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Map" })).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Map" }));
+    expect(onSelectView).toHaveBeenCalledWith("map");
   });
 
   it("invokes callbacks for settings and month toggles", () => {

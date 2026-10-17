@@ -6,6 +6,9 @@ export interface RuntimeConfig {
   viewerPreloadBeforeCount: number;
   timelinePreloadAfterCount: number;
   timelinePreloadBeforeCount: number;
+  // One place to retarget map tiles if the public OpenStreetMap server
+  // is withdrawn. The desktop shell identifies requests to the default host.
+  mapTileUrl: string;
 }
 
 // Defines localStorage key used to persist browser-owned setup discovery data across reloads.
@@ -20,4 +23,5 @@ export const runtimeConfig: RuntimeConfig = {
   viewerPreloadBeforeCount: 2,
   timelinePreloadAfterCount: 25,
   timelinePreloadBeforeCount: 25,
+  mapTileUrl: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
 };

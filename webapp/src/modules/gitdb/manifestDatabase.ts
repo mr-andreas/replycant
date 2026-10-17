@@ -102,7 +102,7 @@ export interface DerivedStoreDefinition {
 const META_STORE = "gitdb_sync_meta";
 const POINTER_STORE = "lfs_pointers";
 const META_KEY = "state";
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 // Bounds how many manifest records each full-rehydration chunk transaction writes.
 // Sized to amortize transaction overhead while keeping each transaction short

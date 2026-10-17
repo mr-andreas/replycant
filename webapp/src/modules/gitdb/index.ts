@@ -9,7 +9,7 @@ export type { ManifestKindRegistration, ManifestIndexDefinition, RegisteredManif
 export { ManifestDatabase } from "./manifestDatabase";
 export type { DerivedStoreQueryRequest, ManifestQueryRequest, ManifestQueryIdentity, SerializableKeyRange } from "./manifestDatabase";
 
-export type { MonthCountRow } from "./timelineDerivedStores";
+export type { MapPointRow, MonthCountRow } from "./timelineDerivedStores";
 
 export {
   buildMtlsHeaders,

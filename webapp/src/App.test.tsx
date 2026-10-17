@@ -86,6 +86,10 @@ vi.mock("./modules/library/CollectionPlaceholderView", () => ({
   CollectionPlaceholderView: () => <div>collection-view</div>,
 }));
 
+vi.mock("./modules/map/MapView", () => ({
+  MapView: () => <div>map-view</div>,
+}));
+
 vi.mock("./components/CommitPane", () => ({
   // Exposes commit pane callbacks so App tests can verify orchestration behavior.
   CommitPane: ({ onResetAndResync }: { onResetAndResync: () => Promise<void> }) => (
@@ -165,6 +169,22 @@ describe("App replycant helper", () => {
 
     expect(screen.queryByText("timeline-view")).toBeNull();
     expect(screen.getByText("collection-view")).toBeInTheDocument();
+  });
+
+  it("restores a saved map view", () => {
+    window.replycantDesktop = {
+      platform: "linux",
+      minimize: vi.fn(),
+      maximize: vi.fn(),
+      close: vi.fn(),
+      persistedLastPage: { activeView: "map", hash: "" },
+      persistLastPage: vi.fn(() => true),
+    };
+
+    render(<App />);
+
+    expect(screen.queryByText("timeline-view")).toBeNull();
+    expect(screen.getByText("map-view")).toBeInTheDocument();
   });
 
   it("persists desktop view and hash changes", async () => {

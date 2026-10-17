@@ -6,7 +6,7 @@ import { readHashParams, writeHashParam } from "../../lib/hashState";
 import { LibraryRuntimeState } from "../library/useLibraryRuntime";
 
 // Describes top-level library views so timeline can render navigation that scales to future modules.
-export type LibraryView = "timeline" | "albums" | "favorites";
+export type LibraryView = "timeline" | "map" | "albums" | "favorites";
 
 interface TimelineViewProps {
   runtime: LibraryRuntimeState;

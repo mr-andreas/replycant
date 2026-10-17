@@ -11,6 +11,15 @@ export interface MonthCountRow {
 
 const ORIGINAL_IDENTITY = { apiVersion: "media.replycant.com/v1alpha1", kind: "Original" } as const;
 
+// One geotagged original, small enough that the map can load every
+// coordinate without reading full manifests across the worker boundary.
+export interface MapPointRow {
+  key: string;
+  latitude: number;
+  longitude: number;
+  takenAt: string;
+}
+
 const monthKeyOf = (record: RegisteredManifestRecord): string | null => {
   if (record.kind !== "Original") return null;
   const takenAt = (record.manifest as { spec?: { takenAt?: string } })?.spec?.takenAt;
@@ -100,6 +109,67 @@ export const timelineMonthCountsStore: DerivedStoreDefinition = {
       }
       if (prevMk) await adjust(prevMk, -1, takenAtOf(update.previous));
       if (currMk) await adjust(currMk, 1, takenAtOf(update.current));
+    }
+  },
+};
+
+// Reads a coordinate only when the original can appear on both the map
+// and the timeline. Photos without a capture time are absent from the
+// timeline, so counting them on a tile would disagree with the place grid.
+const mapPointFrom = (record: RegisteredManifestRecord): MapPointRow | null => {
+  if (record.kind !== "Original") return null;
+  const spec = (record.manifest as {
+    spec?: { takenAt?: unknown; location?: { latitude?: unknown; longitude?: unknown } };
+  })?.spec;
+  if (!spec || typeof spec.takenAt !== "string" || spec.takenAt.length === 0) return null;
+  const latitude = spec.location?.latitude;
+  const longitude = spec.location?.longitude;
+  if (typeof latitude !== "number" || typeof longitude !== "number") return null;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { key: record.key, latitude, longitude, takenAt: spec.takenAt };
+};
+
+// Writes or deletes the coordinate row so a location edit, including
+// losing or gaining one, leaves the map matching the manifest.
+const writeMapPoint = async (
+  derived: DerivedStoreContext["derived"],
+  record: RegisteredManifestRecord,
+): Promise<void> => {
+  if (record.kind !== "Original") return;
+  const row = mapPointFrom(record);
+  if (row) {
+    await derived.put(row);
+    return;
+  }
+  await derived.delete(record.key);
+};
+
+// Projects geotagged originals into map_points so opening the map does
+// not decode every manifest. Counts stay aligned with the timeline
+// because a row exists only when the original has a capture time.
+export const mapPointsStore: DerivedStoreDefinition = {
+  name: "map_points",
+  keyPath: "key",
+
+  async rebuild({ manifests, derived }: DerivedStoreContext): Promise<void> {
+    for await (const { value } of manifests.openCursor(ORIGINAL_IDENTITY)) {
+      const row = mapPointFrom(value);
+      if (row) await derived.put(row);
+    }
+  },
+
+  async applyMutation({ derived }: DerivedStoreContext, mutation: ManifestDatabaseMutation): Promise<void> {
+    for (const record of mutation.removed) {
+      if (record.kind === "Original") await derived.delete(record.key);
+    }
+    for (const record of mutation.added) {
+      await writeMapPoint(derived, record);
+    }
+    for (const update of mutation.updated) {
+      if (update.previous.key !== update.current.key && update.previous.kind === "Original") {
+        await derived.delete(update.previous.key);
+      }
+      await writeMapPoint(derived, update.current);
     }
   },
 };

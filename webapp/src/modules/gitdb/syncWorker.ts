@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 import { SyncEngine } from "./syncEngine";
 import { ManifestRegistry } from "./manifestRegistry";
 import { ManifestDatabase, type DerivedStoreQueryRequest } from "./manifestDatabase";
-import { timelineMonthCountsStore } from "./timelineDerivedStores";
+import { mapPointsStore, timelineMonthCountsStore } from "./timelineDerivedStores";
 import {
   SyncWorkerInboundMessage,
   SyncWorkerOutboundMessage,
@@ -115,7 +115,7 @@ const handleMessage = async (message: SyncWorkerInboundMessage): Promise<void> =
     workerRegistry = buildRegistryFromDescriptors(message.registrations ?? []);
     manifestDb = new ManifestDatabase(
       workerRegistry.allRegistrations(),
-      [timelineMonthCountsStore],
+      [timelineMonthCountsStore, mapPointsStore],
       message.syncDatabaseName ?? "gitdb-manifests-v1",
     );
     syncEngine = new SyncEngine(
