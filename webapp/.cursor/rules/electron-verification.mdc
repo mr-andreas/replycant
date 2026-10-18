@@ -1,0 +1,55 @@
+---
+description: The webapp is Electron-only; verify changes in Electron, never in @Browser
+alwaysApply: true
+---
+
+# Electron Verification
+
+The webapp only runs inside Electron. The renderer needs the preload bridge
+(`window.replycantDesktop`) and main-process IPC, so in a plain browser it
+stops at "desktop app required". Never use @Browser or `cursor-ide-browser`
+to try a webapp change. `npm run e2e` is the exception: it runs headless
+Chromium with a stubbed bridge for automated tests.
+
+A webapp change is not done until it has been checked in Electron:
+
+1. From `webapp/`, run `npm run build:desktop:runtime`. Rerun it after
+   changes under `electron/` or `server/`; Vite serves renderer changes live.
+2. Write a scratch spec at `src/e2e/scratch-<topic>.e2e.spec.ts`. This
+   temporary file is an allowed exception to `less-is-more`:
+
+```ts
+import { _electron as electron, expect, test } from "@playwright/test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { setupOnboardingBypass, unlockBypassIdentity } from "./fixtures";
+
+test("scratch", async () => {
+  const app = await electron.launch({
+    args: [resolve("dist-electron/dev-main.js"),
+      `--user-data-dir=${mkdtempSync(join(tmpdir(), "replycant-scratch-"))}`,
+      "--use-mock-keychain", "--no-sandbox"],
+    env: { ...process.env, ELECTRON_RENDERER_URL: "http://127.0.0.1:5173" },
+  });
+  const page = await app.firstWindow();
+  await setupOnboardingBypass(page, { stubDesktopBridge: false });
+  await page.goto("http://127.0.0.1:5173/");
+  await unlockBypassIdentity(page);
+  // Exercise the change and assert with expect(...).
+  await page.screenshot({ path: "/tmp/replycant-scratch.png" });
+  await app.close();
+});
+```
+
+   Use `seedTimelineIndexedDb` from `./timelineSeed` when the change needs
+   photos (see `readme-screenshot.spec.ts`).
+3. Run `npx playwright test --config playwright.e2e.config.ts
+   src/e2e/scratch-<topic>.e2e.spec.ts` (it starts Vite on 5173), then read
+   the screenshot to check the result visually.
+4. Delete the scratch spec. If it should guard against regressions, rename
+   it and commit it as a real test instead.
+
+The throwaway profile has no paired library or real server, and the API is
+mocked. For pairing, sync, or tailnet behavior, use the Docker harness in
+`src/e2e/integration/desktop.ts` (`npm run e2e:integration`) or ask the user.
