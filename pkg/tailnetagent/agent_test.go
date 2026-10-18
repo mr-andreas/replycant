@@ -133,6 +133,47 @@ func TestSecondAgentExitsWhileLockHeld(t *testing.T) {
 	}
 }
 
+// Callers learn whether an agent is up by taking its lock for a moment.
+// That overlaps the instant a new agent takes the same lock. Giving up on
+// the first try drops a tailnet join that already succeeded, and the git
+// command then waits out the ready timeout.
+func TestAgentStartsWhileProbeHoldsLock(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := Dir(dir)
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatalf("create agent dir: %v", err)
+	}
+	lock, err := lockExclusive(lockPath(agentDir))
+	if err != nil {
+		t.Fatalf("take probe lock: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- (&Server{
+			Dir:         agentDir,
+			IdleTimeout: time.Hour,
+			Password:    "secret",
+		}).Run(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := lock.Close(); err != nil {
+		t.Fatalf("release probe lock: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("agent exited while the probe lock was only briefly held: %v", err)
+	case <-time.After(time.Second):
+	}
+	if _, err := readReady(readyPath(agentDir)); err != nil {
+		t.Fatalf("readiness file: %v", err)
+	}
+}
+
 // The readiness file carries the proxy credential, so it must not be group
 // readable, and it must disappear when the agent exits so the next caller
 // does not dial a dead port.

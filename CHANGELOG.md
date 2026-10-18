@@ -4,6 +4,8 @@
 
 ### Fixes
 
+- a git fetch or push no longer occasionally hangs for two minutes and fails while the repository's tailnet connection starts
+
 #### iOS app
 
 - a device closed while joining a library now returns to setup instead of a resync screen that says "no error"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -19,12 +20,38 @@ type fileLock struct {
 	file *os.File
 }
 
+// startLockGrace is how long a new agent waits out a readiness probe.
+//
+// The probe holds the lock only for the check itself. A lock that stays
+// held belongs to another agent, which must still lose.
+const startLockGrace = 250 * time.Millisecond
+
 // lockExclusive takes a non-blocking exclusive lock.
 //
 // Non-blocking so a second agent can exit immediately and let callers keep
 // using the one that already joined, instead of queueing behind it.
 func lockExclusive(path string) (*fileLock, error) {
 	return flock(path, unix.LOCK_EX|unix.LOCK_NB)
+}
+
+// lockForStart takes the agent lock, waiting out a brief readiness probe.
+//
+// Callers learn whether an agent is up by taking this lock for a moment,
+// and that overlaps the one instant a new agent takes it. Giving up on the
+// first try drops a tailnet join that already succeeded, and the git
+// command then waits out the ready timeout.
+func lockForStart(path string) (*fileLock, error) {
+	deadline := time.Now().Add(startLockGrace)
+	for {
+		lock, err := lockExclusive(path)
+		if err == nil || !errors.Is(err, errLockHeld) {
+			return lock, err
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // lockExclusiveWait blocks until this process can own the file.

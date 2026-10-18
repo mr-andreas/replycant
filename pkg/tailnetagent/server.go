@@ -70,7 +70,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("create tailnet directory: %w", err)
 	}
 
-	lock, err := lockExclusive(lockPath(s.Dir))
+	lock, err := lockForStart(lockPath(s.Dir))
 	if err != nil {
 		if errors.Is(err, errLockHeld) {
 			return ErrAlreadyRunning

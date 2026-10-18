@@ -76,22 +76,42 @@ func armImporterTailnet(t *testing.T, repo string, dial tailnetagent.DialFunc) {
 	}))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	runErr := make(chan error, 1)
 	go func() {
-		_ = (&tailnetagent.Server{
+		runErr <- (&tailnetagent.Server{
 			Dir:         tailnetagent.Dir(gitDir),
 			IdleTimeout: time.Hour,
 			Password:    "secret",
 			Dial:        dial,
 		}).Run(ctx)
 	}()
+	// A startup failure used to be discarded, so the wait below reported
+	// only that the agent never became ready.
+	failExit := func(err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("test tailnet agent exited before it was ready")
+		}
+		t.Fatalf("test tailnet agent exited: %v", err)
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-runErr:
+			failExit(err)
+		default:
+		}
 		if _, ok := tailnetagent.ProxyURL(gitDir); ok {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("test tailnet agent did not become ready")
+	select {
+	case err := <-runErr:
+		failExit(err)
+	default:
+		t.Fatal("test tailnet agent did not become ready")
+	}
 }
 
 func importerGitDir(t *testing.T, repo string) string {
