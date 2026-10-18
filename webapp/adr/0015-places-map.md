@@ -16,7 +16,7 @@ A `map_points` derived store keeps `{ key, latitude, longitude, takenAt }` for o
 
 The map is Leaflet on `https://tile.openstreetmap.org/{z}/{x}/{y}.png`. The Electron shell sets `User-Agent: Replycant/<version> (+https://github.com/mr-andreas/replycant)` on requests to that host. Tiles do not wrap, and the view cannot pan past one copy of the world, so a rectangle never crosses the antimeridian.
 
-Clustering is a port of the iOS grid: power-of-two cells in zoom-0 world pixels, a tile anchored on the newest photo, and the place grid filtered to that tile's tight latitude/longitude box. The place screen reuses the timeline and the full-screen viewer. It does not read or write the library timeline's scroll anchor. The title is "Places".
+Clustering is a port of the iOS grid: power-of-two cells in zoom-0 world pixels, a tile anchored on the newest photo, and the place grid filtered to that tile's tight latitude/longitude box. Desktop leaves out the iOS rule that a view holds about six cells. A desktop window is much larger than a phone, and Leaflet's whole zoom levels push that cell to the next power of two, so one tile then covers a region that looks empty. The cell stays about three tiles wide on screen instead, and a larger window shows more groups. The place screen reuses the timeline and the full-screen viewer. It does not read or write the library timeline's scroll anchor. The title is "Places".
 
 ## Consequences
 

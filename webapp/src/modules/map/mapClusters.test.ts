@@ -87,6 +87,25 @@ const rectCuttingCell = (
   height: size.height,
 });
 
+// A rectangle whose width in zoom-0 units is the view width divided by
+// 2^zoom, which is what Leaflet shows at a whole zoom level.
+const integerZoomRect = (
+  center: { latitude: number; longitude: number },
+  zoom: number,
+  size: ViewSize,
+): WorldRect => {
+  const pointsPerMapPoint = 2 ** zoom;
+  const width = size.width / pointsPerMapPoint;
+  const height = size.height / pointsPerMapPoint;
+  const anchor = project(center.latitude, center.longitude);
+  return {
+    x: anchor.x - width / 2,
+    y: anchor.y - height / 2,
+    width,
+    height,
+  };
+};
+
 const scaled = (rect: WorldRect, factor: number): WorldRect => {
   const width = rect.width * factor;
   const height = rect.height * factor;
@@ -231,7 +250,7 @@ describe("map clusters", () => {
     const rect = centeredOnCell(mapRect(center, 0.5, viewSize), center);
     const cell = cellMapSize(rect, viewSize);
     const onScreen = (cell * viewSize.width) / rect.width;
-    const target = targetCellSize(viewSize);
+    const target = targetCellSize();
     const slack = onScreen / target;
     const zoomIn = 1 + (2 / slack - 1) * 0.5;
     const closer = scaled(rect, 1 / zoomIn);
@@ -265,11 +284,29 @@ describe("map clusters", () => {
     }
   });
 
+  it("uses the same cell at one zoom whether the window is small or large", () => {
+    const center = { latitude: 59.33, longitude: 18.06 };
+    const small: ViewSize = { width: 400, height: 800 };
+    const large: ViewSize = { width: 1920, height: 1080 };
+    const zoom = 8;
+    expect(cellMapSize(integerZoomRect(center, zoom, small), small)).toBe(
+      cellMapSize(integerZoomRect(center, zoom, large), large),
+    );
+  });
+
+  it("keeps a desktop cell 256 px wide at a whole zoom level", () => {
+    const size: ViewSize = { width: 1250, height: 930 };
+    const rect = integerZoomRect({ latitude: 59.33, longitude: 18.06 }, 8, size);
+    const cell = cellMapSize(rect, size);
+    const onScreen = (cell * size.width) / rect.width;
+    expect(onScreen).toBe(256);
+  });
+
   it("keeps the cell a power-of-two slice that stays between the target size and twice that", () => {
     const rect = mapRect({ latitude: 59.33, longitude: 18.06 }, 0.5, viewSize);
     const cell = cellMapSize(rect, viewSize);
     const onScreen = (cell * viewSize.width) / rect.width;
-    const target = targetCellSize(viewSize);
+    const target = targetCellSize();
     expect(onScreen).toBeGreaterThanOrEqual(target);
     expect(onScreen).toBeLessThan(target * 2);
     const ratio = WORLD_SIZE / cell;

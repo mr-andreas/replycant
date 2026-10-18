@@ -68,12 +68,12 @@ export const unproject = (x: number, y: number): { latitude: number; longitude: 
   return { latitude, longitude };
 };
 
-// How wide a cell should be on screen. A view full of photos then holds
-// about six cells, and a cell is always roomier than one tile.
-export const targetCellSize = (viewSize: ViewSize, tileSize = TILE_SIZE): number => {
-  const fromDensity = Math.sqrt((viewSize.width * viewSize.height) / 6);
-  return Math.max(fromDensity, tileSize + TILE_GAP);
-};
+// How wide a cell should be on screen. A desktop window is much larger
+// than a phone, and Leaflet only stops at whole zoom levels, so sizing
+// cells from the window area pushes them to the next power of two and
+// leaves most of a cell empty. Two tile widths stay near three tiles
+// across in any window.
+export const targetCellSize = (tileSize = TILE_SIZE): number => 2 * (tileSize + TILE_GAP);
 
 // The world-aligned cell for this zoom. It is a power-of-two slice of
 // the world, and the largest one that is still at least targetCellSize
@@ -84,7 +84,7 @@ export const cellMapSize = (
   tileSize = TILE_SIZE,
 ): number => {
   if (viewSize.width <= 0 || visibleWorldRect.width <= 0) return WORLD_SIZE;
-  const target = targetCellSize(viewSize, tileSize);
+  const target = targetCellSize(tileSize);
   const pointsPerMapPoint = viewSize.width / visibleWorldRect.width;
   if (!(target > 0) || !Number.isFinite(pointsPerMapPoint) || pointsPerMapPoint <= 0) {
     return WORLD_SIZE;
