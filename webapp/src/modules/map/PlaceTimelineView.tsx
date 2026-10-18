@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { FullscreenViewer } from "../../components/FullscreenViewer";
 import { Timeline, TimelineHandle } from "../../components/Timeline";
 import type { MapPointRow } from "../gitdb";
@@ -52,6 +52,18 @@ export const PlaceTimelineView = ({
     if (lastViewedIndex === null) return;
     timelineRef.current?.scrollToIndex(lastViewedIndex);
   }, [viewerIndex]);
+
+  // Escape leaves the place the same way the back button does. While a
+  // photo is open, that key belongs to the viewer, which closes first.
+  useEffect(() => {
+    if (viewerIndex !== null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      onBack();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onBack, viewerIndex]);
 
   return (
     <>

@@ -161,4 +161,20 @@ describe("MapView", () => {
     expect(await screen.findByRole("heading", { name: "Places" })).toBeInTheDocument();
     expect(screen.getByText("2 Items")).toBeInTheDocument();
   });
+
+  it("returns to the map when Escape is pressed on a place timeline", async () => {
+    const points: MapPointRow[] = [
+      { key: "older", latitude: 59.33, longitude: 18.06, takenAt: "2024-01-01T00:00:00.000Z" },
+      { key: "newer", latitude: 59.331, longitude: 18.061, takenAt: "2024-06-01T00:00:00.000Z" },
+    ];
+    renderMap(points);
+
+    fireEvent.click(await screen.findByRole("button", { name: "2 photos" }));
+    expect(await screen.findByRole("heading", { name: "Places" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByRole("heading", { name: "Places" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "2 photos" })).toBeInTheDocument();
+  });
 });

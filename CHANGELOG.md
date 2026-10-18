@@ -6,7 +6,7 @@
 
 #### Desktop app
 
-- browse your library on a map of places, and open the photos from one place
+- browse your library on a map of places, open the photos from one place, and press Escape to return to the map
 
 ### Fixes
 
