@@ -19,8 +19,11 @@ enum PhotoLibraryError: LocalizedError {
     }
 }
 
-// Captures stable PhotoKit identity and timestamps so sync can skip already-uploaded media quickly.
-struct PhotoAsset: Identifiable {
+// Captures stable PhotoKit identity and timestamps so sync can skip
+// already-uploaded media quickly. Upload enumerates these off the main
+// thread. PhotoKit property reads on a fetched asset are safe there; the
+// class reference is why this is unchecked.
+struct PhotoAsset: Identifiable, @unchecked Sendable {
     let id: String
     let phAsset: PHAsset?
     let filename: String

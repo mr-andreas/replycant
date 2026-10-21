@@ -8,6 +8,12 @@
 
 - share a photo or video, or save it to the camera roll, from the full-screen viewer, and saving an item already in Photos says so instead of adding a copy
 
+### Fixes
+
+#### iOS app
+
+- the timeline and full-screen zoom stay responsive while photos upload
+
 ## 0.5.0 - 2026-10-18
 
 ### Features

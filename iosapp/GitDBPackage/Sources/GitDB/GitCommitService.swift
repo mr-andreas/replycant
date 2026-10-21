@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import LibGit2
 import Yams
 
@@ -68,11 +69,24 @@ public final class DefaultGitCommitService: GitCommitService {
     private let repository: Repository
     private let deviceSpace: String
     private let lfsClient: GitLFS
+    // One cache for every commit this service writes. A new manager per
+    // commit would age-decrypt the same KEK again on each photo.
+    private let kekManager: KEKEpochManager
     
-    public init(repository: Repository, deviceSpace: String, lfsClient: GitLFS) {
+    public init(
+        repository: Repository,
+        deviceSpace: String,
+        lfsClient: GitLFS,
+        ageIdentityLoader: (() throws -> Curve25519.KeyAgreement.PrivateKey)? = nil
+    ) {
         self.repository = repository
         self.deviceSpace = deviceSpace
         self.lfsClient = lfsClient
+        if let ageIdentityLoader {
+            self.kekManager = KEKEpochManager(repository: repository, ageIdentityLoader: ageIdentityLoader)
+        } else {
+            self.kekManager = KEKEpochManager(repository: repository)
+        }
     }
     
     // Validates manifest name according to ADR-0003: must match [a-z][a-z0-9-]{0,249}
@@ -93,7 +107,7 @@ public final class DefaultGitCommitService: GitCommitService {
     // Encrypts manifest YAML with the active KEK before writing files so repository history stores ciphertext only.
     public func createCommit(message: String, items: [GitCommitItem]) async throws {
         var files: [(String, String)] = []
-        let activeKEK = try KEKEpochManager(repository: repository).loadCurrentKEK()
+        let activeKEK = try kekManager.loadCurrentKEK()
         
         for item in items {
             switch item {
@@ -123,7 +137,13 @@ public final class DefaultGitCommitService: GitCommitService {
             }
         }
         
-        try repository.createCommit(message: message, files: files)
+        // libgit2 rewrites the whole index for one photo. Upload calls this
+        // from the main actor, so the index write has to leave that executor.
+        let repository = self.repository
+        await Task.yield()
+        try await Task.detached(priority: .utility) {
+            try repository.createCommit(message: message, files: files)
+        }.value
     }
     
     @available(iOS 13.0, macOS 10.15, *)

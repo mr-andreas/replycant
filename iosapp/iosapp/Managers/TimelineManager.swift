@@ -83,6 +83,11 @@ final class TimelineManager: ObservableObject {
     // Manifest reader bound to the database-backed manifest manager.
     private var manifestLoader: ManifestLoaderProtocol?
     private var databaseChangeCancellable: AnyCancellable?
+    // Buffers per-commit notifications so a sync run refreshes the count
+    // once per burst instead of once per photo.
+    private var changeCoalescer = ManifestChangeCoalescer()
+    private var databaseChangeDrainTask: Task<Void, Never>?
+    private let databaseChangeDrainDelay: UInt64 = 300_000_000
 
     // Keeps one contiguous loaded region so sparse grid reads can map global indices to loaded items.
     private var loadedOffset = 0
@@ -260,7 +265,7 @@ final class TimelineManager: ObservableObject {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] change in
                     Task { @MainActor in
-                        await self?.handleDatabaseChange(change)
+                        self?.receiveDatabaseChange(change)
                     }
                 }
 
@@ -721,7 +726,36 @@ final class TimelineManager: ObservableObject {
         repository = nil
         databaseChangeCancellable?.cancel()
         databaseChangeCancellable = nil
+        databaseChangeDrainTask?.cancel()
+        databaseChangeDrainTask = nil
+        changeCoalescer = ManifestChangeCoalescer()
         resetLoadedRegion(clearVisibleIndices: false)
+    }
+
+    // Buffers one database event and refreshes the timeline once the burst
+    // settles. Each event otherwise re-counts the library on the main actor.
+    func receiveDatabaseChange(_ change: ManifestDatabaseChange) {
+        changeCoalescer.ingest(change)
+        scheduleDatabaseChangeDrain()
+    }
+
+    // Trailing window, same shape as the preload debounce, so a run of
+    // commits becomes one count and one month refresh. A main-actor task
+    // is used so the wait participates in the same executor as the refresh.
+    private func scheduleDatabaseChangeDrain() {
+        databaseChangeDrainTask?.cancel()
+        databaseChangeDrainTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: self?.databaseChangeDrainDelay ?? 300_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.drainCoalescedDatabaseChange()
+        }
+    }
+
+    // Applies the merged burst. A drain with nothing pending is a no-op so a
+    // cancelled window cannot refresh twice.
+    private func drainCoalescedDatabaseChange() async {
+        guard let change = changeCoalescer.drain() else { return }
+        await handleDatabaseChange(change)
     }
 
     // Applies database change events to sparse timeline state so UI updates without full reloads.
@@ -893,6 +927,11 @@ final class TimelineManager: ObservableObject {
         preloadCancellables.removeAll()
         rebuildItemIndex()
         updateRegionCursors()
+    }
+
+    // Lets a test count refreshes without opening the shared manifest database.
+    func setManifestLoaderForTesting(_ loader: ManifestLoaderProtocol?) {
+        manifestLoader = loader
     }
 
     // Resets loaded items/cursors/caches so sparse state can be rebuilt from a new jump position.

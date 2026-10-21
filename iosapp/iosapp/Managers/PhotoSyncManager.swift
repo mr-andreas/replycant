@@ -246,7 +246,7 @@ final class PhotoSyncManager: ObservableObject {
                 )
                 
                 log("Fetching all assets from photo library...", context: "PhotoSync")
-                let assets = photoLibrary.fetchAllAssets()
+                let assets = try await loadAssets()
                 
                 guard !assets.isEmpty else {
                     log("No assets found, completing sync", context: "PhotoSync")
@@ -347,10 +347,7 @@ final class PhotoSyncManager: ObservableObject {
 
             let dek = EncryptionUtils.randomKey(length: 32)
             log("Computing streaming hashes...", context: "PhotoSync")
-            let hashes = try EncryptionUtils.computeStreamingHashes(
-                fileURL: assetFileURL,
-                dek: dek
-            )
+            let hashes = try await hashAsset(fileURL: assetFileURL, dek: dek)
             let sha256String = hashes.plaintextSHA256
             log("Calculated SHA256: \(sha256String)", context: "PhotoSync")
 
@@ -513,19 +510,17 @@ final class PhotoSyncManager: ObservableObject {
                         log("Generating \(sizeName) thumbnail...", context: "PhotoSync")
                         let thumbnailResult = try await generator()
                         
-                        let thumbnailSha256Hash = SHA256.hash(data: thumbnailResult.data)
-                        let thumbnailSha256 = thumbnailSha256Hash.compactMap { String(format: "%02x", $0) }.joined()
-                        log("Thumbnail \(sizeName) SHA256: \(thumbnailSha256)", context: "PhotoSync")
-                        
                         let thumbnailName = "\(normalizedName)-thumb-\(sizeName)"
-                        
                         log("Uploading \(sizeName) thumbnail to LFS...", context: "PhotoSync")
-                        let thumbnailDEK = EncryptionUtils.randomKey(length: 32)
-                        let thumbnailEncrypted = try EncryptionUtils.encryptChunkedBinary(
-                            plaintext: thumbnailResult.data,
-                            dek: thumbnailDEK
+                        let preparedThumbnail = try await encryptThumbnail(
+                            data: thumbnailResult.data,
+                            kek: activeKEK.kek,
+                            kekEpoch: activeKEK.epoch
                         )
-                        let thumbnailWrappedDEK = try EncryptionUtils.wrapDEK(thumbnailDEK, withKEK: activeKEK.kek, kekEpoch: activeKEK.epoch).base64EncodedString()
+                        let thumbnailSha256 = preparedThumbnail.sha256
+                        log("Thumbnail \(sizeName) SHA256: \(thumbnailSha256)", context: "PhotoSync")
+                        let thumbnailEncrypted = preparedThumbnail.encrypted
+                        let thumbnailWrappedDEK = preparedThumbnail.wrappedDEK
                         let uploadedThumbnail = try await manager.addLFSData(
                             thumbnailEncrypted,
                             apiVersion: ThumbnailSetManifest.apiVersion,
@@ -592,6 +587,50 @@ final class PhotoSyncManager: ObservableObject {
         return assetsRequiringDatabaseChecks.count - dbSkippedCount
     }
     
+    // Enumerates the photo library off the main actor. The fetch walks every
+    // asset synchronously, and upload starts it from the main actor.
+    func loadAssets() async throws -> [PhotoAsset] {
+        nonisolated(unsafe) let library = photoLibrary
+        return try await BackgroundWork.run {
+            library.fetchAllAssets()
+        }
+    }
+
+    // Hashes and encrypts one original off the main actor. The pass reads the
+    // whole file, so running it on the upload task stalls scrolling.
+    func hashAsset(
+        fileURL: URL,
+        dek: Data
+    ) async throws -> (plaintextSHA256: String, encryptedOID: String, encryptedSize: Int64, plaintextSize: Int64) {
+        try await BackgroundWork.run {
+            try EncryptionUtils.computeStreamingHashes(fileURL: fileURL, dek: dek)
+        }
+    }
+
+    // Encrypts one thumbnail off the main actor. Upload builds three of these
+    // per photo, and that AES work was running on the main actor.
+    func encryptThumbnail(
+        data: Data,
+        kek: Data,
+        kekEpoch: Int
+    ) async throws -> (sha256: String, encrypted: Data, wrappedDEK: String) {
+        try await BackgroundWork.run {
+            let digest = SHA256.hash(data: data)
+            let sha256 = digest.map { String(format: "%02x", $0) }.joined()
+            let thumbnailDEK = EncryptionUtils.randomKey(length: 32)
+            let encrypted = try EncryptionUtils.encryptChunkedBinary(
+                plaintext: data,
+                dek: thumbnailDEK
+            )
+            let wrappedDEK = try EncryptionUtils.wrapDEK(
+                thumbnailDEK,
+                withKEK: kek,
+                kekEpoch: kekEpoch
+            ).base64EncodedString()
+            return (sha256, encrypted, wrappedDEK)
+        }
+    }
+
     // Applies state transitions only when they belong to the active sync generation.
     private func updateState(_ state: SyncState, generation: UInt64) async {
         guard generation == syncGeneration else { return }

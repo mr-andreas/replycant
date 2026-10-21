@@ -360,4 +360,83 @@ struct TimelineManagerDatabaseChangeTests {
         )
         #expect(manager.index(ofItemId: "c") == 3)
     }
+
+    // A sync commits one photo at a time. Those notifications have to collapse
+    // into one count, or the main actor re-queries the library per photo.
+    @Test func burstOfIncrementalChangesRefreshesCountOnce() async throws {
+        let manager = makeIsolatedManager()
+        let loader = CountingTimelineLoader()
+        manager.setManifestLoaderForTesting(loader)
+
+        manager.receiveDatabaseChange(
+            .incremental(
+                ManifestMutation(
+                    added: [makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")],
+                    updated: [],
+                    removed: []
+                )
+            )
+        )
+        manager.receiveDatabaseChange(
+            .incremental(
+                ManifestMutation(
+                    added: [makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")],
+                    updated: [],
+                    removed: []
+                )
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 600_000_000)
+        #expect(loader.countCalls == 1)
+        #expect(loader.scopes == [.all])
+    }
+}
+
+// Counts timeline refreshes so a burst can be distinguished from one query per event.
+private final class CountingTimelineLoader: ManifestLoaderProtocol {
+    private(set) var countCalls = 0
+    private(set) var scopes: [TimelineScope] = []
+
+    func loadManifest<T: Manifest>(deviceSpace: String?, id: String) async throws -> T? {
+        nil
+    }
+
+    func loadAllManifests<T: Manifest>(deviceSpace: String?) async throws -> [T] {
+        []
+    }
+
+    func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
+        countCalls += 1
+        scopes.append(scope)
+        return 2
+    }
+
+    func loadTimelinePage(offset: Int, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadTimelinePage(before: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadTimelinePage(after: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadTimelineMonthCounts(scope: TimelineScope) async throws -> [TimelineMonthCount] {
+        []
+    }
+
+    func loadGeotaggedPoints() async throws -> [MapMediaPoint] {
+        []
+    }
+
+    func loadOriginals(ids: [String]) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadThumbnailsByOriginalRefs(_ refs: [String]) async throws -> [String: ThumbnailSetManifest] {
+        [:]
+    }
 }

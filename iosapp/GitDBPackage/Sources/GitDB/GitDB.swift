@@ -90,7 +90,13 @@ public final class GitDatabase: Sendable {
             }
         }
         try await repository.withMutationLock {
-            try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
+            // The version read walks HEAD synchronously. Upload commits from
+            // the main actor, so the walk has to leave that executor.
+            let repository = self.repository
+            await Task.yield()
+            try await Task.detached(priority: .utility) {
+                try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
+            }.value
             try await commitService.createCommit(message: message, items: items)
             try await syncEngine.syncAfterCommit(items: items)
         }
