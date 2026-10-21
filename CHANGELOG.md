@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+#### iOS app
+
+- share a photo or video, or save it to the camera roll, from the full-screen viewer
+
 ## 0.5.0 - 2026-10-18
 
 ### Features

@@ -1372,6 +1372,8 @@ struct InfoSection<Content: View>: View {
 
 enum FullResolutionImageLoadError: Error {
     case decodeFailed
+    case repositoryNotAvailable
+    case lfsClientNotAvailable
 }
 
 @MainActor
@@ -1394,7 +1396,7 @@ final class FullResolutionImageLoader: ObservableObject {
     nonisolated static let playbackMIMETypeAssetOptionKey = "AVURLAssetOutOfBandMIMETypeKey"
 
     // Carries request-scoped playback values so backend decrypting services can stream plaintext without KEK access.
-    private struct VideoPlaybackContext {
+    struct VideoPlaybackContext {
         let encryptedOID: String
         let dekBase64: String
     }
@@ -1422,9 +1424,58 @@ final class FullResolutionImageLoader: ObservableObject {
             return localImage
         }
 
+        let mediaData = try await loadRemoteOriginalImageData(
+            for: item,
+            priority: priority,
+            repository: repository,
+            lfsClient: lfsClient
+        )
+        guard let loadedImage = await decodeOriginalImage(mediaData) else {
+            throw FullResolutionImageLoadError.decodeFailed
+        }
+        return loadedImage
+    }
+
+    /// Returns the original photo bytes for export. Sharing and saving
+    /// need the stored file, not a re-encoded UIImage, so a camera-roll
+    /// copy stays byte-identical and photo sync does not upload it again.
+    static func loadOriginalImageData(
+        for item: TimelineItem,
+        priority: ImageLoadPriority,
+        repository: Repository?,
+        lfsClient: GitLFS?,
+        photoLibrary: PhotoLibraryProviding? = nil
+    ) async throws -> Data {
+        if let localData = await loadLocalOriginalImageDataIfAvailable(
+            for: item,
+            photoLibrary: photoLibrary
+        ) {
+            return localData
+        }
+        guard let repository else {
+            throw FullResolutionImageLoadError.repositoryNotAvailable
+        }
+        guard let lfsClient else {
+            throw FullResolutionImageLoadError.lfsClientNotAvailable
+        }
+        return try await loadRemoteOriginalImageData(
+            for: item,
+            priority: priority,
+            repository: repository,
+            lfsClient: lfsClient
+        )
+    }
+
+    // Downloads the encrypted original and decrypts it. Callers that
+    // already resolved local Photos bytes should not reach this.
+    private static func loadRemoteOriginalImageData(
+        for item: TimelineItem,
+        priority: ImageLoadPriority,
+        repository: Repository,
+        lfsClient: GitLFS
+    ) async throws -> Data {
         let deviceSpace = item.original.metadata.deviceSpace
         let originalPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
-
         let mediaData = try await ImageDiskCacheManager.shared.loadImageData(
             kind: .original,
             priority: priority,
@@ -1433,17 +1484,16 @@ final class FullResolutionImageLoader: ObservableObject {
             repository: repository,
             lfsClient: lfsClient
         )
-
         try Task.checkCancellation()
+        return mediaData
+    }
 
-        let loadedImage = await Task.detached(priority: .userInitiated) {
-            UIImage(data: mediaData)
+    // Decodes off the main actor so a large original does not stall
+    // fullscreen gestures.
+    private static func decodeOriginalImage(_ data: Data) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)
         }.value
-
-        guard let loadedImage else {
-            throw FullResolutionImageLoadError.decodeFailed
-        }
-        return loadedImage
     }
 
     // Retries a fullscreen photo that was refused because the tailnet
@@ -1464,12 +1514,13 @@ final class FullResolutionImageLoader: ObservableObject {
         }
     }
 
-    // Resolves full-resolution image bytes from local Photos when the performance toggle is enabled.
-    // Returns nil to preserve fallback behavior when permission, identifiers, or local availability are missing.
-    private static func loadLocalOriginalImageIfAvailable(
+    // Resolves full-resolution image bytes from local Photos when the
+    // performance toggle is enabled. Returns nil so callers fall back
+    // to LFS when permission, identifiers, or the local file are missing.
+    private static func loadLocalOriginalImageDataIfAvailable(
         for item: TimelineItem,
         photoLibrary: PhotoLibraryProviding?
-    ) async -> UIImage? {
+    ) async -> Data? {
         guard CacheSettingsManager.shared.localThumbnailsEnabled else {
             return nil
         }
@@ -1479,13 +1530,23 @@ final class FullResolutionImageLoader: ObservableObject {
         guard let localID = item.original.spec.localID, !localID.isEmpty else {
             return nil
         }
-        guard let localData = await photoLibrary.getOriginalImageData(forLocalIdentifier: localID) else {
+        return await photoLibrary.getOriginalImageData(forLocalIdentifier: localID)
+    }
+
+    // Decodes local Photos bytes for display. A file that cannot be
+    // decoded falls through to LFS so one bad local copy does not hide
+    // the original stored in the library.
+    private static func loadLocalOriginalImageIfAvailable(
+        for item: TimelineItem,
+        photoLibrary: PhotoLibraryProviding?
+    ) async -> UIImage? {
+        guard let localData = await loadLocalOriginalImageDataIfAvailable(
+            for: item,
+            photoLibrary: photoLibrary
+        ) else {
             return nil
         }
-
-        let localImage = await Task.detached(priority: .userInitiated) {
-            UIImage(data: localData)
-        }.value
+        let localImage = await decodeOriginalImage(localData)
         if localImage == nil {
             logWarning("Failed to decode local original image for \(item.id); falling back to LFS", context: "FullScreen")
         } else {
@@ -1896,7 +1957,7 @@ final class FullResolutionImageLoader: ObservableObject {
     }
 
     // Resolves encrypted object metadata and unwraps the per-object DEK locally to keep KEK off backend networks.
-    private static func resolveVideoPlaybackContext(item: TimelineItem, repository: Repository) throws -> VideoPlaybackContext {
+    static func resolveVideoPlaybackContext(item: TimelineItem, repository: Repository) throws -> VideoPlaybackContext {
         let deviceSpace = item.original.metadata.deviceSpace
         let pointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
         let pointerContent = try repository.readFile(at: pointerPath)
