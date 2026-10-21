@@ -332,6 +332,16 @@ final class FullScreenMediaPageViewController: UIViewController {
             return
         }
         guard exportTask == nil else { return }
+        if destination == .save,
+           let item = timelineManager.loadedItems.first(where: { $0.id == currentItemId }),
+           MediaExport.isAlreadyInPhotos(
+               item: item,
+               photoLibrary: timelineManager.photoLibrary,
+               savedMedia: .shared
+           ) {
+            presentAlreadyInPhotos(isVideo: item.original.spec.mediaType == "video")
+            return
+        }
         startExport(destination)
     }
 
@@ -380,7 +390,10 @@ final class FullScreenMediaPageViewController: UIViewController {
                     self.exportTask = nil
                     self.presentShare(url: url, source: button)
                 case .save:
-                    try await MediaExport.saveToPhotos(fileURL: url, isVideo: isVideo)
+                    let createdID = try await MediaExport.saveToPhotos(fileURL: url, isVideo: isVideo)
+                    if let createdID {
+                        SavedMediaStore.shared.record(localIdentifier: createdID, forItemID: item.id)
+                    }
                     self.removeExportFolder(url)
                     guard generation == self.exportGeneration else { return }
                     self.showSavedCheckmark(generation: generation)
@@ -556,6 +569,22 @@ final class FullScreenMediaPageViewController: UIViewController {
         }
         isCoveringViewer = true
         present(controller, animated: true)
+    }
+
+    // A second copy is not what the user asked for. The alert is the
+    // whole result, so no download or camera-roll write starts.
+    private func presentAlreadyInPhotos(isVideo: Bool) {
+        let kind = isVideo ? "video" : "photo"
+        let alert = UIAlertController(
+            title: "Already in Photos",
+            message: "This \(kind) is already in your photo library.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel) { [weak self] _ in
+            self?.isCoveringViewer = false
+        })
+        isCoveringViewer = true
+        present(alert, animated: true)
     }
 
     // Explains a failed export. Denied Photos access offers Settings

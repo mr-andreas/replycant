@@ -34,6 +34,7 @@ final class StateResetManager {
         try await ManifestLoaderManager.shared.deleteDatabaseFile()
         await MainActor.run {
             UploadedMediaCache.shared.clear()
+            SavedMediaStore.shared.clear()
         }
     }
 }

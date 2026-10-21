@@ -9,6 +9,14 @@ import UniformTypeIdentifiers
 /// The bytes stay the file the library stored. Re-encoding would drop
 /// metadata and change the content hash, which makes photo sync upload
 /// the camera-roll copy as a second item.
+
+// Holds the identifier assigned inside `performChanges`. The change
+// block cannot write a local variable, and the placeholder id is only
+// valid to read there.
+private final class CreatedLocalIdentifier: @unchecked Sendable {
+    var value: String?
+}
+
 enum MediaExport {
     /// Failures the viewer can explain. Denied Photos access is its own
     /// case so the alert can offer Settings.
@@ -125,18 +133,43 @@ enum MediaExport {
 
     /// Adds the exported file to the camera roll. Add-only permission
     /// is enough, and the bytes are the original so sync will not
-    /// upload the new asset a second time.
+    /// upload the new asset a second time. The returned identifier is
+    /// how a later Save knows this copy is already there.
     @MainActor
-    static func saveToPhotos(fileURL: URL, isVideo: Bool) async throws {
+    static func saveToPhotos(fileURL: URL, isVideo: Bool) async throws -> String? {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized else {
             throw MediaExportError.photoLibraryDenied
         }
+        let created = CreatedLocalIdentifier()
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let resourceType: PHAssetResourceType = isVideo ? .video : .photo
             request.addResource(with: resourceType, fileURL: fileURL, options: nil)
+            created.value = request.placeholderForCreatedAsset?.localIdentifier
         }
+        return created.value
+    }
+
+    /// True when Photos still has this item, either because this phone
+    /// uploaded it or because Save already wrote it. Add-only access
+    /// cannot see a later deletion, so the check stays false and Save
+    /// proceeds.
+    @MainActor
+    static func isAlreadyInPhotos(
+        item: TimelineItem,
+        photoLibrary: PhotoLibraryProviding,
+        savedMedia: SavedMediaStore
+    ) -> Bool {
+        guard photoLibrary.isAuthorized else { return false }
+        if let localID = item.original.spec.localID, !localID.isEmpty,
+           photoLibrary.assetExists(localIdentifier: localID) {
+            return true
+        }
+        guard let savedID = savedMedia.localIdentifier(forItemID: item.id) else {
+            return false
+        }
+        return photoLibrary.assetExists(localIdentifier: savedID)
     }
 
     // Copies a local Photos video when one exists, otherwise downloads
@@ -247,6 +280,10 @@ enum MediaExport {
             session.finishTasksAndInvalidate()
             throw error
         }
+        // The task delegate can run after this method resumes, which
+        // would leave the ring short of full when the share sheet
+        // opens. Report completion here, where the caller is waiting.
+        delegate.reportFinished()
         session.finishTasksAndInvalidate()
     }
 }
@@ -340,24 +377,32 @@ private final class VideoDownloadDelegate: NSObject, URLSessionTaskDelegate {
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
-        pollTimer?.cancel()
-        pollTimer = nil
         if error == nil {
             report(
                 written: task.countOfBytesReceived,
                 expected: task.countOfBytesExpectedToReceive
             )
-            // The counters are often already cleared by the time this
-            // runs, which would otherwise leave the ring short of full.
-            reportLock.lock()
-            let shouldReport = lastReported < 1
-            if shouldReport {
-                lastReported = 1
-            }
-            reportLock.unlock()
-            if shouldReport {
-                onProgress?(1)
-            }
+            reportFinished()
+        } else {
+            pollTimer?.cancel()
+            pollTimer = nil
+        }
+    }
+
+    // Counters are often already cleared once the file is on disk, so
+    // a last poll can stop at a fraction. Callers waiting on the
+    // download need the ring to reach full before they continue.
+    func reportFinished() {
+        pollTimer?.cancel()
+        pollTimer = nil
+        reportLock.lock()
+        let shouldReport = lastReported < 1
+        if shouldReport {
+            lastReported = 1
+        }
+        reportLock.unlock()
+        if shouldReport {
+            onProgress?(1)
         }
     }
 }

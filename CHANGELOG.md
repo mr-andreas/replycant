@@ -6,7 +6,7 @@
 
 #### iOS app
 
-- share a photo or video, or save it to the camera roll, from the full-screen viewer
+- share a photo or video, or save it to the camera roll, from the full-screen viewer, and saving an item already in Photos says so instead of adding a copy
 
 ## 0.5.0 - 2026-10-18
 

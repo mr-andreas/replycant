@@ -26,6 +26,9 @@ protocol PhotoLibraryProviding {
     // Attempts to resolve a local video file URL without triggering network-backed iCloud fetches.
     // Returns nil when local lookup fails so callers can fall back to remote streaming.
     func getVideoURL(forLocalIdentifier localID: String) async -> URL?
+    // Reports whether a local identifier still names an asset. A deleted
+    // save or upload no longer counts as already on this phone.
+    func assetExists(localIdentifier: String) -> Bool
     func extractMetadata(for photoAsset: PhotoAsset) -> MediaMetadata
 }
 

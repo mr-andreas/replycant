@@ -19,6 +19,7 @@ class MockPhotoLibraryProvider: PhotoLibraryProviding {
     var localThumbnails: [String: UIImage]
     var localOriginalImageData: [String: Data]
     var localVideoAssetURLs: [String: URL]
+    var existingLocalIdentifiers: Set<String> = []
     var localThumbnailRequests: [(localID: String, size: CGSize)] = []
     
     var shouldAuthorize = true
@@ -137,6 +138,11 @@ class MockPhotoLibraryProvider: PhotoLibraryProviding {
     // Supplies deterministic local video file URLs for fullscreen local-first playback tests.
     func getVideoURL(forLocalIdentifier localID: String) async -> URL? {
         localVideoAssetURLs[localID]
+    }
+
+    // Lets a test say which earlier saves are still in Photos.
+    func assetExists(localIdentifier: String) -> Bool {
+        existingLocalIdentifiers.contains(localIdentifier)
     }
     
     nonisolated func extractMetadata(for photoAsset: PhotoAsset) -> MediaMetadata {

@@ -149,6 +149,68 @@ struct MediaExportTests {
         #expect(fraction == 1)
     }
 
+    // Add-only permission cannot see whether a previous save was
+    // deleted, so a recorded identifier must not block saving again.
+    @Test func alreadyInPhotosIsFalseWithoutReadAccess() {
+        let library = MockPhotoLibraryProvider()
+        library.isAuthorized = false
+        library.existingLocalIdentifiers = ["saved-id"]
+        let store = makeSavedMediaStore()
+        store.record(localIdentifier: "saved-id", forItemID: "item-1")
+        let item = makeItem(id: "item-1", localID: "saved-id")
+        #expect(!MediaExport.isAlreadyInPhotos(item: item, photoLibrary: library, savedMedia: store))
+    }
+
+    // An item this phone uploaded is already in Photos when that
+    // asset is still there. A missing identifier means it was deleted.
+    @Test func alreadyInPhotosMatchesUploadedLocalID() {
+        let library = MockPhotoLibraryProvider()
+        library.isAuthorized = true
+        library.existingLocalIdentifiers = ["local-1"]
+        let store = makeSavedMediaStore()
+        let present = makeItem(id: "present", localID: "local-1")
+        let missing = makeItem(id: "missing", localID: "gone")
+        #expect(MediaExport.isAlreadyInPhotos(item: present, photoLibrary: library, savedMedia: store))
+        #expect(!MediaExport.isAlreadyInPhotos(item: missing, photoLibrary: library, savedMedia: store))
+    }
+
+    // A second tap on Save must not add a copy while the earlier
+    // save is still in Photos. Deleting that asset allows saving again.
+    @Test func alreadyInPhotosMatchesRecordedSaveUntilDeleted() {
+        let library = MockPhotoLibraryProvider()
+        library.isAuthorized = true
+        library.existingLocalIdentifiers = ["created-1"]
+        let store = makeSavedMediaStore()
+        store.record(localIdentifier: "created-1", forItemID: "item-1")
+        let item = makeItem(id: "item-1", localID: nil)
+        #expect(MediaExport.isAlreadyInPhotos(item: item, photoLibrary: library, savedMedia: store))
+        library.existingLocalIdentifiers = []
+        #expect(!MediaExport.isAlreadyInPhotos(item: item, photoLibrary: library, savedMedia: store))
+    }
+
+    // The record has to survive a relaunch, and a library reset has
+    // to forget it so the next save is not blocked by a wiped phone.
+    @Test func savedMediaStorePersistsAcrossInstances() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saved-media-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let first = SavedMediaStore(fileURL: fileURL)
+        first.record(localIdentifier: "created-1", forItemID: "item-1")
+        let second = SavedMediaStore(fileURL: fileURL)
+        #expect(second.localIdentifier(forItemID: "item-1") == "created-1")
+        second.clear()
+        let third = SavedMediaStore(fileURL: fileURL)
+        #expect(third.localIdentifier(forItemID: "item-1") == nil)
+    }
+
+    // Each check gets its own file so one test cannot change what
+    // another remembers.
+    private func makeSavedMediaStore() -> SavedMediaStore {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("saved-media-\(UUID().uuidString).json")
+        return SavedMediaStore(fileURL: fileURL)
+    }
+
     // Without either length the ring stays empty instead of dividing
     // by zero or jumping to full.
     @Test func downloadFractionIsZeroWithoutTotal() {

@@ -298,6 +298,12 @@ final class PhotoLibraryManager: PhotoLibraryProviding, @unchecked Sendable {
         return try await generateThumbnail(for: photoAsset, size: targetSize)
     }
 
+    // A count check is enough: Save only needs to know the asset is
+    // still in the library, not to read its bytes.
+    func assetExists(localIdentifier: String) -> Bool {
+        PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).count > 0
+    }
+
     // Resolves a thumbnail directly from a local Photos asset to avoid LFS fetches when the original is on-device.
     // Uses network-disabled options so iCloud-only assets return nil and callers can intentionally fall back.
     func generateThumbnail(forLocalIdentifier localID: String, size: CGSize) async -> UIImage? {
