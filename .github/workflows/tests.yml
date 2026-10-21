@@ -85,9 +85,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: false
 
+  # Playwright 1.58.2 does not support Ubuntu 26.04; keep this pin until that dependency is upgraded.
   webapp-tests:
     name: Webapp tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
       run:
