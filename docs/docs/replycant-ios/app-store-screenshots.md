@@ -1,7 +1,8 @@
 # App Store Screenshots
 
-This flow generates an iPhone timeline screenshot for App Store Connect from a
-repeatable simulator run, then uploads it with App Store Connect API keys.
+This flow generates iPhone and iPad timeline and map screenshots for App Store
+Connect from a repeatable simulator run, then uploads them with App Store
+Connect API keys.
 
 ## Source Media
 
@@ -18,11 +19,16 @@ The screenshot flow uses the existing UI-test fixture stack:
 
 1. Launch app with `--uitesting --screenshots`.
 2. `TestSupport` builds an encrypted local fixture repo and local LFS server.
-3. `TestSupport` seeds photo fixtures from `ScreenshotMedia/`.
-4. `ScreenshotUITests` captures the timeline grid screenshot.
-5. Fastlane `snapshot` runs that test on iPhone 17 Pro Max (6.9") and
-   iPad Pro 13-inch (M5) / iOS 26.2 (fails if that runtime/device is
-   missing; no fallback to older iOS).
+3. `TestSupport` seeds photo fixtures from `ScreenshotMedia/`. Each fixture
+   manifest gets one of a few Stockholm landmark coordinates, so the map has
+   place tiles. The demo JPEGs themselves carry no GPS.
+4. `ScreenshotUITests` captures the timeline grid (`01-timeline`), then the
+   Map tab (`02-map`).
+5. Fastlane `snapshot` runs that test on iPhone 17 Pro (6.3", 1206×2622),
+   iPhone 17 Pro Max (6.9", 1320×2868), and iPad Pro 13-inch (M5) / iOS
+   26.2 (fails if that runtime/device is missing; no fallback to older
+   iOS). The two iPhone sizes match the Dynamic Island medium and large
+   display slots in App Store Connect.
 
 The `iosappScreenshots` scheme isolates screenshot tests from unit tests.
 
@@ -51,7 +57,7 @@ Captures screenshots via Fastlane `snapshot`, frames them with `frameit`
 final set under `iosapp/fastlane/screenshots/framed/en-US/`. Also builds a
 README-specific black-device frame (no slogan, transparent background) under
 `iosapp/fastlane/screenshots/framed/readme/`. Requires the `iosapp/Gemfile`
-fastlane pin (`make ios-bundle`) so frameit recognizes iPhone 17 Pro Max sizes.
+fastlane pin (`make ios-bundle`) so frameit recognizes iPhone 17 sizes.
 
 ```bash
 make readme-screenshots

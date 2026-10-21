@@ -11,6 +11,10 @@
   },
   "data": [
     {
+      "filter": "iPhone 17 Pro-",
+      "background": "../frame_backgrounds/iphone-6-9.png"
+    },
+    {
       "filter": "iPhone 17 Pro Max",
       "background": "../frame_backgrounds/iphone-6-9.png"
     },
@@ -22,6 +26,12 @@
       "filter": "01-timeline",
       "title": {
         "en-US": "Your photos. Your server."
+      }
+    },
+    {
+      "filter": "02-map",
+      "title": {
+        "en-US": "Your places. Your server."
       }
     }
   ]

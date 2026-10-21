@@ -1,7 +1,9 @@
+import CoreLocation
 import Foundation
 import ImageIO
 import GitDB
 import LibGit2
+import MapKit
 import Testing
 @testable import iosapp
 
@@ -79,6 +81,81 @@ struct ScreenshotMediaTests {
         })
 
         #expect(months.count >= 6)
+    }
+
+    // Ensures the App Store map screenshot shows several photo tiles. Demo
+    // JPEGs carry no GPS, so places come from the fixture entries. They
+    // must sit in one city, or the map opens on only some of them.
+    @Test
+    func screenshotFixtureEntriesSpreadAcrossNearbyPlaces() {
+        let entries = TestSupport.screenshotFixtureEntries(photoCount: 21)
+        var photosPerPlace: [String: Int] = [:]
+        for entry in entries {
+            let key = "\(entry.location.latitude),\(entry.location.longitude)"
+            photosPerPlace[key, default: 0] += 1
+        }
+
+        #expect(photosPerPlace.count >= 4)
+        #expect(photosPerPlace.values.allSatisfy { $0 >= 3 })
+
+        let latitudes = entries.map(\.location.latitude)
+        let longitudes = entries.map(\.location.longitude)
+        #expect((latitudes.max() ?? 0) - (latitudes.min() ?? 0) < 0.5)
+        #expect((longitudes.max() ?? 0) - (longitudes.min() ?? 0) < 0.5)
+    }
+
+    // Ensures every fixture place is its own tile when the map first opens
+    // on the App Store devices. Places a few kilometers apart can still
+    // share a cluster cell, which would quietly drop a tile from the shot.
+    @Test(arguments: [
+        CGSize(width: 402, height: 874), // iPhone 17 Pro
+        CGSize(width: 440, height: 956), // iPhone 17 Pro Max
+        CGSize(width: 1032, height: 1376) // iPad Pro 13-inch
+    ])
+    func screenshotPlacesStaySeparateTilesWhenTheMapOpens(viewSize: CGSize) throws {
+        let entries = TestSupport.screenshotFixtureEntries(photoCount: 21)
+        let isoFormatter = ISO8601DateFormatter()
+        let points = entries.map { entry in
+            MapMediaPoint(
+                id: entry.name,
+                latitude: entry.location.latitude,
+                longitude: entry.location.longitude,
+                takenAt: isoFormatter.date(from: entry.timestamp) ?? .distantPast
+            )
+        }
+        let placeCount = Set(points.map { "\($0.latitude),\($0.longitude)" }).count
+        let region = try #require(MapInitialRegion.region(for: points))
+
+        let clusters = MapClusterer.clusters(
+            from: points,
+            visibleMapRect: fittedMapRect(for: region, viewSize: viewSize),
+            viewSize: viewSize
+        )
+
+        #expect(clusters.count == placeCount)
+    }
+
+    // Mirrors MapKit fitting a region into a view: the shorter side grows
+    // around the center so the whole region stays visible.
+    private func fittedMapRect(for region: MKCoordinateRegion, viewSize: CGSize) -> MKMapRect {
+        let topLeft = MKMapPoint(CLLocationCoordinate2D(
+            latitude: region.center.latitude + region.span.latitudeDelta / 2,
+            longitude: region.center.longitude - region.span.longitudeDelta / 2
+        ))
+        let bottomRight = MKMapPoint(CLLocationCoordinate2D(
+            latitude: region.center.latitude - region.span.latitudeDelta / 2,
+            longitude: region.center.longitude + region.span.longitudeDelta / 2
+        ))
+        let rect = MKMapRect(
+            x: topLeft.x,
+            y: topLeft.y,
+            width: bottomRight.x - topLeft.x,
+            height: bottomRight.y - topLeft.y
+        )
+        let aspect = Double(viewSize.width / viewSize.height)
+        let width = max(rect.width, rect.height * aspect)
+        let height = width / aspect
+        return rect.insetBy(dx: (rect.width - width) / 2, dy: (rect.height - height) / 2)
     }
 
     // Ensures screenshot thumbnail variants keep the expected square and long-edge sizing contracts.

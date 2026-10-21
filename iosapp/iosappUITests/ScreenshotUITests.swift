@@ -27,11 +27,13 @@ final class ScreenshotUITests: XCTestCase {
         app = nil
     }
 
-    // Captures the timeline grid with the month sidebar hidden and a slight scroll offset.
+    // Captures the timeline grid with the month sidebar hidden and a slight scroll offset,
+    // then the map of the same fixture library.
     @MainActor
     func testCaptureAppStoreScreenshots() throws {
         waitForFixturePhotos()
         captureTimelineScreenshot()
+        captureMapScreenshot()
     }
 
     // Captures the timeline grid for the App Store listing without the month sidebar.
@@ -51,6 +53,24 @@ final class ScreenshotUITests: XCTestCase {
         waitForContentToSettle(timeout: 20)
 
         snapshot("01-timeline")
+    }
+
+    // Captures the place tiles so the listing shows browsing photos by location.
+    @MainActor
+    private func captureMapScreenshot() {
+        tapTab(named: "Map", identifier: "mapTab")
+
+        let placeTile = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label MATCHES %@", "^[0-9]+ photos$"))
+            .firstMatch
+        XCTAssertTrue(placeTile.waitForExistence(timeout: 60), "Expected place tiles on the map before capture")
+
+        // Map tiles and tile photos load without a spinner, so the settle
+        // check alone would capture grey placeholders.
+        RunLoop.current.run(until: Date().addingTimeInterval(5))
+        waitForContentToSettle(timeout: 20)
+
+        snapshot("02-map")
     }
 
     // Keeps the month index closed so the grid owns the full screenshot width.
@@ -102,11 +122,17 @@ final class ScreenshotUITests: XCTestCase {
     @MainActor
     private func activateTimelineTab() {
         if firstTimelinePhoto().exists { return }
+        tapTab(named: "Timeline", identifier: "timelineTab")
+    }
 
+    // Switches tabs on both iPhone and iPad layouts, falling back to a
+    // coordinate tap when a tab exists but is not reported as hittable.
+    @MainActor
+    private func tapTab(named label: String, identifier: String) {
         let candidates: [XCUIElement] = [
-            app.tabBars.buttons["Timeline"].firstMatch,
-            app.tabBars.buttons["timelineTab"].firstMatch,
-            app.buttons["Timeline"].firstMatch
+            app.tabBars.buttons[label].firstMatch,
+            app.tabBars.buttons[identifier].firstMatch,
+            app.buttons[label].firstMatch
         ]
 
         let deadline = Date().addingTimeInterval(30)
@@ -122,7 +148,7 @@ final class ScreenshotUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
 
-        XCTFail("Expected Timeline tab to become available")
+        XCTFail("Expected \(label) tab to become available")
     }
 
     // Waits for LFS-backed thumbnails to finish loading before capturing marketing screenshots.

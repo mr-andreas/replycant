@@ -5,7 +5,11 @@ README_FRAME_ROOT = File.join(SCREENSHOT_ROOT, "readme")
 README_FRAMED_ROOT = File.join(SCREENSHOT_ROOT, "framed", "readme")
 RAW_SCREENSHOT_ROOT = File.join(SCREENSHOT_ROOT, "en-US")
 
+# iPhone 17 Pro is 1206×2622, the Dynamic Island medium display.
+# iPhone 17 Pro Max is 1320×2868, the large display. Each size is
+# rejected if it is uploaded to the other slot.
 SCREENSHOT_DEVICES = [
+  "iPhone 17 Pro",
   "iPhone 17 Pro Max",
   "iPad Pro 13-inch (M5)"
 ]
@@ -163,7 +167,9 @@ end
 def frame_readme_iphone!
   require "fileutils"
 
-  raw = Dir.glob(File.join(RAW_SCREENSHOT_ROOT, "*iPhone*01-timeline.png"))
+  # The hyphen keeps the 6.9" "iPhone 17 Pro Max" capture out. That file
+  # is a different resolution than the black 6.3" frame used here.
+  raw = Dir.glob(File.join(RAW_SCREENSHOT_ROOT, "*iPhone 17 Pro-01-timeline.png"))
     .reject { |path| path.end_with?("_framed.png") }
     .min
   UI.user_error!("No raw iPhone 01-timeline screenshot under #{RAW_SCREENSHOT_ROOT}") unless raw
@@ -209,14 +215,14 @@ end
 # Fails screenshot lanes when output dimensions do not match accepted iPhone or iPad App Store slots.
 def validate_screenshot_dimensions(directory = screenshot_upload_path)
   accepted = [
-    [1320, 2868], # iPhone 17 Pro Max (6.9") — required App Store baseline
+    [1206, 2622], # iPhone 17 Pro (6.3") — Dynamic Island medium display
+    [2622, 1206],
+    [1320, 2868], # iPhone 17 Pro Max (6.9")
     [2868, 1320],
     [1290, 2796],
     [2796, 1290],
     [1260, 2736],
     [2736, 1260],
-    [1206, 2622], # optional 6.3" class
-    [2622, 1206],
     [2064, 2752], # iPad Pro 13"
     [2752, 2064],
     [2048, 2732],

@@ -54,6 +54,7 @@ class TestSupport {
         let name: String
         let timestamp: String
         let sourceIndex: Int
+        let location: OriginalManifest.Spec.Location
     }
 
     // Captures per-item fixture inputs so test repositories can mix screenshot photos and synthetic/video fixtures.
@@ -62,7 +63,21 @@ class TestSupport {
         let timestamp: String
         let mediaType: String
         let sourcePhoto: ScreenshotFixturePhoto?
+        var location: OriginalManifest.Spec.Location? = nil
     }
+
+    // Public Stockholm landmarks for the App Store map screenshot. Demo
+    // JPEGs have GPS stripped, so places live only on fixture manifests.
+    // The map clusters on a world-aligned grid of about six cells per
+    // screen; each landmark sits in its own cell at the opening zoom, so
+    // the capture shows five tiles. Moving one can merge two tiles.
+    private static let screenshotPlaces: [OriginalManifest.Spec.Location] = [
+        .init(latitude: 59.3251, longitude: 18.0711, altitude: nil), // Gamla Stan
+        .init(latitude: 59.3260, longitude: 18.1150, altitude: nil), // Djurgården
+        .init(latitude: 59.3600, longitude: 18.0330, altitude: nil), // Hagaparken
+        .init(latitude: 59.3030, longitude: 18.1030, altitude: nil), // Hammarby Sjöstad
+        .init(latitude: 59.3586, longitude: 18.1218, altitude: nil), // Millesgården
+    ]
 
     // Defines image resize behavior for each thumbnail variant so screenshot fixtures mimic production thumbnail shapes.
     private enum ThumbnailRecipe {
@@ -260,6 +275,14 @@ class TestSupport {
             // Add duration field for videos
             if mediaType == "video" {
                 manifestLines.append("  duration: \(videoDuration)")
+            }
+
+            if let location = fixtureSeed.location {
+                manifestLines.append(contentsOf: [
+                    "  location:",
+                    "    latitude: \(location.latitude)",
+                    "    longitude: \(location.longitude)"
+                ])
             }
             
             manifestLines.append(contentsOf: [
@@ -542,7 +565,8 @@ class TestSupport {
             return ScreenshotFixtureEntry(
                 name: name,
                 timestamp: timestamp,
-                sourceIndex: index % photoCount
+                sourceIndex: index % photoCount,
+                location: screenshotPlaces[index % screenshotPlaces.count]
             )
         }
     }
@@ -620,7 +644,8 @@ class TestSupport {
                     name: entry.name,
                     timestamp: entry.timestamp,
                     mediaType: "photo",
-                    sourcePhoto: screenshotPhotos[entry.sourceIndex]
+                    sourcePhoto: screenshotPhotos[entry.sourceIndex],
+                    location: entry.location
                 )
             }
         }
