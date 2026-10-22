@@ -238,4 +238,100 @@ struct LFSRequestSchedulerTests {
         _ = try await first.value
         _ = try await queued.value
     }
+
+    /// A cell load is often already cancelled by the time a free slot opens,
+    /// because reloadData() drops the loader while it is still waiting on disk.
+    /// That caller must not keep the slot, or the next thumbnail waits forever.
+    @Test func cancelledCallerWithFreeSlotDoesNotLeakIt() async throws {
+        let scheduler = LFSRequestScheduler(maxConcurrent: 1)
+
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await scheduler.run(
+                priority: .timelinePage,
+                key: "cancelled"
+            ) {
+                1
+            }
+        }
+        try await expectCancellation(cancelled)
+
+        let followUp = try await firstValueWithinOneSecond {
+            try await scheduler.run(
+                priority: .timelineViewport,
+                key: "follow-up"
+            ) {
+                2
+            }
+        }
+        #expect(followUp == 2)
+    }
+
+    /// One leaked slot is survivable while the budget is larger than one.
+    /// The upload burst cancelled more loads than the budget, which is what
+    /// froze every later download. Repeating the leak past the budget must
+    /// still leave a slot for the next caller.
+    @Test func repeatedCancelledCallersDoNotExhaustTheBudget() async throws {
+        let budget = 2
+        let scheduler = LFSRequestScheduler(maxConcurrent: budget)
+
+        for index in 0..<(budget + 1) {
+            let cancelled = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await scheduler.run(
+                    priority: .timelinePage,
+                    key: "cancelled-\(index)"
+                ) {
+                    index
+                }
+            }
+            try await expectCancellation(cancelled)
+        }
+
+        let followUp = try await firstValueWithinOneSecond {
+            try await scheduler.run(
+                priority: .fullscreenCurrent,
+                key: "follow-up"
+            ) {
+                99
+            }
+        }
+        #expect(followUp == 99)
+    }
 }
+
+/// The slot leak leaves the next caller parked in the queue. A timeout turns
+/// that hang into a failure instead of stalling the suite.
+private func firstValueWithinOneSecond<T: Sendable>(
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            throw SlotLeakTimeout()
+        }
+        guard let value = try await group.next() else {
+            throw SlotLeakTimeout()
+        }
+        group.cancelAll()
+        return value
+    }
+}
+
+/// Confirms an already-cancelled caller stops with CancellationError and
+/// does not swallow a different failure as if the leak had been avoided.
+private func expectCancellation<T: Sendable>(_ task: Task<T, Error>) async throws {
+    do {
+        _ = try await task.value
+        Issue.record("Expected CancellationError from an already-cancelled caller")
+    } catch is CancellationError {
+    } catch {
+        throw error
+    }
+}
+
+/// Marks a follow-up download that never received a slot.
+private struct SlotLeakTimeout: Error {}

@@ -14,6 +14,7 @@
 #### iOS app
 
 - the timeline and full-screen zoom stay responsive while photos upload
+- photos no longer stay as grey placeholders after another device uploads a large batch
 
 ## 0.5.0 - 2026-10-18
 

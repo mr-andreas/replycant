@@ -68,7 +68,17 @@ actor LFSRequestScheduler {
                 - waitStart.uptimeNanoseconds) / 1_000_000
         )
         let inflight = runningCount
-        try Task.checkCancellation()
+        // The defer that returns the slot is below. A caller that is already
+        // cancelled — a cell load dropped by reloadData() while it waited on
+        // disk — throws here while holding the permit. Without giving it
+        // back, a burst of those cancellations fills the budget and every
+        // later thumbnail waits forever.
+        do {
+            try Task.checkCancellation()
+        } catch {
+            releasePermit()
+            throw error
+        }
 
         // Task.detached does not inherit task-locals, so the queue
         // facts have to be re-bound inside the worker. That is what
