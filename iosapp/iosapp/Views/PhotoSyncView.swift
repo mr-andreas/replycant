@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 /// Copy for the upload-tab status so a 0-of-0 bar is never the only thing
 /// on screen while the library is still being scanned.
@@ -10,14 +11,16 @@ enum PhotoSyncStatusCopy {
 
 struct PhotoSyncView: View {
     @StateObject private var syncManager: PhotoSyncManager
+    @ObservedObject private var backgroundUpload = BackgroundUploadScheduler.shared
+    @ObservedObject private var backlog = UploadBacklogTracker.shared
     @State private var showMobileDataUploadWarning = false
+    @State private var showReminderExplanation = false
+    @State private var wantsBackgroundUpload = false
 
     init(syncManager: PhotoSyncManager? = nil) {
-        if let manager = syncManager {
-            _syncManager = StateObject(wrappedValue: manager)
-        } else {
-            _syncManager = StateObject(wrappedValue: PhotoSyncManager())
-        }
+        let manager = syncManager ?? PhotoSyncManager.shared
+        _syncManager = StateObject(wrappedValue: manager)
+        _wantsBackgroundUpload = State(initialValue: BackgroundUploadScheduler.shared.isEnabled)
     }
     
     var body: some View {
@@ -40,6 +43,21 @@ struct PhotoSyncView: View {
                 .padding(.vertical)
             
             syncStatusView
+
+            backgroundUploadToggle
+
+            if backlog.isOverdue {
+                Text("Some photos and videos have not finished uploading for 7 days. Tap Start Upload and keep the app open until it completes.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(12)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.orange)
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                    .accessibilityIdentifier("uploadBacklogWarning")
+            }
             
             if !isActivelySyncing {
                 Button(action: {
@@ -76,6 +94,28 @@ struct PhotoSyncView: View {
             }
         }
         .padding()
+        .onAppear {
+            wantsBackgroundUpload = backgroundUpload.isEnabled
+        }
+        .onChange(of: backgroundUpload.isEnabled) { _, enabled in
+            wantsBackgroundUpload = enabled
+        }
+        .onChange(of: wantsBackgroundUpload) { _, enabled in
+            guard enabled != backgroundUpload.isEnabled else { return }
+            if enabled {
+                Task { await enableBackgroundUpload() }
+            } else {
+                Task { await backgroundUpload.setEnabled(false) }
+            }
+        }
+        .alert("Get a reminder if uploads stall?", isPresented: $showReminderExplanation) {
+            Button("Allow Reminders") {
+                Task { await allowUploadReminders() }
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("Background uploads only run while your phone is charging on Wi-Fi. If some photos and videos still have not uploaded after 7 days, Replycant can send one notification so you can finish with the app open.")
+        }
         .alert("Upload over mobile data?", isPresented: $showMobileDataUploadWarning) {
             Button("Upload") {
                 Task {
@@ -88,6 +128,41 @@ struct PhotoSyncView: View {
         }
     }
     
+    // The toggle is off until the user opts in. Photo access is requested
+    // while the app is open, because a charging run cannot show that prompt.
+    private var backgroundUploadToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Upload automatically while charging on Wi-Fi", isOn: $wantsBackgroundUpload)
+                .accessibilityIdentifier("backgroundUploadToggle")
+            Text("Runs while the phone is plugged in, on Wi-Fi, and starts with the smallest files.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+    }
+
+    // Turns the feature on only after photo access. The notification
+    // explanation comes before iOS asks, and Not Now never asks.
+    private func enableBackgroundUpload() async {
+        let allowed = await syncManager.requestPhotoAccess()
+        guard allowed else {
+            wantsBackgroundUpload = false
+            return
+        }
+        await backgroundUpload.setEnabled(true)
+        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        if UploadBacklogTracker.notificationPermissionStep(status: status) == .explain {
+            showReminderExplanation = true
+        }
+    }
+
+    // The system prompt runs only from Allow Reminders. A refusal leaves
+    // background upload on and skips the notification.
+    private func allowUploadReminders() async {
+        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        await backlog.scheduleReminderIfArmed()
+    }
+
     // Uses SyncState as the rendering source of truth so controls stay aligned with progress content.
     private var isActivelySyncing: Bool {
         if case .syncing = syncManager.syncState {

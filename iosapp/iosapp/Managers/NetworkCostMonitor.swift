@@ -24,6 +24,39 @@ final class NetworkCostMonitor: NetworkCostProviding {
         isExpensive || isConstrained
     }
 
+    // Automatic upload has no one to confirm a mobile-data warning, so it
+    // runs only on an unmetered, unconstrained path such as Wi-Fi.
+    static func allowsAutomaticUpload(
+        status: NWPath.Status,
+        isExpensive: Bool,
+        isConstrained: Bool
+    ) -> Bool {
+        status == .satisfied && !isExpensive && !isConstrained
+    }
+
+    // Waits for the first path update. A cold background launch still holds
+    // the monitor's default "not metered" value, which would start an upload
+    // before the path is known.
+    func waitForAutomaticUploadDecision() async -> Bool {
+        let gate = ResumeOnce()
+        return await withCheckedContinuation { continuation in
+            let monitor = NWPathMonitor()
+            let queue = DispatchQueue(label: "NetworkCostMonitor.automaticUpload")
+            monitor.pathUpdateHandler = { path in
+                guard gate.claim() else { return }
+                monitor.cancel()
+                continuation.resume(
+                    returning: Self.allowsAutomaticUpload(
+                        status: path.status,
+                        isExpensive: path.isExpensive,
+                        isConstrained: path.isConstrained
+                    )
+                )
+            }
+            monitor.start(queue: queue)
+        }
+    }
+
     var isMetered: Bool {
         if Self.simulatesMeteredNetwork {
             return true
@@ -61,5 +94,21 @@ final class NetworkCostMonitor: NetworkCostProviding {
         #else
         return false
         #endif
+    }
+}
+
+// Lets the one-shot path check resume its continuation a single time.
+// The monitor can deliver more than one update before cancel takes effect.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+
+    // The first caller resumes the continuation. Later path updates are ignored.
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if didResume { return false }
+        didResume = true
+        return true
     }
 }

@@ -25,6 +25,8 @@ class MockPhotoLibraryProvider: PhotoLibraryProviding {
     var shouldAuthorize = true
     // Allows tests to model whether callers should attempt local Photo Library lookup.
     var isAuthorized = true
+    // Lets ordering tests choose sizes without reading Photos metadata.
+    var fileSizes: [String: Int64] = [:]
     var authError: Error?
     var dataError: Error?
     var thumbnailError: Error?
@@ -143,6 +145,11 @@ class MockPhotoLibraryProvider: PhotoLibraryProviding {
     // Lets a test say which earlier saves are still in Photos.
     func assetExists(localIdentifier: String) -> Bool {
         existingLocalIdentifiers.contains(localIdentifier)
+    }
+
+    // Supplies the sizes a background run sorts by, instead of Photos metadata.
+    func originalFileSize(for photoAsset: PhotoAsset) -> Int64? {
+        fileSizes[photoAsset.id]
     }
     
     nonisolated func extractMetadata(for photoAsset: PhotoAsset) -> MediaMetadata {
@@ -564,6 +571,21 @@ struct PhotoSyncManagerTests {
         return data
     }
     
+    // A recovered simulator already has a tailnet join in progress, and that
+    // join outlasts the upload's wait. These tests upload to a local repo, so
+    // they set the stored tailnet aside and put it back afterwards.
+    func runSync(_ syncManager: PhotoSyncManager, order: UploadOrder = .newestFirst) async {
+        let savedTailnet = TailnetConfigurationManager.shared.load()
+        TailnetConfigurationManager.shared.clear()
+        defer {
+            if let savedTailnet {
+                TailnetConfigurationManager.shared.save(savedTailnet)
+            }
+        }
+        await syncManager.startSync(order: order)
+        await syncManager.syncTask?.value
+    }
+
     func createMockLibrary(assets: [PhotoAsset], withThumbnails: Bool = true) -> MockPhotoLibraryProvider {
         var assetData: [String: Data] = [:]
         var thumbnails: [String: (data: Data, width: Int, height: Int)] = [:]
@@ -1934,6 +1956,130 @@ struct PhotoSyncManagerTests {
 
         #expect(syncManager.syncState == .idle)
         #expect(syncManager.isOnMeteredNetwork == true)
+    }
+
+    // Background runs must drain small files before a video that may not
+    // fit in one charging window. Unknown sizes stay last, and equal sizes
+    // keep the order the library returned.
+    @Test("Smallest-first order puts known sizes first and keeps ties")
+    func testOrderedSmallestFirst() {
+        let small = createTestAsset(id: "small", filename: "small.jpg", mediaType: .image, creationDate: nil)
+        let alsoSmall = createTestAsset(id: "also-small", filename: "also.jpg", mediaType: .image, creationDate: nil)
+        let large = createTestAsset(id: "large", filename: "large.mp4", mediaType: .video, creationDate: nil)
+        let unknown = createTestAsset(id: "unknown", filename: "unknown.jpg", mediaType: .image, creationDate: nil)
+
+        let ordered = PhotoSyncManager.orderedSmallestFirst(
+            [large, small, unknown, alsoSmall],
+            sizes: ["small": 100, "also-small": 100, "large": 5_000]
+        )
+
+        #expect(ordered.map(\.id) == ["small", "also-small", "large", "unknown"])
+    }
+
+    // A manual upload keeps newest-first even when an older file is smaller,
+    // so the background option is the only thing that changes order.
+    @Test("Manual upload stays newest first when file sizes differ")
+    func testManualUploadIgnoresFileSize() async throws {
+        let repoPath = try setupDocumentsRepo()
+        defer { cleanupTestEnvironment(at: repoPath) }
+        UserDefaults.standard.set("http://localhost:8080/lfs", forKey: "gitServerURL")
+
+        let olderSmall = createTestAsset(
+            id: "OLD_SMALL",
+            filename: "older-small.jpg",
+            mediaType: .image,
+            creationDate: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let newerLarge = createTestAsset(
+            id: "NEW_LARGE",
+            filename: "newer-large.mp4",
+            mediaType: .video,
+            creationDate: Date(timeIntervalSince1970: 1_700_000_200)
+        )
+        let mockLibrary = createMockLibrary(assets: [newerLarge, olderSmall])
+        mockLibrary.fileSizes = ["OLD_SMALL": 100, "NEW_LARGE": 9_000_000]
+        let mockManifest = MockManifestManager()
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: mockLibrary,
+            manifestManager: mockManifest
+        )
+
+        await runSync(syncManager)
+
+        let names = mockManifest.createCommitCalls.map(\.message)
+        #expect(names.count == 2)
+        guard names.count == 2 else { return }
+        #expect(names[0].contains("newer-large.mp4"))
+        #expect(names[1].contains("older-small.jpg"))
+    }
+
+    // Background upload spends its short window on the files most likely
+    // to finish, instead of stalling on the newest large video.
+    @Test("Background upload sends the smallest file first")
+    func testBackgroundUploadOrderIsSmallestFirst() async throws {
+        let repoPath = try setupDocumentsRepo()
+        defer { cleanupTestEnvironment(at: repoPath) }
+        UserDefaults.standard.set("http://localhost:8080/lfs", forKey: "gitServerURL")
+
+        let olderSmall = createTestAsset(
+            id: "OLD_SMALL",
+            filename: "older-small.jpg",
+            mediaType: .image,
+            creationDate: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let newerLarge = createTestAsset(
+            id: "NEW_LARGE",
+            filename: "newer-large.mp4",
+            mediaType: .video,
+            creationDate: Date(timeIntervalSince1970: 1_700_000_200)
+        )
+        let unknown = createTestAsset(
+            id: "UNKNOWN",
+            filename: "unknown.jpg",
+            mediaType: .image,
+            creationDate: Date(timeIntervalSince1970: 1_700_000_300)
+        )
+        let mockLibrary = createMockLibrary(assets: [unknown, newerLarge, olderSmall])
+        mockLibrary.fileSizes = ["OLD_SMALL": 100, "NEW_LARGE": 9_000_000]
+        let mockManifest = MockManifestManager()
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: mockLibrary,
+            manifestManager: mockManifest
+        )
+
+        await runSync(syncManager, order: .smallestFirst)
+
+        let names = mockManifest.createCommitCalls.map(\.message)
+        #expect(names.count == 3)
+        guard names.count == 3 else { return }
+        #expect(names[0].contains("older-small.jpg"))
+        #expect(names[1].contains("newer-large.mp4"))
+        #expect(names[2].contains("unknown.jpg"))
+    }
+
+    // Catching up, including an empty library, cancels the 7-day reminder
+    // so a finished upload does not still warn the user.
+    @Test("A finished upload clears the 7-day backlog clock")
+    func testCompletedSyncClearsBacklogClock() async {
+        let suite = "backlog-clear-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let notifications = FakeReminderCenter()
+        notifications.status = .authorized
+        let tracker = UploadBacklogTracker(defaults: defaults, notifications: notifications)
+        await tracker.arm(now: Date(timeIntervalSince1970: 1_700_000_000))
+        #expect(notifications.added.count == 1)
+
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: MockPhotoLibraryProvider(),
+            manifestManager: MockManifestManager(),
+            backlogTracker: tracker
+        )
+        await runSync(syncManager)
+
+        #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) == nil)
+        #expect(notifications.removedPending == [UploadBacklogTracker.reminderIdentifier])
+        #expect(notifications.removedDelivered == [UploadBacklogTracker.reminderIdentifier])
     }
 }
 

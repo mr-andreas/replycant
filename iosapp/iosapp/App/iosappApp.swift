@@ -7,6 +7,7 @@
 
 import SwiftUI
 import LibGit2
+import UserNotifications
 
 @main
 struct iosappApp: App {
@@ -35,6 +36,11 @@ struct iosappApp: App {
         // The monitor has to be running before the first video or upload,
         // so the mobile-data decision is ready when the user acts.
         _ = NetworkCostMonitor.shared
+
+        // Registration has to finish during launch or iOS will not run the
+        // charging upload, including a launch that exists only for that task.
+        BackgroundUploadScheduler.shared.register()
+        UNUserNotificationCenter.current().delegate = AppNotificationDelegate.shared
 
         // Keeps UITest-only setup code out of Release/App Store builds.
         #if DEBUG
@@ -107,7 +113,11 @@ struct iosappApp: App {
         switch phase {
         case .background:
             Task { await TailnetBootstrap.shared.noteEnteredBackground() }
+            if BackgroundUploadScheduler.shared.isEnabled {
+                BackgroundUploadScheduler.shared.schedule()
+            }
         case .active:
+            UploadBacklogTracker.shared.refreshOverdue()
             Task {
                 do {
                     try await TailnetBootstrap.shared.noteReturnedToForeground()

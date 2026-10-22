@@ -21,6 +21,9 @@ The iOS app is built with:
 ### Photo Timeline
 A sparse-loaded grid view sized by total timeline count, with on-demand page loading and thumbnail batch fetches.
 
+### Background upload
+From the Upload tab you can turn on automatic upload. It runs while the phone is charging and on Wi-Fi, and it uploads the smallest files first. Each run is only a few minutes, so a large video may still be waiting. If anything has not finished for 7 days, Replycant sends one notification. Tapping it opens the Upload tab and asks you to finish the upload with the app open. The same warning appears on that tab even if you declined notifications.
+
 ### Offline-First Design
 Full functionality without network access. Changes sync when connectivity is restored.
 

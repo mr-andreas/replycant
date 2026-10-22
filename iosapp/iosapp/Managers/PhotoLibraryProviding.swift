@@ -10,6 +10,9 @@ protocol PhotoLibraryProviding {
     var isAuthorized: Bool { get }
     func requestAuthorization() async -> Bool
     func fetchAllAssets() -> [PhotoAsset]
+    // Reports the original's byte size from local metadata so a background
+    // run can upload small files first without downloading or hashing them.
+    func originalFileSize(for photoAsset: PhotoAsset) -> Int64?
     // Resolves the original filename lazily so callers can avoid expensive metadata fetches on cache-hit runs.
     func filename(for photoAsset: PhotoAsset) -> String
     func getAssetData(for photoAsset: PhotoAsset) async throws -> Data

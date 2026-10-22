@@ -39,6 +39,13 @@ private struct UploadRefusedError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
+// Background runs upload small files first. A manual upload keeps the
+// library's newest-first order.
+enum UploadOrder: Sendable {
+    case newestFirst
+    case smallestFirst
+}
+
 enum SyncState: Equatable {
     case idle
     case syncing(current: Int, total: Int, currentFile: String, uploadSpeed: String, fileSize: String)
@@ -70,6 +77,10 @@ enum SyncState: Equatable {
 
 @MainActor
 final class PhotoSyncManager: ObservableObject {
+    // The Upload tab and a background run share one upload so they cannot
+    // run at the same time, and opening the app shows the run in progress.
+    static let shared = PhotoSyncManager()
+
     @Published var syncState: SyncState = .idle
     @Published var isSyncing = false
     
@@ -93,6 +104,9 @@ final class PhotoSyncManager: ObservableObject {
     private var lfsURLObserver: AnyCancellable?
     // Observes replacement of the shared manifest database so syncs never write through a discarded instance.
     private var databaseInvalidationObserver: AnyCancellable?
+    // Cleared when an upload finishes so a caught-up library does not keep
+    // a 7-day reminder.
+    private let backlogTracker: UploadBacklogTracking
     
     // Injects dependencies so sync behavior can be exercised in tests.
     init(
@@ -100,13 +114,15 @@ final class PhotoSyncManager: ObservableObject {
         manifestManager: ManifestManager? = nil,
         uploadedMediaCache: UploadedMediaCaching = UploadedMediaCache.shared,
         idleTimer: IdleTimerControlling = UIApplicationIdleTimerController(),
-        networkCost: NetworkCostProviding = NetworkCostMonitor.shared
+        networkCost: NetworkCostProviding = NetworkCostMonitor.shared,
+        backlogTracker: UploadBacklogTracking? = nil
     ) {
         self.photoLibrary = photoLibraryProvider
         self.injectedManifestManager = manifestManager
         self.uploadedMediaCache = uploadedMediaCache
         self.idleTimer = idleTimer
         self.networkCost = networkCost
+        self.backlogTracker = backlogTracker ?? UploadBacklogTracker.shared
         observeLFSURLChanges()
         observeDatabaseInvalidation()
         observeNetworkCost()
@@ -114,6 +130,12 @@ final class PhotoSyncManager: ObservableObject {
 
     // Lets the upload button decide whether to warn before any bytes move.
     var isOnMeteredNetwork: Bool { networkCost.isMetered }
+
+    // Asks for photo access while the app is open. A background run cannot
+    // show the system prompt, so the toggle does this before enabling itself.
+    func requestPhotoAccess() async -> Bool {
+        await photoLibrary.requestAuthorization()
+    }
 
     // Recreates manifest dependencies lazily, letting each sync run pick up the latest configured LFS endpoint.
     func getManifestManager() throws -> ManifestManager {
@@ -209,7 +231,9 @@ final class PhotoSyncManager: ObservableObject {
     }
 
     // Starts a new sync run and stamps it with a generation token so stale callbacks cannot update UI state.
-    func startSync() async {
+    // Manual upload keeps newest-first. Background upload passes smallest-first
+    // so a short charging window finishes as many files as it can.
+    func startSync(order: UploadOrder = .newestFirst) async {
         guard !isSyncing else {
             logWarning("Sync already in progress, ignoring request", context: "PhotoSync")
             return
@@ -255,7 +279,7 @@ final class PhotoSyncManager: ObservableObject {
                 }
                 
                 log("Starting sync of \(assets.count) assets...", context: "PhotoSync")
-                let syncedCount = try await syncAssets(assets, generation: generation)
+                let syncedCount = try await syncAssets(assets, generation: generation, order: order)
                 log("Sync completed successfully! Total: \(syncedCount) assets", context: "PhotoSync")
                 await updateState(.completed(total: syncedCount), generation: generation)
             } catch {
@@ -285,7 +309,11 @@ final class PhotoSyncManager: ObservableObject {
     }
     
     // Encrypts and uploads assets while preserving plaintext integrity hashes in manifests for post-decryption verification.
-    private func syncAssets(_ assets: [PhotoAsset], generation: UInt64) async throws -> Int {
+    private func syncAssets(
+        _ assets: [PhotoAsset],
+        generation: UInt64,
+        order: UploadOrder
+    ) async throws -> Int {
         let deviceSpace = DeviceIdentifierManager.shared.deviceSpaceIdentifier
         let modificationDateFormatter = ISO8601DateFormatter()
         var cacheSkippedCount = 0
@@ -301,6 +329,9 @@ final class PhotoSyncManager: ObservableObject {
         guard !assetsRequiringDatabaseChecks.isEmpty else {
             log("All assets skipped by uploaded media cache", context: "PhotoSync")
             return 0
+        }
+        if order == .smallestFirst {
+            assetsRequiringDatabaseChecks = await orderSmallestFirst(assetsRequiringDatabaseChecks)
         }
 
         let repository = try RepositoryManager.shared.getRepository()
@@ -657,6 +688,58 @@ final class PhotoSyncManager: ObservableObject {
             isSyncing = false
         }
         idleTimer.isIdleTimerDisabled = isSyncing
+        if case .completed = state {
+            backlogTracker.clear()
+        }
+    }
+
+    // Puts the smallest known originals first. A missing size sorts last so
+    // one unreadable length cannot block every smaller file behind it.
+    static func orderedSmallestFirst(
+        _ assets: [PhotoAsset],
+        sizes: [String: Int64]
+    ) -> [PhotoAsset] {
+        assets.enumerated().sorted { left, right in
+            let leftSize = sizes[left.element.id]
+            let rightSize = sizes[right.element.id]
+            switch (leftSize, rightSize) {
+            case let (lhs?, rhs?) where lhs != rhs:
+                return lhs < rhs
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                return left.offset < right.offset
+            }
+        }.map(\.element)
+    }
+
+    // Sorts only the files this run still has to upload. Sizes come from
+    // local metadata, off the main actor, so the scan does not hitch the UI.
+    private func orderSmallestFirst(
+        _ entries: [(asset: PhotoAsset, modifiedAt: String?)]
+    ) async -> [(asset: PhotoAsset, modifiedAt: String?)] {
+        let sizes = await originalFileSizes(for: entries.map(\.asset))
+        let ordered = Self.orderedSmallestFirst(entries.map(\.asset), sizes: sizes)
+        let byID = Dictionary(uniqueKeysWithValues: entries.map { ($0.asset.id, $0) })
+        return ordered.compactMap { byID[$0.id] }
+    }
+
+    // Looks up sizes off the main actor. The lookup is metadata only, but a
+    // large library should not do it on the actor that scrolls the timeline.
+    private func originalFileSizes(for assets: [PhotoAsset]) async -> [String: Int64] {
+        nonisolated(unsafe) let library = photoLibrary
+        let measured = try? await BackgroundWork.run { () -> [String: Int64] in
+            var sizes: [String: Int64] = [:]
+            for asset in assets {
+                if let size = library.originalFileSize(for: asset) {
+                    sizes[asset.id] = size
+                }
+            }
+            return sizes
+        }
+        return measured ?? [:]
     }
     
     private func formatBytes(_ bytes: Int) -> String {

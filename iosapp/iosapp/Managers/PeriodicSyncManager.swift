@@ -130,12 +130,19 @@ final class PeriodicSyncManager {
         }
     }
 
+    // Pushes immediately after a background upload. That launch may never
+    // create the SwiftUI scene, so the periodic loop is not running.
+    func pushNow() async -> Bool {
+        await performPushTick()
+    }
+
     // Pushes local commits to origin and logs operation duration for performance visibility.
-    private func performPushTick() async {
-        guard !hasRefusedUnsupportedDatabase(), !hasRefusedFormatTransition() else { return }
+    @discardableResult
+    private func performPushTick() async -> Bool {
+        guard !hasRefusedUnsupportedDatabase(), !hasRefusedFormatTransition() else { return false }
         guard beginNetworkOperationIfIdle() else {
             logDebug("Skipping periodic push because another periodic network operation is running", context: "Sync")
-            return
+            return false
         }
         defer { endNetworkOperation() }
 
@@ -149,14 +156,16 @@ final class PeriodicSyncManager {
             let pushed = try await gitDB.tryPush()
             guard pushed else {
                 logDebug("Skipping periodic push because another mutating git operation is running", context: "Sync")
-                return
+                return false
             }
             notifyPushSuccess()
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logDebug("Periodic push completed in \(String(format: "%.3f", duration)) seconds", context: "Sync")
+            return true
         } catch {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logError("Periodic push failed after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
+            return false
         }
     }
 

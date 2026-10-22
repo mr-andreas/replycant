@@ -37,6 +37,7 @@ struct ContentView: View {
     @State private var showRecoveryFlow = false
     @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
+    @ObservedObject private var notificationDelegate = AppNotificationDelegate.shared
     @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
@@ -190,6 +191,10 @@ struct ContentView: View {
         .onAppear {
             emitRootVisibleIfNeeded()
             consumeRecoveryInputIfAvailable()
+            openRequestedTab()
+        }
+        .onChange(of: notificationDelegate.requestedTab) { _, _ in
+            openRequestedTab()
         }
         .task {
             guard previewState == nil,
@@ -549,6 +554,14 @@ struct ContentView: View {
         isTailnetConfigured: Bool
     ) -> Bool {
         !isRepoInitialized && isServerConfigured && !isTailnetConfigured
+    }
+
+    // A reminder tap asks for the Upload tab. Clearing the request keeps a
+    // later manual tab change from being overwritten.
+    private func openRequestedTab() {
+        guard let tab = notificationDelegate.requestedTab else { return }
+        selectedTab = tab
+        notificationDelegate.requestedTab = nil
     }
 
     // Keeps the Settings badge tied to missing recovery keys so users are

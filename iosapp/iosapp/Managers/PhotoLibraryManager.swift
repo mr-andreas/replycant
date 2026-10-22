@@ -112,6 +112,36 @@ final class PhotoLibraryManager: PhotoLibraryProviding, @unchecked Sendable {
         return sorted
     }
 
+    // Reads the original's size from Photos metadata. Photos has no public
+    // size API, so this uses the resource's fileSize value and skips the
+    // asset when that value is missing.
+    func originalFileSize(for photoAsset: PhotoAsset) -> Int64? {
+        guard let asset = photoAsset.phAsset else { return nil }
+        let resources = PHAssetResource.assetResources(for: asset)
+        let resource = resources.first { candidate in
+            switch candidate.type {
+            case .photo, .video, .fullSizePhoto, .fullSizeVideo:
+                return true
+            default:
+                return false
+            }
+        } ?? resources.first
+        guard let resource else { return nil }
+        return Self.fileSize(of: resource)
+    }
+
+    // fileSize is the metadata Photos already has. A missing value sorts
+    // the asset last instead of failing the upload.
+    private static func fileSize(of resource: PHAssetResource) -> Int64? {
+        let key = "fileSize"
+        guard resource.responds(to: NSSelectorFromString(key)),
+              let number = resource.value(forKey: key) as? NSNumber else {
+            return nil
+        }
+        let size = number.int64Value
+        return size > 0 ? size : nil
+    }
+
     // Resolves a stable filename only when callers actually need to upload an asset.
     func filename(for photoAsset: PhotoAsset) -> String {
         if !photoAsset.filename.isEmpty {
