@@ -3,8 +3,8 @@ import Testing
 import UserNotifications
 @testable import iosapp
 
-// Checks the 7-day reminder: when it is scheduled, when a declined
-// permission skips it, and when a finished upload removes it.
+// Checks that background upload always has one reminder 7 days out, and
+// that a finished upload moves that reminder instead of cancelling it.
 @Suite("Upload backlog tracker", .serialized)
 @MainActor
 struct UploadBacklogTrackerTests {
@@ -17,7 +17,7 @@ struct UploadBacklogTrackerTests {
         notifications.status = .authorized
         let (tracker, _) = makeTracker(notifications: notifications)
 
-        await tracker.arm(now: start)
+        await tracker.start(now: start)
 
         #expect(notifications.added.count == 1)
         let request = notifications.added[0]
@@ -35,7 +35,7 @@ struct UploadBacklogTrackerTests {
             notifications.status = status
             let (tracker, defaults) = makeTracker(notifications: notifications)
 
-            await tracker.arm(now: start)
+            await tracker.start(now: start)
 
             #expect(notifications.added.isEmpty)
             #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) as? Date == start)
@@ -47,7 +47,7 @@ struct UploadBacklogTrackerTests {
         let notifications = FakeReminderCenter()
         notifications.status = .notDetermined
         let (tracker, _) = makeTracker(notifications: notifications)
-        await tracker.arm(now: start)
+        await tracker.start(now: start)
 
         notifications.status = .authorized
         let oneHourLater = start.addingTimeInterval(60 * 60)
@@ -65,17 +65,33 @@ struct UploadBacklogTrackerTests {
         #expect(UploadBacklogTracker.notificationPermissionStep(status: .denied) == .skip)
     }
 
-    @Test("Arming again keeps the original date and the original reminder")
-    func testSecondArmIsIgnored() async {
+    @Test("A finished upload moves an armed reminder a full 7 days out")
+    func testRestartMovesArmedReminder() async {
+        let notifications = FakeReminderCenter()
+        notifications.status = .authorized
+        let (tracker, defaults) = makeTracker(notifications: notifications)
+        await tracker.start(now: start)
+
+        let restarted = start.addingTimeInterval(2 * 24 * 60 * 60)
+        await tracker.restartIfArmed(now: restarted)
+
+        #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) as? Date == restarted)
+        #expect(notifications.added.count == 2)
+        let trigger = notifications.added[1].trigger as? UNTimeIntervalNotificationTrigger
+        #expect(trigger?.timeInterval == week)
+        #expect(notifications.removedDelivered == [UploadBacklogTracker.reminderIdentifier])
+    }
+
+    @Test("A finished upload does nothing while background upload is off")
+    func testRestartDoesNothingWhenDisarmed() async {
         let notifications = FakeReminderCenter()
         notifications.status = .authorized
         let (tracker, defaults) = makeTracker(notifications: notifications)
 
-        await tracker.arm(now: start)
-        await tracker.arm(now: start.addingTimeInterval(week))
+        await tracker.restartIfArmed(now: start)
 
-        #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) as? Date == start)
-        #expect(notifications.added.count == 1)
+        #expect(notifications.added.isEmpty)
+        #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) == nil)
     }
 
     @Test("Clearing the clock removes a pending and a delivered reminder")
@@ -83,7 +99,7 @@ struct UploadBacklogTrackerTests {
         let notifications = FakeReminderCenter()
         notifications.status = .authorized
         let (tracker, defaults) = makeTracker(notifications: notifications)
-        await tracker.arm(now: start)
+        await tracker.start(now: start)
 
         tracker.clear()
 

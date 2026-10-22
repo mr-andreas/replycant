@@ -68,7 +68,7 @@ final class BackgroundUploadScheduler: ObservableObject {
         defaults.set(enabled, forKey: Self.enabledKey)
         if enabled {
             schedule()
-            await backlog.arm(now: now())
+            await backlog.start(now: now())
         } else {
             taskScheduler.cancel(taskRequestWithIdentifier: Self.taskIdentifier)
             backlog.clear()
@@ -136,9 +136,6 @@ final class BackgroundUploadScheduler: ObservableObject {
             if await PeriodicSyncManager.shared.pushNow() {
                 UploadedMediaCache.shared.flushPending()
             }
-        }
-        if !finishedThisRun {
-            await backlog.arm(now: now())
         }
         if control.claimFinish() {
             task.setTaskCompleted(success: finishedThisRun)

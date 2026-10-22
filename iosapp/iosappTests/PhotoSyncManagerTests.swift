@@ -2057,18 +2057,18 @@ struct PhotoSyncManagerTests {
         #expect(names[2].contains("unknown.jpg"))
     }
 
-    // Catching up, including an empty library, cancels the 7-day reminder
-    // so a finished upload does not still warn the user.
-    @Test("A finished upload clears the 7-day backlog clock")
-    func testCompletedSyncClearsBacklogClock() async {
-        let suite = "backlog-clear-\(UUID().uuidString)"
+    // Finishing everything, even an empty library, pushes the reminder out
+    // so a quiet week after a catch-up does not warn the user.
+    @Test("A finished upload postpones an armed reminder")
+    func testCompletedSyncRestartsBacklogClock() async {
+        let suite = "backlog-restart-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         let notifications = FakeReminderCenter()
         notifications.status = .authorized
         let tracker = UploadBacklogTracker(defaults: defaults, notifications: notifications)
-        await tracker.arm(now: Date(timeIntervalSince1970: 1_700_000_000))
-        #expect(notifications.added.count == 1)
+        let armed = Date(timeIntervalSince1970: 1_700_000_000)
+        await tracker.start(now: armed)
 
         let syncManager = PhotoSyncManager(
             photoLibraryProvider: MockPhotoLibraryProvider(),
@@ -2077,9 +2077,33 @@ struct PhotoSyncManagerTests {
         )
         await runSync(syncManager)
 
-        #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) == nil)
-        #expect(notifications.removedPending == [UploadBacklogTracker.reminderIdentifier])
+        let stored = defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) as? Date
+        #expect(stored != nil)
+        #expect(stored! > armed)
+        #expect(notifications.added.count == 2)
         #expect(notifications.removedDelivered == [UploadBacklogTracker.reminderIdentifier])
+    }
+
+    // A manual upload while the feature is off must not start the clock
+    // or schedule a reminder the user never asked for.
+    @Test("A finished upload leaves a disarmed clock alone")
+    func testCompletedSyncDoesNotArmBacklogClock() async {
+        let suite = "backlog-disarmed-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let notifications = FakeReminderCenter()
+        notifications.status = .authorized
+        let tracker = UploadBacklogTracker(defaults: defaults, notifications: notifications)
+        let syncManager = PhotoSyncManager(
+            photoLibraryProvider: MockPhotoLibraryProvider(),
+            manifestManager: MockManifestManager(),
+            backlogTracker: tracker
+        )
+
+        await runSync(syncManager)
+
+        #expect(notifications.added.isEmpty)
+        #expect(defaults.object(forKey: UploadBacklogTracker.startedAtDefaultsKey) == nil)
     }
 }
 

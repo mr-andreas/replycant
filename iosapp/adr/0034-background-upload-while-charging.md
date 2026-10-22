@@ -24,10 +24,11 @@ first, through the existing sync, then pushes.
 
 The manual Start Upload stays newest-first.
 
-Turning the toggle on starts a 7-day clock. The clock also starts when a
-background run does not finish everything, and any finished upload clears
-it. One local notification is scheduled for the deadline so it still arrives
-when no background run happens. Before iOS asks for notification permission,
+Turning the toggle on schedules one reminder 7 days out. Every upload that
+finishes everything, whether it ran in the background or from Start Upload,
+moves that reminder 7 days out again. The background task never schedules
+it, so the reminder still arrives when iOS never runs the task. Turning
+the toggle off removes it. Before iOS asks for notification permission,
 the app explains the reminder. Not Now never shows the system prompt and
 never schedules the notification. The Upload tab still shows the warning
 after 7 days. Tapping the notification opens that tab.

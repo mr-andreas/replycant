@@ -16,17 +16,18 @@ protocol UploadReminderNotifying: AnyObject {
     func removeDelivered(identifiers: [String])
 }
 
-// The Upload tab and a background run share this so either one can start
-// or cancel the reminder.
+// The Upload tab and a finished upload share this so the reminder stays
+// 7 days out while background upload is on, and goes away when it is off.
 @MainActor
 protocol UploadBacklogTracking: AnyObject {
-    func arm(now: Date) async
+    func start(now: Date) async
+    func restartIfArmed(now: Date) async
     func clear()
 }
 
-// Remembers when uploads fell behind and asks for one reminder 7 days
-// later. The date is stored up front so the reminder still fires when no
-// background run happens, which is the case it is meant to catch.
+// Keeps one reminder pending while background upload is on. The date is
+// stored when the user turns it on, and moved forward whenever an upload
+// finishes, so a task iOS never runs still ends in a notification.
 @MainActor
 final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
     static let shared = UploadBacklogTracker()
@@ -74,13 +75,22 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
         return now.timeIntervalSince(startedAt) >= reminderDelay
     }
 
-    // Starts the clock once. A later arm keeps the original deadline so a
-    // repeated background run does not push the reminder further out.
-    func arm(now: Date) async {
-        guard backlogStartedAt == nil else { return }
+    // Starts the clock at now and schedules the reminder a full 7 days
+    // later. Calling it again replaces that reminder, which is how a
+    // finished upload postpones it.
+    func start(now: Date) async {
         backlogStartedAt = now
         refreshOverdue(now: now)
         await scheduleReminder(now: now)
+    }
+
+    // Pushes the reminder out after an upload finishes. Does nothing when
+    // background upload is off, so a manual upload cannot start a reminder
+    // the user never asked for.
+    func restartIfArmed(now: Date) async {
+        guard backlogStartedAt != nil else { return }
+        notifications.removeDelivered(identifiers: [Self.reminderIdentifier])
+        await start(now: now)
     }
 
     // Schedules the reminder after the user allows notifications. The
@@ -89,8 +99,8 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
         await scheduleReminder(now: now)
     }
 
-    // A finished upload, or turning background upload off, drops the reminder
-    // and the in-app warning together.
+    // Turning background upload off drops the reminder and the warning.
+    // A finished upload postpones them instead of calling this.
     func clear() {
         backlogStartedAt = nil
         isOverdue = false

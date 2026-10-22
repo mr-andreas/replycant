@@ -668,6 +668,9 @@ final class PhotoSyncManager: ObservableObject {
         setSyncState(state)
         if case .completed(let total) = state {
             log("State updated to completed (total: \(total))", context: "PhotoSync")
+            // A catch-up, including an empty library, means nothing is waiting,
+            // so the reminder moves a full week out instead of firing.
+            await backlogTracker.restartIfArmed(now: Date())
         } else if case .failed(let error) = state {
             logError("State updated to failed: \(error.localizedDescription)", context: "PhotoSync")
         }
@@ -688,9 +691,6 @@ final class PhotoSyncManager: ObservableObject {
             isSyncing = false
         }
         idleTimer.isIdleTimerDisabled = isSyncing
-        if case .completed = state {
-            backlogTracker.clear()
-        }
     }
 
     // Puts the smallest known originals first. A missing size sorts last so
