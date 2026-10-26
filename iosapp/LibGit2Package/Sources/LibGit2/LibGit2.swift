@@ -9,6 +9,11 @@ import OSLog
 // Minimum severity that produces output. Set to "DEBUG" to see routine diagnostics.
 internal var logMinLevel: String = "INFO"
 
+/// Receives each line this package actually emits so the app can keep a
+/// copy after unified logging drops info-level messages. Nil in tests
+/// and package builds that have nowhere to show the log.
+public var diagnosticLogSink: ((String) -> Void)?
+
 private let levelOrder = ["DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3]
 
 /// Unified-log severity for a LibGit2 log level string.
@@ -33,6 +38,7 @@ internal func log(_ message: String, context: String = "Git", level: String = "I
     guard (levelOrder[level] ?? 1) >= (levelOrder[logMinLevel] ?? 1) else { return }
     let timestamp = timestamp()
     let line = "[\(timestamp)][\(level)][\(context)] \(message)"
+    diagnosticLogSink?(line)
     let logger = Logger(subsystem: "com.replycant.libgit2", category: context)
     switch osLogType(forLevel: level) {
     case .debug:

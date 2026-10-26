@@ -71,6 +71,10 @@ struct SettingsView: View {
                     NavigationLink(destination: CacheSettingsView()) {
                         Label("Cache", systemImage: "photo.stack")
                     }
+
+                    NavigationLink(destination: ApplicationLogView()) {
+                        Label("Application log", systemImage: "doc.text")
+                    }
                 } header: {
                     Text("Advanced")
                 }

@@ -65,6 +65,9 @@ public func log(
     let contextStr = context.map { "[\($0)]" } ?? ""
     let message = items.map { "\($0)" }.joined(separator: separator)
     let line = "[\(timestamp)][\(level.label)]\(contextStr) \(message)"
+    // The system log drops info lines once the debugger detaches. The
+    // file is what Settings can still show and share.
+    ApplicationLog.append(line)
     // print() dies with the debugger. The system log is what remains after
     // the phone locks and the debug session drops.
     let logger = Logger(

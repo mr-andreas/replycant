@@ -386,6 +386,9 @@ enum AppScreenGallery {
         stacked("Settings / cache", section: .settings) {
             CacheSettingsView(previewStats: .sample)
         },
+        stacked("Settings / application log", section: .settings) {
+            ApplicationLogView(previewText: ApplicationLogView.gallerySample)
+        },
         stacked("Settings / connection", section: .settings) {
             ConnectionSettingsView(report: Self.sampleConnectionReport)
         }

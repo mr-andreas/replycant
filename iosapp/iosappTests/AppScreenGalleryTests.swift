@@ -149,6 +149,7 @@ struct AppScreenGalleryTests {
             "Settings / sync",
             "Settings / playback",
             "Settings / cache",
+            "Settings / application log",
             "Settings / connection",
         ])
     }

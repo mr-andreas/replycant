@@ -3,9 +3,6 @@ import Foundation
 import LibGit2
 import Security
 import UniformTypeIdentifiers
-import os.log
-
-private let logger = Logger(subsystem: appLogSubsystem, category: "DirectPlay")
 
 /// Intercepts AVAssetResourceLoader requests for a custom URL scheme so
 /// AVPlayer can stream from decryptd's extensionless `/objects/{oid}` endpoint
@@ -186,7 +183,7 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
             request.httpMethod = "HEAD"
             rangeDescription = "HEAD"
             isOpenEndedDataRequest = false
-            logger.debug("Sending HEAD probe")
+            logDebug("Sending HEAD probe", context: "DirectPlay")
         }
 
         let task = urlSession.dataTask(with: request)
@@ -229,7 +226,6 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         guard isOpenEndedDataRequest else { return ([], false) }
 
         lock.lock()
-        defer { lock.unlock() }
 
         let didReplaceRange = latestOpenEndedRangeDescription.map {
             $0 != rangeDescription
@@ -240,6 +236,7 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         }
 
         var staleTasks: [URLSessionDataTask] = []
+        var cancelNotes: [String] = []
         let staleTaskIDs = sessions.compactMap { taskID, session in
             session.isOpenEndedDataRequest && session.rangeDescription != rangeDescription ? taskID : nil
         }
@@ -251,11 +248,18 @@ final class DirectPlayResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
                 staleTasks.append(task)
                 tasks.removeValue(forKey: ObjectIdentifier(session.loadingRequest))
             }
-            logger.debug(
-                "Cancelling stale \(session.rangeDescription, privacy: .public) stream for new \(rangeDescription, privacy: .public) request"
+            cancelNotes.append(
+                "Cancelling stale \(session.rangeDescription) stream for new \(rangeDescription) request"
             )
         }
-        return (staleTasks, didReplaceRange)
+        let result = (staleTasks, didReplaceRange)
+        lock.unlock()
+        // File logging has to wait until the playback lock is released,
+        // or a full log trim would stall the stream it is describing.
+        for note in cancelNotes {
+            logDebug(note, context: "DirectPlay")
+        }
+        return result
     }
 
     private func session(for task: URLSessionTask) -> LoadingSession? {
@@ -301,7 +305,7 @@ extension DirectPlayResourceLoader: URLSessionDataDelegate {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            logger.error("HTTP error: \(code)")
+            logError("HTTP error: \(code)", context: "DirectPlay")
             completionHandler(.cancel)
             return
         }
@@ -310,8 +314,9 @@ extension DirectPlayResourceLoader: URLSessionDataDelegate {
             contentInfo.contentType = uniformTypeIdentifier
             contentInfo.isByteRangeAccessSupported = true
             contentInfo.contentLength = contentLength(from: httpResponse)
-            logger.debug(
-                "Content info: type=\(self.uniformTypeIdentifier, privacy: .public) length=\(contentInfo.contentLength)"
+            logDebug(
+                "Content info: type=\(self.uniformTypeIdentifier) length=\(contentInfo.contentLength)",
+                context: "DirectPlay"
             )
         }
 
@@ -339,7 +344,10 @@ extension DirectPlayResourceLoader: URLSessionDataDelegate {
         }
         if let error {
             reachability.recordFailure(error)
-            logger.error("Network error: \(error.localizedDescription, privacy: .public)")
+            logError(
+                "Network error: \(error.localizedDescription)",
+                context: "DirectPlay"
+            )
             loadingSession.loadingRequest.finishLoading(with: error)
         } else {
             loadingSession.loadingRequest.finishLoading()

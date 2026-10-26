@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- read the application log in Settings and share it as a text file
 - upload photos and videos automatically while the phone is charging on Wi-Fi, starting with the smallest files, and get a reminder if uploads have not completed for 7 days
 - share a photo or video, or save it to the camera roll, from the full-screen viewer, and saving an item already in Photos says so instead of adding a copy
 

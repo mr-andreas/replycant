@@ -15,6 +15,10 @@ struct iosappApp: App {
 
     // Runs launch-time setup so simulator debug sessions can connect immediately without QR onboarding.
     init() {
+        // Installed before the preview return so git and identity lines
+        // from later launch work are in the file Settings can share.
+        diagnosticLogSink = { ApplicationLog.append($0) }
+
         // Canvas hosts the real app process; skip launch I/O so #Preview
         // does not clone the library or trip libgit2/keychain setup.
         if ContentView.isRunningForPreviews(environment: ProcessInfo.processInfo.environment) {

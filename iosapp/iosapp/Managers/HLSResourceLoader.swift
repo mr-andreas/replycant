@@ -2,9 +2,6 @@ import AVFoundation
 import Foundation
 import LibGit2
 import Security
-import os.log
-
-private let hlsLogger = Logger(subsystem: appLogSubsystem, category: "HLSPlayback")
 
 /// Serves HLS playlists and segments to AVPlayer over gitd's mTLS endpoint.
 ///
@@ -173,7 +170,10 @@ final class HLSResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
             if let error {
                 self.reachability.recordFailure(error)
                 if (error as? URLError)?.code == .cancelled { return }
-                hlsLogger.error("HLS sub-request failed: \(error.localizedDescription, privacy: .public)")
+                logError(
+                    "HLS sub-request failed: \(error.localizedDescription)",
+                    context: "HLSPlayback"
+                )
                 loadingRequest.finishLoading(with: error)
                 return
             }
@@ -183,7 +183,7 @@ final class HLSResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                hlsLogger.error("HLS sub-request HTTP error: \(code)")
+                logError("HLS sub-request HTTP error: \(code)", context: "HLSPlayback")
                 loadingRequest.finishLoading(with: URLError(.badServerResponse))
                 return
             }
