@@ -18,9 +18,10 @@ func main() {
 
 // dispatch sends git's remote-helper invocation to the tailnet transport
 // before kong sees it. Git picks the helper by argv[0], which is not a
-// subcommand it would know to pass through.
+// subcommand it would know to pass through. A one-argument tailnet-agent
+// re-exec is the exception: that child is the agent, not another helper.
 func dispatch() error {
-	if isRemoteHelper(os.Args[0]) {
+	if useRemoteHelper(os.Args) {
 		return runRemoteHelper(os.Args[1:])
 	}
 	return runCLI()

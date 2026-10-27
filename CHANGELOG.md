@@ -17,6 +17,10 @@
 - the timeline and full-screen zoom stay responsive while photos upload
 - photos no longer stay as grey placeholders after another device uploads a large batch
 
+#### git-replycant
+
+- a fetch or push no longer fails when it has to start the repository's tailnet agent
+
 ## 0.5.0 - 2026-10-18
 
 ### Features

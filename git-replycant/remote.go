@@ -33,6 +33,24 @@ func isRemoteHelper(argv0 string) bool {
 	return filepath.Base(argv0) == remoteHelperName
 }
 
+// useRemoteHelper reports whether this argv is git's remote helper.
+//
+// SpawnDetached re-execs os.Executable(), which is the helper symlink when
+// git started the fetch. That child has one argument, "tailnet-agent", and
+// has to run the agent. Treating it as another helper makes it wait on the
+// spawn lock the parent still holds.
+func useRemoteHelper(argv []string) bool {
+	return len(argv) > 0 && isRemoteHelper(argv[0]) && !isSpawnedAgent(argv[1:])
+}
+
+// isSpawnedAgent reports a re-exec of this binary as the hidden agent.
+//
+// A remote literally named tailnet-agent still has a URL argument, so it
+// stays on the helper path.
+func isSpawnedAgent(args []string) bool {
+	return len(args) == 1 && args[0] == "tailnet-agent"
+}
+
 // runRemoteHelper connects git's https transport to the repository's tailnet
 // node. gitd has no host address, so a plain https remote cannot reach it.
 func runRemoteHelper(args []string) error {

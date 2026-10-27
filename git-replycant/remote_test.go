@@ -20,6 +20,26 @@ func TestIsRemoteHelper(t *testing.T) {
 	assert.False(t, isRemoteHelper("/usr/local/bin/git-replycant"))
 }
 
+// SpawnDetached re-execs this binary with one argument, "tailnet-agent".
+// When git started the helper, argv[0] is the helper symlink, and that
+// child has to run the agent rather than take the spawn lock again.
+func TestSpawnedAgentSkipsRemoteHelper(t *testing.T) {
+	t.Parallel()
+	helper := "https://gitd.replycant.internal:8443"
+	assert.True(t, useRemoteHelper([]string{
+		"/usr/local/bin/git-remote-replycant", "origin", helper,
+	}))
+	assert.False(t, useRemoteHelper([]string{
+		"/usr/local/bin/git-remote-replycant", "tailnet-agent",
+	}))
+	assert.False(t, useRemoteHelper([]string{
+		"/usr/local/bin/git-replycant", "tailnet-agent",
+	}))
+	assert.True(t, useRemoteHelper([]string{
+		"/usr/local/bin/git-remote-replycant", "tailnet-agent", helper,
+	}))
+}
+
 // The proxy credential has to reach git without showing up in argv, and
 // without discarding the -c options git already put in the environment.
 func TestWithHTTPProxyAppendsConfig(t *testing.T) {
