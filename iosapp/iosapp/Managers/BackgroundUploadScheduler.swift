@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import UIKit
 
 // Submits and cancels the charging upload so tests can record requests
 // without BGTaskScheduler, which the simulator refuses.
@@ -224,7 +225,8 @@ final class BackgroundUploadScheduler: ObservableObject {
     // Records the run, then reschedules so a kill still has a next one.
     // An upload the user already started is left alone. A long suspend
     // reclaims the tailnet's sockets, so the upload rebuilds the node
-    // before it dials.
+    // before it dials. The stay starts when the task is finished, because
+    // that is when iOS is allowed to suspend the process.
     private func handle(_ task: BGProcessingTask) async {
         let runID = beginRun(at: now())
         schedule()
@@ -236,6 +238,9 @@ final class BackgroundUploadScheduler: ObservableObject {
                 if started {
                     PhotoSyncManager.shared.cancelSync()
                 }
+                // iOS can suspend as soon as the task is completed, which
+                // may be before this function reaches its own finish.
+                await BackgroundUploadScheduler.shared.recordBackgroundStay()
                 if control.claimFinish() {
                     task.setTaskCompleted(success: false)
                 }
@@ -243,6 +248,7 @@ final class BackgroundUploadScheduler: ObservableObject {
         }
 
         if PhotoSyncManager.shared.isSyncing {
+            await recordBackgroundStay()
             if control.claimFinish() {
                 task.setTaskCompleted(success: true)
             }
@@ -278,10 +284,21 @@ final class BackgroundUploadScheduler: ObservableObject {
         } else if control.wasExpired {
             result = .expired
         }
+        await recordBackgroundStay()
         if control.claimFinish() {
             task.setTaskCompleted(success: result == .completed)
         }
         finishRun(id: runID, at: now(), tally: tally, result: result)
+    }
+
+    // The node's sockets survive only while this process does. iOS may
+    // suspend it the moment the charging task is reported finished, so
+    // the stay has to be on record before that call. Recording it again
+    // only moves the time forward.
+    private func recordBackgroundStay() async {
+        await TailnetBootstrap.shared.noteBackgroundRunEnded(
+            isAppActive: UIApplication.shared.applicationState == .active
+        )
     }
 
     private func passesGate() async -> Bool {

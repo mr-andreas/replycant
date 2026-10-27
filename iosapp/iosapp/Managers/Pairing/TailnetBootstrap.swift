@@ -217,11 +217,13 @@ actor TailnetBootstrap {
     /// That launch never makes the scene active, so the foreground return
     /// does not run, and the node's sockets were reclaimed while the phone
     /// was locked. A cold launch for the task has no recorded background
-    /// time; its startup join is already a fresh node. The clock restarts
-    /// here because the process is still in the background and will be
-    /// suspended again, so the next time the app opens it has to rebuild too.
+    /// time; its startup join is already a fresh node. The recorded stay
+    /// is cleared here, rebuilt or not, because the process is running
+    /// the task rather than suspended. The run records a new stay when it
+    /// ends, which is the moment iOS can suspend the process again.
     func noteBackgroundWake() async throws {
         guard let started = backgroundedAt else { return }
+        backgroundedAt = nil
         guard clock().timeIntervalSince(started) >= Self.suspendRebuildThreshold else {
             return
         }
@@ -230,11 +232,19 @@ actor TailnetBootstrap {
             "Rebuilding the tailnet after a background upload wake",
             context: "Tailnet"
         )
-        // Restart the stay even if the join is still coming up. A quick
-        // return to the app would otherwise tear down the node this wake
-        // just started.
-        defer { backgroundedAt = clock() }
         try await rebuildNode(configuration)
+    }
+
+    /// Records that a charging upload finished away from the foreground.
+    ///
+    /// iOS suspends the process, and reclaims the node's sockets, only
+    /// after the run ends. Starting the stay at the wake would count the
+    /// upload itself, so opening the app mid-run would rebuild a node
+    /// that is still fine. A run that ends with the app open leaves the
+    /// clock alone; the scene records the next stay when the user leaves.
+    func noteBackgroundRunEnded(isAppActive: Bool) {
+        guard !isAppActive else { return }
+        backgroundedAt = clock()
     }
 
     /// Replaces the node whose sockets a suspend reclaimed.

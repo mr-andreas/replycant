@@ -304,9 +304,81 @@ struct TailnetBootstrapTests {
     }
 
     // The process stays in the background after the upload wake and will
-    // be suspended again. Opening the app after another long stay has to
-    // rebuild, because that wake's node will have been reclaimed too.
+    // be suspended again once the run ends. Opening the app after that
+    // stay has to rebuild, because the node the run left behind will have
+    // been reclaimed too. The wake itself must not start the stay: the
+    // upload is still running then, and iOS has not suspended anything.
     @Test func aForegroundReturnAfterABackgroundWakeRebuildsAgain() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteBackgroundWake()
+        await bootstrap.noteBackgroundRunEnded(isAppActive: false)
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 3)
+    }
+
+    // A charging task can be the thing that launches the process. The
+    // scene never enters the background, so nothing records a stay until
+    // the run ends. After that, a long lock reclaims the node, and opening
+    // the app has to build a new one.
+    @Test func aColdWakeRebuildsOnTheNextForegroundReturnAfterTheRunEnds() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        try await bootstrap.noteBackgroundWake()
+        await bootstrap.noteBackgroundRunEnded(isAppActive: false)
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 2)
+    }
+
+    // The same cold launch can be woken again by the next charging run
+    // instead of by the user. That run is what uploaded nothing while the
+    // previous node's sockets were already gone.
+    @Test func aColdWakeRebuildsOnTheNextChargingWakeAfterTheRunEnds() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        try await bootstrap.noteBackgroundWake()
+        await bootstrap.noteBackgroundRunEnded(isAppActive: false)
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteBackgroundWake()
+
+        #expect(await probe.attempts == 2)
+    }
+
+    // Opening the app while a charging upload is still running must leave
+    // the node that wake just built. The run has not ended, so iOS has not
+    // had a chance to reclaim its sockets, and rebuilding would drop the
+    // upload's connection.
+    @Test func openingTheAppDuringAChargingRunDoesNotRebuild() async throws {
         let clock = ManualClock()
         let probe = JoinProbe()
         let bootstrap = TailnetBootstrap(
@@ -323,7 +395,28 @@ struct TailnetBootstrapTests {
         clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
         try await bootstrap.noteReturnedToForeground()
 
-        #expect(await probe.attempts == 3)
+        #expect(await probe.attempts == 2)
+    }
+
+    // A run that finishes after the user has opened the app is not a
+    // suspend. Recording it would rebuild on the next return even though
+    // the node never left the foreground.
+    @Test func aRunThatEndsWhileTheAppIsOpenDoesNotStartAStay() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteBackgroundRunEnded(isAppActive: true)
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 1)
     }
 
     // An upload that starts while the wake rebuild is in flight has to wait
