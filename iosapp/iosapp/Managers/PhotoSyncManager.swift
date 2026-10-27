@@ -46,6 +46,33 @@ enum UploadOrder: Sendable {
     case smallestFirst
 }
 
+// Counts what one upload run finished. The background task records this
+// on its settings row; the completion total still means the queue size.
+struct UploadRunTally: Equatable, Codable {
+    var queueCount: Int?
+    var uploadedCount: Int
+    var uploadedBytes: Int64
+
+    static let empty = UploadRunTally(
+        queueCount: nil,
+        uploadedCount: 0,
+        uploadedBytes: 0
+    )
+
+    // The queue is the cache miss list, known before any file is sent.
+    // A run that stops during the scan leaves this unset.
+    mutating func noteQueue(_ count: Int) {
+        queueCount = count
+    }
+
+    // Only a committed original counts. A cancel mid-file, and every
+    // thumbnail, stay out of the bytes the settings row shows.
+    mutating func recordUploadedFile(plaintextBytes: Int64) {
+        uploadedCount += 1
+        uploadedBytes += plaintextBytes
+    }
+}
+
 enum SyncState: Equatable {
     case idle
     case syncing(current: Int, total: Int, currentFile: String, uploadSpeed: String, fileSize: String)
@@ -83,6 +110,9 @@ final class PhotoSyncManager: ObservableObject {
 
     @Published var syncState: SyncState = .idle
     @Published var isSyncing = false
+    // Reset at the start of each run. Background upload reads it after
+    // the task returns, including when iOS cancels the run early.
+    private(set) var runTally = UploadRunTally.empty
     
     private let photoLibrary: PhotoLibraryProviding
     private let uploadedMediaCache: UploadedMediaCaching
@@ -238,6 +268,7 @@ final class PhotoSyncManager: ObservableObject {
             logWarning("Sync already in progress, ignoring request", context: "PhotoSync")
             return
         }
+        runTally = .empty
         startedOnMeteredNetwork = networkCost.isMetered
         
         if let incompatibility = DatabaseCompatibilityManager.shared.incompatibility {
@@ -274,6 +305,7 @@ final class PhotoSyncManager: ObservableObject {
                 
                 guard !assets.isEmpty else {
                     log("No assets found, completing sync", context: "PhotoSync")
+                    runTally.noteQueue(0)
                     await updateState(.completed(total: 0), generation: generation)
                     return
                 }
@@ -326,6 +358,7 @@ final class PhotoSyncManager: ObservableObject {
             }
             assetsRequiringDatabaseChecks.append((asset: asset, modifiedAt: modifiedAt))
         }
+        runTally.noteQueue(assetsRequiringDatabaseChecks.count)
         guard !assetsRequiringDatabaseChecks.isEmpty else {
             log("All assets skipped by uploaded media cache", context: "PhotoSync")
             return 0
@@ -605,6 +638,7 @@ final class PhotoSyncManager: ObservableObject {
             log("Creating commit with LFS pointer and manifest...", context: "PhotoSync")
             try await manager.createCommit(message: commitMessage, items: items)
             log("Commit created successfully for \(uploadAsset.filename)", context: "PhotoSync")
+            runTally.recordUploadedFile(plaintextBytes: hashes.plaintextSize)
             uploadedMediaCache.addPending(localID: asset.id, modifiedAt: assetModifiedAt)
             
             try? await Task.sleep(nanoseconds: 100_000_000)

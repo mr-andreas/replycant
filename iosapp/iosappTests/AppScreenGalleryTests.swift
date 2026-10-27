@@ -147,6 +147,7 @@ struct AppScreenGalleryTests {
             "Settings / recovery warning",
             "Settings / repository",
             "Settings / sync",
+            "Settings / background upload",
             "Settings / playback",
             "Settings / cache",
             "Settings / application log",

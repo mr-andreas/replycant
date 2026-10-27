@@ -668,6 +668,12 @@ struct PhotoSyncManagerTests {
         
         // Verify manifest database sync was requested before upload dedup checks.
         #expect(mockManifest.syncToHeadCalls == 1)
+
+        // The background-run row counts files that finished, not the
+        // queue, and uses the plaintext size shown on the Upload tab.
+        #expect(syncManager.runTally.uploadedCount == 1)
+        #expect(syncManager.runTally.uploadedBytes == 2048)
+        #expect(syncManager.runTally.queueCount == 1)
     }
 
     // Ensures notification-driven dependency invalidation never replaces an
@@ -963,6 +969,12 @@ struct PhotoSyncManagerTests {
         #expect(mockLibrary.getAssetFileURLCalls == 0)
         #expect(mockLibrary.filenameCalls == 0)
         #expect(mockManifest.createCommitCalls.isEmpty)
+
+        // A cache hit never enters the upload queue, so the run row
+        // must not pretend those files were waiting.
+        #expect(syncManager.runTally.uploadedCount == 0)
+        #expect(syncManager.runTally.uploadedBytes == 0)
+        #expect(syncManager.runTally.queueCount == 0)
     }
 
     // Ensures localID skip path persists immediately so reruns can bypass database and hashing.

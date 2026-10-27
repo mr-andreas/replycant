@@ -64,6 +64,10 @@ struct SettingsView: View {
                         Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                     }
 
+                    NavigationLink(destination: BackgroundUploadSettingsView()) {
+                        Label("Background upload", systemImage: "arrow.up.circle")
+                    }
+
                     NavigationLink(destination: PlaybackSettingsView()) {
                         Label("Playback", systemImage: "play.rectangle")
                     }

@@ -50,6 +50,35 @@ enum AppScreenGallery {
     private static let sampleDevicePublicKeyQR =
         "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\",\"pairing_secret\":\"preview\"}"
 
+    // Two fixed runs so the settings tile shows a finished upload and a
+    // skip without reading this phone's stored history.
+    private static let sampleBackgroundUploadStatus = BackgroundUploadStatus(
+        isEnabled: true,
+        isRegistered: true,
+        lastScheduledAt: Date(timeIntervalSince1970: 1_800_000_000),
+        lastScheduleError: nil,
+        runs: [
+            BackgroundUploadRun(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+                startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                stoppedAt: Date(timeIntervalSince1970: 1_800_000_180),
+                uploadedCount: 12,
+                uploadedBytes: 48 * 1024 * 1024,
+                queueCount: 340,
+                result: .completed
+            ),
+            BackgroundUploadRun(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+                startedAt: Date(timeIntervalSince1970: 1_799_900_000),
+                stoppedAt: Date(timeIntervalSince1970: 1_799_900_040),
+                uploadedCount: 0,
+                uploadedBytes: 0,
+                queueCount: nil,
+                result: .skipped
+            )
+        ]
+    )
+
     // A running node with a direct path so the Connection tile shows
     // every row a joined device can see, without talking to a tailnet.
     private static let sampleConnectionReport = try! TailnetStatusReport.decode(
@@ -379,6 +408,9 @@ enum AppScreenGallery {
         },
         stacked("Settings / sync", section: .settings) {
             SyncSettingsView()
+        },
+        stacked("Settings / background upload", section: .settings) {
+            BackgroundUploadSettingsView(previewStatus: Self.sampleBackgroundUploadStatus)
         },
         stacked("Settings / playback", section: .settings) {
             PlaybackSettingsView()
