@@ -262,6 +262,70 @@ struct TailnetBootstrapTests {
         #expect(await probe.attempts == 1)
     }
 
+    // A charging upload wakes the suspended process without the scene
+    // becoming active, so the foreground return never runs. The node's
+    // sockets were reclaimed while the phone was locked, and uploading
+    // on them fails before the first byte.
+    @Test func aBackgroundUploadWakeRebuildsTheNodeOnce() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteBackgroundWake()
+
+        #expect(await probe.attempts == 2)
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        #expect(await probe.attempts == 2)
+    }
+
+    // A launch that exists only for the task has no recorded background
+    // time. The startup join is already a fresh node, and rebuilding it
+    // would throw that away.
+    @Test func aBackgroundWakeWithNoPriorBackgroundLeavesTheLaunchJoin() async throws {
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        try await bootstrap.noteBackgroundWake()
+
+        #expect(await probe.attempts == 1)
+    }
+
+    // The process stays in the background after the upload wake and will
+    // be suspended again. Opening the app after another long stay has to
+    // rebuild, because that wake's node will have been reclaimed too.
+    @Test func aForegroundReturnAfterABackgroundWakeRebuildsAgain() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in _ = await probe.begin() },
+            clock: { clock.current() }
+        )
+        try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+
+        await bootstrap.noteEnteredBackground()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteBackgroundWake()
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold)
+        try await bootstrap.noteReturnedToForeground()
+
+        #expect(await probe.attempts == 3)
+    }
+
     // An upload that starts while the wake rebuild is in flight has to wait
     // on that rebuild. Starting another join would put two nodes on one
     // state directory.

@@ -209,9 +209,40 @@ actor TailnetBootstrap {
             return
         }
         guard let configuration = configurations.load() else { return }
-        // Publish the replacement join before the first await. An upload
-        // that starts in this window then waits on it, instead of seeing
-        // the old node as still joined and dialling a dead proxy.
+        try await rebuildNode(configuration)
+    }
+
+    /// Rebuilds the node when a charging upload wakes the suspended app.
+    ///
+    /// That launch never makes the scene active, so the foreground return
+    /// does not run, and the node's sockets were reclaimed while the phone
+    /// was locked. A cold launch for the task has no recorded background
+    /// time; its startup join is already a fresh node. The clock restarts
+    /// here because the process is still in the background and will be
+    /// suspended again, so the next time the app opens it has to rebuild too.
+    func noteBackgroundWake() async throws {
+        guard let started = backgroundedAt else { return }
+        guard clock().timeIntervalSince(started) >= Self.suspendRebuildThreshold else {
+            return
+        }
+        guard let configuration = configurations.load() else { return }
+        log(
+            "Rebuilding the tailnet after a background upload wake",
+            context: "Tailnet"
+        )
+        // Restart the stay even if the join is still coming up. A quick
+        // return to the app would otherwise tear down the node this wake
+        // just started.
+        defer { backgroundedAt = clock() }
+        try await rebuildNode(configuration)
+    }
+
+    /// Replaces the node whose sockets a suspend reclaimed.
+    ///
+    /// The replacement join is published before the first await. An upload
+    /// that starts in this window then waits on it, instead of seeing the
+    /// old node as still joined and dialling a dead proxy.
+    private func rebuildNode(_ configuration: TailnetConfiguration) async throws {
         joined = false
         let previous = manager
         manager = nil

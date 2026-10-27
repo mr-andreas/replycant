@@ -102,7 +102,9 @@ final class BackgroundUploadScheduler: ObservableObject {
     }
 
     // Reschedules first so a run that is killed still has a next one.
-    // An upload the user already started is left alone.
+    // An upload the user already started is left alone. A long suspend
+    // reclaims the tailnet's sockets, so the upload rebuilds the node
+    // before it dials.
     private func handle(_ task: BGProcessingTask) async {
         schedule()
         let control = RunControl()
@@ -128,6 +130,9 @@ final class BackgroundUploadScheduler: ObservableObject {
         var finishedThisRun = false
         if await passesGate(), !control.isFinished {
             control.markStarted()
+            // A still-connecting join keeps running. The upload waits on
+            // that same join, so this error is not a reason to skip the run.
+            try? await TailnetBootstrap.shared.noteBackgroundWake()
             await PhotoSyncManager.shared.startSync(order: .smallestFirst)
             await PhotoSyncManager.shared.syncTask?.value
             if case .completed = PhotoSyncManager.shared.syncState {
