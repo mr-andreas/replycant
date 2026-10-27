@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Turns a stored charging run into the words on the settings page.
 // Dates stay local; counts stay plain so a row can be read at a glance.
@@ -21,7 +22,6 @@ enum BackgroundUploadStatusCopy {
             scheduled = "Not scheduled"
         }
         return [
-            SummaryRow(title: "On", value: status.isEnabled ? "Yes" : "No"),
             SummaryRow(title: "Registered", value: status.isRegistered == true ? "Yes" : "No"),
             SummaryRow(title: "Last scheduled", value: scheduled)
         ]
@@ -37,7 +37,7 @@ enum BackgroundUploadStatusCopy {
     }
 
     // Files include videos. Bytes are the plaintext originals, which is
-    // the size the Upload tab already shows, not thumbnails.
+    // the size shown while an upload is in progress, not thumbnails.
     static func runDetail(_ run: BackgroundUploadRun) -> String {
         let files = run.uploadedCount == 1 ? "1 file" : "\(run.uploadedCount) files"
         let queued = run.queueCount.map { "\($0) queued" } ?? "—"
@@ -78,14 +78,21 @@ enum BackgroundUploadStatusCopy {
     }
 }
 
-// Read-only status for the charging upload. The switch stays on the
-// Upload tab; this page only explains whether iOS is running it.
+// The upload switch and the charging-run list. One page, because they
+// are the same choice: on means Wi-Fi uploads now and while charging.
 struct BackgroundUploadSettingsView: View {
     private let previewStatus: BackgroundUploadStatus?
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var scheduler = BackgroundUploadScheduler.shared
+    @ObservedObject private var uploadController = UploadController.shared
+    @ObservedObject private var uploadBacklog = UploadBacklogTracker.shared
+    @State private var wantsUpload: Bool
+    @State private var wantsReminders: Bool
 
     init(previewStatus: BackgroundUploadStatus? = nil) {
         self.previewStatus = previewStatus
+        _wantsUpload = State(initialValue: UploadController.shared.isEnabled)
+        _wantsReminders = State(initialValue: UploadBacklogTracker.shared.remindersEnabled)
     }
 
     private var status: BackgroundUploadStatus {
@@ -94,6 +101,7 @@ struct BackgroundUploadSettingsView: View {
 
     var body: some View {
         Form {
+            uploadControls
             Section {
                 ForEach(BackgroundUploadStatusCopy.summaryRows(for: status)) { row in
                     LabeledContent(row.title, value: row.value)
@@ -122,6 +130,56 @@ struct BackgroundUploadSettingsView: View {
                 Text("Runs while the phone is charging and on Wi-Fi. A force quit, Low Power Mode, or Background App Refresh off keeps iOS from running it.")
             }
         }
-        .navigationTitle("Background upload")
+        .navigationTitle("Upload")
+        .task { await uploadController.refreshNotificationAccess() }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await uploadController.refreshNotificationAccess() }
+        }
+        .onChange(of: wantsUpload) { _, enabled in
+            guard enabled != uploadController.isEnabled else { return }
+            Task {
+                if enabled {
+                    await uploadController.enable()
+                } else {
+                    await uploadController.disable()
+                }
+                wantsUpload = uploadController.isEnabled
+            }
+        }
+        .onChange(of: uploadController.isEnabled) { _, enabled in
+            wantsUpload = enabled
+        }
+        .onChange(of: wantsReminders) { _, enabled in
+            guard enabled != uploadBacklog.remindersEnabled else { return }
+            Task { await uploadController.setRemindersEnabled(enabled) }
+        }
+        .onChange(of: uploadBacklog.remindersEnabled) { _, enabled in
+            wantsReminders = enabled
+        }
+    }
+
+    // The same switch the timeline offers. Reminders stay editable after
+    // the enable question so a No can be changed without turning upload off.
+    private var uploadControls: some View {
+        Section {
+            Toggle("Upload photos and videos", isOn: $wantsUpload)
+                .accessibilityIdentifier("uploadEnabledToggle")
+            Toggle("Notify me if uploads stall", isOn: $wantsReminders)
+                .disabled(!uploadController.isEnabled)
+                .accessibilityIdentifier("uploadRemindersToggle")
+        } footer: {
+            if uploadController.notificationsDenied {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Notifications are off, so Replycant cannot remind you if uploads stall.")
+                    Button("Open Settings") {
+                        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                        UIApplication.shared.open(url)
+                    }
+                }
+            } else {
+                Text("New photos and videos upload on Wi-Fi. While the phone is charging, uploading also continues with the app closed.")
+            }
+        }
     }
 }

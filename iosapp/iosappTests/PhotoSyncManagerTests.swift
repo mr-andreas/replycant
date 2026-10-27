@@ -492,16 +492,6 @@ final class MockUploadedMediaCache: UploadedMediaCaching {
 @Suite("PhotoSyncManager Tests", .serialized, .sharedAppState)
 struct PhotoSyncManagerTests {
 
-    // A 0-of-0 determinate bar is a silent spinner. The preparing phase
-    // has to keep the file label as the headline so the user can see
-    // that access or the library scan is still running.
-    @Test func preparingSyncKeepsThePhaseAsTheHeadline() {
-        #expect(PhotoSyncStatusCopy.headline(current: 0, total: 0, file: "Asking for photo access...")
-            == "Asking for photo access...")
-        #expect(PhotoSyncStatusCopy.headline(current: 3, total: 10, file: "IMG.HEIC")
-            == "Uploading 3 of 10")
-    }
-    
     // MARK: - Test Setup Helpers
     
     func setupTestEnvironment() throws -> String {
@@ -670,7 +660,7 @@ struct PhotoSyncManagerTests {
         #expect(mockManifest.syncToHeadCalls == 1)
 
         // The background-run row counts files that finished, not the
-        // queue, and uses the plaintext size shown on the Upload tab.
+        // queue, and uses the plaintext size shown while uploading.
         #expect(syncManager.runTally.uploadedCount == 1)
         #expect(syncManager.runTally.uploadedBytes == 2048)
         #expect(syncManager.runTally.queueCount == 1)
@@ -1528,7 +1518,7 @@ struct PhotoSyncManagerTests {
         }
     }
 
-    // The Upload tab prints localizedDescription, so a denied library
+    // Upload progress prints localizedDescription, so a denied library
     // must tell the user where to turn Photos access back on.
     @Test("Denied photo access explains how to turn Photos access back on")
     func testAuthDeniedMessage() {
@@ -1901,7 +1891,7 @@ struct PhotoSyncManagerTests {
             return
         }
         #expect(error is UploadPausedOnMobileDataError)
-        #expect(error.localizedDescription == "Upload paused because the phone switched to mobile data. Press Start Upload to continue.")
+        #expect(error.localizedDescription == "Upload paused because the phone switched to mobile data. It continues automatically on Wi-Fi.")
         #expect(mockManifest.cancelActiveUploadCalls == 1)
         #expect(mockManifest.createCommitCalls.isEmpty)
     }

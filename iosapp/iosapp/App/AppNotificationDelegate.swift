@@ -1,8 +1,9 @@
 import Foundation
 import UserNotifications
 
-// Routes the upload reminder to the Upload tab. Other notifications are
-// ignored so a future alert cannot change the tab the user is on.
+// Routes the upload reminder to the timeline. Opening the app starts
+// the upload itself. Other notifications are ignored so a future alert
+// cannot change the tab the user is on.
 @MainActor
 final class AppNotificationDelegate: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = AppNotificationDelegate()
@@ -11,7 +12,7 @@ final class AppNotificationDelegate: NSObject, ObservableObject, UNUserNotificat
 
     func handleNotificationTap(identifier: String) {
         guard identifier == UploadBacklogTracker.reminderIdentifier else { return }
-        requestedTab = 2
+        requestedTab = 0
     }
 
     func userNotificationCenter(

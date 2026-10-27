@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-0035.
+
+The charging task, smallest-first ordering, and the 7-day reminder below
+still apply. ADR-0035 replaces the Upload tab, the manual Start Upload
+action, and where the reminder opens.
 
 ## Context
 

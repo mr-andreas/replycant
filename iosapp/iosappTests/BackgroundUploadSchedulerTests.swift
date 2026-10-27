@@ -199,9 +199,8 @@ struct BackgroundUploadSchedulerTests {
             runs: []
         )
         let registeredRows = BackgroundUploadStatusCopy.summaryRows(for: registered)
-        #expect(registeredRows.map(\.title) == ["On", "Registered", "Last scheduled"])
+        #expect(registeredRows.map(\.title) == ["Registered", "Last scheduled"])
         #expect(registeredRows.map(\.value) == [
-            "Yes",
             "Yes",
             BackgroundUploadStatusCopy.timeText(scheduledAt)
         ])
@@ -215,7 +214,6 @@ struct BackgroundUploadSchedulerTests {
         )
         #expect(BackgroundUploadStatusCopy.summaryRows(for: failed).map(\.value) == [
             "No",
-            "No",
             "Too many pending tasks"
         ])
 
@@ -227,7 +225,6 @@ struct BackgroundUploadSchedulerTests {
             runs: []
         )
         #expect(BackgroundUploadStatusCopy.summaryRows(for: neverScheduled).map(\.value) == [
-            "No",
             "No",
             "Not scheduled"
         ])

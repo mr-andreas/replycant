@@ -21,8 +21,16 @@ The iOS app is built with:
 ### Photo Timeline
 A sparse-loaded grid view sized by total timeline count, with on-demand page loading and thumbnail batch fetches.
 
-### Background upload
-From the Upload tab you can turn on automatic upload. It runs while the phone is charging and on Wi-Fi, and it uploads the smallest files first. Each run is only a few minutes, so a large video may still be waiting. If uploads have not completed for 7 days, Replycant sends one notification. Tapping it opens the Upload tab and asks you to finish the upload with the app open. Finishing everything postpones that notification by another 7 days. The same warning appears on that tab even if you declined notifications. Settings lists each background run: when it started and stopped, how many files and bytes it uploaded, how many were waiting, and how it ended.
+### Upload
+Turn upload on from the banner at the top of the timeline, from the empty timeline, or in **Settings**. Replycant asks for photo access, then asks whether to send a notification if uploads stall.
+
+With upload on, opening the app starts an upload on Wi-Fi after the timeline has loaded. Newer photos go first. A progress button on the timeline opens how far the run has got. The phone stays awake while that run is on screen.
+
+The same switch also uploads while the phone is charging and on Wi-Fi with the app closed, smallest files first. Each of those runs is only a few minutes, so a large video may still be waiting. If uploads have not completed for 7 days, and you allowed the reminder, Replycant sends one notification. Tapping it opens the timeline. Finishing everything postpones that notification by another 7 days. The upload details show the same warning if you declined notifications.
+
+Uploads wait for Wi-Fi. A run that moves onto mobile data continues when Wi-Fi is back.
+
+The Upload page in Settings holds the switch, the stall reminder, and each charging run: when it started and stopped, how many files and bytes it uploaded, how many were waiting, and how it ended.
 
 ### Offline-First Design
 Full functionality without network access. Changes sync when connectivity is restored.

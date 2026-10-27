@@ -12,7 +12,6 @@ enum GallerySection: String, CaseIterable, Identifiable {
     case recovery
     case appShell
     case timeline
-    case upload
     case settings
     case components
 
@@ -29,7 +28,6 @@ enum GallerySection: String, CaseIterable, Identifiable {
         case .recovery: return "Recover access"
         case .appShell: return "App shell"
         case .timeline: return "Timeline"
-        case .upload: return "Upload"
         case .settings: return "Settings"
         case .components: return "Components"
         }
@@ -90,7 +88,7 @@ enum AppScreenGallery {
 
     static let all: [GalleryScreen] =
         onboarding + linking + recoveryKeys + createRecoveryKey
-        + recovery + appShell + timeline + upload + settings + components
+        + recovery + appShell + timeline + settings + components
 
     // Filters the catalog so a section preview only instantiates that
     // group's screens.
@@ -355,15 +353,12 @@ enum AppScreenGallery {
         },
         tile("Timeline / error", section: .timeline) {
             TimelineView(previewState: .error("LFS URL not configured"))
-        }
-    ]
-
-    private static let upload: [GalleryScreen] = [
-        tile("Upload / idle", section: .upload) {
-            GalleryPhotoSyncPreview(state: .idle, isSyncing: false)
         },
-        tile("Upload / syncing", section: .upload) {
-            GalleryPhotoSyncPreview(
+        tile("Timeline / enable upload", section: .timeline) {
+            TimelineView(previewState: .empty, previewShowsEnableBanner: true)
+        },
+        tile("Timeline / uploading", section: .timeline) {
+            GalleryUploadDetailsPreview(
                 state: .syncing(
                     current: 7,
                     total: 24,
@@ -374,14 +369,14 @@ enum AppScreenGallery {
                 isSyncing: true
             )
         },
-        tile("Upload / completed", section: .upload) {
-            GalleryPhotoSyncPreview(
-                state: .completed(total: 24),
+        tile("Timeline / upload waiting", section: .timeline) {
+            GalleryUploadDetailsPreview(
+                state: .failed(UploadPausedOnMobileDataError()),
                 isSyncing: false
             )
         },
-        tile("Upload / failed", section: .upload) {
-            GalleryPhotoSyncPreview(
+        tile("Timeline / upload failed", section: .timeline) {
+            GalleryUploadDetailsPreview(
                 state: .failed(
                     NSError(
                         domain: "Preview",
@@ -409,7 +404,7 @@ enum AppScreenGallery {
         stacked("Settings / sync", section: .settings) {
             SyncSettingsView()
         },
-        stacked("Settings / background upload", section: .settings) {
+        stacked("Settings / upload", section: .settings) {
             BackgroundUploadSettingsView(previewStatus: Self.sampleBackgroundUploadStatus)
         },
         stacked("Settings / playback", section: .settings) {
@@ -445,9 +440,9 @@ enum AppScreenGallery {
     ]
 }
 
-// Seeds PhotoSyncView with a parked manager so the gallery can show
-// idle, in-flight, and finished upload states without Photos access.
-private struct GalleryPhotoSyncPreview: View {
+// Seeds the progress sheet with a parked manager so the gallery can show
+// an in-flight, paused, or failed upload without Photos access.
+private struct GalleryUploadDetailsPreview: View {
     let state: SyncState
     let isSyncing: Bool
 
@@ -455,7 +450,11 @@ private struct GalleryPhotoSyncPreview: View {
         let manager = PhotoSyncManager()
         manager.syncState = state
         manager.isSyncing = isSyncing
-        return PhotoSyncView(syncManager: manager)
+        return UploadDetailsView(
+            syncManager: manager,
+            isOverdue: false,
+            onRetry: {}
+        )
     }
 }
 
@@ -547,16 +546,9 @@ struct AppScreenGalleryBoard: View {
     )
 }
 
-#Preview("Timeline", traits: .fixedLayout(width: 1318, height: 958)) {
+#Preview("Timeline", traits: .fixedLayout(width: 1744, height: 1876)) {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .timeline),
-        columns: 3
-    )
-}
-
-#Preview("Upload", traits: .fixedLayout(width: 1744, height: 958)) {
-    AppScreenGalleryBoard(
-        screens: AppScreenGallery.screens(in: .upload),
         columns: 4
     )
 }

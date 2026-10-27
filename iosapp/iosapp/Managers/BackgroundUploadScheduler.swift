@@ -49,9 +49,10 @@ struct BackgroundUploadStatus: Equatable {
 }
 
 // Asks iOS to upload while the phone is charging and online, then refuses
-// the run unless the path is unmetered. The user turns this on from Upload.
+// the run unless the path is unmetered. The user turns this on from the
+// timeline or from Settings. The same switch starts foreground upload.
 @MainActor
-final class BackgroundUploadScheduler: ObservableObject {
+final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
     static let shared = BackgroundUploadScheduler()
     static let taskIdentifier = "app.ios.replycant.com.background-upload"
 

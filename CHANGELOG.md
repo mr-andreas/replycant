@@ -7,7 +7,7 @@
 #### iOS app
 
 - read the application log in Settings and share it as a text file
-- upload photos and videos automatically while the phone is charging on Wi-Fi, starting with the smallest files, and get a reminder if uploads have not completed for 7 days. Settings lists each background run with when it started and stopped, how many files and bytes it uploaded, how many were waiting, and the result
+- turn on photo and video upload from the timeline or Settings. Uploads start on Wi-Fi while the app is open, and also while the phone is charging with the app closed, smallest files first. The timeline shows progress. If uploads have not completed for 7 days, Replycant can send one reminder. The Upload page in Settings holds the switch and lists each charging run with when it started and stopped, how many files and bytes it uploaded, how many were waiting, and the result
 - share a photo or video, or save it to the camera roll, from the full-screen viewer, and saving an item already in Photos says so instead of adding a copy
 
 ### Fixes

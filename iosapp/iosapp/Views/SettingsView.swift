@@ -48,6 +48,12 @@ struct SettingsView: View {
                     Text("Device Management")
                 }
 
+                Section {
+                    NavigationLink(destination: BackgroundUploadSettingsView()) {
+                        Label("Upload", systemImage: "arrow.up.circle")
+                    }
+                }
+
                 // Loaded here, not inside the section, because a zero-height
                 // List child never runs `.task` and a joined device then
                 // looks unpaired. Above Advanced because "can
@@ -62,10 +68,6 @@ struct SettingsView: View {
 
                     NavigationLink(destination: SyncSettingsView()) {
                         Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                    }
-
-                    NavigationLink(destination: BackgroundUploadSettingsView()) {
-                        Label("Background upload", systemImage: "arrow.up.circle")
                     }
 
                     NavigationLink(destination: PlaybackSettingsView()) {
@@ -95,7 +97,9 @@ struct SettingsView: View {
                     }
                 }
             }
-            .task { await reloadTailnetStatus() }
+            .task {
+                await reloadTailnetStatus()
+            }
             .onChange(of: scenePhase) { _, phase in
                 // The first visit loads from .task. Later wakes have to
                 // read again, or a row captured before the lock stays green.

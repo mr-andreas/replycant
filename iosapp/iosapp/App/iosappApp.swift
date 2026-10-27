@@ -122,6 +122,9 @@ struct iosappApp: App {
             }
         case .active:
             UploadBacklogTracker.shared.refreshOverdue()
+            // After the first timeline load this starts a run. Before
+            // that it returns, so launch is not spent scanning Photos.
+            Task { await UploadController.shared.startIfReady() }
             Task {
                 do {
                     try await TailnetBootstrap.shared.noteReturnedToForeground()

@@ -1,8 +1,9 @@
 import Foundation
 import UserNotifications
 
-// Decides whether the Upload tab explains notifications before iOS asks.
-// The system prompt is shown only after the user agrees to reminders.
+// Decides whether enabling upload asks about a stall reminder before
+// iOS does. A denial cannot be asked again. Any other status still
+// gets the question, because system permission is not the reminder choice.
 enum NotificationPermissionStep: Equatable {
     case explain
     case skip
@@ -11,13 +12,14 @@ enum NotificationPermissionStep: Equatable {
 // Schedules and removes the one local reminder a backlog can have.
 protocol UploadReminderNotifying: AnyObject {
     func authorizationStatus() async -> UNAuthorizationStatus
+    func requestAuthorization() async -> Bool
     func add(_ request: UNNotificationRequest) async throws
     func removePending(identifiers: [String])
     func removeDelivered(identifiers: [String])
 }
 
-// The Upload tab and a finished upload share this so the reminder stays
-// 7 days out while background upload is on, and goes away when it is off.
+// Upload and a finished run share this so the reminder stays 7 days out
+// while upload is on, and goes away when upload is turned off.
 @MainActor
 protocol UploadBacklogTracking: AnyObject {
     func start(now: Date) async
@@ -29,13 +31,17 @@ protocol UploadBacklogTracking: AnyObject {
 // stored when the user turns it on, and moved forward whenever an upload
 // finishes, so a task iOS never runs still ends in a notification.
 @MainActor
-final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
+final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking, UploadReminderPreference {
     static let shared = UploadBacklogTracker()
     static let reminderIdentifier = "upload-backlog-reminder"
     static let startedAtDefaultsKey = "uploadBacklogStartedAt"
+    static let remindersEnabledKey = "uploadRemindersEnabled"
     static let reminderDelay: TimeInterval = 7 * 24 * 60 * 60
 
     @Published private(set) var isOverdue = false
+    // Defaults to on so a library that already opted into upload keeps
+    // its reminder. No, or the Settings toggle, turns it off.
+    @Published private(set) var remindersEnabled: Bool
 
     private let defaults: UserDefaults
     private let notifications: UploadReminderNotifying
@@ -46,6 +52,7 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
     ) {
         self.defaults = defaults
         self.notifications = notifications
+        self.remindersEnabled = defaults.object(forKey: Self.remindersEnabledKey) as? Bool ?? true
         #if DEBUG
         if let override = Self.debugBacklogStart(
             arguments: ProcessInfo.processInfo.arguments,
@@ -53,20 +60,20 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
         ) {
             backlogStartedAt = override
             // A debug launch that is already past the deadline also posts the
-            // reminder, so the tap that opens Upload can be checked without
-            // waiting 7 days. With permission refused, nothing is posted.
+            // reminder, so the tap that opens the timeline can be checked
+            // without waiting 7 days. With permission refused, nothing is posted.
             Task { await scheduleReminder(now: Date()) }
         }
         #endif
         refreshOverdue()
     }
 
-    // Shows the explanation only while the user has not decided. A previous
-    // allow or refusal is not asked again.
+    // Asks unless iOS has already denied notifications. An earlier allow
+    // is not the reminder choice, and a denial cannot show the prompt again.
     static func notificationPermissionStep(
         status: UNAuthorizationStatus
     ) -> NotificationPermissionStep {
-        status == .notDetermined ? .explain : .skip
+        status == .denied ? .skip : .explain
     }
 
     // The warning appears once uploads have been unfinished for 7 days.
@@ -99,6 +106,31 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
         await scheduleReminder(now: now)
     }
 
+    // Settings and the enable question share this. Off removes a pending
+    // reminder immediately. On schedules one only when permission exists
+    // and the upload clock is already running.
+    func setRemindersEnabled(_ enabled: Bool) async {
+        remindersEnabled = enabled
+        defaults.set(enabled, forKey: Self.remindersEnabledKey)
+        if enabled {
+            await scheduleReminder(now: Date())
+        } else {
+            notifications.removePending(identifiers: [Self.reminderIdentifier])
+            notifications.removeDelivered(identifiers: [Self.reminderIdentifier])
+        }
+    }
+
+    // Forwards the system status so Settings can explain a denial.
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await notifications.authorizationStatus()
+    }
+
+    // Forwards the system prompt. Callers invoke it only after the user
+    // agrees to the stall reminder.
+    func requestAuthorization() async -> Bool {
+        await notifications.requestAuthorization()
+    }
+
     // Turning background upload off drops the reminder and the warning.
     // A finished upload postpones them instead of calling this.
     func clear() {
@@ -125,9 +157,10 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
         }
     }
 
-    // Skips scheduling until notifications are allowed. The stored date still
-    // drives the in-app warning.
+    // Skips scheduling until the user wants the reminder and notifications
+    // are allowed. The stored date still drives the in-app warning.
     private func scheduleReminder(now: Date) async {
+        guard remindersEnabled else { return }
         guard let started = backlogStartedAt else { return }
         let status = await notifications.authorizationStatus()
         guard status == .authorized else { return }
@@ -136,7 +169,7 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
             .timeIntervalSince(now)
         let content = UNMutableNotificationContent()
         content.title = "Uploads not finished"
-        content.body = "Some photos and videos have not finished uploading for 7 days. Open Replycant and upload them with the app open."
+        content.body = "Some photos and videos have not finished uploading for 7 days. Open Replycant to finish uploading them."
         let request = UNNotificationRequest(
             identifier: Self.reminderIdentifier,
             content: content,
@@ -173,6 +206,11 @@ final class UploadBacklogTracker: ObservableObject, UploadBacklogTracking {
 final class SystemUploadReminderCenter: UploadReminderNotifying {
     func authorizationStatus() async -> UNAuthorizationStatus {
         await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+
+    // The system sheet. Callers ask only after the user agrees to reminders.
+    func requestAuthorization() async -> Bool {
+        (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
     func add(_ request: UNNotificationRequest) async throws {

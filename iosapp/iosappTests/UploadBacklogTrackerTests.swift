@@ -11,6 +11,20 @@ struct UploadBacklogTrackerTests {
     private let start = Date(timeIntervalSince1970: 1_700_000_000)
     private let week: TimeInterval = 7 * 24 * 60 * 60
 
+    @Test("Turning reminders off removes the pending reminder")
+    func testRemindersOffRemovesPending() async {
+        let notifications = FakeReminderCenter()
+        notifications.status = .authorized
+        let (tracker, _) = makeTracker(notifications: notifications)
+        await tracker.start(now: start)
+        #expect(notifications.added.count == 1)
+
+        await tracker.setRemindersEnabled(false)
+
+        #expect(tracker.remindersEnabled == false)
+        #expect(notifications.removedPending == [UploadBacklogTracker.reminderIdentifier])
+    }
+
     @Test("An authorized user gets one reminder exactly 7 days out")
     func testArmSchedulesOneReminder() async {
         let notifications = FakeReminderCenter()
@@ -23,7 +37,7 @@ struct UploadBacklogTrackerTests {
         let request = notifications.added[0]
         #expect(request.identifier == UploadBacklogTracker.reminderIdentifier)
         #expect(request.content.title == "Uploads not finished")
-        #expect(request.content.body == "Some photos and videos have not finished uploading for 7 days. Open Replycant and upload them with the app open.")
+        #expect(request.content.body == "Some photos and videos have not finished uploading for 7 days. Open Replycant to finish uploading them.")
         let trigger = request.trigger as? UNTimeIntervalNotificationTrigger
         #expect(trigger?.timeInterval == week)
     }
@@ -58,11 +72,31 @@ struct UploadBacklogTrackerTests {
         #expect(trigger?.timeInterval == week - 60 * 60)
     }
 
-    @Test("The explanation is shown only before the user has decided")
+    @Test("The reminder question is skipped only after notifications were denied")
     func testNotificationPermissionStep() {
         #expect(UploadBacklogTracker.notificationPermissionStep(status: .notDetermined) == .explain)
-        #expect(UploadBacklogTracker.notificationPermissionStep(status: .authorized) == .skip)
+        #expect(UploadBacklogTracker.notificationPermissionStep(status: .authorized) == .explain)
         #expect(UploadBacklogTracker.notificationPermissionStep(status: .denied) == .skip)
+    }
+
+    @Test("Turning reminders off removes the pending notification and does not schedule another")
+    func testRemindersDisabledRemovesPending() async {
+        let notifications = FakeReminderCenter()
+        notifications.status = .authorized
+        let (tracker, defaults) = makeTracker(notifications: notifications)
+        await tracker.start(now: start)
+
+        await tracker.setRemindersEnabled(false)
+
+        #expect(tracker.remindersEnabled == false)
+        #expect(notifications.removedPending == [UploadBacklogTracker.reminderIdentifier])
+        #expect(defaults.bool(forKey: UploadBacklogTracker.remindersEnabledKey) == false)
+
+        await tracker.restartIfArmed(now: start.addingTimeInterval(60))
+        #expect(notifications.added.count == 1)
+
+        let reloaded = UploadBacklogTracker(defaults: defaults, notifications: FakeReminderCenter())
+        #expect(reloaded.remindersEnabled == false)
     }
 
     @Test("A finished upload moves an armed reminder a full 7 days out")
@@ -138,9 +172,14 @@ final class FakeReminderCenter: UploadReminderNotifying {
     var added: [UNNotificationRequest] = []
     var removedPending: [String] = []
     var removedDelivered: [String] = []
+    private(set) var authorizationRequests = 0
 
     func authorizationStatus() async -> UNAuthorizationStatus {
         status
+    }
+
+    func requestAuthorization() async -> Bool {
+        false
     }
 
     func add(_ request: UNNotificationRequest) async throws {
@@ -153,5 +192,11 @@ final class FakeReminderCenter: UploadReminderNotifying {
 
     func removeDelivered(identifiers: [String]) {
         removedDelivered.append(contentsOf: identifiers)
+    }
+
+    func requestAuthorization() async -> Bool {
+        authorizationRequests += 1
+        status = .authorized
+        return true
     }
 }

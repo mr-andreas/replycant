@@ -53,23 +53,21 @@ struct MediaMetadata {
 
 // Provides access to the device's photo library and media processing operations.
 // Implements PhotoLibraryProviding to enable testability through dependency injection.
-final class PhotoLibraryManager: PhotoLibraryProviding, @unchecked Sendable {
+final class PhotoLibraryManager: PhotoLibraryProviding, PhotoAccessRequesting, @unchecked Sendable {
     // Reports current read authorization so callers can avoid API access that would trigger a permission prompt.
     var isAuthorized: Bool {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         return status == .authorized || status == .limited
     }
     
+    // Limited access still has photos to upload. Treating it as a refusal
+    // left those libraries unable to turn upload on.
     func requestAuthorization() async -> Bool {
         log("Requesting photo library authorization...", context: "PhotoLibrary")
-        let result = await withCheckedContinuation { continuation in
-            PHPhotoLibrary.requestAuthorization { status in
-                log("Authorization status: \(status.rawValue)", context: "PhotoLibrary")
-                continuation.resume(returning: status == .authorized)
-            }
-        }
-        log("Authorization granted: \(result)", context: "PhotoLibrary")
-        return result
+        let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        let granted = status == .authorized || status == .limited
+        log("Authorization granted: \(granted) (\(status.rawValue))", context: "PhotoLibrary")
+        return granted
     }
     
     // Returns a single newest-first media list so sync prioritizes recent captures.

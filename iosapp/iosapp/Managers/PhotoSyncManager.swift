@@ -24,11 +24,12 @@ enum PhotoSyncError: Error {
     case syncInProgress
 }
 
-// Tells the upload tab why a Wi-Fi upload stopped, and that pressing
-// Start Upload again is how to continue. Already-uploaded items are skipped.
+// Tells the progress sheet why a Wi-Fi upload stopped. The run resumes
+// on its own when the network is unmetered again. Already-uploaded
+// items are skipped.
 struct UploadPausedOnMobileDataError: Error, LocalizedError {
     var errorDescription: String? {
-        "Upload paused because the phone switched to mobile data. Press Start Upload to continue."
+        "Upload paused because the phone switched to mobile data. It continues automatically on Wi-Fi."
     }
 }
 
@@ -103,9 +104,9 @@ enum SyncState: Equatable {
 }
 
 @MainActor
-final class PhotoSyncManager: ObservableObject {
-    // The Upload tab and a background run share one upload so they cannot
-    // run at the same time, and opening the app shows the run in progress.
+final class PhotoSyncManager: ObservableObject, UploadRunning {
+    // Foreground upload and a background run share one upload so they
+    // cannot run at the same time, and opening the app shows the run.
     static let shared = PhotoSyncManager()
 
     @Published var syncState: SyncState = .idle
@@ -261,8 +262,8 @@ final class PhotoSyncManager: ObservableObject {
     }
 
     // Starts a new sync run and stamps it with a generation token so stale callbacks cannot update UI state.
-    // Manual upload keeps newest-first. Background upload passes smallest-first
-    // so a short charging window finishes as many files as it can.
+    // Foreground upload keeps newest-first. Background upload passes
+    // smallest-first so a short charging window finishes as many files as it can.
     func startSync(order: UploadOrder = .newestFirst) async {
         guard !isSyncing else {
             logWarning("Sync already in progress, ignoring request", context: "PhotoSync")

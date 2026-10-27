@@ -94,11 +94,19 @@ struct TimelineView: View {
     }
 
     @StateObject private var timelineManager: TimelineManager
+    @ObservedObject private var uploadController = UploadController.shared
+    @ObservedObject private var syncManager = PhotoSyncManager.shared
+    @ObservedObject private var uploadBacklog = UploadBacklogTracker.shared
+    @State private var showUploadDetails = false
     private let previewState: PreviewState?
+    private let previewShowsEnableBanner: Bool
 
     // Allows previews to render TimelineView states without repository and LFS dependencies.
-    init(previewState: PreviewState? = nil) {
+    // previewShowsEnableBanner forces the offer over an empty preview, which
+    // is the only way the gallery can show it without a loaded library.
+    init(previewState: PreviewState? = nil, previewShowsEnableBanner: Bool = false) {
         self.previewState = previewState
+        self.previewShowsEnableBanner = previewShowsEnableBanner
         _timelineManager = StateObject(wrappedValue: TimelineManager())
     }
 
@@ -119,23 +127,98 @@ struct TimelineView: View {
                 timelineManager: timelineManager,
                 previewState: previewState,
                 emptyTitle: "No photos uploaded yet",
-                emptyMessage: "Upload some photos to see them in your timeline"
+                emptyMessage: "Upload some photos to see them in your timeline",
+                emptyAction: emptyUploadAction,
+                onInitialLoad: {
+                    Task { await uploadController.launchDidFinish() }
+                }
             )
             .navigationTitle("Timeline")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                if UploadDetailsCopy.activityIndicator(for: syncManager.syncState) != .hidden {
+                    ToolbarItem(placement: .topBarLeading) {
+                        UploadProgressButton(state: syncManager.syncState) {
+                            showUploadDetails = true
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showUploadDetails) {
+                UploadDetailsView(
+                    syncManager: syncManager,
+                    isOverdue: uploadBacklog.isOverdue,
+                    onRetry: {
+                        Task { await uploadController.startIfReady() }
+                    }
+                )
+            }
         }
+        .overlay(alignment: .top) {
+            if showsEnableBanner {
+                UploadEnableBanner(
+                    onEnable: { Task { await uploadController.enable() } },
+                    onDismiss: { uploadController.dismissPrompt() }
+                )
+                .padding(.top, 44)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut, value: showsEnableBanner)
     }
+
+    // The banner is for a timeline that already has photos. The empty
+    // screen keeps its button even after the banner was dismissed.
+    private var showsEnableBanner: Bool {
+        if previewShowsEnableBanner { return true }
+        guard previewState == nil else { return false }
+        return UploadController.showsEnableBanner(
+            isEnabled: uploadController.isEnabled,
+            isDismissed: uploadController.isPromptDismissed,
+            isTimelineEmpty: timelineManager.isLoading || timelineManager.totalCount == 0
+        )
+    }
+
+    // Shown whenever upload is off, including after the banner was
+    // dismissed. The banner preview hides it so that tile is only the bar.
+    private var emptyUploadAction: TimelineEmptyAction? {
+        let show: Bool
+        switch previewState {
+        case .empty:
+            show = !previewShowsEnableBanner
+        case nil:
+            show = !uploadController.isEnabled
+        default:
+            show = false
+        }
+        guard show else { return nil }
+        return TimelineEmptyAction(
+            title: "Enable upload",
+            accessibilityIdentifier: "enableUploadButton",
+            perform: { Task { await uploadController.enable() } }
+        )
+    }
+}
+
+// The empty timeline's upload button. Places passes none, because that
+// grid is a filter over photos that are already in the library.
+struct TimelineEmptyAction {
+    var title: String
+    var accessibilityIdentifier: String
+    var perform: () -> Void
 }
 
 // The timeline grid, including its viewer and month sidebar, so a place
 // can show the same browsing flow for one cluster's photos.
 struct TimelineGridScreen: View {
     @ObservedObject var timelineManager: TimelineManager
-    var previewState: TimelineView.PreviewState?
+    var previewState: TimelineView.PreviewState? = nil
     var emptyTitle: String
     var emptyMessage: String
+    var emptyAction: TimelineEmptyAction? = nil
+    var onInitialLoad: (() -> Void)? = nil
     @State private var selectedItem: SelectedTimelineItem?
     @State private var showMonthSidebar = false
 
@@ -198,6 +281,8 @@ struct TimelineGridScreen: View {
             ) else { return }
             TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
             await timelineManager.loadTimeline()
+            guard !Task.isCancelled else { return }
+            onInitialLoad?()
         }
     }
 
@@ -256,6 +341,12 @@ struct TimelineGridScreen: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+
+            if let emptyAction {
+                Button(emptyAction.title, action: emptyAction.perform)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(emptyAction.accessibilityIdentifier)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

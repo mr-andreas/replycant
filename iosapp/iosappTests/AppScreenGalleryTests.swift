@@ -94,8 +94,8 @@ struct AppScreenGalleryTests {
         ])
     }
 
-    // Places root-shell, timeline, upload, and settings tiles in their
-    // own sections so Main cannot collect unrelated tab content again.
+    // Places root-shell, timeline, and settings tiles in their own
+    // sections so Main cannot collect unrelated tab content again.
     @Test func mainTabTilesLiveInDedicatedSections() {
         let byId = Dictionary(
             uniqueKeysWithValues: AppScreenGallery.all.map { ($0.id, $0.section) }
@@ -105,10 +105,10 @@ struct AppScreenGalleryTests {
         #expect(byId["Timeline / empty"] == .timeline)
         #expect(byId["Timeline / loading"] == .timeline)
         #expect(byId["Timeline / error"] == .timeline)
-        #expect(byId["Upload / idle"] == .upload)
-        #expect(byId["Upload / syncing"] == .upload)
-        #expect(byId["Upload / completed"] == .upload)
-        #expect(byId["Upload / failed"] == .upload)
+        #expect(byId["Timeline / enable upload"] == .timeline)
+        #expect(byId["Timeline / uploading"] == .timeline)
+        #expect(byId["Timeline / upload waiting"] == .timeline)
+        #expect(byId["Timeline / upload failed"] == .timeline)
         #expect(byId["Settings / list"] == .settings)
         #expect(byId["Settings / recovery warning"] == .settings)
     }
@@ -147,7 +147,7 @@ struct AppScreenGalleryTests {
             "Settings / recovery warning",
             "Settings / repository",
             "Settings / sync",
-            "Settings / background upload",
+            "Settings / upload",
             "Settings / playback",
             "Settings / cache",
             "Settings / application log",

@@ -227,7 +227,7 @@ final class TimelineManager: ObservableObject {
                 repository = try RepositoryManager.shared.getRepository()
             } catch {
                 logError("Repository not found at: \(RepositoryManager.shared.repositoryPath())", context: "Timeline")
-                logError("Please upload some photos first using the Upload tab", context: "Timeline")
+                logError("Turn on upload from the timeline or Settings, then try again", context: "Timeline")
                 throw TimelineError.repositoryNotFound
             }
             

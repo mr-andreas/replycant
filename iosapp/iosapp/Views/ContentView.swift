@@ -38,6 +38,7 @@ struct ContentView: View {
     @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
     @ObservedObject private var notificationDelegate = AppNotificationDelegate.shared
+    @ObservedObject private var uploadController = UploadController.shared
     @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
@@ -119,13 +120,6 @@ struct ContentView: View {
                             .tag(1)
                             .accessibilityIdentifier("mapTab")
 
-                        PhotoSyncView()
-                            .tabItem {
-                                Label("Upload", systemImage: "photo.on.rectangle.angled")
-                            }
-                            .tag(2)
-                            .accessibilityIdentifier("uploadTab")
-
                         SettingsView(onWipeAndResync: {
                             Task { await performResync(shouldWipeLocalState: true) }
                         }, showRecoveryWarning: showRecoveryWarning)
@@ -195,6 +189,14 @@ struct ContentView: View {
         }
         .onChange(of: notificationDelegate.requestedTab) { _, _ in
             openRequestedTab()
+        }
+        .alert(
+            uploadController.pendingPrompt?.title ?? "",
+            isPresented: uploadPromptPresented
+        ) {
+            uploadPromptButtons
+        } message: {
+            Text(uploadController.pendingPrompt?.message ?? "")
         }
         .task {
             guard previewState == nil,
@@ -556,12 +558,52 @@ struct ContentView: View {
         !isRepoInitialized && isServerConfigured && !isTailnetConfigured
     }
 
-    // A reminder tap asks for the Upload tab. Clearing the request keeps a
+    // A reminder tap asks for the timeline. Clearing the request keeps a
     // later manual tab change from being overwritten.
     private func openRequestedTab() {
         guard let tab = notificationDelegate.requestedTab else { return }
         selectedTab = tab
         notificationDelegate.requestedTab = nil
+    }
+
+    // One alert for photo access, the stall question, and a dismissed
+    // banner. The reminder buttons answer it. Other prompts just close.
+    private var uploadPromptPresented: Binding<Bool> {
+        Binding(
+            get: { uploadController.pendingPrompt != nil },
+            set: { isPresented in
+                if !isPresented {
+                    uploadController.acknowledgePrompt()
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var uploadPromptButtons: some View {
+        switch uploadController.pendingPrompt {
+        case .photoAccessDenied:
+            Button("Open Settings") {
+                openAppSettings()
+            }
+            Button("OK", role: .cancel) {}
+        case .reminderQuestion:
+            Button("Notify Me") {
+                uploadController.answerReminderQuestion(allowReminders: true)
+            }
+            Button("Not Now", role: .cancel) {
+                uploadController.answerReminderQuestion(allowReminders: false)
+            }
+        case .dismissedHint, .none:
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    // Photo access and notifications can only be reversed in the system
+    // Settings app once iOS has recorded a denial.
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     // Keeps the Settings badge tied to missing recovery keys so users are
