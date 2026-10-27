@@ -1,5 +1,8 @@
 import Foundation
+import LinkPresentation
 import Testing
+import UniformTypeIdentifiers
+import UIKit
 @testable import GitDB
 @testable import LibGit2
 @testable import iosapp
@@ -106,6 +109,58 @@ struct ApplicationLogTests {
             try FileManager.default.removeItem(at: url)
             #expect(ApplicationLog.text() == retained)
         }
+    }
+
+    // Mail and Files need the snapshot file, not a string, so the
+    // attachment keeps the replycant-log.txt name. Plain text keeps
+    // those destinations in the sheet.
+    @Test func shareItemAttachesTheSnapshotAsPlainText() throws {
+        let directory = try makeDirectory()
+        defer { remove(directory) }
+        try ApplicationLog.isolate(directory: directory, maxBytes: 8 * 1024 * 1024) {
+            ApplicationLog.append("share-me")
+            let url = try ApplicationLog.makeShareFile()
+            defer { remove(url) }
+            let source = ApplicationLogShareItem(url: url)
+            let controller = UIActivityViewController(
+                activityItems: [],
+                applicationActivities: nil
+            )
+            let activities: [UIActivity.ActivityType] = [
+                .mail, .airDrop, .copyToPasteboard,
+            ]
+            for activity in activities {
+                let item = source.activityViewController(
+                    controller,
+                    itemForActivityType: activity
+                )
+                #expect((item as? URL) == url)
+                #expect(
+                    source.activityViewController(
+                        controller,
+                        dataTypeIdentifierForActivityType: activity
+                    ) == UTType.plainText.identifier
+                )
+            }
+            #expect(
+                source.activityViewControllerPlaceholderItem(controller) as? URL == url
+            )
+        }
+    }
+
+    // Header metadata with no URL is what keeps the share sheet from
+    // reading the log before it appears. A URL here is the freeze.
+    @Test func shareItemHeaderDoesNotPointAtTheLog() {
+        let source = ApplicationLogShareItem(
+            url: URL(fileURLWithPath: "/tmp/replycant-log.txt")
+        )
+        let metadata = source.activityViewControllerLinkMetadata(
+            UIActivityViewController(activityItems: [], applicationActivities: nil)
+        )
+        #expect(metadata?.title == ApplicationLog.shareFileName)
+        #expect(metadata?.url == nil)
+        #expect(metadata?.originalURL == nil)
+        #expect(metadata?.iconProvider?.canLoadObject(ofClass: UIImage.self) == true)
     }
 
     // Gives each test its own directory so a cap or share assertion cannot

@@ -14,6 +14,7 @@
 
 #### iOS app
 
+- sharing the application log opens without freezing, and the file reaches the app you pick
 - the timeline and full-screen zoom stay responsive while photos upload
 - photos no longer stay as grey placeholders after another device uploads a large batch
 
