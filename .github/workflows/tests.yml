@@ -198,14 +198,31 @@ jobs:
             -derivedDataPath iosapp/build/uitest-derived-data
 
       - name: Run iOS UI tests
-        run: make ios-ui-test
+        env:
+          # Destination failures write ResultBundle under TMPDIR, not derived data.
+          TMPDIR: ${{ github.workspace }}/iosapp/build/xcodebuild-tmp
+        run: |
+          mkdir -p "$TMPDIR"
+          make ios-ui-test
 
-      # The log line only says the viewer was missing. The xcresult has
-      # the screenshot and accessibility hierarchy from that moment.
+      # A started test writes iosapp/build/uitest-results.xcresult. A failure
+      # before testing starts writes ResultBundle under TMPDIR instead.
+      - name: Collect UI test results
+        if: failure()
+        run: |
+          dest=iosapp/build/ui-test-results
+          mkdir -p "$dest"
+          if [ -d iosapp/build/uitest-results.xcresult ]; then
+            cp -R iosapp/build/uitest-results.xcresult "$dest/"
+          fi
+          if [ -d iosapp/build/xcodebuild-tmp ]; then
+            find iosapp/build/xcodebuild-tmp -name '*.xcresult' -prune -exec cp -R {} "$dest/" \;
+          fi
+
       - name: Upload UI test results
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ios-ui-test-results
-          path: iosapp/build/uitest-derived-data/Logs/Test/*.xcresult
-          if-no-files-found: warn
+          path: iosapp/build/ui-test-results
+          if-no-files-found: error

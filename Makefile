@@ -83,9 +83,11 @@ ios-unit-test: ios-tailscalekit
 	  -derivedDataPath iosapp/build/test-derived-data
 
 ios-ui-test: ios-tailscalekit
+	rm -rf iosapp/build/uitest-results.xcresult
 	xcodebuild test -project $(IOS_PROJECT) -scheme iosappScreenshots \
 	  -destination '$(IOS_TEST_DESTINATION)' \
 	  -derivedDataPath iosapp/build/uitest-derived-data \
+	  -resultBundlePath iosapp/build/uitest-results.xcresult \
 	  -skip-testing:iosappUITests/ScreenshotUITests
 
 ios-test: ios-unit-test ios-ui-test
