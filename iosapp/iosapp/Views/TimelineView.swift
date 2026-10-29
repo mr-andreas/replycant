@@ -1450,9 +1450,19 @@ struct TimelineCollectionView: UIViewRepresentable {
             timelineManager.itemDidDisappear(at: indexPath.item)
         }
 
+        // UIKit selects the cell before this runs. The photo on the cell
+        // can disagree with the loaded-window index, and a binding write
+        // in this callback can be dropped while that selection sticks, so
+        // the next tap never arrives. Clear the selection, and publish the
+        // id the cell is showing only once the viewer can still resolve it.
         func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-            guard let item = timelineManager.item(at: indexPath.item) else { return }
-            selectedItemId.wrappedValue = item.id
+            let cell = collectionView.cellForItem(at: indexPath) as? TimelineCollectionCell
+            let itemId = cell?.currentItemId ?? timelineManager.item(at: indexPath.item)?.id
+            collectionView.deselectItem(at: indexPath, animated: false)
+            guard let itemId, timelineManager.index(ofItemId: itemId) != nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.selectedItemId.wrappedValue = itemId
+            }
         }
 
         // Sizes every thumbnail so the row fills the grid width. A wider

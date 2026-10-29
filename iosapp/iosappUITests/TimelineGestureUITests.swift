@@ -92,11 +92,7 @@ final class TimelineGestureUITests: XCTestCase {
         
         // Verify we're viewing a photo in full screen.
         let fullScreenImage = app.descendants(matching: .any).matching(identifier: "zoomableImage").firstMatch
-        var didOpenPhoto = fullScreenImage.waitForExistence(timeout: 5)
-        if !didOpenPhoto, firstCell.exists {
-            firstCell.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            didOpenPhoto = fullScreenImage.waitForExistence(timeout: 10)
-        }
+        let didOpenPhoto = fullScreenImage.waitForExistence(timeout: 5)
         if !didOpenPhoto {
             XCTFail("Should be in full screen photo view (\(openFailureDescription(cell: firstCell)))")
             return
@@ -125,11 +121,7 @@ final class TimelineGestureUITests: XCTestCase {
         
         // Verify we're viewing a photo in full screen.
         let fullScreenImage = app.descendants(matching: .any).matching(identifier: "zoomableImage").firstMatch
-        var didOpenPhoto = fullScreenImage.waitForExistence(timeout: 5)
-        if !didOpenPhoto, secondCell.exists {
-            secondCell.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            didOpenPhoto = fullScreenImage.waitForExistence(timeout: 10)
-        }
+        let didOpenPhoto = fullScreenImage.waitForExistence(timeout: 5)
         if !didOpenPhoto {
             XCTFail("Should be in full screen photo view (\(openFailureDescription(cell: secondCell)))")
             return
