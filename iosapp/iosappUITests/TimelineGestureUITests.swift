@@ -54,6 +54,21 @@ final class TimelineGestureUITests: XCTestCase {
             .joined(separator: " | ")
         return "state=[\(active.isEmpty ? "none" : active)] labels=[\(labels)]"
     }
+
+    // Names the viewer and the tapped cell when opening media fails.
+    //
+    // A missing page looks the same when the tap never selected the cell,
+    // when the cell stayed selected without a cover, and when the cover
+    // opened without its page. CI keeps this message, so those states
+    // have to be in it. The assertion itself is unchanged.
+    private func openFailureDescription(cell: XCUIElement) -> String {
+        let fullScreen = app.otherElements["fullScreenImage"].exists
+        let failedLoad = app.staticTexts["Failed to load image"].exists
+        let repoError = app.staticTexts["Repository not available"].exists
+        let lfsError = app.staticTexts["LFS client not available"].exists
+        let selected = cell.exists && cell.isSelected
+        return "fullScreen=\(fullScreen), cellExists=\(cell.exists), cellSelected=\(selected), failedLoad=\(failedLoad), repoError=\(repoError), lfsError=\(lfsError), \(timelineStateDescription())"
+    }
     
     // Navigate to timeline and open first image
     func navigateToFirstImage() throws {
@@ -83,13 +98,7 @@ final class TimelineGestureUITests: XCTestCase {
             didOpenPhoto = fullScreenImage.waitForExistence(timeout: 10)
         }
         if !didOpenPhoto {
-            let failedLoad = app.staticTexts["Failed to load image"].exists
-            let repoError = app.staticTexts["Repository not available"].exists
-            let lfsError = app.staticTexts["LFS client not available"].exists
-            let labels = app.staticTexts.allElementsBoundByIndex.map(\.label).prefix(12).joined(separator: " | ")
-            XCTFail(
-                "Should be in full screen photo view (failedLoad=\(failedLoad), repoError=\(repoError), lfsError=\(lfsError), labels=\(labels))"
-            )
+            XCTFail("Should be in full screen photo view (\(openFailureDescription(cell: firstCell)))")
             return
         }
         XCTAssertTrue(didOpenPhoto, "Should be in full screen photo view")
@@ -120,6 +129,10 @@ final class TimelineGestureUITests: XCTestCase {
         if !didOpenPhoto, secondCell.exists {
             secondCell.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             didOpenPhoto = fullScreenImage.waitForExistence(timeout: 10)
+        }
+        if !didOpenPhoto {
+            XCTFail("Should be in full screen photo view (\(openFailureDescription(cell: secondCell)))")
+            return
         }
         XCTAssertTrue(didOpenPhoto, "Should be in full screen photo view")
     }
@@ -576,7 +589,10 @@ final class TimelineGestureUITests: XCTestCase {
         
         // Verify we're viewing the video in full screen
         let fullScreenView = app.otherElements["fullScreenImage"]
-        XCTAssertTrue(fullScreenView.waitForExistence(timeout: 5), "Should be in full screen view for video")
+        if !fullScreenView.waitForExistence(timeout: 5) {
+            XCTFail("Should be in full screen view for video (\(openFailureDescription(cell: videoCell)))")
+            return
+        }
         
         // Get the video player
         let videoPlayer = app.descendants(matching: .any).matching(identifier: "videoPlayer").firstMatch
@@ -626,7 +642,10 @@ final class TimelineGestureUITests: XCTestCase {
         
         // Verify we're viewing the video in full screen
         let fullScreenView = app.otherElements["fullScreenImage"]
-        XCTAssertTrue(fullScreenView.waitForExistence(timeout: 5), "Should be in full screen view for video")
+        if !fullScreenView.waitForExistence(timeout: 5) {
+            XCTFail("Should be in full screen view for video (\(openFailureDescription(cell: videoCell)))")
+            return
+        }
         
         // Verify we're on the video (zoomableImage should not exist for videos)
         let videoImageView = app.descendants(matching: .any).matching(identifier: "zoomableImage").firstMatch

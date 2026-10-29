@@ -199,3 +199,13 @@ jobs:
 
       - name: Run iOS UI tests
         run: make ios-ui-test
+
+      # The log line only says the viewer was missing. The xcresult has
+      # the screenshot and accessibility hierarchy from that moment.
+      - name: Upload UI test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-test-results
+          path: iosapp/build/uitest-derived-data/Logs/Test/*.xcresult
+          if-no-files-found: warn
