@@ -178,10 +178,6 @@ final class FakeReminderCenter: UploadReminderNotifying {
         status
     }
 
-    func requestAuthorization() async -> Bool {
-        false
-    }
-
     func add(_ request: UNNotificationRequest) async throws {
         added.append(request)
     }

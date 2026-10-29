@@ -14,6 +14,7 @@
 
 #### iOS app
 
+- landscape timeline thumbnails stay about the portrait size and run to the edges of the screen
 - opening the app after a charging upload reconnects, instead of staying on a tailnet whose sockets were reclaimed while the phone was locked
 - sharing the application log opens without freezing, and the file reaches the app you pick
 - the timeline and full-screen zoom stay responsive while photos upload

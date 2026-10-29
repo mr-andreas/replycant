@@ -84,6 +84,55 @@ struct TimelineMonthJumpAnchor {
     }
 }
 
+// Chooses how many timeline thumbnails fit across the grid so a row
+// fills the width it is given. Widths at or below the portrait width
+// stay on three columns, which is what lets the month sidebar shrink
+// cells instead of dropping one. Wider rows keep only as many
+// portrait-sized cells as fit, then grow them to the edges.
+struct TimelineGridMetrics: Equatable {
+    static let spacing: CGFloat = 1
+
+    let columns: Int
+    let side: CGFloat
+
+    // The side is the exact share of the width, not a floored value.
+    // Flooring left a gap at the edge. Growing absorbs the leftover
+    // width so the row meets both sides.
+    static func make(
+        layoutWidth: CGFloat,
+        portraitWidth: CGFloat
+    ) -> TimelineGridMetrics {
+        let width = max(layoutWidth, 1)
+        let portrait = max(portraitWidth, 1)
+        let columns = columnCount(layoutWidth: width, portraitWidth: portrait)
+        let gaps = spacing * CGFloat(columns - 1)
+        let side = max((width - gaps) / CGFloat(columns), 1)
+        return TimelineGridMetrics(columns: columns, side: side)
+    }
+
+    // Estimates the row for one item when the collection view has not
+    // produced layout attributes yet, so scroll restoration still lands
+    // on the same photo after the column count changes.
+    func row(for item: Int) -> Int {
+        item / max(columns, 1)
+    }
+
+    private static let portraitColumns = 3
+
+    // Portrait and anything narrower (the month sidebar) keep three
+    // columns. A wider width keeps only as many portrait-sized cells
+    // as fit. The caller then grows those cells to fill the width,
+    // instead of adding a column that would shrink them.
+    private static func columnCount(layoutWidth: CGFloat, portraitWidth: CGFloat) -> Int {
+        if layoutWidth <= portraitWidth + 0.5 {
+            return portraitColumns
+        }
+        let target = (portraitWidth - spacing * CGFloat(portraitColumns - 1)) / CGFloat(portraitColumns)
+        let raw = (layoutWidth + spacing) / (max(target, 1) + spacing)
+        return max(portraitColumns, Int(raw))
+    }
+}
+
 // Renders the photo timeline grid while requesting sparse pages as cells come into view.
 struct TimelineView: View {
     // Defines deterministic preview modes so canvas rendering never depends on repository setup.
@@ -382,13 +431,19 @@ struct TimelineCollectionView: UIViewRepresentable {
     // Creates the UIKit timeline grid and emits the first collection-view creation milestone.
     func makeUIView(context: Context) -> UICollectionView {
         let layout = UICollectionViewFlowLayout()
-        layout.minimumLineSpacing = 1
-        layout.minimumInteritemSpacing = 1
+        layout.minimumLineSpacing = TimelineGridMetrics.spacing
+        layout.minimumInteritemSpacing = TimelineGridMetrics.spacing
         layout.sectionInset = .zero
+        // The row is measured against the content inset. Horizontal
+        // insets stay 0 so that width is the full grid, not the safe area.
+        layout.sectionInsetReference = .fromContentInset
 
         let collectionView = InitialLayoutCollectionView(frame: .zero, collectionViewLayout: layout)
         AppSignposts.event("TimelineCollectionViewCreated")
         collectionView.backgroundColor = .systemBackground
+        // Automatic adjustment keeps the vertical safe area, so the first
+        // and last rows still clear the bars. The horizontal part is
+        // cancelled in the collection view, or landscape gains side margins.
         collectionView.contentInsetAdjustmentBehavior = .always
         collectionView.alwaysBounceVertical = true
         collectionView.dataSource = context.coordinator
@@ -402,6 +457,9 @@ struct TimelineCollectionView: UIViewRepresentable {
         }
         collectionView.onBoundsWidthChanged = { [weak coordinator = context.coordinator] _ in
             coordinator?.handleCollectionWidthChange()
+        }
+        collectionView.onHorizontalContentInsetChanged = { [weak coordinator = context.coordinator] in
+            coordinator?.handleHorizontalContentInsetChange()
         }
 
         context.coordinator.attach(collectionView: collectionView)
@@ -538,9 +596,9 @@ struct TimelineCollectionView: UIViewRepresentable {
                 var restoredOffset = saved
                 if let anchorIndex = timelineManager.savedViewportAnchorIndex,
                    let anchorOffset = timelineManager.savedViewportAnchorOffsetFromItemTop {
-                    let row = anchorIndex / 3
-                    let side = max(1, (collectionView.bounds.width - 2) / 3.0)
-                    restoredOffset.y = (CGFloat(row) * (side + 1)) + anchorOffset
+                    let metrics = gridMetrics(for: collectionView)
+                    let row = metrics.row(for: anchorIndex)
+                    restoredOffset.y = (CGFloat(row) * (metrics.side + TimelineGridMetrics.spacing)) + anchorOffset
                 }
                 collectionView.setContentOffset(restoredOffset, animated: false)
                 collectionView.layoutIfNeeded()
@@ -589,6 +647,19 @@ struct TimelineCollectionView: UIViewRepresentable {
             if !force, top == lastKnownTopVisibleIndex { return }
             lastKnownTopVisibleIndex = top
             timelineManager.updateCurrentMonth(for: top, force: force)
+        }
+
+        // Safe-area insets arrive after the bounds width on rotation.
+        // Relayout then, or the row keeps the pre-inset cell size and
+        // opens the landscape hole between two oversized cells.
+        func handleHorizontalContentInsetChange() {
+            guard let collectionView else { return }
+            guard hasCommittedInitialPosition else {
+                collectionView.collectionViewLayout.invalidateLayout()
+                return
+            }
+            handleCollectionWidthWillChange()
+            handleCollectionWidthChange()
         }
 
         func handleCollectionWidthWillChange() {
@@ -833,9 +904,9 @@ struct TimelineCollectionView: UIViewRepresentable {
             if let attributes = collectionView.layoutAttributesForItem(at: anchor.indexPath) {
                 desiredY = attributes.frame.minY + anchor.offsetFromItemTop
             } else {
-                let row = anchor.indexPath.item / 3
-                let side = max(1, (collectionView.bounds.width - 2) / 3.0)
-                desiredY = (CGFloat(row) * (side + 1)) + anchor.offsetFromItemTop
+                let metrics = gridMetrics(for: collectionView)
+                let row = metrics.row(for: anchor.indexPath.item)
+                desiredY = (CGFloat(row) * (metrics.side + TimelineGridMetrics.spacing)) + anchor.offsetFromItemTop
             }
             setContentOffsetY(desiredY, in: collectionView)
             return true
@@ -904,10 +975,22 @@ struct TimelineCollectionView: UIViewRepresentable {
             selectedItemId.wrappedValue = item.id
         }
 
+        // Sizes every thumbnail so the row fills the grid width. A wider
+        // row grows the cells slightly instead of leaving side margins.
         func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-            let totalSpacing: CGFloat = 2
-            let side = max(1, (collectionView.bounds.width - totalSpacing) / 3.0)
+            let side = gridMetrics(for: collectionView).side
             return CGSize(width: side, height: side)
+        }
+
+        // The row is the collection view's full width, including the
+        // area beside the landscape safe area. The month sidebar, when
+        // open, is already outside these bounds.
+        private func gridMetrics(for collectionView: UICollectionView) -> TimelineGridMetrics {
+            let reference = collectionView.window?.bounds ?? collectionView.bounds
+            return TimelineGridMetrics.make(
+                layoutWidth: collectionView.bounds.width,
+                portraitWidth: min(reference.width, reference.height)
+            )
         }
     }
 }
@@ -921,7 +1004,44 @@ final class InitialLayoutCollectionView: UICollectionView {
     // oldest month can land at the top. A finger drag reaches the top
     // through the tracking path, which is not redirected.
     var redirectsTopAnchorsToBottom = false
+    var onHorizontalContentInsetChanged: (() -> Void)?
     private var lastKnownBoundsWidth: CGFloat = 0
+    private var lastKnownHorizontalContentInset: CGFloat = -1
+
+    // A horizontal inset shrinks the row the flow layout places into.
+    // That is the landscape margin, so a late change has to rebuild
+    // the row. Edge-to-edge insets keep this at zero.
+    override func adjustedContentInsetDidChange() {
+        super.adjustedContentInsetDidChange()
+        let horizontal = adjustedContentInset.left + adjustedContentInset.right
+        guard abs(horizontal - lastKnownHorizontalContentInset) > 0.5 else { return }
+        lastKnownHorizontalContentInset = horizontal
+        onHorizontalContentInsetChanged?()
+    }
+
+    // Thumbnails run to the left and right edges. The system still adds
+    // the top and bottom safe area, so the first and last rows clear the
+    // navigation bar and the tab bar. A negative horizontal content
+    // inset cancels that same adjustment on the sides.
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        applyEdgeToEdgeInsets()
+    }
+
+    // Cancels the horizontal safe area without touching the vertical
+    // insets the scroll view uses to clear the bars. Called from layout
+    // as well, because the first pass can happen before
+    // safeAreaInsetsDidChange.
+    private func applyEdgeToEdgeInsets() {
+        let next = UIEdgeInsets(
+            top: 0,
+            left: -safeAreaInsets.left,
+            bottom: 0,
+            right: -safeAreaInsets.right
+        )
+        guard contentInset != next else { return }
+        contentInset = next
+    }
 
     // Restoring a saved anchor is not a scroll-to-top gesture, even when the
     // anchor is the oldest row sitting at the top offset.
@@ -970,6 +1090,7 @@ final class InitialLayoutCollectionView: UICollectionView {
 
     // Emits width changes so parent coordinator can invalidate flow layout after sidebar show/hide resizes the grid.
     override func layoutSubviews() {
+        applyEdgeToEdgeInsets()
         let widthChanged = abs(bounds.width - lastKnownBoundsWidth) > 0.5
         if widthChanged {
             onBoundsWidthWillChange?()
