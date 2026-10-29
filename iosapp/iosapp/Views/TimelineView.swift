@@ -84,6 +84,139 @@ struct TimelineMonthJumpAnchor {
     }
 }
 
+// The photo under the middle of the screen stays there when the grid
+// reflows. The fraction is the point within that photo the viewport
+// center sits on, so a shorter landscape viewport does not jump to
+// the old top row. The month sidebar is a small width-only change and
+// keeps the top photo instead.
+struct TimelineViewportCenterAnchor: Equatable {
+    let itemIndex: Int
+    let fractionFromItemTop: CGFloat
+
+    // Picks the photo the viewport center sits on. A center that falls
+    // in the gap between cells uses the nearest photo, so the rotation
+    // hold is not dropped for the 1pt spacing.
+    static func capturing(
+        itemFrames: [(index: Int, frame: CGRect)],
+        viewportCenter: CGPoint
+    ) -> TimelineViewportCenterAnchor? {
+        let containing = itemFrames.filter { $0.frame.contains(viewportCenter) }
+        // The 1pt row gap is close enough to keep the hold. A center that
+        // is nowhere near the laid-out cells is a mid-rotation mismatch,
+        // and snapping to the nearest photo is what walks the timeline.
+        let candidates = containing.isEmpty
+            ? itemFrames.filter { distanceOutside($0.frame, viewportCenter) <= 2 }
+            : containing
+        guard let chosen = candidates.min(by: { lhs, rhs in
+            let left = centerDistanceSquared(lhs.frame, viewportCenter)
+            let right = centerDistanceSquared(rhs.frame, viewportCenter)
+            if left == right {
+                return lhs.index < rhs.index
+            }
+            return left < right
+        }) else {
+            return nil
+        }
+        let height = max(chosen.frame.height, 1)
+        // A gap pick sits just outside the cell. Keep the fraction on
+        // the photo so the restore still targets that photo's edge.
+        let raw = (viewportCenter.y - chosen.frame.minY) / height
+        let fraction = min(max(raw, 0), 1)
+        return TimelineViewportCenterAnchor(
+            itemIndex: chosen.index,
+            fractionFromItemTop: fraction
+        )
+    }
+
+    // Content offset that puts the saved point of the anchor photo back
+    // on the vertical center. The first and last rows stop at the scroll
+    // range instead of moving past the content.
+    static func contentOffsetY(
+        itemMinY: CGFloat,
+        itemHeight: CGFloat,
+        fractionFromItemTop: CGFloat,
+        viewportHeight: CGFloat,
+        contentHeight: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat
+    ) -> CGFloat {
+        let centerY = itemMinY + fractionFromItemTop * itemHeight
+        let desired = centerY - viewportHeight / 2
+        let minOffset = -topInset
+        let maxOffset = max(minOffset, contentHeight - viewportHeight + bottomInset)
+        return min(max(desired, minOffset), maxOffset)
+    }
+
+    // The month sidebar narrows the grid by 64pt and does not change
+    // height. In landscape it also gives back the side safe area, so
+    // the width change can pass 100pt, and that resize still keeps the
+    // top photo. A jump of a couple hundred points, a real height
+    // change, or a change on both axes is a rotation and keeps the
+    // middle photo. Height is included on its own because the first
+    // rotation frame can arrive before the width does, and capturing
+    // after that frame would lock onto the wrong photo.
+    static func preservesCenter(widthDelta: CGFloat, heightDelta: CGFloat) -> Bool {
+        if widthDelta > 200 { return true }
+        if heightDelta > 8 { return true }
+        return widthDelta > 0.5 && heightDelta > 1
+    }
+
+    // How far the point sits outside the cell. Zero when it is inside.
+    // Chebyshev distance matches the row gap without a square root.
+    private static func distanceOutside(_ frame: CGRect, _ point: CGPoint) -> CGFloat {
+        let dx = max(frame.minX - point.x, point.x - frame.maxX, 0)
+        let dy = max(frame.minY - point.y, point.y - frame.maxY, 0)
+        return max(dx, dy)
+    }
+
+    // Squared distance is enough to compare cells, and it avoids a root
+    // on a path that can run while the grid is scrolling.
+    private static func centerDistanceSquared(_ frame: CGRect, _ point: CGPoint) -> CGFloat {
+        let dx = frame.midX - point.x
+        let dy = frame.midY - point.y
+        return dx * dx + dy * dy
+    }
+}
+
+// Tells UIKit where to scroll when the bounds change. Without this the
+// collection view keeps the old content offset, and that offset is a
+// different photo after the column count changes.
+final class TimelineGridLayout: UICollectionViewFlowLayout {
+    var centerAnchor: TimelineViewportCenterAnchor?
+    private var isResolvingCenterAnchor = false
+
+    override func targetContentOffset(forProposedContentOffset proposedContentOffset: CGPoint) -> CGPoint {
+        guard let centerAnchor, let collectionView, !isResolvingCenterAnchor else {
+            return super.targetContentOffset(forProposedContentOffset: proposedContentOffset)
+        }
+        guard !collectionView.isTracking, !collectionView.isDragging else {
+            return super.targetContentOffset(forProposedContentOffset: proposedContentOffset)
+        }
+        isResolvingCenterAnchor = true
+        defer { isResolvingCenterAnchor = false }
+        // Same row math as the restore. Asking the layout for attributes
+        // here can prepare the new column count against the old offset
+        // and report the previous photo.
+        let width = collectionView.bounds.width
+        let windowBounds = collectionView.window?.bounds ?? collectionView.bounds
+        let portrait = min(windowBounds.width, windowBounds.height)
+        let metrics = TimelineGridMetrics.make(layoutWidth: width, portraitWidth: portrait)
+        let row = metrics.row(for: centerAnchor.itemIndex)
+        let minY = CGFloat(row) * (metrics.side + TimelineGridMetrics.spacing)
+        let inset = collectionView.adjustedContentInset
+        let y = TimelineViewportCenterAnchor.contentOffsetY(
+            itemMinY: minY,
+            itemHeight: metrics.side,
+            fractionFromItemTop: centerAnchor.fractionFromItemTop,
+            viewportHeight: collectionView.bounds.height,
+            contentHeight: collectionViewContentSize.height,
+            topInset: inset.top,
+            bottomInset: inset.bottom
+        )
+        return CGPoint(x: proposedContentOffset.x, y: y)
+    }
+}
+
 // Chooses how many timeline thumbnails fit across the grid so a row
 // fills the width it is given. Widths at or below the portrait width
 // stay on three columns, which is what lets the month sidebar shrink
@@ -430,7 +563,7 @@ struct TimelineCollectionView: UIViewRepresentable {
 
     // Creates the UIKit timeline grid and emits the first collection-view creation milestone.
     func makeUIView(context: Context) -> UICollectionView {
-        let layout = UICollectionViewFlowLayout()
+        let layout = TimelineGridLayout()
         layout.minimumLineSpacing = TimelineGridMetrics.spacing
         layout.minimumInteritemSpacing = TimelineGridMetrics.spacing
         layout.sectionInset = .zero
@@ -452,11 +585,17 @@ struct TimelineCollectionView: UIViewRepresentable {
         collectionView.onDidLayoutSubviews = { [weak coordinator = context.coordinator] in
             coordinator?.performInitialScrollIfNeeded()
         }
-        collectionView.onBoundsWidthWillChange = { [weak coordinator = context.coordinator] in
-            coordinator?.handleCollectionWidthWillChange()
+        collectionView.onBoundsWillPreserveCenter = { [weak coordinator = context.coordinator] in
+            coordinator?.freezeCenterAnchorForBoundsChange()
         }
-        collectionView.onBoundsWidthChanged = { [weak coordinator = context.coordinator] _ in
-            coordinator?.handleCollectionWidthChange()
+        collectionView.onBoundsWidthWillChange = { [weak coordinator = context.coordinator] preservesCenter in
+            coordinator?.handleCollectionWidthWillChange(preservesCenter: preservesCenter)
+        }
+        collectionView.onBoundsWidthChanged = { [weak coordinator = context.coordinator] preservesCenter in
+            coordinator?.handleCollectionWidthChange(preservesCenter: preservesCenter)
+        }
+        collectionView.onBoundsSettled = { [weak coordinator = context.coordinator] in
+            coordinator?.handleBoundsSettled()
         }
         collectionView.onHorizontalContentInsetChanged = { [weak coordinator = context.coordinator] in
             coordinator?.handleHorizontalContentInsetChange()
@@ -485,7 +624,20 @@ struct TimelineCollectionView: UIViewRepresentable {
         private var isProgrammaticMonthJumpInFlight = false
         private var lastStableContentOffsetY: CGFloat?
         private var pendingWidthChangeAnchor: (indexPath: IndexPath, offsetFromItemTop: CGFloat)?
+        // Set before the collection view lays out a new size, so a scroll
+        // callback during that pass cannot replace the anchor with the
+        // photo that happens to sit at the old offset.
         private var isHandlingWidthChange = false
+        // Stops a layout pass started by the restore itself from running
+        // the restore again and clearing the in-progress flag early.
+        private var isRestoringBoundsAnchor = false
+        private var stableCenterAnchor: TimelineViewportCenterAnchor?
+        private var activeRotationAnchor: TimelineViewportCenterAnchor?
+        private var isWatchingRotationEnd = false
+        private var clearsRotationHoldWhenBoundsSettle = false
+        private var stableLayoutsAfterRotation = 0
+        private var isFinishingRotation = false
+        private var isReapplyingRotationAnchor = false
         private var hasPendingReconfigure = false
         private let edgeThreshold = 24
 
@@ -605,6 +757,7 @@ struct TimelineCollectionView: UIViewRepresentable {
                 hasCommittedInitialPosition = true
                 (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
                 lastStableContentOffsetY = collectionView.contentOffset.y
+                rememberCenterAnchor(in: collectionView)
                 publishViewportMonth(in: collectionView, force: true)
                 AppSignposts.event("TimelineGridRestoredScroll")
                 return
@@ -626,6 +779,7 @@ struct TimelineCollectionView: UIViewRepresentable {
             hasCommittedInitialPosition = true
             (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             lastStableContentOffsetY = collectionView.contentOffset.y
+            rememberCenterAnchor(in: collectionView)
             publishViewportMonth(in: collectionView, force: true)
             AppSignposts.event("TimelineGridFirstLayout")
         }
@@ -651,28 +805,71 @@ struct TimelineCollectionView: UIViewRepresentable {
 
         // Safe-area insets arrive after the bounds width on rotation.
         // Relayout then, or the row keeps the pre-inset cell size and
-        // opens the landscape hole between two oversized cells.
+        // opens the landscape hole between two oversized cells. A
+        // rotation already holding the middle photo restores that photo
+        // again here instead of pinning the new top row.
         func handleHorizontalContentInsetChange() {
             guard let collectionView else { return }
             guard hasCommittedInitialPosition else {
                 collectionView.collectionViewLayout.invalidateLayout()
                 return
             }
-            handleCollectionWidthWillChange()
-            handleCollectionWidthChange()
+            // The inset pass can run before the new height is recorded.
+            // That pass still belongs to the rotation, so it keeps the
+            // middle photo instead of pinning whatever row is now on top.
+            let pendingRotation = (collectionView as? InitialLayoutCollectionView)?
+                .hasPendingRotationChange ?? false
+            let preservesCenter = activeRotationAnchor != nil || pendingRotation
+            handleCollectionWidthWillChange(preservesCenter: preservesCenter)
+            handleCollectionWidthChange(preservesCenter: preservesCenter)
         }
 
-        func handleCollectionWidthWillChange() {
-            guard let collectionView else { return }
-            guard hasCommittedInitialPosition else { return }
-            pendingWidthChangeAnchor = visibleTopAnchor(in: collectionView)
+        // Copies the middle photo before UIKit applies the new bounds.
+        // setBounds adjusts the content offset, and the scroll callback
+        // would otherwise snapshot whatever photo landed under the center.
+        func freezeCenterAnchorForBoundsChange() {
+            guard hasCommittedInitialPosition, let collectionView else { return }
+            installRotationAnchor(in: collectionView)
         }
 
-        // Invalidates and re-anchors layout when collection width changes so sidebar toggles do not shift visible media.
-        func handleCollectionWidthChange() {
+        // Captures the anchor before the collection view lays out the new
+        // width. Rotation keeps the middle photo already snapshotted while
+        // scrolling. A width-only change, such as the month sidebar, keeps
+        // the top photo.
+        func handleCollectionWidthWillChange(preservesCenter: Bool) {
             guard let collectionView else { return }
             guard hasCommittedInitialPosition else { return }
-            guard !isHandlingWidthChange else { return }
+            isHandlingWidthChange = true
+            if preservesCenter || activeRotationAnchor != nil {
+                installRotationAnchor(in: collectionView)
+                stableLayoutsAfterRotation = 0
+                return
+            }
+            // The top photo was recorded while the columns still matched
+            // the screen. Cells here can already be the new column count:
+            // the scroll UIKit emits inside setBounds prepares that layout
+            // before this callback, and the prepared row is a different photo.
+            if let index = timelineManager.savedViewportAnchorIndex,
+               let offset = timelineManager.savedViewportAnchorOffsetFromItemTop {
+                pendingWidthChangeAnchor = (IndexPath(item: index, section: 0), offset)
+            } else if let top = topAnchorFromVisibleCells(in: collectionView) {
+                pendingWidthChangeAnchor = top
+            }
+        }
+
+        // Invalidates and re-anchors layout when the collection width
+        // changes. The month sidebar keeps the top photo. Rotation keeps
+        // the held middle photo, including the later safe-area pass.
+        func handleCollectionWidthChange(preservesCenter: Bool) {
+            guard let collectionView else {
+                isHandlingWidthChange = false
+                return
+            }
+            guard hasCommittedInitialPosition else {
+                isHandlingWidthChange = false
+                return
+            }
+            guard !isRestoringBoundsAnchor else { return }
             let persistedAnchor: (indexPath: IndexPath, offsetFromItemTop: CGFloat)? = {
                 guard let index = timelineManager.savedViewportAnchorIndex,
                       let offset = timelineManager.savedViewportAnchorOffsetFromItemTop else {
@@ -680,33 +877,101 @@ struct TimelineCollectionView: UIViewRepresentable {
                 }
                 return (IndexPath(item: index, section: 0), offset)
             }()
-            let anchor = pendingWidthChangeAnchor ?? persistedAnchor ?? visibleTopAnchor(in: collectionView)
+            let capturedTopAnchor = pendingWidthChangeAnchor ?? persistedAnchor
             pendingWidthChangeAnchor = nil
             isHandlingWidthChange = true
-            defer { isHandlingWidthChange = false }
+            isRestoringBoundsAnchor = true
+            defer {
+                isRestoringBoundsAnchor = false
+                isHandlingWidthChange = false
+            }
+            let useCenter = preservesCenter || activeRotationAnchor != nil
+            if useCenter {
+                installRotationAnchor(in: collectionView)
+            }
             collectionView.collectionViewLayout.invalidateLayout()
             collectionView.layoutIfNeeded()
-            if !restoreVisibleTopAnchor(anchor, in: collectionView),
-               let lastStableContentOffsetY {
-                setContentOffsetY(lastStableContentOffsetY, in: collectionView)
+            // A rotation that cannot find the middle photo must not fall
+            // through to the top photo. That fallthrough is what jumps
+            // the grid when the center snapshot is missing for one frame.
+            // The sidebar keeps the photo it pinned. The new column count
+            // starts that photo's row on an earlier item, and saving the
+            // new row start walks the viewport up when the sidebar closes.
+            var pinnedTop: (indexPath: IndexPath, offsetFromItemTop: CGFloat)?
+            if useCenter {
+                _ = restoreViewportCenterAnchor(activeRotationAnchor, in: collectionView)
+            } else {
+                let topAnchor = capturedTopAnchor ?? visibleTopAnchor(in: collectionView)
+                if restoreVisibleTopAnchor(topAnchor, in: collectionView) {
+                    pinnedTop = topAnchor
+                } else if let lastStableContentOffsetY {
+                    setContentOffsetY(lastStableContentOffsetY, in: collectionView)
+                }
+            }
+            if !useCenter {
+                rememberCenterAnchor(in: collectionView)
             }
             timelineManager.savedContentOffset = collectionView.contentOffset
             timelineManager.savedGridWidth = collectionView.bounds.width
             lastStableContentOffsetY = collectionView.contentOffset.y
             collectionView.layoutIfNeeded()
+            if let pinnedTop {
+                timelineManager.savedViewportAnchorIndex = pinnedTop.indexPath.item
+                timelineManager.savedViewportAnchorOffsetFromItemTop = pinnedTop.offsetFromItemTop
+            } else {
+                // Rotation lands on a new top row. Record that row so the
+                // next sidebar open pins the photo now on screen.
+                rememberSettledTopAnchor(in: collectionView)
+            }
             publishViewportMonth(in: collectionView, force: true)
             // The width-change layout pass can finish with only the newest
             // cell in existence. Publish again after that pass so the
-            // settled top row replaces it.
+            // settled top row replaces it. A pinned sidebar photo stays
+            // pinned: re-reading the cells would replace it with the new
+            // row start.
+            let keepPinnedTop = pinnedTop != nil
             DispatchQueue.main.async { [weak collectionView] in
                 guard let collectionView else { return }
+                if (collectionView as? InitialLayoutCollectionView)?
+                    .hasUncommittedBoundsChange == true {
+                    return
+                }
+                if !keepPinnedTop {
+                    self.rememberSettledTopAnchor(in: collectionView)
+                }
                 self.publishViewportMonth(in: collectionView, force: true)
             }
         }
 
+        // Without a transition coordinator, the first layout that keeps
+        // the new size is the end of the resize. Clearing the hold there
+        // lets the next gesture capture a fresh middle photo.
+        func handleBoundsSettled() {
+            guard activeRotationAnchor != nil else { return }
+            guard !isHandlingWidthChange, !isRestoringBoundsAnchor else { return }
+            guard !isReapplyingRotationAnchor, !isFinishingRotation else { return }
+            reapplyRotationAnchor()
+            stableLayoutsAfterRotation += 1
+            // The first idle layout re-applies the middle photo. The next
+            // one releases the hold, after a trailing offset change has
+            // had a chance to be corrected.
+            guard stableLayoutsAfterRotation >= 2 else { return }
+            guard clearsRotationHoldWhenBoundsSettle || !isWatchingRotationEnd else { return }
+            finishRotationHold(in: collectionView)
+        }
+
         // Updates persisted offset and active month with a low-cost visible-index lookup suitable for per-frame callbacks.
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            guard !isHandlingWidthChange else { return }
+            // The resize scroll happens before layout records the new size.
+            // Saving here would name a photo from the old offset under the
+            // new column count, and the next sidebar open would jump to it.
+            if let grid = scrollView as? InitialLayoutCollectionView,
+               grid.hasUncommittedBoundsChange {
+                return
+            }
+            let captureSuppressed = (scrollView as? InitialLayoutCollectionView)?
+                .suppressesCenterAnchorCapture ?? false
+            guard !isHandlingWidthChange, activeRotationAnchor == nil, !captureSuppressed else { return }
             if hasCommittedInitialPosition {
                 timelineManager.savedContentOffset = scrollView.contentOffset
                 lastStableContentOffsetY = scrollView.contentOffset.y
@@ -716,18 +981,25 @@ struct TimelineCollectionView: UIViewRepresentable {
             guard !isProgrammaticMonthJumpInFlight else { return }
             let visibleCount = collectionView.indexPathsForVisibleItems.count
             let layoutSettled = visibleCount >= 2 || timelineManager.totalCount <= 1
-            let topIndex = layoutSettled ? topVisibleItemIndex(in: collectionView) : nil
-            if layoutSettled,
-               let topIndex,
-               let attributes = collectionView.layoutAttributesForItem(at: IndexPath(item: topIndex, section: 0)) {
-                timelineManager.savedViewportAnchorIndex = topIndex
-                timelineManager.savedViewportAnchorOffsetFromItemTop = scrollView.contentOffset.y - attributes.frame.minY
+            // The row comes from the offset and the current column count.
+            // Layout attributes during a resize still name the previous
+            // photo, and the sidebar would then pin that other row.
+            if hasCommittedInitialPosition, layoutSettled {
+                rememberSettledTopAnchor(in: collectionView)
+            }
+            // Snapshot while the layout still matches the screen. A bounds
+            // change must not recompute this from the new column count.
+            if hasCommittedInitialPosition, layoutSettled {
+                rememberCenterAnchor(in: collectionView)
             }
             publishViewportMonth(in: collectionView, force: false)
         }
 
         // Flags dragging start so sidebar can avoid expensive animation during active grid interaction.
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            if activeRotationAnchor != nil {
+                finishRotationHold(in: collectionView)
+            }
             isProgrammaticMonthJumpInFlight = false
             (scrollView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             timelineManager.setGridScrolling(true)
@@ -739,6 +1011,7 @@ struct TimelineCollectionView: UIViewRepresentable {
                 timelineManager.setGridScrolling(false)
                 flushPendingReconfigure()
                 if let collectionView = scrollView as? UICollectionView {
+                    rememberCenterAnchor(in: collectionView)
                     publishViewportMonth(in: collectionView, force: true)
                 }
             }
@@ -749,6 +1022,7 @@ struct TimelineCollectionView: UIViewRepresentable {
             timelineManager.setGridScrolling(false)
             flushPendingReconfigure()
             if let collectionView = scrollView as? UICollectionView {
+                rememberCenterAnchor(in: collectionView)
                 publishViewportMonth(in: collectionView, force: true)
             }
         }
@@ -785,8 +1059,15 @@ struct TimelineCollectionView: UIViewRepresentable {
             (scrollView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             timelineManager.setGridScrolling(false)
             flushPendingReconfigure()
-            if !wasMonthJump, let collectionView = scrollView as? UICollectionView {
-                publishViewportMonth(in: collectionView, force: true)
+            if let collectionView = scrollView as? UICollectionView {
+                // The jump blocks per-frame anchor updates. Record the
+                // settled middle and top once, or the next sidebar resize
+                // restores wherever the grid was before the jump.
+                rememberCenterAnchor(in: collectionView)
+                rememberSettledTopAnchor(in: collectionView)
+                if !wasMonthJump {
+                    publishViewportMonth(in: collectionView, force: true)
+                }
             }
         }
 
@@ -891,6 +1172,206 @@ struct TimelineCollectionView: UIViewRepresentable {
             return (indexPath, delta)
         }
 
+        // The top row currently on screen, read from the cells rather
+        // than from layout attributes. Called before the resize layout
+        // so the frames are still the column count the person is seeing.
+        private func topAnchorFromVisibleCells(
+            in collectionView: UICollectionView
+        ) -> (indexPath: IndexPath, offsetFromItemTop: CGFloat)? {
+            var topMinY: CGFloat?
+            for cell in collectionView.visibleCells {
+                if topMinY == nil || cell.frame.minY < topMinY! {
+                    topMinY = cell.frame.minY
+                }
+            }
+            guard let topMinY else { return nil }
+            var rowStart: (indexPath: IndexPath, minY: CGFloat)?
+            for cell in collectionView.visibleCells {
+                guard abs(cell.frame.minY - topMinY) < 1,
+                      let indexPath = collectionView.indexPath(for: cell) else { continue }
+                if rowStart == nil || indexPath.item < rowStart!.indexPath.item {
+                    rowStart = (indexPath, cell.frame.minY)
+                }
+            }
+            guard let rowStart else { return nil }
+            return (rowStart.indexPath, collectionView.contentOffset.y - rowStart.minY)
+        }
+
+        // Records the top row from the column count and the offset, not
+        // from layout attributes. Attributes during a resize still
+        // describe the previous column count and name the wrong photo.
+        private func rememberSettledTopAnchor(in collectionView: UICollectionView) {
+            let count = collectionView.numberOfItems(inSection: 0)
+            guard count > 0 else { return }
+            let metrics = gridMetrics(for: collectionView)
+            let pitch = metrics.side + TimelineGridMetrics.spacing
+            guard pitch > 0 else { return }
+            // Cells are the photo the person is looking at. Use them only
+            // when they still sit on the current offset. A bounds change
+            // can leave the previous row's frames in place, and those
+            // would record a different photo.
+            if let top = topAnchorFromVisibleCells(in: collectionView),
+               top.offsetFromItemTop > -2,
+               top.offsetFromItemTop < pitch {
+                timelineManager.savedViewportAnchorIndex = top.indexPath.item
+                timelineManager.savedViewportAnchorOffsetFromItemTop = top.offsetFromItemTop
+                return
+            }
+            // The top edge of the bounds, not a point below the safe area.
+            // Adding the inset named the next row and the sidebar pinned that.
+            let probeY = collectionView.contentOffset.y + 0.5
+            let row = min(max(Int(floor(probeY / pitch)), 0), max((count - 1) / metrics.columns, 0))
+            let index = min(row * metrics.columns, count - 1)
+            let minY = CGFloat(row) * pitch
+            timelineManager.savedViewportAnchorIndex = index
+            timelineManager.savedViewportAnchorOffsetFromItemTop = collectionView.contentOffset.y - minY
+        }
+
+        // Records the middle photo while layout still matches the screen,
+        // so a later rotation can put that same point back in the center.
+        private func rememberCenterAnchor(in collectionView: UICollectionView) {
+            guard let anchor = visibleCenterAnchor(in: collectionView) else { return }
+            stableCenterAnchor = anchor
+        }
+
+        // The photo under the middle of the viewport. Read from the current
+        // layout attributes, which are only valid while the size is stable.
+        private func visibleCenterAnchor(
+            in collectionView: UICollectionView
+        ) -> TimelineViewportCenterAnchor? {
+            let frames: [(index: Int, frame: CGRect)] = collectionView.indexPathsForVisibleItems.compactMap { indexPath in
+                guard let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else {
+                    return nil
+                }
+                return (index: indexPath.item, frame: frame)
+            }
+            let viewportCenter = CGPoint(
+                x: collectionView.contentOffset.x + collectionView.bounds.width / 2,
+                y: collectionView.contentOffset.y + collectionView.bounds.height / 2
+            )
+            return TimelineViewportCenterAnchor.capturing(
+                itemFrames: frames,
+                viewportCenter: viewportCenter
+            )
+        }
+
+        // Puts the held middle photo's saved point back on the viewport
+        // center after the grid reflows into the new column count.
+        @discardableResult
+        private func restoreViewportCenterAnchor(
+            _ anchor: TimelineViewportCenterAnchor?,
+            in collectionView: UICollectionView
+        ) -> Bool {
+            guard let anchor else { return false }
+            guard collectionView.numberOfItems(inSection: 0) > anchor.itemIndex else {
+                return false
+            }
+            // Metrics follow the bounds we have now. Layout attributes can
+            // still describe the previous column count for a frame, and
+            // restoring from those frames lands on a different photo.
+            let metrics = gridMetrics(for: collectionView)
+            let row = metrics.row(for: anchor.itemIndex)
+            let height = metrics.side
+            let minY = CGFloat(row) * (metrics.side + TimelineGridMetrics.spacing)
+            let inset = collectionView.adjustedContentInset
+            let y = TimelineViewportCenterAnchor.contentOffsetY(
+                itemMinY: minY,
+                itemHeight: height,
+                fractionFromItemTop: anchor.fractionFromItemTop,
+                viewportHeight: collectionView.bounds.height,
+                contentHeight: collectionView.contentSize.height,
+                topInset: inset.top,
+                bottomInset: inset.bottom
+            )
+            setContentOffsetY(y, in: collectionView)
+            return true
+        }
+
+        // Pins the snapshotted middle photo into the layout so UIKit's
+        // own bounds-change offset uses it, and so a scroll-to-top during
+        // the rotation is not sent to the newest row.
+        private func installRotationAnchor(in collectionView: UICollectionView) {
+            if activeRotationAnchor == nil {
+                activeRotationAnchor = stableCenterAnchor
+                if activeRotationAnchor != nil {
+                    beginRotationHold(in: collectionView)
+                }
+            }
+            guard let activeRotationAnchor else { return }
+            (collectionView.collectionViewLayout as? TimelineGridLayout)?.centerAnchor = activeRotationAnchor
+            (collectionView as? InitialLayoutCollectionView)?.suspendsTopRedirect = true
+        }
+
+        // Puts the held middle photo back in the center. Called again
+        // after the size change because UIKit can replace the offset
+        // once layout returns.
+        private func reapplyRotationAnchor() {
+            guard !isReapplyingRotationAnchor else { return }
+            guard let collectionView, let activeRotationAnchor else { return }
+            isReapplyingRotationAnchor = true
+            defer { isReapplyingRotationAnchor = false }
+            _ = restoreViewportCenterAnchor(activeRotationAnchor, in: collectionView)
+        }
+
+        // Holds the middle photo until the rotation transition finishes.
+        // The animation and its completion both put that photo back,
+        // because UIKit can move the offset after the first layout.
+        private func beginRotationHold(in collectionView: UICollectionView) {
+            guard !isWatchingRotationEnd else { return }
+            isWatchingRotationEnd = true
+            if let coordinator = transitionCoordinator(for: collectionView) {
+                coordinator.animate(alongsideTransition: { [weak self] _ in
+                    self?.reapplyRotationAnchor()
+                }, completion: { [weak self, weak collectionView] _ in
+                    self?.reapplyRotationAnchor()
+                    self?.finishRotationHold(in: collectionView)
+                })
+            } else {
+                clearsRotationHoldWhenBoundsSettle = true
+            }
+        }
+
+        // Drops the rotation hold and records the photo now in the middle,
+        // plus the new top photo, so the next rotation or remount matches
+        // the screen the person is looking at.
+        private func finishRotationHold(in collectionView: UICollectionView?) {
+            guard !isFinishingRotation else { return }
+            guard activeRotationAnchor != nil || isWatchingRotationEnd else { return }
+            isFinishingRotation = true
+            defer { isFinishingRotation = false }
+            reapplyRotationAnchor()
+            isWatchingRotationEnd = false
+            clearsRotationHoldWhenBoundsSettle = false
+            stableLayoutsAfterRotation = 0
+            activeRotationAnchor = nil
+            let settledView = collectionView ?? self.collectionView
+            guard let settledView else { return }
+            (settledView.collectionViewLayout as? TimelineGridLayout)?.centerAnchor = nil
+            (settledView as? InitialLayoutCollectionView)?.suspendsTopRedirect = false
+            rememberCenterAnchor(in: settledView)
+            rememberSettledTopAnchor(in: settledView)
+            timelineManager.savedContentOffset = settledView.contentOffset
+            timelineManager.savedGridWidth = settledView.bounds.width
+            lastStableContentOffsetY = settledView.contentOffset.y
+        }
+
+        // The hosting controller owns the rotation transition. The first
+        // controller in the responder chain with an active coordinator is
+        // the one whose completion means the new size has settled.
+        private func transitionCoordinator(
+            for view: UIView
+        ) -> UIViewControllerTransitionCoordinator? {
+            var responder: UIResponder? = view
+            while let current = responder {
+                if let controller = current as? UIViewController,
+                   let coordinator = controller.transitionCoordinator {
+                    return coordinator
+                }
+                responder = current.next
+            }
+            return nil
+        }
+
         // Restores content offset from one saved anchor so the exact same media row stays in place after relayout.
         @discardableResult
         private func restoreVisibleTopAnchor(_ anchor: (indexPath: IndexPath, offsetFromItemTop: CGFloat)?, in collectionView: UICollectionView) -> Bool {
@@ -900,14 +1381,13 @@ struct TimelineCollectionView: UIViewRepresentable {
             guard collectionView.numberOfItems(inSection: anchor.indexPath.section) > anchor.indexPath.item else {
                 return false
             }
-            let desiredY: CGFloat
-            if let attributes = collectionView.layoutAttributesForItem(at: anchor.indexPath) {
-                desiredY = attributes.frame.minY + anchor.offsetFromItemTop
-            } else {
-                let metrics = gridMetrics(for: collectionView)
-                let row = metrics.row(for: anchor.indexPath.item)
-                desiredY = (CGFloat(row) * (metrics.side + TimelineGridMetrics.spacing)) + anchor.offsetFromItemTop
-            }
+            // Metrics follow the bounds we have now. Layout attributes can
+            // still describe the previous column count, and restoring
+            // from those frames lands on a different row.
+            let metrics = gridMetrics(for: collectionView)
+            let row = metrics.row(for: anchor.indexPath.item)
+            let desiredY = (CGFloat(row) * (metrics.side + TimelineGridMetrics.spacing))
+                + anchor.offsetFromItemTop
             setContentOffsetY(desiredY, in: collectionView)
             return true
         }
@@ -997,16 +1477,47 @@ struct TimelineCollectionView: UIViewRepresentable {
 
 final class InitialLayoutCollectionView: UICollectionView {
     var onDidLayoutSubviews: (() -> Void)?
-    var onBoundsWidthWillChange: (() -> Void)?
-    var onBoundsWidthChanged: ((CGFloat) -> Void)?
+    var onBoundsWillPreserveCenter: (() -> Void)?
+    var onBoundsWidthWillChange: ((Bool) -> Void)?
+    var onBoundsWidthChanged: ((Bool) -> Void)?
+    var onBoundsSettled: (() -> Void)?
     // Stays off until the grid has anchored, so the first layout can still
     // place the newest row itself. Month jumps turn it off again so the
     // oldest month can land at the top. A finger drag reaches the top
     // through the tracking path, which is not redirected.
     var redirectsTopAnchorsToBottom = false
+    // While a rotation is putting the middle photo back, a system
+    // scroll-to-top would otherwise send the grid to the newest row.
+    var suspendsTopRedirect = false
+    // Set for the duration of a bounds change that keeps the middle
+    // photo. UIKit scrolls inside that change, and the scroll callback
+    // would otherwise replace the snapshot with the jumped photo.
+    var suppressesCenterAnchorCapture = false
     var onHorizontalContentInsetChanged: (() -> Void)?
     private var lastKnownBoundsWidth: CGFloat = 0
+    private var lastKnownBoundsHeight: CGFloat = 0
     private var lastKnownHorizontalContentInset: CGFloat = -1
+    private var isSettingBounds = false
+
+    // The safe-area pass can run before layout records the new size.
+    // Callers use this to keep the middle photo during that pass.
+    var hasPendingRotationChange: Bool {
+        TimelineViewportCenterAnchor.preservesCenter(
+            widthDelta: abs(bounds.width - lastKnownBoundsWidth),
+            heightDelta: abs(bounds.height - lastKnownBoundsHeight)
+        )
+    }
+
+    // setBounds updates the size and then scrolls before layoutSubviews.
+    // That scroll still sees the previous row geometry. Recording an
+    // anchor from it, or asking the layout for attributes, pins the
+    // sidebar to a different photo once the new column count is applied.
+    var hasUncommittedBoundsChange: Bool {
+        guard lastKnownBoundsWidth > 0 else { return false }
+        if abs(bounds.width - lastKnownBoundsWidth) > 0.5 { return true }
+        if abs(bounds.height - lastKnownBoundsHeight) > 1 { return true }
+        return false
+    }
 
     // A horizontal inset shrinks the row the flow layout places into.
     // That is the landscape margin, so a late change has to rebuild
@@ -1052,6 +1563,10 @@ final class InitialLayoutCollectionView: UICollectionView {
     // Tab reselect and the status bar scroll to the top. The oldest photos
     // are there, so the request is carried to the newest row instead.
     override func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
+        if suspendsTopRedirect {
+            super.setContentOffset(contentOffset, animated: animated)
+            return
+        }
         if let redirected = newestOffset(replacingTopAnchor: contentOffset) {
             super.setContentOffset(redirected, animated: true)
             return
@@ -1062,6 +1577,10 @@ final class InitialLayoutCollectionView: UICollectionView {
     // Some system scroll-to-top paths reveal the zero rect instead of
     // setting an offset. That is the same request as a jump to the top.
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) {
+        if suspendsTopRedirect {
+            super.scrollRectToVisible(rect, animated: animated)
+            return
+        }
         let top = CGPoint(x: contentOffset.x, y: rect.minY - adjustedContentInset.top)
         if rect.minY <= 1, let redirected = newestOffset(replacingTopAnchor: top) {
             super.setContentOffset(redirected, animated: true)
@@ -1088,17 +1607,64 @@ final class InitialLayoutCollectionView: UICollectionView {
         return CGPoint(x: contentOffset.x, y: y)
     }
 
-    // Emits width changes so parent coordinator can invalidate flow layout after sidebar show/hide resizes the grid.
+    // Freezes the middle photo before UIKit's bounds setter moves the
+    // content offset. A willSet observer on this ObjC property is not
+    // called when UIKit resizes the view, so the setter itself has to
+    // snapshot first. layoutSubviews runs too late: the scroll callback
+    // has already replaced the snapshot with the jumped photo.
+    override var bounds: CGRect {
+        get { super.bounds }
+        set {
+            if isSettingBounds {
+                super.bounds = newValue
+                return
+            }
+            isSettingBounds = true
+            defer { isSettingBounds = false }
+            let widthDelta = abs(newValue.width - bounds.width)
+            let heightDelta = abs(newValue.height - bounds.height)
+            let preservesCenter = TimelineViewportCenterAnchor.preservesCenter(
+                widthDelta: widthDelta,
+                heightDelta: heightDelta
+            )
+            if preservesCenter {
+                suppressesCenterAnchorCapture = true
+                onBoundsWillPreserveCenter?()
+            }
+            super.bounds = newValue
+            if preservesCenter {
+                suppressesCenterAnchorCapture = false
+            }
+        }
+    }
+
+    // Emits width changes so the grid can keep the same photos. Rotation
+    // keeps the middle photo. The month sidebar keeps the top photo.
     override func layoutSubviews() {
         applyEdgeToEdgeInsets()
-        let widthChanged = abs(bounds.width - lastKnownBoundsWidth) > 0.5
-        if widthChanged {
-            onBoundsWidthWillChange?()
+        let widthDelta = abs(bounds.width - lastKnownBoundsWidth)
+        let heightDelta = abs(bounds.height - lastKnownBoundsHeight)
+        let widthChanged = widthDelta > 0.5
+        let heightChanged = heightDelta > 1
+        let preservesCenter = TimelineViewportCenterAnchor.preservesCenter(
+            widthDelta: widthDelta,
+            heightDelta: heightDelta
+        )
+        if preservesCenter || widthChanged {
+            onBoundsWidthWillChange?(preservesCenter)
         }
         super.layoutSubviews()
-        if widthChanged {
-            lastKnownBoundsWidth = bounds.width
-            onBoundsWidthChanged?(bounds.width)
+        if preservesCenter || widthChanged {
+            if widthChanged {
+                lastKnownBoundsWidth = bounds.width
+            }
+            onBoundsWidthChanged?(preservesCenter)
+        }
+        if widthChanged || heightChanged {
+            lastKnownBoundsHeight = bounds.height
+        }
+        if !widthChanged && !heightChanged {
+            onBoundsSettled?()
         }
         onDidLayoutSubviews?()
     }
