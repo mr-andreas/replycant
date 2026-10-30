@@ -9,12 +9,28 @@ const mapResize = vi.hoisted(() => ({
   invalidateSize: vi.fn(),
 }));
 
+// Records the options the map is created with, so a test can require
+// continuous touchpad zoom instead of whole-level steps.
+const mapCreate = vi.hoisted(() => ({
+  options: undefined as {
+    zoomSnap?: number;
+    zoomAnimation?: boolean;
+    scrollWheelZoom?: boolean;
+  } | undefined,
+}));
+
 vi.mock("leaflet", async () => {
   const { project } = await import("./mapClusters");
-  const map = (element: HTMLElement) => {
+  const map = (element: HTMLElement, options?: {
+    zoomSnap?: number;
+    zoomAnimation?: boolean;
+    scrollWheelZoom?: boolean;
+  }) => {
+    mapCreate.options = options;
     const handlers = new Map<string, () => void>();
     const instance = {
       element,
+      options,
       setView() {
         return instance;
       },
@@ -139,6 +155,7 @@ describe("MapView", () => {
 
   beforeEach(() => {
     onMapResize = null;
+    mapCreate.options = undefined;
     mapResize.invalidateSize.mockClear();
     vi.stubGlobal("ResizeObserver", class {
       constructor(callback: () => void) {
@@ -159,6 +176,18 @@ describe("MapView", () => {
     renderMap([]);
     expect(await screen.findByText("No photos with location")).toBeInTheDocument();
     expect(screen.getByText("Photos with a location will show up here.")).toBeInTheDocument();
+  });
+
+  // A pinch has to change scale with the fingers. The stock wheel handler
+  // resets the view, which deletes every tile and flashes the map.
+  it("zooms continuously with the touchpad instead of stepping through whole levels", async () => {
+    renderMap([
+      { key: "older", latitude: 59.33, longitude: 18.06, takenAt: "2024-01-01T00:00:00.000Z" },
+    ]);
+    await screen.findByRole("button", { name: "1 photos" });
+
+    expect(mapCreate.options).toMatchObject({ zoomSnap: 0, scrollWheelZoom: false });
+    expect(mapCreate.options?.zoomAnimation).not.toBe(false);
   });
 
   it("draws one tile per group and opens that group's photos", async () => {

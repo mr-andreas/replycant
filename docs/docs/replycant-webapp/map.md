@@ -10,7 +10,7 @@ The map shows geotagged photos as place tiles on an OpenStreetMap base map. Choo
 
 Each original manifest may store a `location` with a latitude and longitude. The sync cache keeps a `map_points` row per original that has both a location and a capture time, so the map can load every coordinate without reading the manifests.
 
-Tiles are not one marker per photo. Photos are grouped into cells of a fixed world grid. The cell size is a power-of-two slice of the world, about three tiles wide on screen, whatever the window size. Panning shows or hides whole groups. Zooming across a step splits a group into the four smaller cells it contains. Each tile shows the newest photo in its cell, the count of photos, and a pointer sitting on that photo's coordinate.
+Tiles are not one marker per photo. Photos are grouped into cells of a fixed world grid. The cell size is a power-of-two slice of the world, about three tiles wide on screen, whatever the window size. Panning shows or hides whole groups. A pinch or scroll scales the map already on screen, and sharper tiles load after the gesture. A group splits only after that scale crosses a power-of-two step, into the four smaller cells it contains. Each tile shows the newest photo in its cell, the count of photos, and a pointer sitting on that photo's coordinate.
 
 ## A place
 

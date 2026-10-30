@@ -23,6 +23,7 @@
 
 #### Desktop app
 
+- the map zooms continuously with the touchpad, scaling in place instead of flashing
 - the map keeps its place, zoom, and open place when you leave it and come back
 
 #### git-replycant

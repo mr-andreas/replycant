@@ -15,6 +15,7 @@ import {
   type GeoBounds,
   type MapCluster,
 } from "./mapClusters";
+import { attachMapWheelZoom, type MapWheelZoom } from "./mapWheelZoom";
 import { PlaceTimelineView } from "./PlaceTimelineView";
 
 const POINTER_HEIGHT = 10;
@@ -150,6 +151,9 @@ const MapCanvas = ({
   useEffect(() => {
     const element = containerRef.current;
     if (!element || mapRef.current) return;
+    // A touchpad scroll has to scale the tiles already on screen. The
+    // stock wheel handler resets the view, which deletes every tile and
+    // flashes the map.
     const map = L.map(element, {
       maxBounds: L.latLngBounds(
         L.latLng(-WORLD_LATITUDE, -180),
@@ -157,6 +161,8 @@ const MapCanvas = ({
       ),
       maxBoundsViscosity: 1,
       worldCopyJump: false,
+      zoomSnap: 0,
+      scrollWheelZoom: false,
     });
     L.tileLayer(runtimeConfig.mapTileUrl, {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
@@ -175,6 +181,7 @@ const MapCanvas = ({
     };
     map.on("moveend", onMove);
     map.on("zoomend", onMove);
+    const detachWheelZoom = attachMapWheelZoom(map as unknown as MapWheelZoom, element);
     mapRef.current = map;
     reclusterRef.current();
     const observer = typeof ResizeObserver === "undefined"
@@ -188,6 +195,7 @@ const MapCanvas = ({
       });
     observer?.observe(element);
     return () => {
+      detachWheelZoom();
       observer?.disconnect();
       try {
         const center = map.getCenter();
