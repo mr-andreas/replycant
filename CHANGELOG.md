@@ -21,6 +21,10 @@
 - the timeline and full-screen zoom stay responsive while photos upload
 - photos no longer stay as grey placeholders after another device uploads a large batch
 
+#### Desktop app
+
+- the map keeps its place, zoom, and open place when you leave it and come back
+
 #### git-replycant
 
 - a fetch or push no longer fails when it has to start the repository's tailnet agent

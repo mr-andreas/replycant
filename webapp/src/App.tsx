@@ -68,6 +68,9 @@ const readInitialCommitPaneOpen = (): boolean => readHashParams().get("sp") === 
 // Composes onboarding, runtime, and active library view modules so App can stay a thin shell.
 export const App = () => {
   const [activeView, setActiveView] = useState<LibraryView>(() => readInitialActiveView());
+  // The map stays mounted after the first open, including a relaunch that
+  // restores the map, so its camera and open place are still there.
+  const [mapVisited, setMapVisited] = useState(() => readInitialActiveView() === "map");
   const [commitPaneOpen, setCommitPaneOpen] = useState(() => readInitialCommitPaneOpen());
   const onboarding = useOnboardingFlow();
   const runtime = useLibraryRuntime({
@@ -144,6 +147,13 @@ export const App = () => {
     />
   ) : null;
 
+  // Remembers that the map was opened so a later timeline visit can keep
+  // that map mounted instead of creating a new one.
+  const selectView = (view: LibraryView) => {
+    if (view === "map") setMapVisited(true);
+    setActiveView(view);
+  };
+
   // Keeps hash state aligned with the settings/commit panel visibility toggle.
   const handleToggleCommitPane = () => {
     setCommitPaneOpen((current) => {
@@ -160,31 +170,35 @@ export const App = () => {
           runtime={runtime}
           mtlsHeaders={onboarding.mtlsHeaders}
           activeView={activeView}
-          onSelectView={setActiveView}
+          onSelectView={selectView}
           commitPaneOpen={commitPaneOpen}
           onToggleCommitPane={handleToggleCommitPane}
           commitPane={commitPane}
         />
-      ) : activeView === "map" ? (
-        <MapView
-          runtime={runtime}
-          mtlsHeaders={onboarding.mtlsHeaders}
-          activeView={activeView}
-          onSelectView={setActiveView}
-          commitPaneOpen={commitPaneOpen}
-          onToggleCommitPane={handleToggleCommitPane}
-          commitPane={commitPane}
-        />
-      ) : (
+      ) : activeView !== "map" ? (
         <CollectionPlaceholderView
           activeView={activeView}
-          onSelectView={setActiveView}
+          onSelectView={selectView}
           commitPaneOpen={commitPaneOpen}
           onToggleCommitPane={handleToggleCommitPane}
           commitPane={commitPane}
           snapshot={runtime.snapshot}
         />
-      )}
+      ) : null}
+      {/* The opened map stays mounted, only hidden, so pan and zoom survive. */}
+      {mapVisited ? (
+        <div hidden={activeView !== "map"}>
+          <MapView
+            runtime={runtime}
+            mtlsHeaders={onboarding.mtlsHeaders}
+            activeView={activeView}
+            onSelectView={selectView}
+            commitPaneOpen={commitPaneOpen}
+            onToggleCommitPane={handleToggleCommitPane}
+            commitPane={activeView === "map" ? commitPane : null}
+          />
+        </div>
+      ) : null}
     </OnboardingGate>
   );
 };

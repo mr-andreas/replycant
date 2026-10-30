@@ -180,6 +180,9 @@ const MapCanvas = ({
     const observer = typeof ResizeObserver === "undefined"
       ? null
       : new ResizeObserver(() => {
+        // A hidden map reports no size. Resizing it then would move the
+        // camera the person already chose.
+        if (element.clientWidth === 0 || element.clientHeight === 0) return;
         map.invalidateSize();
         reclusterRef.current();
       });

@@ -75,6 +75,7 @@ vi.mock("./modules/timeline/TimelineView", () => ({
       <div>timeline-view</div>
       <div data-testid="active-view">{activeView}</div>
       <button onClick={() => onSelectView("albums")}>switch-view</button>
+      <button onClick={() => onSelectView("map")}>switch-to-map</button>
       <button onClick={onToggleCommitPane}>{commitPaneOpen ? "hide-commit-pane" : "show-commit-pane"}</button>
       {commitPane}
     </div>
@@ -87,7 +88,12 @@ vi.mock("./modules/library/CollectionPlaceholderView", () => ({
 }));
 
 vi.mock("./modules/map/MapView", () => ({
-  MapView: () => <div>map-view</div>,
+  MapView: ({ onSelectView }: { onSelectView: (view: string) => void }) => (
+    <div>
+      map-view
+      <button onClick={() => onSelectView("timeline")}>switch-to-timeline</button>
+    </div>
+  ),
 }));
 
 vi.mock("./components/CommitPane", () => ({
@@ -169,6 +175,23 @@ describe("App replycant helper", () => {
 
     expect(screen.queryByText("timeline-view")).toBeNull();
     expect(screen.getByText("collection-view")).toBeInTheDocument();
+  });
+
+  // Leaving the map used to unmount it, which dropped pan, zoom, and an open place.
+  it("keeps the map mounted while the timeline is showing", () => {
+    render(<App />);
+
+    expect(screen.queryByText("map-view", { hidden: true })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "switch-to-map" }));
+    const mapNode = screen.getByText("map-view");
+    expect(mapNode.closest("[hidden]")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "switch-to-timeline" }));
+
+    expect(screen.getByText("timeline-view")).toBeInTheDocument();
+    expect(screen.getByText("map-view")).toBe(mapNode);
+    expect(mapNode.closest("[hidden]")).not.toBeNull();
   });
 
   it("restores a saved map view", () => {

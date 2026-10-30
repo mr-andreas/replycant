@@ -5,6 +5,10 @@ import type { LibraryRuntimeState } from "../library/useLibraryRuntime";
 import type { MapPointRow } from "../gitdb";
 import { MapView } from "./MapView";
 
+const mapResize = vi.hoisted(() => ({
+  invalidateSize: vi.fn(),
+}));
+
 vi.mock("leaflet", async () => {
   const { project } = await import("./mapClusters");
   const map = (element: HTMLElement) => {
@@ -41,6 +45,7 @@ vi.mock("leaflet", async () => {
         return project(latlng.lat, latlng.lng);
       },
       invalidateSize() {
+        mapResize.invalidateSize();
         return instance;
       },
       remove() {},
@@ -130,8 +135,16 @@ const renderMap = (points: MapPointRow[]) => {
 };
 
 describe("MapView", () => {
+  let onMapResize: (() => void) | null = null;
+
   beforeEach(() => {
+    onMapResize = null;
+    mapResize.invalidateSize.mockClear();
     vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) {
+        onMapResize = callback;
+      }
+
       observe() {}
       unobserve() {}
       disconnect() {}
@@ -176,5 +189,24 @@ describe("MapView", () => {
 
     expect(screen.queryByRole("heading", { name: "Places" })).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "2 photos" })).toBeInTheDocument();
+  });
+
+  // Hiding the map reports a zero size. Resizing then would move the camera.
+  it("does not resize the map when its container has no size", async () => {
+    const points: MapPointRow[] = [
+      { key: "older", latitude: 59.33, longitude: 18.06, takenAt: "2024-01-01T00:00:00.000Z" },
+      { key: "newer", latitude: 59.331, longitude: 18.061, takenAt: "2024-06-01T00:00:00.000Z" },
+    ];
+    renderMap(points);
+    await screen.findByRole("button", { name: "2 photos" });
+
+    const canvas = document.querySelector(".map-canvas");
+    expect(canvas).toBeInstanceOf(HTMLElement);
+    Object.defineProperty(canvas, "clientWidth", { configurable: true, value: 0 });
+    Object.defineProperty(canvas, "clientHeight", { configurable: true, value: 0 });
+    mapResize.invalidateSize.mockClear();
+    onMapResize?.();
+
+    expect(mapResize.invalidateSize).not.toHaveBeenCalled();
   });
 });
