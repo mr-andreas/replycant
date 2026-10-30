@@ -934,6 +934,13 @@ final class TimelineManager: ObservableObject {
         manifestLoader = loader
     }
 
+    // Lets a burst test wait until the trailing window drains. A fixed
+    // sleep races the main actor: under CI the assertion resumed before
+    // this task started its debounce, so the count looked missing.
+    func waitForDatabaseChangeDrainForTesting() async {
+        await databaseChangeDrainTask?.value
+    }
+
     // Resets loaded items/cursors/caches so sparse state can be rebuilt from a new jump position.
     private func resetLoadedRegion(clearVisibleIndices: Bool, clearCurrentMonth: Bool = true) {
         loadedOffset = 0

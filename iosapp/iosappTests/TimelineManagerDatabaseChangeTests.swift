@@ -363,7 +363,7 @@ struct TimelineManagerDatabaseChangeTests {
 
     // A sync commits one photo at a time. Those notifications have to collapse
     // into one count, or the main actor re-queries the library per photo.
-    @Test func burstOfIncrementalChangesRefreshesCountOnce() async throws {
+    @Test func burstOfIncrementalChangesRefreshesCountOnce() async {
         let manager = makeIsolatedManager()
         let loader = CountingTimelineLoader()
         manager.setManifestLoaderForTesting(loader)
@@ -387,7 +387,7 @@ struct TimelineManagerDatabaseChangeTests {
             )
         )
 
-        try await Task.sleep(nanoseconds: 600_000_000)
+        await manager.waitForDatabaseChangeDrainForTesting()
         #expect(loader.countCalls == 1)
         #expect(loader.scopes == [.all])
     }
