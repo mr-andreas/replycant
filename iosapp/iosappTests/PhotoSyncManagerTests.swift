@@ -1321,8 +1321,10 @@ struct PhotoSyncManagerTests {
     
     // MARK: - Cancellation Tests
     
-    // Waits on the clock so a test can outlast the tailnet join that
-    // startSync performs before the first file is uploaded.
+    // Waits on the clock so a test can outlast the work startSync does
+    // before the first file is uploaded. That work joins the tailnet and
+    // then loads assets on a utility executor. A yield spin finishes
+    // before either of those runs when the runner is busy.
     func waitUntil(seconds: Double, condition: () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
@@ -1399,8 +1401,8 @@ struct PhotoSyncManagerTests {
         let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
 
         await syncManager.startSync()
-        await waitForCondition(maxIterations: 300) { uploadStarted }
-        try #require(uploadStarted)
+        let started = await waitUntil(seconds: 20) { uploadStarted }
+        try #require(started)
 
         syncManager.cancelSync()
         await waitForCondition(maxIterations: 300) { !syncManager.isSyncing }
@@ -1434,7 +1436,8 @@ struct PhotoSyncManagerTests {
         )
 
         await syncManager.startSync()
-        await waitForCondition(maxIterations: 300) { uploadStarted }
+        let started = await waitUntil(seconds: 20) { uploadStarted }
+        try #require(started)
         await waitForCondition(maxIterations: 300) { idleTimer.isIdleTimerDisabled }
 
         #expect(syncManager.isSyncing == true)
@@ -1494,7 +1497,8 @@ struct PhotoSyncManagerTests {
         )
 
         await syncManager.startSync()
-        await waitForCondition(maxIterations: 300) { uploadStarted }
+        let started = await waitUntil(seconds: 20) { uploadStarted }
+        try #require(started)
         await waitForCondition(maxIterations: 300) { idleTimer.isIdleTimerDisabled }
 
         syncManager.cancelSync()
