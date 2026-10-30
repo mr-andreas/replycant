@@ -767,6 +767,14 @@ final class TimelineManager: ObservableObject {
         do {
             let refreshedTotalCount = try await manifestLoader.countTimelineOriginals(scope: scope)
             applyDatabaseChange(change, refreshedTotalCount: refreshedTotalCount)
+            // A full replace drops the loaded window. The grid does not
+            // reload when the count stays the same, so those cells still
+            // show photos that can no longer be opened. Load that page back.
+            if case .fullReplace = change, refreshedTotalCount > 0 {
+                let saved = savedViewportAnchorIndex ?? (refreshedTotalCount - 1)
+                let anchor = min(max(0, saved), refreshedTotalCount - 1)
+                await ensureLoaded(around: anchor)
+            }
             updateMonthIndex(try await buildMonthIndex(loader: manifestLoader))
             if refreshedTotalCount == 0 {
                 monthSelection.currentYearMonth = nil

@@ -287,6 +287,28 @@ struct TimelineManagerDatabaseChangeTests {
         #expect(manager.totalCount == 5)
     }
 
+    // A sync can replace the manifest without changing how many photos
+    // there are. The grid keeps showing the old cells in that case, so
+    // the open page has to be loaded again or a tap does nothing.
+    @Test func fullReplaceReloadsPhotosStillOnScreen() async throws {
+        let manager = makeIsolatedManager()
+        let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
+        let second = makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
+        manager.seedLoadedRegionForTesting(
+            offset: 0,
+            items: [TimelineItem(original: first), TimelineItem(original: second)],
+            totalCount: 2
+        )
+        let loader = PageReturningTimelineLoader(originals: [first, second])
+        manager.setManifestLoaderForTesting(loader)
+
+        manager.receiveDatabaseChange(.fullReplace)
+
+        try await Task.sleep(nanoseconds: 600_000_000)
+        #expect(manager.index(ofItemId: "a") != nil)
+        #expect(manager.index(ofItemId: "b") != nil)
+    }
+
     // A place grid's offsets describe only photos inside the tapped area.
     // A sync that adds a photo somewhere else must not slide that window.
     @Test func incrementalAdditionOutsideAreaDoesNotShiftOffset() {
@@ -390,6 +412,56 @@ struct TimelineManagerDatabaseChangeTests {
         await manager.waitForDatabaseChangeDrainForTesting()
         #expect(loader.countCalls == 1)
         #expect(loader.scopes == [.all])
+    }
+}
+
+// Returns one fixed page so a full replace can be checked for reloading
+// the photos the grid is still showing.
+private final class PageReturningTimelineLoader: ManifestLoaderProtocol {
+    let originals: [OriginalManifest]
+
+    init(originals: [OriginalManifest]) {
+        self.originals = originals
+    }
+
+    func loadManifest<T: Manifest>(deviceSpace: String?, id: String) async throws -> T? {
+        nil
+    }
+
+    func loadAllManifests<T: Manifest>(deviceSpace: String?) async throws -> [T] {
+        []
+    }
+
+    func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
+        originals.count
+    }
+
+    func loadTimelinePage(offset: Int, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        Array(originals.dropFirst(offset).prefix(limit))
+    }
+
+    func loadTimelinePage(before: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadTimelinePage(after: TimelineCursor, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadTimelineMonthCounts(scope: TimelineScope) async throws -> [TimelineMonthCount] {
+        []
+    }
+
+    func loadGeotaggedPoints() async throws -> [MapMediaPoint] {
+        []
+    }
+
+    func loadOriginals(ids: [String]) async throws -> [OriginalManifest] {
+        []
+    }
+
+    func loadThumbnailsByOriginalRefs(_ refs: [String]) async throws -> [String: ThumbnailSetManifest] {
+        [:]
     }
 }
 
