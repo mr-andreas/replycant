@@ -181,7 +181,7 @@ describe("App replycant helper", () => {
   it("keeps the map mounted while the timeline is showing", () => {
     render(<App />);
 
-    expect(screen.queryByText("map-view", { hidden: true })).toBeNull();
+    expect(screen.queryByText("map-view")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "switch-to-map" }));
     const mapNode = screen.getByText("map-view");
