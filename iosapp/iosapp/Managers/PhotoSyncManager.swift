@@ -48,7 +48,7 @@ enum UploadOrder: Sendable {
 }
 
 // Counts what one upload run finished. The background task records this
-// on its settings row; the completion total still means the queue size.
+// on its settings row. queueCount is how many files were still left.
 struct UploadRunTally: Equatable, Codable {
     var queueCount: Int?
     var uploadedCount: Int
@@ -60,7 +60,7 @@ struct UploadRunTally: Equatable, Codable {
         uploadedBytes: 0
     )
 
-    // The queue is the cache miss list, known before any file is sent.
+    // What remained after commits and files already on the server.
     // A run that stops during the scan leaves this unset.
     mutating func noteQueue(_ count: Int) {
         queueCount = count
@@ -359,7 +359,14 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
             }
             assetsRequiringDatabaseChecks.append((asset: asset, modifiedAt: modifiedAt))
         }
-        runTally.noteQueue(assetsRequiringDatabaseChecks.count)
+        let candidates = assetsRequiringDatabaseChecks.count
+        var dbSkippedCount = 0
+        // The settings row is written after this returns, including when a
+        // file throws or the task is cancelled, so the remainder is stored
+        // on the way out.
+        defer {
+            runTally.noteQueue(candidates - dbSkippedCount - runTally.uploadedCount)
+        }
         guard !assetsRequiringDatabaseChecks.isEmpty else {
             log("All assets skipped by uploaded media cache", context: "PhotoSync")
             return 0
@@ -382,7 +389,6 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
         // Syncs cache to HEAD once before upload so dedup checks include latest pulled/committed manifests.
         try await manager.syncToHead(progressHandler: nil)
         let uploadedByLocalID = try await manager.loadUploadedLocalIDs()
-        var dbSkippedCount = 0
         
         for (loopIndex, entry) in assetsRequiringDatabaseChecks.enumerated() {
             let asset = entry.asset

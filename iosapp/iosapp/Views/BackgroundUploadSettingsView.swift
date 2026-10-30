@@ -38,10 +38,11 @@ enum BackgroundUploadStatusCopy {
 
     // Files include videos. Bytes are the plaintext originals, which is
     // the size shown while an upload is in progress, not thumbnails.
+    // The count is what was still left when the run stopped.
     static func runDetail(_ run: BackgroundUploadRun) -> String {
         let files = run.uploadedCount == 1 ? "1 file" : "\(run.uploadedCount) files"
-        let queued = run.queueCount.map { "\($0) queued" } ?? "—"
-        return "\(files), \(bytesText(run.uploadedBytes)), \(queued), \(resultLabel(run.result))"
+        let left = run.queueCount.map { "\($0) left" } ?? "—"
+        return "\(files), \(bytesText(run.uploadedBytes)), \(left), \(resultLabel(run.result))"
     }
 
     static func resultLabel(_ result: BackgroundUploadRunResult) -> String {

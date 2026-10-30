@@ -62,7 +62,7 @@ enum AppScreenGallery {
                 stoppedAt: Date(timeIntervalSince1970: 1_800_000_180),
                 uploadedCount: 12,
                 uploadedBytes: 48 * 1024 * 1024,
-                queueCount: 340,
+                queueCount: 0,
                 result: .completed
             ),
             BackgroundUploadRun(

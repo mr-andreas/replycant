@@ -187,8 +187,8 @@ struct BackgroundUploadSchedulerTests {
     }
 
     // The row words are what Settings shows, so a skipped run with no
-    // queue must not look like a completed upload of nothing known.
-    @Test("Status copy names registration, schedule, files, bytes, queue, and result")
+    // remainder must not look like a completed upload of nothing known.
+    @Test("Status copy names registration, schedule, files, bytes, left, and result")
     func testStatusCopy() {
         let scheduledAt = Date(timeIntervalSince1970: 1_800_000_000)
         let registered = BackgroundUploadStatus(
@@ -239,7 +239,7 @@ struct BackgroundUploadSchedulerTests {
             result: .completed
         )
         #expect(BackgroundUploadStatusCopy.runDetail(completed) ==
-            "1 file, \(BackgroundUploadStatusCopy.bytesText(2048)), 1 queued, Completed")
+            "1 file, \(BackgroundUploadStatusCopy.bytesText(2048)), 1 left, Completed")
 
         let skipped = BackgroundUploadRun(
             id: UUID(),

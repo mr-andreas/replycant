@@ -30,7 +30,7 @@ The same switch also uploads while the phone is charging and on Wi-Fi with the a
 
 Uploads wait for Wi-Fi. A run that moves onto mobile data continues when Wi-Fi is back.
 
-The Upload page in Settings holds the switch, the stall reminder, and each charging run: when it started and stopped, how many files and bytes it uploaded, how many were waiting, and how it ended.
+The Upload page in Settings holds the switch, the stall reminder, and each charging run: when it started and stopped, how many files and bytes it uploaded, how many were left, and how it ended.
 
 ### Offline-First Design
 Full functionality without network access. Changes sync when connectivity is restored.

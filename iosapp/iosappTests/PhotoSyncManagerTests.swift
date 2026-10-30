@@ -439,6 +439,33 @@ class MockManifestManager: ManifestManager {
     
 }
 
+// Fails the second original so a run can be checked for what it left
+// behind after one file has already committed.
+private final class FailSecondOriginalManifest: MockManifestManager {
+    struct UploadFailed: Error {}
+
+    override func addLFSFileEncrypting(
+        at fileURL: URL,
+        dek: Data,
+        oid: String,
+        size: Int64,
+        for manifest: any Manifest,
+        progressHandler: ((Int64, Int64) -> Void)?
+    ) async throws -> LFSPointer {
+        if addLFSFileEncryptingCalls.count >= 1 {
+            throw UploadFailed()
+        }
+        return try await super.addLFSFileEncrypting(
+            at: fileURL,
+            dek: dek,
+            oid: oid,
+            size: size,
+            for: manifest,
+            progressHandler: progressHandler
+        )
+    }
+}
+
 // Captures idle timer toggles so upload wake-lock behavior can be asserted.
 final class MockIdleTimerController: IdleTimerControlling {
     var history: [Bool] = []
@@ -633,9 +660,8 @@ struct PhotoSyncManagerTests {
         let mockManifest = MockManifestManager()
         
         let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
-        
-        await syncManager.startSync()
-        await syncManager.syncTask?.value
+
+        await runSync(syncManager)
         
         #expect(syncManager.isSyncing == false)
         
@@ -659,10 +685,38 @@ struct PhotoSyncManagerTests {
         // Verify manifest database sync was requested before upload dedup checks.
         #expect(mockManifest.syncToHeadCalls == 1)
 
-        // The background-run row counts files that finished, not the
-        // queue, and uses the plaintext size shown while uploading.
+        // The background-run row counts files that finished, and nothing
+        // remains after the only candidate commits. Bytes are the plaintext
+        // size shown while uploading.
         #expect(syncManager.runTally.uploadedCount == 1)
         #expect(syncManager.runTally.uploadedBytes == 2048)
+        #expect(syncManager.runTally.queueCount == 0)
+    }
+
+    // A charging run's row is what remained, so a file that never committed
+    // stays in the count after one file has finished.
+    @Test("Stopped upload reports the file it did not finish as left")
+    func testStoppedUploadReportsRemainder() async throws {
+        let repoPath = try setupDocumentsRepo()
+        defer { cleanupTestEnvironment(at: repoPath) }
+
+        UserDefaults.standard.set("http://localhost:8080/lfs", forKey: "gitServerURL")
+
+        let first = createTestAsset(id: "IMG_LEFT_001", filename: "first.jpg", mediaType: .image, creationDate: Date())
+        let second = createTestAsset(id: "IMG_LEFT_002", filename: "second.jpg", mediaType: .image, creationDate: Date())
+        let mockLibrary = createMockLibrary(assets: [first, second])
+        let mockManifest = FailSecondOriginalManifest()
+
+        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+
+        await runSync(syncManager)
+
+        #expect(syncManager.isSyncing == false)
+        if case .failed = syncManager.syncState {
+        } else {
+            Issue.record("Expected the second original to fail the run")
+        }
+        #expect(syncManager.runTally.uploadedCount == 1)
         #expect(syncManager.runTally.queueCount == 1)
     }
 
