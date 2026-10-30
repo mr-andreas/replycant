@@ -93,24 +93,24 @@ struct MediaExportTests {
     // Saving and sharing must not re-encode. A changed byte would
     // also make photo sync upload the camera-roll copy as a new item.
     @Test func photoExportWritesSourceBytesUnchanged() async throws {
-        let previous = CacheSettingsManager.shared.localThumbnailsEnabled
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
-        defer { CacheSettingsManager.shared.localThumbnailsEnabled = previous }
+        // Bound to this task so a parallel suite cannot turn local loading
+        // off while the export is still copying the camera-roll bytes.
+        try await LocalPhotoLibraryPreference.$enabled.withValue(true) {
+            let source = Data([0x00, 0xFF, 0x10, 0x20, 0x30, 0x7F])
+            let mockLibrary = MockPhotoLibraryProvider()
+            mockLibrary.isAuthorized = true
+            mockLibrary.localOriginalImageData["local-1"] = source
+            let manager = TimelineManager(photoLibrary: mockLibrary, notificationCenter: NotificationCenter())
+            let item = makeItem(localID: "local-1", path: "DCIM/IMG_0001.JPG")
 
-        let source = Data([0x00, 0xFF, 0x10, 0x20, 0x30, 0x7F])
-        let mockLibrary = MockPhotoLibraryProvider()
-        mockLibrary.isAuthorized = true
-        mockLibrary.localOriginalImageData["local-1"] = source
-        let manager = TimelineManager(photoLibrary: mockLibrary, notificationCenter: NotificationCenter())
-        let item = makeItem(localID: "local-1", path: "DCIM/IMG_0001.JPG")
+            let url = try await MediaExport.exportOriginal(item: item, timelineManager: manager)
+            defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let url = try await MediaExport.exportOriginal(item: item, timelineManager: manager)
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-
-        let written = try Data(contentsOf: url)
-        #expect(written == source)
-        #expect(url.lastPathComponent == "IMG_0001.JPG")
-        #expect(url.deletingLastPathComponent().path.hasPrefix(FileManager.default.temporaryDirectory.path))
+            let written = try Data(contentsOf: url)
+            #expect(written == source)
+            #expect(url.lastPathComponent == "IMG_0001.JPG")
+            #expect(url.deletingLastPathComponent().path.hasPrefix(FileManager.default.temporaryDirectory.path))
+        }
     }
 
     // A downloaded video has to be the original object, with the

@@ -15,6 +15,17 @@ struct FullResolutionImageLoaderLocalMediaTests {
         TimelineManager(photoLibrary: photoLibrary, notificationCenter: NotificationCenter())
     }
 
+    // Binds local-library loading to this task so a parallel suite cannot
+    // flip the shared UserDefaults flag while the load is still in flight.
+    private func withLocalLibrary(
+        _ enabled: Bool,
+        _ body: @MainActor () async throws -> Void
+    ) async rethrows {
+        try await LocalPhotoLibraryPreference.$enabled.withValue(enabled) {
+            try await body()
+        }
+    }
+
     // Creates a minimal timeline item fixture with an optional local Photos identifier.
     private func makeItem(
         id: String = "item-1",
@@ -81,76 +92,80 @@ struct FullResolutionImageLoaderLocalMediaTests {
 
     // Confirms local full-resolution images are used before LFS when enabled.
     @Test func testPhotoUsesLocalOriginalWhenEnabled() async {
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
-        let localID = "photo-local-id"
-        let mockLibrary = MockPhotoLibraryProvider()
-        mockLibrary.isAuthorized = true
-        mockLibrary.localOriginalImageData[localID] = makeJPEGData()
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let loader = FullResolutionImageLoader(timelineManager: manager)
+        await withLocalLibrary(true) {
+            let localID = "photo-local-id"
+            let mockLibrary = MockPhotoLibraryProvider()
+            mockLibrary.isAuthorized = true
+            mockLibrary.localOriginalImageData[localID] = makeJPEGData()
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let loader = FullResolutionImageLoader(timelineManager: manager)
 
-        loader.loadOriginal(for: makeItem(localID: localID), isVideo: false)
-        await waitForLoaderSettled(loader)
+            loader.loadOriginal(for: makeItem(localID: localID), isVideo: false)
+            await waitForLoaderSettled(loader)
 
-        #expect(loader.image != nil)
-        #expect(loader.errorMessage == nil)
+            #expect(loader.image != nil)
+            #expect(loader.errorMessage == nil)
+        }
     }
 
     // Confirms photo loading falls through to existing remote path when local lookup misses.
     @Test func testPhotoFallsBackWhenLocalOriginalMissing() async {
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
-        let localID = "photo-local-id"
-        let mockLibrary = MockPhotoLibraryProvider()
-        mockLibrary.isAuthorized = true
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let loader = FullResolutionImageLoader(timelineManager: manager)
+        await withLocalLibrary(true) {
+            let localID = "photo-local-id"
+            let mockLibrary = MockPhotoLibraryProvider()
+            mockLibrary.isAuthorized = true
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let loader = FullResolutionImageLoader(timelineManager: manager)
 
-        loader.loadOriginal(for: makeItem(localID: localID), isVideo: false)
-        await waitForLoaderSettled(loader)
+            loader.loadOriginal(for: makeItem(localID: localID), isVideo: false)
+            await waitForLoaderSettled(loader)
 
-        #expect(loader.image == nil)
-        #expect(loader.errorMessage != nil)
+            #expect(loader.image == nil)
+            #expect(loader.errorMessage != nil)
+        }
     }
 
     // Confirms local full-resolution video assets are used before server streaming when enabled.
     @Test func testVideoUsesLocalAssetWhenEnabled() async throws {
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
-        let localID = "video-local-id"
-        let mockLibrary = MockPhotoLibraryProvider()
-        mockLibrary.isAuthorized = true
-        let videoURL = try makeTempVideoURL()
-        mockLibrary.localVideoAssetURLs[localID] = videoURL
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let loader = FullResolutionImageLoader(timelineManager: manager)
+        try await withLocalLibrary(true) {
+            let localID = "video-local-id"
+            let mockLibrary = MockPhotoLibraryProvider()
+            mockLibrary.isAuthorized = true
+            let videoURL = try makeTempVideoURL()
+            mockLibrary.localVideoAssetURLs[localID] = videoURL
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let loader = FullResolutionImageLoader(timelineManager: manager)
 
-        loader.loadOriginal(
-            for: makeItem(localID: localID, mediaType: "video", mimeType: "video/mp4", duration: 3),
-            isVideo: true
-        )
-        await waitForLoaderSettled(loader)
+            loader.loadOriginal(
+                for: makeItem(localID: localID, mediaType: "video", mimeType: "video/mp4", duration: 3),
+                isVideo: true
+            )
+            await waitForLoaderSettled(loader)
 
-        #expect(loader.player != nil)
-        #expect(loader.errorMessage == nil)
+            #expect(loader.player != nil)
+            #expect(loader.errorMessage == nil)
+        }
     }
 
     // Confirms the development toggle still disables local-first paths for performance testing.
     @Test func testVideoSkipsLocalWhenToggleDisabled() async throws {
-        CacheSettingsManager.shared.localThumbnailsEnabled = false
-        let localID = "video-local-id"
-        let mockLibrary = MockPhotoLibraryProvider()
-        mockLibrary.isAuthorized = true
-        let videoURL = try makeTempVideoURL()
-        mockLibrary.localVideoAssetURLs[localID] = videoURL
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let loader = FullResolutionImageLoader(timelineManager: manager)
+        try await withLocalLibrary(false) {
+            let localID = "video-local-id"
+            let mockLibrary = MockPhotoLibraryProvider()
+            mockLibrary.isAuthorized = true
+            let videoURL = try makeTempVideoURL()
+            mockLibrary.localVideoAssetURLs[localID] = videoURL
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let loader = FullResolutionImageLoader(timelineManager: manager)
 
-        loader.loadOriginal(
-            for: makeItem(localID: localID, mediaType: "video", mimeType: "video/mp4", duration: 3),
-            isVideo: true
-        )
-        await waitForLoaderSettled(loader)
+            loader.loadOriginal(
+                for: makeItem(localID: localID, mediaType: "video", mimeType: "video/mp4", duration: 3),
+                isVideo: true
+            )
+            await waitForLoaderSettled(loader)
 
-        #expect(loader.player == nil)
-        #expect(loader.errorMessage != nil)
+            #expect(loader.player == nil)
+            #expect(loader.errorMessage != nil)
+        }
     }
 }

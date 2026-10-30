@@ -71,6 +71,31 @@ struct CacheSettingsManagerTests {
         #expect(manager.imagesAfterViewport == 100)
     }
 
+    // Overlapping loads must each see the value their own task bound.
+    // A shared flag would let one test turn local playback back on
+    // while another is still deciding whether to skip it.
+    @Test func localThumbnailOverrideFollowsTheTask() async {
+        let gate = PairGate()
+        let disabled = Task {
+            await LocalPhotoLibraryPreference.$enabled.withValue(false) {
+                await gate.meet()
+                return await MainActor.run {
+                    CacheSettingsManager.shared.localThumbnailsEnabled
+                }
+            }
+        }
+        let enabled = Task {
+            await LocalPhotoLibraryPreference.$enabled.withValue(true) {
+                await gate.meet()
+                return await MainActor.run {
+                    CacheSettingsManager.shared.localThumbnailsEnabled
+                }
+            }
+        }
+        #expect(await disabled.value == false)
+        #expect(await enabled.value == true)
+    }
+
     // Verifies local-thumbnail toggle persists because multiple loaders
     // branch on this flag before touching Photos APIs.
     @Test func testLocalThumbnailsEnabledPersists() {
@@ -121,6 +146,26 @@ struct CacheSettingsManagerTests {
         #expect(manager.topDiskCacheLimitMB == 100)
         #expect(manager.mainCacheWarmItemCount == 1000)
         #expect(manager.topCacheWarmItemCount == 300)
+    }
+}
+
+// Keeps both tasks inside their own binding before either reads, so a
+// process-wide flag would be visible as the wrong value on one of them.
+private actor PairGate {
+    private var arrived = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func meet() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            arrived += 1
+            if arrived == 2 {
+                continuation.resume()
+                waiters.forEach { $0.resume() }
+                waiters.removeAll()
+            } else {
+                waiters.append(continuation)
+            }
+        }
     }
 }
 

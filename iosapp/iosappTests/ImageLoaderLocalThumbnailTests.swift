@@ -15,9 +15,15 @@ struct ImageLoaderLocalThumbnailTests {
         TimelineManager(photoLibrary: photoLibrary, notificationCenter: NotificationCenter())
     }
 
-    // Clears persisted toggle state so each test controls local-thumbnail behavior explicitly.
-    private func clearLocalThumbnailSetting() {
-        UserDefaults.standard.removeObject(forKey: "localThumbnailsEnabled")
+    // Binds local-library loading to this task so a parallel suite cannot
+    // flip the shared UserDefaults flag while the lookup is still in flight.
+    private func withLocalLibrary(
+        _ enabled: Bool,
+        _ body: @MainActor () async throws -> Void
+    ) async rethrows {
+        try await LocalPhotoLibraryPreference.$enabled.withValue(enabled) {
+            try await body()
+        }
     }
 
     // Creates a minimal original manifest fixture with configurable local Photos identifier.
@@ -58,74 +64,70 @@ struct ImageLoaderLocalThumbnailTests {
 
     // Ensures local lookup is used when the toggle is enabled and the original has a local Photos identifier.
     @Test func testLoadLocalThumbnailWhenEnabledAndAvailable() async {
-        clearLocalThumbnailSetting()
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
+        await withLocalLibrary(true) {
+            let localID = "photo-local-id"
+            let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let item = TimelineItem(original: makeOriginal(localID: localID))
+            let loader = ImageLoader(item: item, timelineManager: manager)
 
-        let localID = "photo-local-id"
-        let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let item = TimelineItem(original: makeOriginal(localID: localID))
-        let loader = ImageLoader(item: item, timelineManager: manager)
+            let image = await loader.loadLocalThumbnailIfAvailable()
 
-        let image = await loader.loadLocalThumbnailIfAvailable()
-
-        #expect(image != nil)
-        #expect(mockLibrary.localThumbnailRequests.count == 1)
-        #expect(mockLibrary.localThumbnailRequests.first?.localID == localID)
-        #expect(mockLibrary.localThumbnailRequests.first?.size == CGSize(width: 225, height: 225))
+            #expect(image != nil)
+            #expect(mockLibrary.localThumbnailRequests.count == 1)
+            #expect(mockLibrary.localThumbnailRequests.first?.localID == localID)
+            #expect(mockLibrary.localThumbnailRequests.first?.size == CGSize(width: 225, height: 225))
+        }
     }
 
     // Ensures disabled setting bypasses local lookup so the caller can proceed with the LFS fallback path.
     @Test func testLoadLocalThumbnailBypassesWhenDisabled() async {
-        clearLocalThumbnailSetting()
-        CacheSettingsManager.shared.localThumbnailsEnabled = false
+        await withLocalLibrary(false) {
+            let localID = "photo-local-id"
+            let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let item = TimelineItem(original: makeOriginal(localID: localID))
+            let loader = ImageLoader(item: item, timelineManager: manager)
 
-        let localID = "photo-local-id"
-        let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let item = TimelineItem(original: makeOriginal(localID: localID))
-        let loader = ImageLoader(item: item, timelineManager: manager)
+            let image = await loader.loadLocalThumbnailIfAvailable()
 
-        let image = await loader.loadLocalThumbnailIfAvailable()
-
-        #expect(image == nil)
-        #expect(mockLibrary.localThumbnailRequests.isEmpty)
+            #expect(image == nil)
+            #expect(mockLibrary.localThumbnailRequests.isEmpty)
+        }
     }
 
     // Ensures missing local thumbnails return nil so image loading can fall back to the existing remote flow.
     @Test func testLoadLocalThumbnailReturnsNilWhenMissing() async {
-        clearLocalThumbnailSetting()
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
+        await withLocalLibrary(true) {
+            let localID = "photo-local-id"
+            let mockLibrary = MockPhotoLibraryProvider()
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let item = TimelineItem(original: makeOriginal(localID: localID))
+            let loader = ImageLoader(item: item, timelineManager: manager)
 
-        let localID = "photo-local-id"
-        let mockLibrary = MockPhotoLibraryProvider()
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let item = TimelineItem(original: makeOriginal(localID: localID))
-        let loader = ImageLoader(item: item, timelineManager: manager)
+            let image = await loader.loadLocalThumbnailIfAvailable()
 
-        let image = await loader.loadLocalThumbnailIfAvailable()
-
-        #expect(image == nil)
-        #expect(mockLibrary.localThumbnailRequests.count == 1)
-        #expect(mockLibrary.localThumbnailRequests.first?.localID == localID)
+            #expect(image == nil)
+            #expect(mockLibrary.localThumbnailRequests.count == 1)
+            #expect(mockLibrary.localThumbnailRequests.first?.localID == localID)
+        }
     }
 
     // Ensures timeline local-thumbnail lookup never touches Photos APIs before upload permission has been granted.
     @Test func testLoadLocalThumbnailBypassesWhenUnauthorized() async {
-        clearLocalThumbnailSetting()
-        CacheSettingsManager.shared.localThumbnailsEnabled = true
+        await withLocalLibrary(true) {
+            let localID = "photo-local-id"
+            let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
+            mockLibrary.isAuthorized = false
+            let manager = makeIsolatedManager(photoLibrary: mockLibrary)
+            let item = TimelineItem(original: makeOriginal(localID: localID))
+            let loader = ImageLoader(item: item, timelineManager: manager)
 
-        let localID = "photo-local-id"
-        let mockLibrary = MockPhotoLibraryProvider(localThumbnails: [localID: makeTestImage()])
-        mockLibrary.isAuthorized = false
-        let manager = makeIsolatedManager(photoLibrary: mockLibrary)
-        let item = TimelineItem(original: makeOriginal(localID: localID))
-        let loader = ImageLoader(item: item, timelineManager: manager)
+            let image = await loader.loadLocalThumbnailIfAvailable()
 
-        let image = await loader.loadLocalThumbnailIfAvailable()
-
-        #expect(image == nil)
-        #expect(mockLibrary.localThumbnailRequests.isEmpty)
+            #expect(image == nil)
+            #expect(mockLibrary.localThumbnailRequests.isEmpty)
+        }
     }
 
     // Ensures sparse-page reconfigure keeps an in-flight or completed loader for the same item.

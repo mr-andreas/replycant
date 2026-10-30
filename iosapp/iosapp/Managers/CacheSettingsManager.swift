@@ -1,5 +1,12 @@
 import Foundation
 
+// Parallel tests share UserDefaults.standard. Binding local-library
+// loading to the current task lets each test choose its own value, and
+// child tasks started by a load inherit it instead of another suite's write.
+enum LocalPhotoLibraryPreference {
+    @TaskLocal static var enabled: Bool?
+}
+
 // Manages cache settings for timeline image preloading.
 // Stores user preferences for how many images to preload before and after the viewport
 // to improve perceived scrolling performance.
@@ -118,10 +125,17 @@ final class CacheSettingsManager {
         }
     }
 
-    // Enables loading timeline thumbnails from local Photo Library assets before LFS fetches.
-    // Defaults to true so local-first behavior is active unless users explicitly opt out.
+    // Enables loading timeline thumbnails from local Photo Library assets
+    // before LFS fetches. Defaults to true so local-first behavior is
+    // active unless users explicitly opt out. A task-local value wins so
+    // parallel tests do not share this UserDefaults key.
     var localThumbnailsEnabled: Bool {
-        get { defaults.object(forKey: localThumbnailsEnabledKey) as? Bool ?? true }
+        get {
+            if let enabled = LocalPhotoLibraryPreference.enabled {
+                return enabled
+            }
+            return defaults.object(forKey: localThumbnailsEnabledKey) as? Bool ?? true
+        }
         set { defaults.set(newValue, forKey: localThumbnailsEnabledKey) }
     }
 
