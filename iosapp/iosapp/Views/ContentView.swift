@@ -260,6 +260,16 @@ struct ContentView: View {
 
         errorMessage = nil
 
+        #if DEBUG
+        // UI tests commit the fixture library off the main thread so launch
+        // can return. Looking for the repo before that commit finishes
+        // looks like a device with no library, and the onboarding skip
+        // then shows an empty timeline.
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") {
+            await TestSupport.waitUntilRepositoryPrepared()
+        }
+        #endif
+
         // The local library does not need the tailnet, and waiting for the
         // join held the timeline behind a "local data was reset" screen for
         // the whole handshake. The join runs beside Git setup. Requests

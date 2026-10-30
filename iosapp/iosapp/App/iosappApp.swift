@@ -56,7 +56,15 @@ struct iosappApp: App {
         
         // Generate device key on first boot (idempotent - does nothing if key exists).
         // This ensures the key exists before any onboarding flow needs it.
+        // UI tests create the test-device identity inside deferred fixture
+        // setup. Doing it here as well races that write on the keychain.
+        #if DEBUG
+        if !ProcessInfo.processInfo.arguments.contains("--uitesting") {
+            ensureDeviceKeyExists()
+        }
+        #else
         ensureDeviceKeyExists()
+        #endif
         
         // Initialize mTLS transport for Git network operations if credentials are available.
         // This registers the mtls+https:// scheme with libgit2, enabling push/pull

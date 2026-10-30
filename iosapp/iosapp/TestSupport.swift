@@ -114,7 +114,14 @@ class TestSupport {
         return "\(first)/\(second)/\(rest)"
     }
     
+    // The in-flight fixture build. Launch returns as soon as this is
+    // scheduled; ContentView waits before it treats a missing repo as a
+    // device that has no library.
+    private static var repositoryPreparation: Task<Void, Never>?
+
     // Centralizes launch-argument-gated UITest setup before app services start.
+    // The heavy work is scheduled, not run here: XCTest abandons the launch
+    // when the LFS bind and fixture commit stay on the main thread.
     static func setupTestEnvironment() {
         print("TestSupport: Setting up test environment")
         
@@ -124,39 +131,69 @@ class TestSupport {
             return
         }
 
-        // Wipes prior UITest library state so privacy screenshots can show a clean onboarding flow.
-        if ProcessInfo.processInfo.arguments.contains("--screenshots-onboarding") {
-            resetLocalStateForScreenshotOnboarding()
-        }
-        
         print("TestSupport: Running in UI test mode")
 
         // Fixture media is served by the in-process LFS server, which is
         // not on a tailnet. Without a node the shared router refuses every
         // download, so fullscreen images never leave the spinner.
         TailnetSessionRouter.shared.use(PassthroughTailnetNode())
-        
-        // Start test LFS server
+
+        scheduleRepositoryPreparation {
+            Self.runDeferredFixtureSetup()
+        }
+    }
+
+    // Starts fixture work without waiting for it. Tests use this with a
+    // stand-in body so the launch contract can be checked without building
+    // a repository.
+    static func scheduleRepositoryPreparation(
+        _ work: @escaping @Sendable () async -> Void
+    ) {
+        repositoryPreparation = Task.detached(operation: work)
+    }
+
+    // Unblocks library checks once the fixture repo is committed and
+    // hydration has been started. The on-screen ready marker comes later,
+    // after a window exists to attach it to.
+    static func waitUntilRepositoryPrepared() async {
+        await repositoryPreparation?.value
+    }
+
+    // Builds the fixture library after launch has returned. A cold CI
+    // simulator spends longer here than XCTest will wait while acquiring
+    // a background assertion.
+    private static func runDeferredFixtureSetup() {
+        // Wipes prior UITest library state so privacy screenshots can show
+        // a clean onboarding flow.
+        if ProcessInfo.processInfo.arguments.contains("--screenshots-onboarding") {
+            resetLocalStateForScreenshotOnboarding()
+        }
+
         do {
             try TestLFSServer.shared.start()
         } catch {
             fatalError("TestSupport: Failed to start test LFS server: \(error)")
         }
-        
-        // Set up test repository
+
         do {
             try setupTestRepository()
             setupTestUserDefaults()
             print("TestSupport: Test environment setup complete")
         } catch {
-            // Surfaces the concrete setup failure in simulator logs before the intentional trap.
+            // Surfaces the concrete setup failure in simulator logs before
+            // the intentional trap.
             print("TestSupport: Failed to setup test environment: \(error)")
             fatalError("TestSupport: Failed to setup test environment: \(error)")
         }
 
-        // Rotate phone to portrait mode
-        UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
-        
+        // Rotate phone to portrait mode. Hop to the main thread so this
+        // does not touch UIKit from the fixture task.
+        DispatchQueue.main.async {
+            UIDevice.current.setValue(
+                UIInterfaceOrientation.portrait.rawValue,
+                forKey: "orientation"
+            )
+        }
     }
     
     // Builds a UI-test repository that mirrors production encrypted LFS pointer behavior for timeline loading.
