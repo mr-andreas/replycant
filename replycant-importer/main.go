@@ -1760,7 +1760,11 @@ func parseDuration(v string) (float64, error) {
 	return strconv.ParseFloat(v, 64)
 }
 
-// extractImageMetadata reads capture date/orientation and optional GPS from image metadata.
+// extractImageMetadata reads capture date, orientation, and optional GPS
+// from image metadata. GPS comes only from the GPS IFD: camera JPEGs also
+// carry an interoperability block whose tag ids collide with GPS latitude,
+// and that block is decoded later. A flat tag map then keeps latitude 0
+// while longitude, which does not collide, survives.
 func extractImageMetadata(path string) (takenAt string, loc *OriginalLocation, orientation int) {
 	format, ok := imageFormatFromPath(path)
 	if !ok {
@@ -1774,12 +1778,40 @@ func extractImageMetadata(path string) (takenAt string, loc *OriginalLocation, o
 	defer f.Close()
 
 	var tags imagemeta.Tags
+	var gpsLat, gpsLng float64
+	var hasLat, hasLng bool
+	var latRef, lngRef string
+	var gpsAlt *float64
 	_, err = imagemeta.Decode(imagemeta.Options{
 		R:           f,
 		ImageFormat: format,
 		Sources:     imagemeta.EXIF | imagemeta.XMP | imagemeta.IPTC,
 		HandleTag: func(info imagemeta.TagInfo) error {
 			tags.Add(info)
+			if strings.HasSuffix(info.Namespace, "GPSInfoIFD") {
+				switch info.Tag {
+				case "GPSLatitude":
+					if v, ok := asFloat64(info.Value); ok {
+						gpsLat, hasLat = v, true
+					}
+				case "GPSLongitude":
+					if v, ok := asFloat64(info.Value); ok {
+						gpsLng, hasLng = v, true
+					}
+				case "GPSLatitudeRef":
+					if s, ok := info.Value.(string); ok {
+						latRef = s
+					}
+				case "GPSLongitudeRef":
+					if s, ok := info.Value.(string); ok {
+						lngRef = s
+					}
+				case "GPSAltitude":
+					if alt, ok := asFloat64(info.Value); ok {
+						gpsAlt = &alt
+					}
+				}
+			}
 			return nil
 		},
 	})
@@ -1801,18 +1833,17 @@ func extractImageMetadata(path string) (takenAt string, loc *OriginalLocation, o
 	}
 	orientation = normalizePhotoOrientation(format, orientation)
 
-	lat, lng, err := tags.GetLatLong()
-	if err == nil {
-		if _, ok := tags.EXIF()["GPSLatitude"]; ok {
-			loc = &OriginalLocation{
-				Latitude:  lat,
-				Longitude: lng,
-			}
-			if altTag, ok := tags.EXIF()["GPSAltitude"]; ok {
-				if alt, ok := asFloat64(altTag.Value); ok {
-					loc.Altitude = &alt
-				}
-			}
+	if hasLat && hasLng {
+		if latRef == "S" {
+			gpsLat = -gpsLat
+		}
+		if lngRef == "W" {
+			gpsLng = -gpsLng
+		}
+		loc = &OriginalLocation{
+			Latitude:  gpsLat,
+			Longitude: gpsLng,
+			Altitude:  gpsAlt,
 		}
 	}
 

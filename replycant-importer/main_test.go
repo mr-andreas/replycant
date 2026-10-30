@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -737,6 +739,134 @@ func assertLocation(t *testing.T, got, want *OriginalLocation) {
 	if *got.Altitude != *want.Altitude {
 		t.Fatalf("expected altitude %v, got %v", *want.Altitude, *got.Altitude)
 	}
+}
+
+// TestExtractImageMetadataKeepsGPSWhenInteropBlockReusesTagIDs verifies a
+// camera JPEG's interoperability block cannot replace the GPS latitude.
+// Those files reuse tag ids 0x0001 and 0x0002, and that block is decoded
+// after the GPS IFD, so a flat tag map keeps latitude 0 and a real longitude.
+func TestExtractImageMetadataKeepsGPSWhenInteropBlockReusesTagIDs(t *testing.T) {
+	lat := 57.0 + 9.0/60 + (592767.0/10000)/3600
+	lng := 24.0 + 50.0/60 + (482597.0/10000)/3600
+	cases := []struct {
+		name   string
+		latRef byte
+		lngRef byte
+		want   OriginalLocation
+	}{
+		{
+			name:   "north east",
+			latRef: 'N',
+			lngRef: 'E',
+			want:   OriginalLocation{Latitude: lat, Longitude: lng},
+		},
+		{
+			name:   "south west",
+			latRef: 'S',
+			lngRef: 'W',
+			want:   OriginalLocation{Latitude: -lat, Longitude: -lng},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "photo.jpg")
+			if err := os.WriteFile(path, jpegWithGPSAndInterop(tc.latRef, tc.lngRef), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, got, _ := extractImageMetadata(path)
+			if got == nil {
+				t.Fatal("expected a location")
+			}
+			if got.Altitude != nil {
+				t.Fatalf("expected no altitude, got %v", *got.Altitude)
+			}
+			const eps = 1e-9
+			if math.Abs(got.Latitude-tc.want.Latitude) > eps || math.Abs(got.Longitude-tc.want.Longitude) > eps {
+				t.Fatalf("expected lat %v lon %v, got lat %v lon %v", tc.want.Latitude, tc.want.Longitude, got.Latitude, got.Longitude)
+			}
+		})
+	}
+}
+
+// jpegWithGPSAndInterop builds a JPEG whose GPS directory is followed by an
+// interoperability directory. The later directory's ids collide with GPS
+// latitude, which is how the flat metadata map drops the real latitude.
+func jpegWithGPSAndInterop(latRef, lngRef byte) []byte {
+	var b []byte
+	u16 := func(v uint16) { b = binary.BigEndian.AppendUint16(b, v) }
+	u32 := func(v uint32) { b = binary.BigEndian.AppendUint32(b, v) }
+	entry := func(tag, typ uint16, count, value uint32) {
+		u16(tag)
+		u16(typ)
+		u32(count)
+		u32(value)
+	}
+	patch := func(entryAt int, value uint32) {
+		binary.BigEndian.PutUint32(b[entryAt+8:entryAt+12], value)
+	}
+
+	u16(0x4D4D)
+	u16(42)
+	u32(8)
+
+	// GPS before Exif, out of tag-id order, so the interoperability block is
+	// applied second. That is the order cameras use when this bug shows up.
+	u16(2)
+	gpsPtr := len(b)
+	entry(0x8825, 4, 1, 0)
+	exifPtr := len(b)
+	entry(0x8769, 4, 1, 0)
+	u32(0)
+
+	gpsAt := uint32(len(b))
+	u16(4)
+	entry(0x0001, 2, 2, uint32(latRef)<<24)
+	latPtr := len(b)
+	entry(0x0002, 5, 3, 0)
+	entry(0x0003, 2, 2, uint32(lngRef)<<24)
+	lngPtr := len(b)
+	entry(0x0004, 5, 3, 0)
+	u32(0)
+
+	latAt := uint32(len(b))
+	u32(57)
+	u32(1)
+	u32(9)
+	u32(1)
+	u32(592767)
+	u32(10000)
+	lngAt := uint32(len(b))
+	u32(24)
+	u32(1)
+	u32(50)
+	u32(1)
+	u32(482597)
+	u32(10000)
+
+	exifAt := uint32(len(b))
+	u16(1)
+	interopPtr := len(b)
+	entry(0xA005, 4, 1, 0)
+	u32(0)
+
+	interopAt := uint32(len(b))
+	u16(2)
+	entry(0x0001, 2, 4, 0x52393800) // "R98\x00", reported as GPSLatitudeRef
+	entry(0x0002, 7, 4, 0x30313030) // "0100", reported as GPSLatitude 0
+	u32(0)
+
+	patch(gpsPtr, gpsAt)
+	patch(exifPtr, exifAt)
+	patch(latPtr, latAt)
+	patch(lngPtr, lngAt)
+	patch(interopPtr, interopAt)
+
+	payload := append([]byte("Exif\x00\x00"), b...)
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE1}
+	jpeg = binary.BigEndian.AppendUint16(jpeg, uint16(2+len(payload)))
+	jpeg = append(jpeg, payload...)
+	jpeg = append(jpeg, 0xFF, 0xDA)
+	return jpeg
 }
 
 // TestNormalizePhotoOrientation verifies HEIF avoids double-rotation while other formats keep EXIF orientation.
