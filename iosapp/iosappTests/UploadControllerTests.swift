@@ -191,6 +191,31 @@ struct UploadControllerTests {
         #expect(harness.runner.startedOrders.isEmpty)
     }
 
+    // A filled screenshot library would otherwise cover the photos with
+    // the enable offer. Upload stays off so the progress ring stays hidden.
+    @Test("A screenshot launch hides the enable offer and does not start an upload")
+    func testScreenshotLaunchHidesEnableOfferWithoutUploading() async {
+        let harness = Harness(launchArguments: ["--screenshots", "--uitesting"])
+        harness.photos.isAuthorized = true
+        harness.reminders.status = .denied
+
+        #expect(harness.controller.isEnabled == false)
+        #expect(harness.controller.isPromptDismissed == true)
+        #expect(harness.defaults.bool(forKey: UploadController.promptDismissedKey) == false)
+        #expect(
+            UploadController.showsEnableBanner(
+                isEnabled: harness.controller.isEnabled,
+                isDismissed: harness.controller.isPromptDismissed,
+                isTimelineEmpty: false
+            ) == false
+        )
+
+        await harness.controller.launchDidFinish()
+
+        #expect(harness.runner.startedOrders.isEmpty)
+        #expect(harness.scheduler.setEnabledCalls.isEmpty)
+    }
+
     @Test("The enable banner shows only while upload is off, not dismissed, and the timeline has photos")
     func testShowsEnableBanner() {
         for enabled in [false, true] {

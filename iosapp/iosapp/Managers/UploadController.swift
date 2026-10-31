@@ -107,7 +107,12 @@ final class UploadController: ObservableObject {
         self.defaults = defaults
         self.launchArguments = launchArguments
         self.isEnabled = scheduler.isEnabled
+        // A screenshot library already has photos, so the enable offer
+        // would cover the timeline. Leaving upload off keeps the progress
+        // ring hidden too. The flag is not stored, so a later real launch
+        // still asks.
         self.isPromptDismissed = defaults.bool(forKey: Self.promptDismissedKey)
+            || launchArguments.contains("--screenshots")
         // A return to Wi-Fi has nobody to tap Start. The path check
         // inside startIfReady still refuses a metered network.
         networkCancellable = network.isMeteredPublisher

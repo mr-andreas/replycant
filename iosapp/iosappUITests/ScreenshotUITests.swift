@@ -52,6 +52,18 @@ final class ScreenshotUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(1.0))
         waitForContentToSettle(timeout: 20)
 
+        // A marketing timeline should look like a library already in use.
+        // The enable offer and the upload ring are both real product UI,
+        // and either one would cover the photos in the README shot.
+        XCTAssertFalse(
+            app.descendants(matching: .any)["enableUploadBanner"].exists,
+            "Enable upload banner is visible in the timeline screenshot"
+        )
+        XCTAssertFalse(
+            app.descendants(matching: .any)["uploadProgressButton"].exists,
+            "Upload progress is visible in the timeline screenshot"
+        )
+
         snapshot("01-timeline")
     }
 
