@@ -27,8 +27,9 @@ struct TimelineInitialBottomAnchorTests {
         #expect(offset == -20)
     }
 
-    // Tab reselect and the status bar ask for the top. That is where the
-    // oldest photos are, so the grid is sent to the newest row instead.
+    // A tab reselect asks for the top. That is where the oldest photos
+    // are, so the grid is sent to the newest row instead. A notch tap
+    // uses the same offset but is let through by the one-shot flag.
     @Test func replacesTopAnchorWithNewestRow() {
         let offset = TimelineInitialBottomAnchor.newestOffsetReplacingTopAnchor(
             requestedY: -100,
@@ -143,6 +144,47 @@ struct TimelineInitialBottomAnchorTests {
         // A mistaken redirect animates toward the newest row. Spin so that
         // jump shows up as a settled offset instead of a pending animation.
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        #expect(
+            abs(grid.contentOffset.y - top) <= 0.5,
+            "offset \(grid.contentOffset.y) top \(top) size \(grid.contentSize)"
+        )
+    }
+
+    // A notch tap asks for the oldest row, which sits at the same top
+    // offset a tab reselect uses. The one-shot flag lets that write
+    // through, and is consumed so the next tab reselect still jumps
+    // to the newest row.
+    @Test @MainActor func notchTopAnchorStaysOnTheOldestRow() {
+        let layout = UICollectionViewFlowLayout()
+        layout.itemSize = CGSize(width: 140, height: 140)
+        layout.minimumInteritemSpacing = 0
+        layout.minimumLineSpacing = 0
+        let frame = CGRect(x: 0, y: 0, width: 440, height: 956)
+        let grid = InitialLayoutCollectionView(frame: frame, collectionViewLayout: layout)
+        let source = OldestRowGridSource(count: 30)
+        grid.dataSource = source
+        grid.register(UICollectionViewCell.self, forCellWithReuseIdentifier: OldestRowGridSource.reuseID)
+        grid.contentInsetAdjustmentBehavior = .never
+        grid.redirectsTopAnchorsToBottom = true
+        let window = UIWindow(frame: frame)
+        window.addSubview(grid)
+        window.makeKeyAndVisible()
+        grid.layoutIfNeeded()
+
+        #expect(grid.contentSize.height > grid.bounds.height)
+        let top = -grid.adjustedContentInset.top
+        let bottom = TimelineInitialBottomAnchor.targetYOffset(
+            contentHeight: grid.contentSize.height,
+            viewportHeight: grid.bounds.height,
+            topInset: grid.adjustedContentInset.top,
+            bottomInset: grid.adjustedContentInset.bottom
+        )
+        grid.restoreContentOffset(CGPoint(x: 0, y: bottom))
+        #expect(abs(grid.contentOffset.y - bottom) <= 0.5)
+        grid.honorsNextTopAnchor = true
+        grid.setContentOffset(CGPoint(x: 0, y: top), animated: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        #expect(grid.honorsNextTopAnchor == false)
         #expect(
             abs(grid.contentOffset.y - top) <= 0.5,
             "offset \(grid.contentOffset.y) top \(top) size \(grid.contentSize)"

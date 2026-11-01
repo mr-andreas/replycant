@@ -19,10 +19,11 @@ struct TimelineInitialBottomAnchor {
         return maxOffset
     }
 
-    // A tab reselect or status-bar tap asks for the top. The oldest photos
-    // are there, so the request is carried to the newest row. Nil means the
-    // original request should stand: the person is dragging, a month jump
-    // asked for this offset, or the content is too short to scroll.
+    // A tab reselect asks for the top. The oldest photos are there, so
+    // the request is carried to the newest row. A notch tap uses the
+    // same offset and is let through before this runs. Nil means the
+    // original request should stand: the person is dragging, a month
+    // jump asked for this offset, or the content is too short to scroll.
     static func newestOffsetReplacingTopAnchor(
         requestedY: CGFloat,
         currentY: CGFloat,
@@ -1027,22 +1028,18 @@ struct TimelineCollectionView: UIViewRepresentable {
             }
         }
 
-        // Tab reselect and status-bar taps ask for the top. The timeline is
-        // oldest-first, so the end someone is trying to reach is the newest
-        // row. Returning false keeps UIKit from also scrolling to the top.
-        // This is not a month jump: the sidebar should follow the viewport
-        // to the newest month when the animation ends.
+        // A notch tap asks for the oldest photos. The timeline is
+        // oldest-first, so that is the top inset. Returning false keeps
+        // UIKit from scrolling again. Tab reselect does not come through
+        // here; it sets the top offset directly and is sent to the newest
+        // row. This is not a month jump, so the sidebar follows the
+        // viewport when the animation ends.
         func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
-            let inset = scrollView.adjustedContentInset
-            let targetY = TimelineInitialBottomAnchor.targetYOffset(
-                contentHeight: scrollView.contentSize.height,
-                viewportHeight: scrollView.bounds.height,
-                topInset: inset.top,
-                bottomInset: inset.bottom
-            )
-            guard abs(scrollView.contentOffset.y - targetY) > 0.5 else { return false }
+            let topY = -scrollView.adjustedContentInset.top
+            guard abs(scrollView.contentOffset.y - topY) > 0.5 else { return false }
+            (scrollView as? InitialLayoutCollectionView)?.honorsNextTopAnchor = true
             scrollView.setContentOffset(
-                CGPoint(x: scrollView.contentOffset.x, y: targetY),
+                CGPoint(x: scrollView.contentOffset.x, y: topY),
                 animated: true
             )
             return false
@@ -1499,6 +1496,11 @@ final class InitialLayoutCollectionView: UICollectionView {
     // While a rotation is putting the middle photo back, a system
     // scroll-to-top would otherwise send the grid to the newest row.
     var suspendsTopRedirect = false
+    // A notch tap asks for the oldest photos, which sit at the same
+    // offset a tab reselect uses. The next offset write is that request
+    // and must not be rewritten to the newest row. Cleared after one
+    // write so the tab still jumps to the newest photos.
+    var honorsNextTopAnchor = false
     // Set for the duration of a bounds change that keeps the middle
     // photo. UIKit scrolls inside that change, and the scroll callback
     // would otherwise replace the snapshot with the jumped photo.
@@ -1570,10 +1572,12 @@ final class InitialLayoutCollectionView: UICollectionView {
         super.setContentOffset(offset, animated: false)
     }
 
-    // Tab reselect and the status bar scroll to the top. The oldest photos
-    // are there, so the request is carried to the newest row instead.
+    // A tab reselect scrolls to the top. The oldest photos are there, so
+    // the request is carried to the newest row instead. A notch tap sets
+    // honorsNextTopAnchor so that one write stays at the top.
     override func setContentOffset(_ contentOffset: CGPoint, animated: Bool) {
-        if suspendsTopRedirect {
+        let honorTop = consumeHonoredTopAnchor()
+        if suspendsTopRedirect || honorTop {
             super.setContentOffset(contentOffset, animated: animated)
             return
         }
@@ -1599,9 +1603,19 @@ final class InitialLayoutCollectionView: UICollectionView {
         super.scrollRectToVisible(rect, animated: animated)
     }
 
-    // A programmatic jump to the top is the system scroll-to-top gesture.
-    // Dragging and deceleration move the same distance in small steps, and
-    // those have to be able to reach the oldest photos.
+    // A notch tap is allowed through once. Consuming the flag here keeps
+    // the next tab reselect, which uses the same top offset, on the
+    // newest row.
+    private func consumeHonoredTopAnchor() -> Bool {
+        guard honorsNextTopAnchor else { return false }
+        honorsNextTopAnchor = false
+        return true
+    }
+
+    // A tab reselect jumps to the top in one write. Dragging and
+    // deceleration move the same distance in small steps, and those
+    // have to be able to reach the oldest photos. A notch tap is
+    // excluded before this runs.
     private func newestOffset(replacingTopAnchor contentOffset: CGPoint) -> CGPoint? {
         let inset = adjustedContentInset
         guard let y = TimelineInitialBottomAnchor.newestOffsetReplacingTopAnchor(
