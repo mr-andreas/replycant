@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- flicking the timeline keeps going while photos upload
 - tapping the top of the screen scrolls the timeline to the oldest photos
 
 ## 0.6.0 - 2026-10-31

@@ -267,6 +267,23 @@ struct TimelineGridMetrics: Equatable {
     }
 }
 
+// A reload while UIKit is still decelerating cancels the flick. Structural
+// timeline updates wait until the finger, the coast, or a month-jump
+// animation has finished.
+enum TimelineLiveUpdatePolicy {
+    // True while a gesture or a month jump still owns the scroll view.
+    // A reload in that window cancels the coast.
+    static func shouldHold(
+        isTracking: Bool,
+        isDragging: Bool,
+        isDecelerating: Bool,
+        isGridScrolling: Bool,
+        isProgrammaticJump: Bool
+    ) -> Bool {
+        isTracking || isDragging || isDecelerating || isGridScrolling || isProgrammaticJump
+    }
+}
+
 // Renders the photo timeline grid while requesting sparse pages as cells come into view.
 struct TimelineView: View {
     // Defines deterministic preview modes so canvas rendering never depends on repository setup.
@@ -640,6 +657,7 @@ struct TimelineCollectionView: UIViewRepresentable {
         private var isFinishingRotation = false
         private var isReapplyingRotationAnchor = false
         private var hasPendingReconfigure = false
+        private var hasPendingTotalCountReload = false
         private let edgeThreshold = 24
 
         init(timelineManager: TimelineManager, selectedItemId: Binding<String?>) {
@@ -676,31 +694,11 @@ struct TimelineCollectionView: UIViewRepresentable {
                 .sink { [weak self] updatedCount in
                     guard let self, let collectionView = self.collectionView else { return }
                     guard self.lastKnownTotalCount != updatedCount else { return }
-                    self.lastKnownTotalCount = updatedCount
-                    // The cell still shows the photo from before this change.
-                    // The manager's index for that row has already moved, so
-                    // reading the manager here would anchor the wrong photo.
-                    let preserved = self.hasCommittedInitialPosition
-                        ? self.preservedVisibleItem(in: collectionView)
-                        : nil
-                    collectionView.reloadData()
-                    collectionView.layoutIfNeeded()
-                    if let preserved,
-                       let newIndex = self.timelineManager.index(ofItemId: preserved.itemId) {
-                        let restored = self.restoreVisibleTopAnchor(
-                            (IndexPath(item: newIndex, section: 0), preserved.offsetFromItemTop),
-                            in: collectionView
-                        )
-                        if restored {
-                            collectionView.layoutIfNeeded()
-                            self.timelineManager.savedContentOffset = collectionView.contentOffset
-                            self.timelineManager.savedViewportAnchorIndex = newIndex
-                            self.timelineManager.savedViewportAnchorOffsetFromItemTop = preserved.offsetFromItemTop
-                            self.lastStableContentOffsetY = collectionView.contentOffset.y
-                            self.publishViewportMonth(in: collectionView, force: true)
-                        }
+                    if self.shouldHoldGridReload(collectionView) {
+                        self.hasPendingTotalCountReload = true
+                        return
                     }
-                    self.performInitialScrollIfNeeded()
+                    self.applyTotalCount(updatedCount, in: collectionView)
                 }
                 .store(in: &cancellables)
 
@@ -728,6 +726,62 @@ struct TimelineCollectionView: UIViewRepresentable {
             guard hasPendingReconfigure else { return }
             hasPendingReconfigure = false
             reconfigureVisibleCells()
+        }
+
+        // A count that lands while the finger is down, the grid is
+        // coasting, or a month jump is animating would reload the
+        // collection view and cancel that scroll.
+        private func shouldHoldGridReload(_ collectionView: UICollectionView) -> Bool {
+            TimelineLiveUpdatePolicy.shouldHold(
+                isTracking: collectionView.isTracking,
+                isDragging: collectionView.isDragging,
+                isDecelerating: collectionView.isDecelerating,
+                isGridScrolling: timelineManager.isGridScrolling,
+                isProgrammaticJump: isProgrammaticMonthJumpInFlight
+            )
+        }
+
+        // Rebuilds the grid for a new photo count and keeps the photo
+        // that was on screen. The manager's index for that row may
+        // already have moved, so the anchor is the cell's item id.
+        private func applyTotalCount(_ updatedCount: Int, in collectionView: UICollectionView) {
+            guard lastKnownTotalCount != updatedCount else { return }
+            lastKnownTotalCount = updatedCount
+            let preserved = hasCommittedInitialPosition
+                ? preservedVisibleItem(in: collectionView)
+                : nil
+            collectionView.reloadData()
+            collectionView.layoutIfNeeded()
+            if let preserved,
+               let newIndex = timelineManager.index(ofItemId: preserved.itemId) {
+                let restored = restoreVisibleTopAnchor(
+                    (IndexPath(item: newIndex, section: 0), preserved.offsetFromItemTop),
+                    in: collectionView
+                )
+                if restored {
+                    collectionView.layoutIfNeeded()
+                    timelineManager.savedContentOffset = collectionView.contentOffset
+                    timelineManager.savedViewportAnchorIndex = newIndex
+                    timelineManager.savedViewportAnchorOffsetFromItemTop = preserved.offsetFromItemTop
+                    lastStableContentOffsetY = collectionView.contentOffset.y
+                    publishViewportMonth(in: collectionView, force: true)
+                }
+            }
+            performInitialScrollIfNeeded()
+        }
+
+        // Applies a photo-count change that arrived during a flick before
+        // refreshing visible cells. The reload already rebuilds those cells.
+        private func flushPendingGridUpdates() {
+            if hasPendingTotalCountReload {
+                hasPendingTotalCountReload = false
+                hasPendingReconfigure = false
+                if let collectionView {
+                    applyTotalCount(timelineManager.totalCount, in: collectionView)
+                }
+                return
+            }
+            flushPendingReconfigure()
         }
 
         // Restores a previously saved scroll position, or anchors to the newest row on first launch.
@@ -1010,7 +1064,7 @@ struct TimelineCollectionView: UIViewRepresentable {
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
                 timelineManager.setGridScrolling(false)
-                flushPendingReconfigure()
+                flushPendingGridUpdates()
                 if let collectionView = scrollView as? UICollectionView {
                     rememberCenterAnchor(in: collectionView)
                     publishViewportMonth(in: collectionView, force: true)
@@ -1021,7 +1075,7 @@ struct TimelineCollectionView: UIViewRepresentable {
         // Clears drag flag after inertial scrolling settles so sidebar may resume animated autoscroll.
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
             timelineManager.setGridScrolling(false)
-            flushPendingReconfigure()
+            flushPendingGridUpdates()
             if let collectionView = scrollView as? UICollectionView {
                 rememberCenterAnchor(in: collectionView)
                 publishViewportMonth(in: collectionView, force: true)
@@ -1055,7 +1109,7 @@ struct TimelineCollectionView: UIViewRepresentable {
             isProgrammaticMonthJumpInFlight = false
             (scrollView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             timelineManager.setGridScrolling(false)
-            flushPendingReconfigure()
+            flushPendingGridUpdates()
             if let collectionView = scrollView as? UICollectionView {
                 // The jump blocks per-frame anchor updates. Record the
                 // settled middle and top once, or the next sidebar resize

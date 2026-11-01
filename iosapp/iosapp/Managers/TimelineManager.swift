@@ -88,6 +88,9 @@ final class TimelineManager: ObservableObject {
     private var changeCoalescer = ManifestChangeCoalescer()
     private var databaseChangeDrainTask: Task<Void, Never>?
     private let databaseChangeDrainDelay: UInt64 = 300_000_000
+    // The grid is still coasting, so the buffered burst stays unapplied.
+    // Publishing it now reloads the collection view and stops the flick.
+    private var databaseChangeHeldForScroll = false
 
     // Keeps one contiguous loaded region so sparse grid reads can map global indices to loaded items.
     private var loadedOffset = 0
@@ -383,7 +386,8 @@ final class TimelineManager: ObservableObject {
     /// Tracks active grid scrolling state so sidebar animations and
     /// preload work can be suppressed during drag/deceleration. When
     /// scrolling ends, fires the pending preload pass immediately so
-    /// off-screen images begin loading without the 150ms debounce delay.
+    /// off-screen images begin loading without the 150ms debounce delay,
+    /// and applies any database burst that was held for the flick.
     func setGridScrolling(_ isScrolling: Bool) {
         guard isGridScrolling != isScrolling else { return }
         monthSelection.isGridScrolling = isScrolling
@@ -392,6 +396,7 @@ final class TimelineManager: ObservableObject {
             preloadUpdateWorkItem?.cancel()
             preloadUpdateWorkItem = nil
             updatePreloadRange()
+            flushDatabaseChangeHeldForScroll()
         }
     }
 
@@ -728,6 +733,7 @@ final class TimelineManager: ObservableObject {
         databaseChangeCancellable = nil
         databaseChangeDrainTask?.cancel()
         databaseChangeDrainTask = nil
+        databaseChangeHeldForScroll = false
         changeCoalescer = ManifestChangeCoalescer()
         resetLoadedRegion(clearVisibleIndices: false)
     }
@@ -752,10 +758,39 @@ final class TimelineManager: ObservableObject {
     }
 
     // Applies the merged burst. A drain with nothing pending is a no-op so a
-    // cancelled window cannot refresh twice.
+    // cancelled window cannot refresh twice. A flick keeps the burst: the
+    // grid reload that follows a count change cancels deceleration.
     private func drainCoalescedDatabaseChange() async {
+        if isGridScrolling {
+            databaseChangeHeldForScroll = true
+            return
+        }
         guard let change = changeCoalescer.drain() else { return }
         await handleDatabaseChange(change)
+    }
+
+    // The count can finish after a flick has started. Put this burst back
+    // ahead of any commits that landed while the count ran, and wait until
+    // the coast ends so the grid is not reloaded mid-flick.
+    private func holdDatabaseChangeForScroll(_ change: ManifestDatabaseChange) {
+        let newer = changeCoalescer.drain()
+        changeCoalescer.ingest(change)
+        if let newer {
+            changeCoalescer.ingest(newer)
+        }
+        databaseChangeHeldForScroll = true
+    }
+
+    // Applies a burst that was kept back for a flick, without waiting out
+    // another debounce. The coast is already over, so the photo should
+    // show up on the next turn.
+    private func flushDatabaseChangeHeldForScroll() {
+        guard databaseChangeHeldForScroll else { return }
+        databaseChangeHeldForScroll = false
+        databaseChangeDrainTask?.cancel()
+        databaseChangeDrainTask = Task { [weak self] in
+            await self?.drainCoalescedDatabaseChange()
+        }
     }
 
     // Applies database change events to sparse timeline state so UI updates without full reloads.
@@ -766,6 +801,10 @@ final class TimelineManager: ObservableObject {
         }
         do {
             let refreshedTotalCount = try await manifestLoader.countTimelineOriginals(scope: scope)
+            if isGridScrolling {
+                holdDatabaseChangeForScroll(change)
+                return
+            }
             applyDatabaseChange(change, refreshedTotalCount: refreshedTotalCount)
             // A full replace drops the loaded window. The grid does not
             // reload when the count stays the same, so those cells still

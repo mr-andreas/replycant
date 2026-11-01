@@ -413,6 +413,82 @@ struct TimelineManagerDatabaseChangeTests {
         #expect(loader.countCalls == 1)
         #expect(loader.scopes == [.all])
     }
+
+    // A flick dies if the grid reloads while it is still decelerating.
+    // Commits that land during the coast stay buffered, then apply once.
+    @Test func scrollingHoldsDatabaseBurstUntilTheFlickEnds() async {
+        let manager = makeIsolatedManager()
+        let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
+        let third = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
+        manager.seedLoadedRegionForTesting(
+            offset: 0,
+            items: [TimelineItem(original: first), TimelineItem(original: third)],
+            totalCount: 2
+        )
+        let loader = CountingTimelineLoader()
+        loader.countResult = 4
+        manager.setManifestLoaderForTesting(loader)
+        manager.setGridScrolling(true)
+
+        let second = makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
+        let fourth = makeOriginal(id: "d", guessedTakenAt: Date(timeIntervalSince1970: 25), sha256: "sha-d")
+        manager.receiveDatabaseChange(
+            .incremental(ManifestMutation(added: [second], updated: [], removed: []))
+        )
+        manager.receiveDatabaseChange(
+            .incremental(ManifestMutation(added: [fourth], updated: [], removed: []))
+        )
+
+        await manager.waitForDatabaseChangeDrainForTesting()
+        #expect(loader.countCalls == 0)
+        #expect(manager.totalCount == 2)
+        #expect(manager.loadedItems.map(\.id) == ["a", "c"])
+
+        manager.setGridScrolling(false)
+        await manager.waitForDatabaseChangeDrainForTesting()
+        #expect(loader.countCalls == 1)
+        #expect(manager.totalCount == 4)
+        #expect(manager.loadedItems.map(\.id) == ["a", "b", "d", "c"])
+    }
+
+    // The library count is async. A flick that starts while that query is
+    // in flight still has to keep the burst, or the grid reloads mid-coast.
+    @Test func countThatFinishesDuringAFlickIsHeld() async {
+        let manager = makeIsolatedManager()
+        let first = makeOriginal(id: "a", guessedTakenAt: Date(timeIntervalSince1970: 10), sha256: "sha-a")
+        let third = makeOriginal(id: "c", guessedTakenAt: Date(timeIntervalSince1970: 30), sha256: "sha-c")
+        manager.seedLoadedRegionForTesting(
+            offset: 0,
+            items: [TimelineItem(original: first), TimelineItem(original: third)],
+            totalCount: 2
+        )
+        let loader = CountingTimelineLoader()
+        loader.countResult = 3
+        var didStartFlick = false
+        loader.onCount = {
+            if !didStartFlick {
+                didStartFlick = true
+                manager.setGridScrolling(true)
+            }
+        }
+        manager.setManifestLoaderForTesting(loader)
+
+        let second = makeOriginal(id: "b", guessedTakenAt: Date(timeIntervalSince1970: 20), sha256: "sha-b")
+        manager.receiveDatabaseChange(
+            .incremental(ManifestMutation(added: [second], updated: [], removed: []))
+        )
+
+        await manager.waitForDatabaseChangeDrainForTesting()
+        #expect(loader.countCalls == 1)
+        #expect(manager.totalCount == 2)
+        #expect(manager.loadedItems.map(\.id) == ["a", "c"])
+
+        manager.setGridScrolling(false)
+        await manager.waitForDatabaseChangeDrainForTesting()
+        #expect(loader.countCalls == 2)
+        #expect(manager.totalCount == 3)
+        #expect(manager.loadedItems.map(\.id) == ["a", "b", "c"])
+    }
 }
 
 // Returns one fixed page so a full replace can be checked for reloading
@@ -478,10 +554,14 @@ private final class CountingTimelineLoader: ManifestLoaderProtocol {
         []
     }
 
+    var countResult = 2
+    var onCount: (@MainActor () -> Void)?
+
     func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
         countCalls += 1
         scopes.append(scope)
-        return 2
+        await onCount?()
+        return countResult
     }
 
     func loadTimelinePage(offset: Int, limit: Int, scope: TimelineScope) async throws -> [OriginalManifest] {
