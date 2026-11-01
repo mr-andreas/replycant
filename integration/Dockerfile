@@ -1,6 +1,6 @@
 FROM ghcr.io/juanfont/headscale:0.29.3 AS headscale
 
-FROM golang:1.26.6-trixie
+FROM golang:1.27.3-trixie
 
 RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs openssl ca-certificates curl dnsmasq && rm -rf /var/lib/apt/lists/*
 

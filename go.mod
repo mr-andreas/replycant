@@ -1,6 +1,6 @@
 module github.com/mr-andreas/replycant
 
-go 1.26.6
+go 1.27.3
 
 require (
 	github.com/alecthomas/kong v1.12.1

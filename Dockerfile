@@ -1,5 +1,5 @@
 # Build for alpine
-FROM golang:1.26.6-alpine3.23 AS alpine-builder
+FROM golang:1.27.3-alpine3.23 AS alpine-builder
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ COPY . .
 RUN go install ./...
 
 # Build for debian
-FROM golang:1.26.6-trixie AS debian-builder
+FROM golang:1.27.3-trixie AS debian-builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
