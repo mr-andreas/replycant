@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- opening the app after the phone was locked finishes reconnecting, instead of staying unavailable when the previous connection cannot shut down
 - flicking the timeline keeps going while photos upload
 - tapping the top of the screen scrolls the timeline to the oldest photos
 

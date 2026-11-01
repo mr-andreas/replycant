@@ -44,7 +44,11 @@ FASTLANE := cd iosapp && $(FASTLANE_LOCALE) env PATH="$(HOMEBREW_RUBY_BIN):$$PAT
 #
 # Bump TAILSCALEKIT_REV deliberately. It is the only thing describing which
 # Tailscale client every device runs.
-TAILSCALEKIT_REV := 59d4bb82744915815178e0f0776d60026a397ee7
+#
+# libtailscale passes CC=$(PWD)/clangwrap to `go build`, and the Go
+# toolchain splits CC on spaces. Building through a symlink without a
+# space keeps that path intact on a volume whose name has one.
+TAILSCALEKIT_REV := ac7ed43af14e19e1c1810ee9f8319872c6beb412
 TAILSCALEKIT_REPO := https://github.com/tailscale/libtailscale.git
 TAILSCALEKIT_SRC := iosapp/build/libtailscale
 TAILSCALEKIT_FRAMEWORK := iosapp/TailscaleKit.xcframework
@@ -62,8 +66,9 @@ $(TAILSCALEKIT_STAMP):
 	  fi; \
 	  cd $(TAILSCALEKIT_SRC); \
 	  git fetch --all --tags; \
-	  git checkout --detach $(TAILSCALEKIT_REV); \
-	  cd swift && make ios-fat; \
+	  git checkout -f --detach $(TAILSCALEKIT_REV); \
+	  ln -sfn "$(CURDIR)/$(TAILSCALEKIT_SRC)" /tmp/replycant-libtailscale; \
+	  cd /tmp/replycant-libtailscale/swift && make ios-fat; \
 	  cd "$(CURDIR)"; \
 	  rm -rf $(TAILSCALEKIT_FRAMEWORK); \
 	  cp -R $(TAILSCALEKIT_SRC)/swift/build/Build/Products/Release-iphonefat/TailscaleKit.xcframework \

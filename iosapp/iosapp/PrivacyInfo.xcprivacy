@@ -46,7 +46,7 @@
       </array>
     </dict>
     <dict>
-      <!-- sysctl kern.boottime, used by the Go runtime's monotonic clock. -->
+      <!-- mach_absolute_time, used by the Go runtime's monotonic clock. -->
       <key>NSPrivacyAccessedAPIType</key>
       <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
       <key>NSPrivacyAccessedAPITypeReasons</key>
