@@ -30,13 +30,21 @@ func TestNormalizeCloneOptions(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loopback")
 
+	bare, err := NormalizeCloneOptions(CloneOptions{
+		DiscoveryURL: "https://discovery.replycant.com",
+		Bare:         true,
+	})
+	require.NoError(t, err)
+	assert.True(t, bare.Bare)
+	assert.False(t, bare.LFS)
+
 	_, err = NormalizeCloneOptions(CloneOptions{
 		DiscoveryURL: "https://discovery.replycant.com",
 		Bare:         true,
-		NoLFS:        false,
+		LFS:          true,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--bare requires --no-lfs")
+	assert.Contains(t, err.Error(), "--bare cannot be used with --lfs")
 
 	opts, err := NormalizeCloneOptions(CloneOptions{DeviceName: " test "})
 	require.NoError(t, err)

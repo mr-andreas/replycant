@@ -221,7 +221,7 @@ log and start this step again.
 D=/tmp/replycant-sim-bootstrap
 R=$D/import
 mkdir -p "$D"
-git-replycant clone --no-lfs --device-name sim-seeder \
+git-replycant clone --device-name sim-seeder \
   --qr-addr 127.0.0.1:18990 "$R" >"$D/clone.log" 2>&1 &
 CLONE=$!
 ok=

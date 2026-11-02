@@ -122,29 +122,35 @@ func readFile(t *testing.T, containerID string, path string) string {
 // runReplycantClone executes the real git-replycant clone workflow against gitd.
 func runReplycantClone(t *testing.T, containerID string, cloneDir string) {
 	t.Helper()
-	out, err := runReplycantCloneAllowFail(containerID, cloneDir)
+	out, err := runReplycantCloneAllowFail(containerID, cloneDir, false)
 	require.NoErrorf(t, err, "git-replycant clone failed: %s", out)
 }
 
-func runReplycantCloneAllowFail(containerID string, cloneDir string) (string, error) {
-	return dockerExecAllowFail(
-		containerID,
+// runReplycantCloneAllowFail runs clone and returns its output. lfs passes
+// --lfs, which binary round-trip tests need. Other clones stay on the
+// pointer default.
+func runReplycantCloneAllowFail(containerID string, cloneDir string, lfs bool) (string, error) {
+	args := []string{
 		"git-replycant",
 		"clone",
 		"--discovery-url", e2eDiscoveryURL,
 		"--qr-addr", e2eQRAddr,
-		cloneDir,
-	)
+	}
+	if lfs {
+		args = append(args, "--lfs")
+	}
+	args = append(args, cloneDir)
+	return dockerExecAllowFail(containerID, args...)
 }
 
-// runReplycantCloneBareAllowFail executes clone in bare mode without LFS setup.
+// runReplycantCloneBareAllowFail executes a bare clone. Bare repos have no
+// worktree, so they cannot check photos out.
 func runReplycantCloneBareAllowFail(containerID string, cloneDir string) (string, error) {
 	return dockerExecAllowFail(
 		containerID,
 		"git-replycant",
 		"clone",
 		"--bare",
-		"--no-lfs",
 		"--discovery-url", e2eDiscoveryURL,
 		"--qr-addr", e2eQRAddr,
 		cloneDir,
@@ -196,9 +202,25 @@ func provisionDevice(t *testing.T, containerID string, cloneDir string) {
 
 func cloneAndProvision(t *testing.T, containerID string, cloneDir string) {
 	t.Helper()
+	cloneAndProvisionOpts(t, containerID, cloneDir, false)
+}
+
+// cloneAndProvisionLFS clones with --lfs so checkout restores photo bytes
+// and git add encrypts files under binary/. Round-trip tests need that;
+// a default clone leaves those paths as pointers.
+func cloneAndProvisionLFS(t *testing.T, containerID string, cloneDir string) {
+	t.Helper()
+	cloneAndProvisionOpts(t, containerID, cloneDir, true)
+}
+
+// cloneAndProvisionOpts pairs a clone and pulls once the device is
+// authorized. lfs selects --lfs for tests that need photo bytes in the
+// worktree.
+func cloneAndProvisionOpts(t *testing.T, containerID string, cloneDir string, lfs bool) {
+	t.Helper()
 	cloneErr := make(chan error, 1)
 	go func() {
-		out, err := runReplycantCloneAllowFail(containerID, cloneDir)
+		out, err := runReplycantCloneAllowFail(containerID, cloneDir, lfs)
 		if err != nil {
 			cloneErr <- fmt.Errorf("%s: %w", out, err)
 			return
@@ -346,7 +368,7 @@ func TestE2EBinaryWorkflow(t *testing.T) {
 	var secondChecksum string
 
 	t.Run("clone_and_add_binary", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/binary-clone")
+		cloneAndProvisionLFS(t, containerID, "/tmp/binary-clone")
 
 		dockerExec(t, containerID, "mkdir", "-p", "/tmp/binary-clone/binary")
 		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/binary-clone/binary/test.bin")
@@ -373,7 +395,7 @@ func TestE2EBinaryWorkflow(t *testing.T) {
 	})
 
 	t.Run("second_clone_restores_plaintext", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/binary-clone-2")
+		cloneAndProvisionLFS(t, containerID, "/tmp/binary-clone-2")
 		secondChecksum = sha256File(t, containerID, "/tmp/binary-clone-2/binary/test.bin")
 		assert.Equal(t, firstChecksum, secondChecksum)
 	})
@@ -413,7 +435,7 @@ func TestE2ELFSModifyAndPull(t *testing.T) {
 	var updatedChecksum string
 
 	t.Run("initial_binary_push", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/lfs-mod")
+		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-mod")
 
 		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-mod/binary")
 		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/lfs-mod/binary/data.bin")
@@ -436,7 +458,7 @@ func TestE2ELFSModifyAndPull(t *testing.T) {
 	})
 
 	t.Run("second_clone_sees_initial_binary", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/lfs-mod-2")
+		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-mod-2")
 		clonedChecksum := sha256File(t, containerID, "/tmp/lfs-mod-2/binary/data.bin")
 		assert.Equal(t, originalChecksum, clonedChecksum)
 	})
@@ -477,7 +499,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 	var modifiedChecksum string
 
 	t.Run("clone_a_create_binary_and_push", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/lfs-cross-a")
+		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-cross-a")
 
 		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-cross-a/binary")
 		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/lfs-cross-a/binary/test.bin")
@@ -502,7 +524,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 	})
 
 	t.Run("clone_b_clone_verify_modify_and_push", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/lfs-cross-b")
+		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-cross-b")
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "pull", "origin", "main")
 
 		clonedChecksum := sha256File(t, containerID, "/tmp/lfs-cross-b/binary/test.bin")
@@ -554,7 +576,7 @@ func TestE2ELFSCloneExistingRepo(t *testing.T) {
 	checksums := map[string]string{}
 
 	t.Run("seed_existing_lfs_repo", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/lfs-existing-src")
+		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-existing-src")
 		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-existing-src/binary")
 
 		for _, f := range files {
@@ -589,7 +611,7 @@ func TestE2ELFSCloneExistingRepo(t *testing.T) {
 	})
 
 	t.Run("fresh_clone_fetches_and_decrypts_all_binaries", func(t *testing.T) {
-		cloneAndProvision(t, containerID, "/tmp/lfs-existing-dst")
+		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-existing-dst")
 
 		for _, f := range files {
 			clonedChecksum := sha256File(t, containerID, "/tmp/lfs-existing-dst/"+f.path)

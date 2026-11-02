@@ -92,7 +92,7 @@ code in the iOS app to connect.
 The Git repository can be copied, moved, or mirrored with established tools.
 Git records the metadata history, while Git LFS storage holds encrypted media.
 Backing up both gives you an independent copy of the complete library. Want an
-extra backup somewhere? Simply create one using `git-replycant clone` and do
+extra backup somewhere? Simply create one using `git-replycant clone --lfs` and do
 regular `git pull` to receive updates.
 
 ### Device-centric auth

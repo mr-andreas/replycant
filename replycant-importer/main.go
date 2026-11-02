@@ -583,14 +583,14 @@ func (i *importer) ensureNoFullLFSClone(ctx context.Context, repoPath string) er
 		for _, line := range strings.Split(string(raw), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "binary/** filter=replycant-crypt" {
-				return fmt.Errorf("repository has binary/** LFS filters configured; re-clone with git-replycant clone --no-lfs")
+				return fmt.Errorf("repository has binary/** LFS filters configured; clone again without --lfs")
 			}
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return fmt.Errorf("failed reading %s: %w", attrPath, readErr)
 	}
 	if _, err := i.runCmd(ctx, repoPath, "git", "config", "--local", "--get", "lfs.url"); err == nil {
-		return fmt.Errorf("repository has lfs.url configured; re-clone with git-replycant clone --no-lfs")
+		return fmt.Errorf("repository has lfs.url configured; clone again without --lfs")
 	}
 	return nil
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Breaking changes
+
+#### git-replycant
+
+- `git-replycant clone` leaves photos on the server. Pass `--lfs` to download them and install LFS filters. `--no-lfs` is removed, and a bare clone no longer needs an extra flag
+
 ### Features
 
 #### iOS app

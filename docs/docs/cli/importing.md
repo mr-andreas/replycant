@@ -6,12 +6,12 @@ server, and commits only LFS pointer files plus manifests.
 
 ## Prerequisites
 
-- A repository cloned with `git-replycant clone --no-lfs`
+- A repository cloned with `git-replycant clone` (without `--lfs`)
 - `ffmpeg` and `ffprobe` on your `PATH`
 - An authorized device identity in the clone (created during onboarding)
 
 Full-LFS clones (with `binary/** filter=replycant-crypt` or `lfs.url`)
-are rejected. Re-clone with `--no-lfs` before importing.
+are rejected. Clone again without `--lfs` before importing.
 
 ## Usage
 
@@ -27,7 +27,7 @@ Optional flags:
 
 ## How It Differs From Interactive Clients
 
-iOS and normal `git-replycant` clones still use the clean filter plus
+iOS and `git-replycant clone --lfs` still use the clean filter plus
 pre-push hook: plaintext binaries land in the worktree, git encrypts
 them on `git add`, and the pre-push hook uploads on `git push`.
 

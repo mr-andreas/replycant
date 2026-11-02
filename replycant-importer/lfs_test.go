@@ -20,7 +20,8 @@ import (
 )
 
 // TestRejectsFullLFSClone ensures filter-driven clones fail at boot with a
-// clear --no-lfs instruction instead of silently writing plaintext binaries.
+// clear instruction to clone again without --lfs, instead of silently
+// writing plaintext binaries.
 func TestRejectsFullLFSClone(t *testing.T) {
 	repo := initTempRepo(t)
 	gitDir := strings.TrimSpace(mustRun(t, repo, "git", "rev-parse", "--git-dir"))
@@ -44,7 +45,7 @@ func TestRejectsFullLFSClone(t *testing.T) {
 		DeviceSpace: "device-a",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--no-lfs")
+	assert.Contains(t, err.Error(), "without --lfs")
 }
 
 // TestRejectsLFSURLConfig rejects clones that still have lfs.url even without filters.
@@ -61,7 +62,7 @@ func TestRejectsLFSURLConfig(t *testing.T) {
 		DeviceSpace: "device-a",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--no-lfs")
+	assert.Contains(t, err.Error(), "without --lfs")
 }
 
 // TestUploadFailureSkipsFileWithoutCommit leaves the repo unchanged when LFS

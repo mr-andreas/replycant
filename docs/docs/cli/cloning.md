@@ -6,7 +6,7 @@ This tutorial shows how to clone a Replycant repository with
 ## Prerequisites
 
 - `git`
-- `git-lfs` for the default filter-driven clone
+- `git-lfs`, when you pass `--lfs`
 - `git-replycant` on your `PATH`
 - `git-remote-replycant` on your `PATH`, as a symlink to that same binary
 
@@ -15,12 +15,14 @@ platform. The archive includes the `git-remote-replycant` symlink. Git
 uses that name to reach the repository over the tailnet; without it,
 clone stops before pairing.
 
-## Clone With LFS Filters (default)
+## Clone
 
-By default, `git-replycant clone` configures `binary/**` through the
-`replycant-crypt` filter and installs the pre-push hook that uploads
-encrypted LFS objects. Use this for interactive work where you edit
-files with normal git commands.
+By default, `git-replycant clone` leaves photos and videos on the server.
+Binary paths stay as LFS pointer files. The clone still gets manifest
+encryption filters and mTLS config, but it does not install `binary/**`
+filters, `lfs.url`, or the pre-push hook. This is the setup
+`replycant-importer` expects: the importer uploads LFS objects itself
+and writes pointer files directly.
 
 ```bash
 git-replycant clone
@@ -41,16 +43,19 @@ There is no server URL. gitd is always
 `https://gitd.replycant.internal:8443`, and that name only resolves
 after this machine has joined the tailnet.
 
-## Clone Without LFS Filters (`--no-lfs`)
+## Check out photos and videos (`--lfs`)
 
-Use `--no-lfs` for bulk import with `replycant-importer`. The clone still
-gets manifest encryption filters and mTLS config, but it does not install
-`binary/**` filters, `lfs.url`, or the pre-push hook. The importer uploads
-LFS objects itself and writes pointer files directly.
+Pass `--lfs` to download photos and videos into the worktree. The clone
+configures `binary/**` through the `replycant-crypt` filter and installs
+the pre-push hook that uploads encrypted LFS objects. Use this when you
+edit files with normal git commands. It requires `git-lfs`.
 
 ```bash
-git-replycant clone --no-lfs my-import-repo
+git-replycant clone --lfs my-library
 ```
+
+`--bare` cannot be combined with `--lfs`, because checking files out
+needs a working directory.
 
 ## What Happens During Clone
 

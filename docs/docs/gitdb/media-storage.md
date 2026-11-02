@@ -92,7 +92,7 @@ The actual binary data is stored on the LFS server and fetched on demand.
 
 Clients can reach the same on-disk layout through two different paths.
 
-### Interactive clients (iOS, normal `git-replycant` clones)
+### Interactive clients (iOS, `git-replycant clone --lfs`)
 
 1. Write plaintext media under `binary/**`
 2. On `git add`, the `replycant-crypt` clean filter encrypts the payload and
@@ -102,7 +102,7 @@ Clients can reach the same on-disk layout through two different paths.
 
 ### Bulk importer (`replycant-importer`)
 
-Bulk import uses a `--no-lfs` clone and never stages plaintext under
+Bulk import uses a clone without `--lfs` and never stages plaintext under
 `binary/**`:
 
 1. Encrypt each original/thumbnail with a fresh DEK

@@ -18,7 +18,7 @@ You need:
 
    ```bash
    cd ~
-   git-replycant clone backup
+   git-replycant clone --lfs backup
    ```
 
 2. Open the address it prints in a browser. On the iPhone, tap **Settings**, then **Link a New Device**, and scan the QR code.

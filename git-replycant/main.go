@@ -45,7 +45,7 @@ type CloneCommand struct {
 	DeviceName   string `name:"device-name" help:"Optional device name override."`
 	Depth        int    `name:"depth" help:"Shallow clone depth (0 for full history)." default:"0"`
 	Bare         bool   `name:"bare" help:"Create a bare repository."`
-	NoLFS        bool   `name:"no-lfs" help:"Skip LFS setup."`
+	LFS          bool   `name:"lfs" default:"false" help:"Check out photos and videos, and encrypt and upload new ones on push. Requires git-lfs."`
 	DiscoveryURL string `name:"discovery-url" default:"https://discovery.replycant.com" help:"Discovery API base URL. The pairing slot is prepended as a subdomain."`
 	QRAddr       string `name:"qr-addr" default:"127.0.0.1:0" help:"Loopback address for the pairing QR page."`
 	Directory    string `arg:"" optional:"" name:"directory" help:"Clone destination directory. Defaults to replycant."`
@@ -83,7 +83,7 @@ func (c *CloneCommand) Run() error {
 		DeviceName:   c.DeviceName,
 		Depth:        c.Depth,
 		Bare:         c.Bare,
-		NoLFS:        c.NoLFS,
+		LFS:          c.LFS,
 		DiscoveryURL: c.DiscoveryURL,
 		QRAddr:       c.QRAddr,
 		Directory:    c.Directory,

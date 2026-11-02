@@ -84,7 +84,6 @@ func TestClonePersistsTailnetConfigOnlyAfterJoin(t *testing.T) {
 	err := runClone(CloneOptions{
 		Directory:    dir,
 		DiscoveryURL: "http://discovery.test",
-		NoLFS:        true,
 		DeviceName:   "cli",
 	}, cloneRuntime{
 		pollInterval: 10 * time.Millisecond,
@@ -126,7 +125,6 @@ func TestCloneDoesNotPersistConfigWhenJoinFails(t *testing.T) {
 	err := runClone(CloneOptions{
 		Directory:    dir,
 		DiscoveryURL: "http://discovery.test",
-		NoLFS:        true,
 	}, cloneRuntime{
 		pollInterval: 10 * time.Millisecond,
 		httpClient:   dialClient(server),
@@ -145,6 +143,58 @@ func TestCloneDoesNotPersistConfigWhenJoinFails(t *testing.T) {
 	require.NoError(t, gitErr)
 	_, loadErr := tailnetagent.LoadConfig(gitDir)
 	assert.ErrorIs(t, loadErr, tailnetagent.ErrNotConfigured)
+}
+
+// TestCloneLeavesLFSUnsetUnlessRequested keeps photo bytes on the server
+// unless --lfs is set. The importer rejects a clone that installed LFS
+// filters, so the default must hand finish an empty LFS URL.
+func TestCloneLeavesLFSUnsetUnlessRequested(t *testing.T) {
+	putRemoteHelperOnPath(t)
+	secret := mustSecret(t)
+	wantURL, err := DeriveLFSURL(tailnetaddr.GitdURL())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		lfs  bool
+	}{
+		{name: "default leaves pointers", lfs: false},
+		{name: "lfs checks photos out", lfs: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "repo")
+			server := pairingServer(t, dir, secret, pairing.Payload{
+				HeadscaleURL: "https://headscale.example",
+				CAPEM:        "ca",
+			})
+			t.Cleanup(server.Close)
+			var got string
+			err := runClone(CloneOptions{
+				Directory:    dir,
+				DiscoveryURL: "http://discovery.test",
+				DeviceName:   "cli",
+				LFS:          tt.lfs,
+			}, cloneRuntime{
+				pollInterval: 10 * time.Millisecond,
+				httpClient:   dialClient(server),
+				newSecret:    func() (pairing.Secret, error) { return secret, nil },
+				join: func(context.Context, string, tailnetagent.StartConfig) error {
+					return nil
+				},
+				finish: func(_ context.Context, finish cloneFinish) error {
+					got = finish.LFSURL
+					return nil
+				},
+			})
+			require.NoError(t, err)
+			if tt.lfs {
+				assert.Equal(t, wantURL, got)
+				return
+			}
+			assert.Empty(t, got)
+		})
+	}
 }
 
 func pairingServer(t *testing.T, _ string, secret pairing.Secret, payload pairing.Payload) *httptest.Server {

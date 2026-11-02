@@ -2271,7 +2271,8 @@ func advanceRemoteWithForeignCommit(t *testing.T, remote string) string {
 	return sha
 }
 
-// initTempRepo creates a --no-lfs-style replycant worktree with encryption and mTLS config.
+// initTempRepo creates a replycant worktree without LFS filters, with
+// encryption and mTLS config.
 func initTempRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

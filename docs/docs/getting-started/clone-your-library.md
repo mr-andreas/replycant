@@ -8,7 +8,7 @@ Clone the library to a computer so you can import photos into it from the comman
 
 You need:
 
-- `git` and `git-lfs` (Git Large File Storage, which Git uses for the photos)
+- `git`
 - the iPhone you connected in [Start a server](./start-a-server.md)
 
 ## Clone without the photos
@@ -22,10 +22,10 @@ You need:
 2. Clone the library into `my-library`:
 
    ```bash
-   git-replycant clone --no-lfs my-library
+   git-replycant clone my-library
    ```
 
-   `--no-lfs` leaves the photos on the server, which is the setup the [importer](./import-media.md) expects. The command prints an address and waits:
+   The clone leaves the photos on the server, which is the setup the [importer](./import-media.md) expects. The command prints an address and waits:
 
    ```text
    Generated new local identity in /home/you/my-library/.git/replycant

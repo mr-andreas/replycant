@@ -46,10 +46,13 @@ const (
 
 // CloneOptions captures CLI inputs required for tailnet pairing and clone setup.
 type CloneOptions struct {
-	DeviceName   string
-	Depth        int
-	Bare         bool
-	NoLFS        bool
+	DeviceName string
+	Depth      int
+	Bare       bool
+	// LFS checks photos out and installs the filters that encrypt them on
+	// add. Left off, binary paths stay pointers, which is what import and
+	// a clone that should not download the library need.
+	LFS          bool
 	DiscoveryURL string
 	QRAddr       string
 	Directory    string
@@ -97,7 +100,9 @@ func runClone(options CloneOptions, runtime cloneRuntime) error {
 	if err != nil {
 		return err
 	}
-	if options.NoLFS {
+	// Without --lfs the worktree keeps pointer files. Filters, lfs.url,
+	// and the pre-push hook are what would download and encrypt photo bytes.
+	if !options.LFS {
 		lfsURL = ""
 	}
 
@@ -339,8 +344,8 @@ func NormalizeCloneOptions(options CloneOptions) (CloneOptions, error) {
 	if options.Depth < 0 {
 		return CloneOptions{}, fmt.Errorf("depth must be >= 0")
 	}
-	if options.Bare && !options.NoLFS {
-		return CloneOptions{}, fmt.Errorf("--bare requires --no-lfs: LFS setup needs a working directory")
+	if options.Bare && options.LFS {
+		return CloneOptions{}, fmt.Errorf("--bare cannot be used with --lfs: LFS checkout needs a working directory")
 	}
 	options.DiscoveryURL = parsed.String()
 	return options, nil
