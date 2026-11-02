@@ -4,11 +4,13 @@ import XCTest
 final class TimelineSidebarTogglePositionUITests: XCTestCase {
     private var app: XCUIApplication!
 
-    // Boots fixture-backed timeline state so sidebar toggle assertions run on deterministic data.
+    // Boots a portrait fixture timeline so the sidebar width assertion
+    // matches the phone grid these tests were written against.
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
         UITestFixtures.configureApp(app)
+        UITestFixtures.requirePortrait()
         app.launch()
 
         let fixturesReady = app.otherElements["uitest_fixtures_ready"]

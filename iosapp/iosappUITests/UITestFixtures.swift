@@ -23,6 +23,13 @@ class UITestFixtures {
         app.launchEnvironment["TEST_MODE"] = "1"
         app.launchEnvironment["SKIP_ONBOARDING"] = "1"
     }
+
+    // Puts the simulator in portrait before launch. These tests measure
+    // portrait frames and gesture axes. A rotated simulator otherwise
+    // stays landscape and overrides the in-app portrait request.
+    static func requirePortrait() {
+        XCUIDevice.shared.orientation = .portrait
+    }
     
     // Creates test repository in app's documents directory
     static func setupTestRepository(for app: XCUIApplication) throws {

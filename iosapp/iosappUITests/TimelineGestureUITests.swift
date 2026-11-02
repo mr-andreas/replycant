@@ -11,12 +11,15 @@ final class TimelineGestureUITests: XCTestCase {
     
     var app: XCUIApplication!
     
+    // Launches a fixture library in portrait so swipe axes match the
+    // phone layout these gestures were written against.
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
         
         // Set up test environment with fixtures
         UITestFixtures.configureApp(app)
+        UITestFixtures.requirePortrait()
         
         app.launch()
 

@@ -4,11 +4,13 @@ import XCTest
 final class TimelineLaunchPositionUITests: XCTestCase {
     private var app: XCUIApplication!
 
-    // Boots the app with hydrated fixtures so launch-position checks run against deterministic media ordering.
+    // Boots the app in portrait with hydrated fixtures so launch-position
+    // checks measure the phone layout, not a rotated simulator.
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
         UITestFixtures.configureApp(app)
+        UITestFixtures.requirePortrait()
         app.launch()
 
         let fixturesReady = app.otherElements["uitest_fixtures_ready"]
