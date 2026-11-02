@@ -159,9 +159,18 @@ struct PeriodicSyncManagerTests {
     }
 
     // Ensures periodic push/pull network work does not overlap and can resume after completion.
-    @Test func periodicNetworkOperationGuardSkipsOverlap() {
+    @Test func periodicNetworkOperationGuardSkipsOverlap() async {
         let manager = PeriodicSyncManager.shared
         manager.stop()
+
+        // The app, or an earlier test, may already be inside a pull.
+        // That tick holds the slot until its join wait ends, including
+        // one pointed at a control plane that is not running. Wait for
+        // the release so the assertions cover the guard itself.
+        let released = await waitUntil(timeoutNanoseconds: 12_000_000_000) {
+            !manager.isNetworkOperationInProgressForTesting
+        }
+        #expect(released)
 
         let firstAcquire = manager.beginNetworkOperationIfIdleForTesting()
         #expect(firstAcquire)

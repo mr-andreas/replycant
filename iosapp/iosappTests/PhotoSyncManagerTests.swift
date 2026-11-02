@@ -588,17 +588,31 @@ struct PhotoSyncManagerTests {
         return data
     }
     
-    // A recovered simulator already has a tailnet join in progress, and that
-    // join outlasts the upload's wait. These tests upload to a local repo, so
-    // they set the stored tailnet aside and put it back afterwards.
+    // Builds a manager whose join returns immediately. These tests upload
+    // into a local repo, and a control plane left in UserDefaults by the
+    // integration suite must not turn the run into stillConnecting.
+    func makeSyncManager(
+        photoLibraryProvider: PhotoLibraryProviding,
+        manifestManager: ManifestManager? = nil,
+        uploadedMediaCache: UploadedMediaCaching = UploadedMediaCache.shared,
+        idleTimer: IdleTimerControlling = UIApplicationIdleTimerController(),
+        networkCost: NetworkCostProviding = NetworkCostMonitor.shared,
+        backlogTracker: UploadBacklogTracking? = nil
+    ) -> PhotoSyncManager {
+        PhotoSyncManager(
+            photoLibraryProvider: photoLibraryProvider,
+            manifestManager: manifestManager,
+            uploadedMediaCache: uploadedMediaCache,
+            idleTimer: idleTimer,
+            networkCost: networkCost,
+            backlogTracker: backlogTracker,
+            joinTailnet: { () async throws in }
+        )
+    }
+
+    // Waits until the run finishes so callers assert the end state rather
+    // than a sync that is still in flight.
     func runSync(_ syncManager: PhotoSyncManager, order: UploadOrder = .newestFirst) async {
-        let savedTailnet = TailnetConfigurationManager.shared.load()
-        TailnetConfigurationManager.shared.clear()
-        defer {
-            if let savedTailnet {
-                TailnetConfigurationManager.shared.save(savedTailnet)
-            }
-        }
         await syncManager.startSync(order: order)
         await syncManager.syncTask?.value
     }
@@ -632,7 +646,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = MockPhotoLibraryProvider()
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -659,7 +673,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [asset])
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
 
         await runSync(syncManager)
         
@@ -707,7 +721,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [first, second])
         let mockManifest = FailSecondOriginalManifest()
 
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
 
         await runSync(syncManager)
 
@@ -733,7 +747,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [asset])
         let mockManifest = MockManifestManager()
 
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         let beforeInvalidationManager = try syncManager.getManifestManager()
 
         NotificationCenter.default.post(
@@ -779,7 +793,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [asset])
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -812,7 +826,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [asset1, asset2, asset3])
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -861,11 +875,11 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: orderedAssets)
         let mockManifest = MockManifestManager()
 
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         await syncManager.startSync()
         await syncManager.syncTask?.value
 
-        #expect(mockManifest.createCommitCalls.count == 3)
+        try #require(mockManifest.createCommitCalls.count == 3)
         let commitMessages = mockManifest.createCommitCalls.map(\.message)
         #expect(commitMessages[0].contains("newest.jpg"))
         #expect(commitMessages[1].contains("middle.mp4"))
@@ -913,7 +927,7 @@ struct PhotoSyncManagerTests {
         let existingHash = SHA256.hash(data: existingData).compactMap { String(format: "%02x", $0) }.joined()
         mockManifest.loadedOriginalBySHA256[existingHash] = existingManifest
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -958,7 +972,7 @@ struct PhotoSyncManagerTests {
         let dateFormatter = ISO8601DateFormatter()
         mockManifest.uploadedLocalIDs[asset1.id] = dateFormatter.string(from: modifiedAt)
 
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         await syncManager.startSync()
         await syncManager.syncTask?.value
 
@@ -995,7 +1009,7 @@ struct PhotoSyncManagerTests {
         let dateFormatter = ISO8601DateFormatter()
         mockCache.storedEntries[asset.id] = dateFormatter.string(from: modifiedAt)
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             uploadedMediaCache: mockCache
@@ -1044,7 +1058,7 @@ struct PhotoSyncManagerTests {
         let dateFormatter = ISO8601DateFormatter()
         mockManifest.uploadedLocalIDs[asset.id] = dateFormatter.string(from: modifiedAt)
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             uploadedMediaCache: mockCache
@@ -1107,7 +1121,7 @@ struct PhotoSyncManagerTests {
         let existingHash = SHA256.hash(data: existingData).compactMap { String(format: "%02x", $0) }.joined()
         mockManifest.loadedOriginalBySHA256[existingHash] = existingManifest
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             uploadedMediaCache: mockCache
@@ -1176,7 +1190,7 @@ struct PhotoSyncManagerTests {
         let existingHash = SHA256.hash(data: existingData).compactMap { String(format: "%02x", $0) }.joined()
         firstRunManifest.loadedOriginalBySHA256[existingHash] = existingManifest
 
-        let firstRunSyncManager = PhotoSyncManager(
+        let firstRunSyncManager = makeSyncManager(
             photoLibraryProvider: firstRunLibrary,
             manifestManager: firstRunManifest,
             uploadedMediaCache: firstRunCache
@@ -1191,7 +1205,7 @@ struct PhotoSyncManagerTests {
         let secondRunCache = UploadedMediaCache(fileURL: cacheFileURL)
         let secondRunLibrary = createMockLibrary(assets: [asset])
         let secondRunManifest = MockManifestManager()
-        let secondRunSyncManager = PhotoSyncManager(
+        let secondRunSyncManager = makeSyncManager(
             photoLibraryProvider: secondRunLibrary,
             manifestManager: secondRunManifest,
             uploadedMediaCache: secondRunCache
@@ -1249,7 +1263,7 @@ struct PhotoSyncManagerTests {
         mockCache.storedEntries[secondAsset.id] = formatter.string(from: secondDate)
         mockCache.storedEntries[uploadAsset.id] = formatter.string(from: thirdDate)
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             uploadedMediaCache: mockCache
@@ -1305,7 +1319,7 @@ struct PhotoSyncManagerTests {
         let dateFormatter = ISO8601DateFormatter()
         mockManifest.uploadedLocalIDs[asset.id] = dateFormatter.string(from: Date(timeIntervalSince1970: 1_710_010_000))
 
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         await syncManager.startSync()
         await syncManager.syncTask?.value
 
@@ -1362,7 +1376,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: assets)
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         
@@ -1398,7 +1412,7 @@ struct PhotoSyncManagerTests {
         var uploadStarted = false
         mockManifest.addLFSDataStartHook = { uploadStarted = true }
 
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
 
         await syncManager.startSync()
         let started = await waitUntil(seconds: 20) { uploadStarted }
@@ -1429,7 +1443,7 @@ struct PhotoSyncManagerTests {
         var uploadStarted = false
         mockManifest.addLFSDataStartHook = { uploadStarted = true }
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             idleTimer: idleTimer
@@ -1460,7 +1474,7 @@ struct PhotoSyncManagerTests {
         let mockManifest = MockManifestManager()
         let idleTimer = MockIdleTimerController()
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             idleTimer: idleTimer
@@ -1490,7 +1504,7 @@ struct PhotoSyncManagerTests {
         var uploadStarted = false
         mockManifest.addLFSDataStartHook = { uploadStarted = true }
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             idleTimer: idleTimer
@@ -1527,7 +1541,7 @@ struct PhotoSyncManagerTests {
         )
         let idleTimer = MockIdleTimerController()
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             idleTimer: idleTimer
@@ -1559,7 +1573,7 @@ struct PhotoSyncManagerTests {
         
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1602,7 +1616,7 @@ struct PhotoSyncManagerTests {
         
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1629,7 +1643,7 @@ struct PhotoSyncManagerTests {
         let mockManifest = MockManifestManager()
         mockManifest.addLFSDataError = NSError(domain: "LFSError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Upload failed"])
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1659,7 +1673,7 @@ struct PhotoSyncManagerTests {
         let mockManifest = MockManifestManager()
         mockManifest.createCommitError = NSError(domain: "GitError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Commit failed"])
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1690,7 +1704,7 @@ struct PhotoSyncManagerTests {
         
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1727,7 +1741,7 @@ struct PhotoSyncManagerTests {
         
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         // Initial state
         #expect(syncManager.isSyncing == false)
@@ -1767,7 +1781,7 @@ struct PhotoSyncManagerTests {
         
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1816,7 +1830,7 @@ struct PhotoSyncManagerTests {
         
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1873,7 +1887,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: assets)
         let mockManifest = MockManifestManager()
         
-        let syncManager = PhotoSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
+        let syncManager = makeSyncManager(photoLibraryProvider: mockLibrary, manifestManager: mockManifest)
         
         await syncManager.startSync()
         await syncManager.syncTask?.value
@@ -1926,7 +1940,7 @@ struct PhotoSyncManagerTests {
         mockManifest.addLFSDataStartHook = { uploadStarted = true }
         let network = ControllableNetworkCost(isMetered: false)
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             networkCost: network
@@ -1971,7 +1985,7 @@ struct PhotoSyncManagerTests {
         mockManifest.addLFSDataStartHook = { uploadStarted = true }
         let network = ControllableNetworkCost(isMetered: true)
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest,
             networkCost: network
@@ -2002,7 +2016,7 @@ struct PhotoSyncManagerTests {
     @Test("Metered network change while idle leaves the upload idle")
     func testMeteredChangeWhileIdleDoesNotChangeState() async {
         let network = ControllableNetworkCost(isMetered: false)
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: MockPhotoLibraryProvider(),
             manifestManager: MockManifestManager(),
             networkCost: network
@@ -2059,7 +2073,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [newerLarge, olderSmall])
         mockLibrary.fileSizes = ["OLD_SMALL": 100, "NEW_LARGE": 9_000_000]
         let mockManifest = MockManifestManager()
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest
         )
@@ -2102,7 +2116,7 @@ struct PhotoSyncManagerTests {
         let mockLibrary = createMockLibrary(assets: [unknown, newerLarge, olderSmall])
         mockLibrary.fileSizes = ["OLD_SMALL": 100, "NEW_LARGE": 9_000_000]
         let mockManifest = MockManifestManager()
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: mockLibrary,
             manifestManager: mockManifest
         )
@@ -2130,7 +2144,7 @@ struct PhotoSyncManagerTests {
         let armed = Date(timeIntervalSince1970: 1_700_000_000)
         await tracker.start(now: armed)
 
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: MockPhotoLibraryProvider(),
             manifestManager: MockManifestManager(),
             backlogTracker: tracker
@@ -2154,7 +2168,7 @@ struct PhotoSyncManagerTests {
         let notifications = FakeReminderCenter()
         notifications.status = .authorized
         let tracker = UploadBacklogTracker(defaults: defaults, notifications: notifications)
-        let syncManager = PhotoSyncManager(
+        let syncManager = makeSyncManager(
             photoLibraryProvider: MockPhotoLibraryProvider(),
             manifestManager: MockManifestManager(),
             backlogTracker: tracker

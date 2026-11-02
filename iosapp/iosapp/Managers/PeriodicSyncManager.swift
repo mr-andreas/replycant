@@ -328,6 +328,15 @@ extension PeriodicSyncManager {
         return pullTask != nil
     }
 
+    // Lets a test see a tick the app already started. stop() cancels
+    // the loop, but that tick keeps the slot until its join attempt
+    // finishes, and acquiring before then is not an overlap failure.
+    var isNetworkOperationInProgressForTesting: Bool {
+        operationStateLock.lock()
+        defer { operationStateLock.unlock() }
+        return isNetworkOperationInProgress
+    }
+
     // Allows tests to assert push/pull overlap prevention logic without running network requests.
     func beginNetworkOperationIfIdleForTesting() -> Bool {
         beginNetworkOperationIfIdle()

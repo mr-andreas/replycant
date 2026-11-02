@@ -138,6 +138,9 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
     // Cleared when an upload finishes so a caught-up library does not keep
     // a 7-day reminder.
     private let backlogTracker: UploadBacklogTracking
+    // The app waits for the real tailnet. Tests upload into a local repo
+    // and replace this so a stored control plane cannot fail the run.
+    private let joinTailnet: () async throws -> Void
     
     // Injects dependencies so sync behavior can be exercised in tests.
     init(
@@ -146,7 +149,10 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
         uploadedMediaCache: UploadedMediaCaching = UploadedMediaCache.shared,
         idleTimer: IdleTimerControlling = UIApplicationIdleTimerController(),
         networkCost: NetworkCostProviding = NetworkCostMonitor.shared,
-        backlogTracker: UploadBacklogTracking? = nil
+        backlogTracker: UploadBacklogTracking? = nil,
+        joinTailnet: @escaping () async throws -> Void = {
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+        }
     ) {
         self.photoLibrary = photoLibraryProvider
         self.injectedManifestManager = manifestManager
@@ -154,6 +160,7 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
         self.idleTimer = idleTimer
         self.networkCost = networkCost
         self.backlogTracker = backlogTracker ?? UploadBacklogTracker.shared
+        self.joinTailnet = joinTailnet
         observeLFSURLChanges()
         observeDatabaseInvalidation()
         observeNetworkCost()
@@ -287,8 +294,9 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
             do {
                 // A wake rebuild may still be replacing the node. Waiting
                 // here keeps the upload off a proxy iOS dropped while the
-                // phone was locked.
-                try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+                // phone was locked. Tests pass a join that returns
+                // immediately, because they have no control plane.
+                try await joinTailnet()
 
                 log("Requesting photo library authorization...", context: "PhotoSync")
                 guard await photoLibrary.requestAuthorization() else {
