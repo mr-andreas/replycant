@@ -26,6 +26,16 @@ enum BackgroundUploadRunResult: String, Codable, Equatable {
     case unfinished
 }
 
+// Why a charging wake uploaded nothing. Older rows have none, and the
+// settings line stays "Skipped" for those.
+enum BackgroundUploadSkipReason: String, Codable, Equatable {
+    case uploadOff
+    case noPhotoAccess
+    case notOnWiFi
+    case lowData
+    case wiFiNotConnected
+}
+
 // One invocation of the charging task. Written when iOS starts it and
 // filled in when the upload returns, so a kill still leaves a row.
 struct BackgroundUploadRun: Equatable, Codable, Identifiable {
@@ -36,6 +46,7 @@ struct BackgroundUploadRun: Equatable, Codable, Identifiable {
     var uploadedBytes: Int64
     var queueCount: Int?
     var result: BackgroundUploadRunResult
+    var skipReason: BackgroundUploadSkipReason? = nil
 }
 
 // The settings page's snapshot. A gallery tile can pass a fixed one
@@ -220,7 +231,8 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         id: UUID,
         at date: Date,
         tally: UploadRunTally,
-        result: BackgroundUploadRunResult
+        result: BackgroundUploadRunResult,
+        skipReason: BackgroundUploadSkipReason? = nil
     ) {
         guard let index = runs.firstIndex(where: { $0.id == id }) else { return }
         runs[index].stoppedAt = date
@@ -228,6 +240,9 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         runs[index].uploadedBytes = tally.uploadedBytes
         runs[index].queueCount = tally.queueCount
         runs[index].result = result
+        // An expired or unfinished run is not a skip. Keeping a reason
+        // there would tell the settings page the wrong story.
+        runs[index].skipReason = result == .skipped ? skipReason : nil
         persistRuns()
     }
 
@@ -236,14 +251,30 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         defaults.set(data, forKey: Self.runsKey)
     }
 
-    // All three have to hold. A background run cannot ask the user to
-    // confirm mobile data or photo access.
-    static func shouldRun(
+    // The first failing gate is the one Settings names. Nil means this
+    // wake may upload. A background run cannot ask the user to confirm
+    // mobile data or photo access.
+    static func skipReason(
         isEnabled: Bool,
         isPhotoAccessGranted: Bool,
-        allowsAutomaticUpload: Bool
-    ) -> Bool {
-        isEnabled && isPhotoAccessGranted && allowsAutomaticUpload
+        network: AutomaticUploadDecision
+    ) -> BackgroundUploadSkipReason? {
+        if !isEnabled {
+            return .uploadOff
+        }
+        if !isPhotoAccessGranted {
+            return .noPhotoAccess
+        }
+        switch network {
+        case .allow:
+            return nil
+        case .notOnWiFi:
+            return .notOnWiFi
+        case .lowData:
+            return .lowData
+        case .wiFiNotConnected:
+            return .wiFiNotConnected
+        }
     }
 
     // An open upload is the user's. A background wake owns the run even
@@ -327,8 +358,10 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         }
 
         var result: BackgroundUploadRunResult = .skipped
+        var skipReason: BackgroundUploadSkipReason?
         var tally = UploadRunTally.empty
-        if await passesGate(), !control.isFinished {
+        let gate = await passesGate()
+        if gate == nil, !control.isFinished {
             control.markStarted()
             if await libraryNetworkIsReady(control), !control.isFinished {
                 await PhotoSyncManager.shared.startSync(order: .smallestFirst)
@@ -351,12 +384,20 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
             }
         } else if control.wasExpired {
             result = .expired
+        } else {
+            skipReason = gate
         }
         await recordBackgroundStay()
         if control.claimFinish() {
             task.setTaskCompleted(success: result == .completed)
         }
-        finishRun(id: runID, at: now(), tally: tally, result: result)
+        finishRun(
+            id: runID,
+            at: now(),
+            tally: tally,
+            result: result,
+            skipReason: skipReason
+        )
     }
 
     // Rebuilds after a long suspend, then waits out "still connecting".
@@ -407,13 +448,12 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         )
     }
 
-    private func passesGate() async -> Bool {
-        let allowsUpload = await NetworkCostMonitor.shared.waitForAutomaticUploadDecision()
-        let photoAccess = PhotoLibraryManager().isAuthorized
-        return Self.shouldRun(
+    private func passesGate() async -> BackgroundUploadSkipReason? {
+        let network = await NetworkCostMonitor.shared.waitForAutomaticUploadDecision()
+        return Self.skipReason(
             isEnabled: isEnabled,
-            isPhotoAccessGranted: photoAccess,
-            allowsAutomaticUpload: allowsUpload
+            isPhotoAccessGranted: PhotoLibraryManager().isAuthorized,
+            network: network
         )
     }
 }

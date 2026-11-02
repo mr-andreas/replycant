@@ -58,28 +58,50 @@ struct BackgroundUploadSchedulerTests {
         #expect(notifications.removedPending == [UploadBacklogTracker.reminderIdentifier])
     }
 
+    // The first failing gate is what Settings names. Nil is the only
+    // answer that lets the wake upload.
     @Test("A background run starts only when upload is on, photos are allowed, and the network is unmetered")
-    func testShouldRunRequiresEveryCondition() {
-        #expect(BackgroundUploadScheduler.shouldRun(
+    func testSkipReasonNamesTheFirstFailingGate() {
+        #expect(BackgroundUploadScheduler.skipReason(
             isEnabled: false,
             isPhotoAccessGranted: true,
-            allowsAutomaticUpload: true
-        ) == false)
-        #expect(BackgroundUploadScheduler.shouldRun(
+            network: .allow
+        ) == .uploadOff)
+        #expect(BackgroundUploadScheduler.skipReason(
             isEnabled: true,
             isPhotoAccessGranted: false,
-            allowsAutomaticUpload: true
-        ) == false)
-        #expect(BackgroundUploadScheduler.shouldRun(
+            network: .allow
+        ) == .noPhotoAccess)
+        #expect(BackgroundUploadScheduler.skipReason(
             isEnabled: true,
             isPhotoAccessGranted: true,
-            allowsAutomaticUpload: false
-        ) == false)
-        #expect(BackgroundUploadScheduler.shouldRun(
+            network: .notOnWiFi
+        ) == .notOnWiFi)
+        #expect(BackgroundUploadScheduler.skipReason(
             isEnabled: true,
             isPhotoAccessGranted: true,
-            allowsAutomaticUpload: true
-        ) == true)
+            network: .lowData
+        ) == .lowData)
+        #expect(BackgroundUploadScheduler.skipReason(
+            isEnabled: true,
+            isPhotoAccessGranted: true,
+            network: .wiFiNotConnected
+        ) == .wiFiNotConnected)
+        #expect(BackgroundUploadScheduler.skipReason(
+            isEnabled: false,
+            isPhotoAccessGranted: false,
+            network: .notOnWiFi
+        ) == .uploadOff)
+        #expect(BackgroundUploadScheduler.skipReason(
+            isEnabled: true,
+            isPhotoAccessGranted: false,
+            network: .lowData
+        ) == .noPhotoAccess)
+        #expect(BackgroundUploadScheduler.skipReason(
+            isEnabled: true,
+            isPhotoAccessGranted: true,
+            network: .allow
+        ) == nil)
     }
 
     // A launch that iOS rejects has to stay visible, and a second call
@@ -170,6 +192,63 @@ struct BackgroundUploadSchedulerTests {
         #expect(reloaded.runs[0].uploadedBytes == 4096)
         #expect(reloaded.runs[0].queueCount == 4)
         #expect(reloaded.runs[0].result == .completed)
+        #expect(reloaded.runs[0].skipReason == nil)
+    }
+
+    // The settings line is the only place a skip is explained. A run
+    // iOS stopped is not a skip, so a reason must not ride along.
+    @Test("A skip reason is stored with the run and omitted for any other result")
+    func testFinishRunStoresSkipReason() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let (scheduler, defaults) = makeScheduler(
+            tasks: FakeBackgroundTaskScheduler(),
+            now: start
+        )
+        let skippedID = scheduler.beginRun(at: start)
+        scheduler.finishRun(
+            id: skippedID,
+            at: start,
+            tally: .empty,
+            result: .skipped,
+            skipReason: .wiFiNotConnected
+        )
+        let expiredID = scheduler.beginRun(at: start)
+        scheduler.finishRun(
+            id: expiredID,
+            at: start,
+            tally: .empty,
+            result: .expired,
+            skipReason: .notOnWiFi
+        )
+
+        let reloaded = reload(
+            defaults: defaults,
+            tasks: FakeBackgroundTaskScheduler(),
+            now: start
+        )
+        #expect(reloaded.runs[0].result == .expired)
+        #expect(reloaded.runs[0].skipReason == nil)
+        #expect(reloaded.runs[1].result == .skipped)
+        #expect(reloaded.runs[1].skipReason == .wiFiNotConnected)
+        #expect(BackgroundUploadStatusCopy.runDetail(reloaded.runs[1]) ==
+            "0 files, 0 bytes, —, Skipped, Wi-Fi not connected")
+    }
+
+    // Rows written before a reason was stored have no key. They still
+    // load, and the line stays the old "Skipped".
+    @Test("A stored run from before skip reasons still loads")
+    func testRunWithoutSkipReasonDecodes() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000002","startedAt":625000000,"uploadedCount":0,"uploadedBytes":0,"result":"skipped"}
+        """
+        let run = try JSONDecoder().decode(
+            BackgroundUploadRun.self,
+            from: Data(json.utf8)
+        )
+        #expect(run.result == .skipped)
+        #expect(run.skipReason == nil)
+        #expect(BackgroundUploadStatusCopy.runDetail(run) ==
+            "0 files, 0 bytes, —, Skipped")
     }
 
     // The page lists every recent run, but UserDefaults is not a log.
@@ -252,6 +331,21 @@ struct BackgroundUploadSchedulerTests {
         )
         #expect(BackgroundUploadStatusCopy.runDetail(skipped) ==
             "0 files, 0 bytes, —, Skipped")
+        #expect(BackgroundUploadStatusCopy.runDetail(
+            skippedRun(at: scheduledAt, reason: .uploadOff)
+        ) == "0 files, 0 bytes, —, Skipped, Upload is off")
+        #expect(BackgroundUploadStatusCopy.runDetail(
+            skippedRun(at: scheduledAt, reason: .noPhotoAccess)
+        ) == "0 files, 0 bytes, —, Skipped, No photo access")
+        #expect(BackgroundUploadStatusCopy.runDetail(
+            skippedRun(at: scheduledAt, reason: .notOnWiFi)
+        ) == "0 files, 0 bytes, —, Skipped, Not on Wi-Fi")
+        #expect(BackgroundUploadStatusCopy.runDetail(
+            skippedRun(at: scheduledAt, reason: .lowData)
+        ) == "0 files, 0 bytes, —, Skipped, Low Data Mode")
+        #expect(BackgroundUploadStatusCopy.runDetail(
+            skippedRun(at: scheduledAt, reason: .wiFiNotConnected)
+        ) == "0 files, 0 bytes, —, Skipped, Wi-Fi not connected")
         #expect(BackgroundUploadStatusCopy.timeRange(completed).contains("–"))
 
         let killed = BackgroundUploadRun(
@@ -357,6 +451,22 @@ struct BackgroundUploadSchedulerTests {
             isExpensive: false,
             isConstrained: false
         ) == false)
+    }
+
+    private func skippedRun(
+        at date: Date,
+        reason: BackgroundUploadSkipReason
+    ) -> BackgroundUploadRun {
+        BackgroundUploadRun(
+            id: UUID(),
+            startedAt: date,
+            stoppedAt: date,
+            uploadedCount: 0,
+            uploadedBytes: 0,
+            queueCount: nil,
+            result: .skipped,
+            skipReason: reason
+        )
     }
 
     private func makeScheduler(

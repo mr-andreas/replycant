@@ -139,7 +139,7 @@ final class UploadController: ObservableObject {
             reminders: UploadBacklogTracker.shared,
             network: NetworkCostMonitor.shared,
             allowsAutomaticUpload: {
-                await NetworkCostMonitor.shared.waitForAutomaticUploadDecision()
+                await NetworkCostMonitor.shared.waitForAutomaticUploadDecision() == .allow
             },
             defaults: .standard,
             launchArguments: ProcessInfo.processInfo.arguments,

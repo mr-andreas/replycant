@@ -19,7 +19,9 @@ struct NetworkCostMonitorTests {
     }
 
     // A charging wake's first sample is often still unsatisfied. That is
-    // not a decision yet. A metered path is, and must not be waited out.
+    // not a decision yet. Cellular and Low Data Mode are, and Low Data
+    // is the phrase even when the path is also expensive. The grace
+    // ending on a path that never comes up is Wi-Fi not being connected.
     @Test func unsatisfiedPathWaitsAndMeteredPathRefuses() {
         #expect(NetworkCostMonitor.automaticUploadDecision(
             status: .unsatisfied,
@@ -30,21 +32,33 @@ struct NetworkCostMonitorTests {
             status: .satisfied,
             isExpensive: true,
             isConstrained: false
-        ) == .refuse)
+        ) == .notOnWiFi)
         #expect(NetworkCostMonitor.automaticUploadDecision(
             status: .satisfied,
             isExpensive: false,
             isConstrained: true
-        ) == .refuse)
+        ) == .lowData)
         #expect(NetworkCostMonitor.automaticUploadDecision(
             status: .unsatisfied,
             isExpensive: true,
             isConstrained: false
-        ) == .refuse)
+        ) == .notOnWiFi)
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .unsatisfied,
+            isExpensive: true,
+            isConstrained: true
+        ) == .lowData)
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .satisfied,
+            isExpensive: true,
+            isConstrained: true
+        ) == .lowData)
         #expect(NetworkCostMonitor.automaticUploadDecision(
             status: .satisfied,
             isExpensive: false,
             isConstrained: false
         ) == .allow)
+        #expect(NetworkCostMonitor.outcomeAfterGrace(.waitForSatisfiedPath) ==
+            .wiFiNotConnected)
     }
 }

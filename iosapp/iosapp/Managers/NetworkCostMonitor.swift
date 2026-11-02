@@ -6,8 +6,18 @@ import Network
 // not final: the radio may still be associating.
 enum AutomaticUploadPathDecision: Equatable {
     case allow
-    case refuse
+    case notOnWiFi
+    case lowData
     case waitForSatisfiedPath
+}
+
+// The answer once a sample is final, including a grace that ran out
+// while the path was still unsatisfied.
+enum AutomaticUploadDecision: Equatable {
+    case allow
+    case notOnWiFi
+    case lowData
+    case wiFiNotConnected
 }
 
 // Reports whether the current path would bill the user for a full-size
@@ -47,14 +57,18 @@ final class NetworkCostMonitor: NetworkCostProviding {
     static let unsatisfiedPathGrace: TimeInterval = 5
 
     // The first path sample on a fresh wake is often still unsatisfied.
-    // That is not a refusal. Cellular and Low Data Mode are.
+    // That is not a refusal. Low Data is named before an expensive path
+    // so a cellular Low Data sample is not described as merely off Wi-Fi.
     static func automaticUploadDecision(
         status: NWPath.Status,
         isExpensive: Bool,
         isConstrained: Bool
     ) -> AutomaticUploadPathDecision {
-        if isExpensive || isConstrained {
-            return .refuse
+        if isConstrained {
+            return .lowData
+        }
+        if isExpensive {
+            return .notOnWiFi
         }
         if status != .satisfied {
             return .waitForSatisfiedPath
@@ -62,39 +76,52 @@ final class NetworkCostMonitor: NetworkCostProviding {
         return .allow
     }
 
+    // The grace ending while the path is still unsatisfied means Wi-Fi
+    // is not connected. Low Data and an expensive path were already decided.
+    static func outcomeAfterGrace(
+        _ decision: AutomaticUploadPathDecision
+    ) -> AutomaticUploadDecision {
+        switch decision {
+        case .allow:
+            return .allow
+        case .notOnWiFi:
+            return .notOnWiFi
+        case .lowData:
+            return .lowData
+        case .waitForSatisfiedPath:
+            return .wiFiNotConnected
+        }
+    }
+
     // Waits until the path is known. A cold launch's default "not metered"
     // would start an upload before the path exists, and the first sample
     // can still be unsatisfied while the radio associates.
-    func waitForAutomaticUploadDecision() async -> Bool {
+    func waitForAutomaticUploadDecision() async -> AutomaticUploadDecision {
         let gate = ResumeOnce()
         return await withCheckedContinuation { continuation in
             let monitor = NWPathMonitor()
             let queue = DispatchQueue(label: "NetworkCostMonitor.automaticUpload")
-            let finish: (Bool) -> Void = { allowed in
+            let finish: (AutomaticUploadDecision) -> Void = { decision in
                 guard gate.claim() else { return }
                 monitor.cancel()
-                continuation.resume(returning: allowed)
+                continuation.resume(returning: decision)
             }
-            let timeout = DispatchWorkItem { finish(false) }
+            let timeout = DispatchWorkItem {
+                finish(Self.outcomeAfterGrace(.waitForSatisfiedPath))
+            }
             queue.asyncAfter(
                 deadline: .now() + Self.unsatisfiedPathGrace,
                 execute: timeout
             )
             monitor.pathUpdateHandler = { path in
-                switch Self.automaticUploadDecision(
+                let decision = Self.automaticUploadDecision(
                     status: path.status,
                     isExpensive: path.isExpensive,
                     isConstrained: path.isConstrained
-                ) {
-                case .allow:
-                    timeout.cancel()
-                    finish(true)
-                case .refuse:
-                    timeout.cancel()
-                    finish(false)
-                case .waitForSatisfiedPath:
-                    break
-                }
+                )
+                guard decision != .waitForSatisfiedPath else { return }
+                timeout.cancel()
+                finish(Self.outcomeAfterGrace(decision))
             }
             monitor.start(queue: queue)
         }

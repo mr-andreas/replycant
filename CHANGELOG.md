@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+#### iOS app
+
+- a skipped charging run names why, in a few words
+
 ### Fixes
 
 #### iOS app

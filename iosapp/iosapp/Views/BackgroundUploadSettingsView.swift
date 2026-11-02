@@ -42,16 +42,34 @@ enum BackgroundUploadStatusCopy {
     static func runDetail(_ run: BackgroundUploadRun) -> String {
         let files = run.uploadedCount == 1 ? "1 file" : "\(run.uploadedCount) files"
         let left = run.queueCount.map { "\($0) left" } ?? "—"
-        return "\(files), \(bytesText(run.uploadedBytes)), \(left), \(resultLabel(run.result))"
+        let outcome = resultLabel(run.result, skipReason: run.skipReason)
+        return "\(files), \(bytesText(run.uploadedBytes)), \(left), \(outcome)"
     }
 
-    static func resultLabel(_ result: BackgroundUploadRunResult) -> String {
+    static func resultLabel(
+        _ result: BackgroundUploadRunResult,
+        skipReason: BackgroundUploadSkipReason? = nil
+    ) -> String {
         switch result {
         case .completed: return "Completed"
         case .expired: return "Stopped early"
         case .alreadyUploading: return "Already uploading"
-        case .skipped: return "Skipped"
+        case .skipped:
+            guard let skipReason else { return "Skipped" }
+            return "Skipped, \(skipReasonText(skipReason))"
         case .unfinished: return "Did not finish"
+        }
+    }
+
+    // The few words after "Skipped". Each one is a gate the wake can
+    // actually fail, so the row says which one it was.
+    private static func skipReasonText(_ reason: BackgroundUploadSkipReason) -> String {
+        switch reason {
+        case .uploadOff: return "Upload is off"
+        case .noPhotoAccess: return "No photo access"
+        case .notOnWiFi: return "Not on Wi-Fi"
+        case .lowData: return "Low Data Mode"
+        case .wiFiNotConnected: return "Wi-Fi not connected"
         }
     }
 

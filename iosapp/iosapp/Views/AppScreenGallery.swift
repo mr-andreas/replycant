@@ -49,7 +49,7 @@ enum AppScreenGallery {
         "{\"pubkey\":\"ssh-ed25519 AAAA...\",\"age_pubkey\":\"age1...\",\"name\":\"preview-iphone\",\"uuid\":\"abc123\",\"pairing_secret\":\"preview\"}"
 
     // Two fixed runs so the settings tile shows a finished upload and a
-    // skip without reading this phone's stored history.
+    // skip that names why, without reading this phone's stored history.
     private static let sampleBackgroundUploadStatus = BackgroundUploadStatus(
         isEnabled: true,
         isRegistered: true,
@@ -72,7 +72,8 @@ enum AppScreenGallery {
                 uploadedCount: 0,
                 uploadedBytes: 0,
                 queueCount: nil,
-                result: .skipped
+                result: .skipped,
+                skipReason: .wiFiNotConnected
             )
         ]
     )
