@@ -2,6 +2,14 @@ import Combine
 import Foundation
 import Network
 
+// A charging wake's answer for the path it just sampled. Unsatisfied is
+// not final: the radio may still be associating.
+enum AutomaticUploadPathDecision: Equatable {
+    case allow
+    case refuse
+    case waitForSatisfiedPath
+}
+
 // Reports whether the current path would bill the user for a full-size
 // media transfer, so playback and uploads can ask before starting one.
 protocol NetworkCostProviding: AnyObject {
@@ -34,24 +42,59 @@ final class NetworkCostMonitor: NetworkCostProviding {
         status == .satisfied && !isExpensive && !isConstrained
     }
 
-    // Waits for the first path update. A cold background launch still holds
-    // the monitor's default "not metered" value, which would start an upload
-    // before the path is known.
+    // How long a charging wake waits for a radio that is not up yet.
+    // A metered path is already an answer and is not given this grace.
+    static let unsatisfiedPathGrace: TimeInterval = 5
+
+    // The first path sample on a fresh wake is often still unsatisfied.
+    // That is not a refusal. Cellular and Low Data Mode are.
+    static func automaticUploadDecision(
+        status: NWPath.Status,
+        isExpensive: Bool,
+        isConstrained: Bool
+    ) -> AutomaticUploadPathDecision {
+        if isExpensive || isConstrained {
+            return .refuse
+        }
+        if status != .satisfied {
+            return .waitForSatisfiedPath
+        }
+        return .allow
+    }
+
+    // Waits until the path is known. A cold launch's default "not metered"
+    // would start an upload before the path exists, and the first sample
+    // can still be unsatisfied while the radio associates.
     func waitForAutomaticUploadDecision() async -> Bool {
         let gate = ResumeOnce()
         return await withCheckedContinuation { continuation in
             let monitor = NWPathMonitor()
             let queue = DispatchQueue(label: "NetworkCostMonitor.automaticUpload")
-            monitor.pathUpdateHandler = { path in
+            let finish: (Bool) -> Void = { allowed in
                 guard gate.claim() else { return }
                 monitor.cancel()
-                continuation.resume(
-                    returning: Self.allowsAutomaticUpload(
-                        status: path.status,
-                        isExpensive: path.isExpensive,
-                        isConstrained: path.isConstrained
-                    )
-                )
+                continuation.resume(returning: allowed)
+            }
+            let timeout = DispatchWorkItem { finish(false) }
+            queue.asyncAfter(
+                deadline: .now() + Self.unsatisfiedPathGrace,
+                execute: timeout
+            )
+            monitor.pathUpdateHandler = { path in
+                switch Self.automaticUploadDecision(
+                    status: path.status,
+                    isExpensive: path.isExpensive,
+                    isConstrained: path.isConstrained
+                ) {
+                case .allow:
+                    timeout.cancel()
+                    finish(true)
+                case .refuse:
+                    timeout.cancel()
+                    finish(false)
+                case .waitForSatisfiedPath:
+                    break
+                }
             }
             monitor.start(queue: queue)
         }

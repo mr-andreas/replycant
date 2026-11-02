@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UIKit
 import UserNotifications
 
 // Photo permission without the rest of the library API, so the upload
@@ -85,6 +86,7 @@ final class UploadController: ObservableObject {
     private let allowsAutomaticUpload: () async -> Bool
     private let defaults: UserDefaults
     private let launchArguments: [String]
+    private let isApplicationActive: () -> Bool
     private var didFinishLaunch = false
     private var waitingForReminderAnswer = false
     private var networkCancellable: AnyCancellable?
@@ -97,7 +99,8 @@ final class UploadController: ObservableObject {
         network: NetworkCostProviding,
         allowsAutomaticUpload: @escaping () async -> Bool,
         defaults: UserDefaults,
-        launchArguments: [String]
+        launchArguments: [String],
+        isApplicationActive: @escaping () -> Bool = { true }
     ) {
         self.scheduler = scheduler
         self.upload = upload
@@ -106,6 +109,7 @@ final class UploadController: ObservableObject {
         self.allowsAutomaticUpload = allowsAutomaticUpload
         self.defaults = defaults
         self.launchArguments = launchArguments
+        self.isApplicationActive = isApplicationActive
         self.isEnabled = scheduler.isEnabled
         // A screenshot library already has photos, so the enable offer
         // would cover the timeline. Leaving upload off keeps the progress
@@ -113,8 +117,9 @@ final class UploadController: ObservableObject {
         // still asks.
         self.isPromptDismissed = defaults.bool(forKey: Self.promptDismissedKey)
             || launchArguments.contains("--screenshots")
-        // A return to Wi-Fi has nobody to tap Start. The path check
-        // inside startIfReady still refuses a metered network.
+        // A return to Wi-Fi has nobody to tap Start. startIfReady still
+        // refuses a metered network, and ignores the update unless the
+        // app is open. A charging wake must not start a second sync.
         networkCancellable = network.isMeteredPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isMetered in
@@ -137,7 +142,10 @@ final class UploadController: ObservableObject {
                 await NetworkCostMonitor.shared.waitForAutomaticUploadDecision()
             },
             defaults: .standard,
-            launchArguments: ProcessInfo.processInfo.arguments
+            launchArguments: ProcessInfo.processInfo.arguments,
+            isApplicationActive: {
+                UIApplication.shared.applicationState == .active
+            }
         )
     }
 
@@ -239,9 +247,12 @@ final class UploadController: ObservableObject {
         await startIfReady()
     }
 
-    // Foreground auto-start. Background charging runs do not come
-    // through here. UI tests opt out so a fixture library is left alone.
+    // Foreground auto-start. A charging wake also sees Wi-Fi return, and
+    // a sync started there takes the uploader so the charging task ends
+    // and iOS suspends both. UI tests opt out so a fixture library is
+    // left alone.
     func startIfReady() async {
+        guard isApplicationActive() else { return }
         guard didFinishLaunch else { return }
         guard !launchArguments.contains("--uitesting") else { return }
         guard !waitingForReminderAnswer else { return }

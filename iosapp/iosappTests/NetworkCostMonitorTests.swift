@@ -1,3 +1,4 @@
+import Network
 import Testing
 @testable import iosapp
 
@@ -15,5 +16,35 @@ struct NetworkCostMonitorTests {
 
     @Test func unconstrainedWifiIsNotMetered() {
         #expect(!NetworkCostMonitor.isMetered(isExpensive: false, isConstrained: false))
+    }
+
+    // A charging wake's first sample is often still unsatisfied. That is
+    // not a decision yet. A metered path is, and must not be waited out.
+    @Test func unsatisfiedPathWaitsAndMeteredPathRefuses() {
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .unsatisfied,
+            isExpensive: false,
+            isConstrained: false
+        ) == .waitForSatisfiedPath)
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .satisfied,
+            isExpensive: true,
+            isConstrained: false
+        ) == .refuse)
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .satisfied,
+            isExpensive: false,
+            isConstrained: true
+        ) == .refuse)
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .unsatisfied,
+            isExpensive: true,
+            isConstrained: false
+        ) == .refuse)
+        #expect(NetworkCostMonitor.automaticUploadDecision(
+            status: .satisfied,
+            isExpensive: false,
+            isConstrained: false
+        ) == .allow)
     }
 }

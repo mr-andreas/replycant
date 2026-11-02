@@ -165,6 +165,26 @@ struct UploadControllerTests {
         #expect(busy.runner.startedOrders.isEmpty)
     }
 
+    // A charging wake also sees the path become unmetered. Starting a
+    // foreground sync then makes the charging task give the wake back,
+    // and iOS suspends the upload that just started.
+    @Test("A background return to Wi-Fi does not start an upload")
+    func testInactiveReturnToWiFiDoesNotStart() async {
+        let harness = Harness(isApplicationActive: { false })
+        harness.reminders.status = .denied
+        harness.photos.isAuthorized = true
+
+        await harness.controller.launchDidFinish()
+        await harness.controller.enable()
+        await harness.controller.startIfReady()
+        harness.network.subject.send(false)
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(harness.runner.startedOrders.isEmpty)
+    }
+
     @Test("Regaining Wi-Fi starts a run that mobile data had blocked")
     func testRegainingWiFiStarts() async {
         let harness = Harness()
@@ -293,7 +313,8 @@ private struct Harness {
 
     init(
         defaults existing: UserDefaults? = nil,
-        launchArguments: [String] = []
+        launchArguments: [String] = [],
+        isApplicationActive: @escaping () -> Bool = { true }
     ) {
         let defaults: UserDefaults
         if let existing {
@@ -324,7 +345,8 @@ private struct Harness {
             network: network,
             allowsAutomaticUpload: { gate.allows },
             defaults: defaults,
-            launchArguments: launchArguments
+            launchArguments: launchArguments,
+            isApplicationActive: isApplicationActive
         )
     }
 

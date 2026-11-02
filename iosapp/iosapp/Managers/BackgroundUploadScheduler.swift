@@ -48,6 +48,29 @@ struct BackgroundUploadStatus: Equatable {
     var runs: [BackgroundUploadRun]
 }
 
+// A charging wake finds a sync already running. Leaving it alone is only
+// safe while the app is open: completing the task otherwise lets iOS
+// suspend that sync, and every later wake sees it still running.
+enum ChargingWakeStart: Equatable {
+    case leaveExistingUpload
+    case uploadInThisTask
+}
+
+// What one join attempt did. Still connecting is not a failure: the node
+// is still coming up, and a charging window can wait for it.
+enum TailnetJoinAttempt: Equatable {
+    case joined
+    case stillConnecting
+    case failed
+}
+
+// Why a charging wake stopped waiting for the library network.
+enum TailnetJoinOutcome: Equatable {
+    case joined
+    case expired
+    case failed
+}
+
 // Asks iOS to upload while the phone is charging and online, then refuses
 // the run unless the path is unmetered. The user turns this on from the
 // timeline or from Settings. The same switch starts foreground upload.
@@ -223,11 +246,45 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         isEnabled && isPhotoAccessGranted && allowsAutomaticUpload
     }
 
+    // An open upload is the user's. A background wake owns the run even
+    // when a path update or a previous suspend left a sync marked active,
+    // because completing the task would freeze that sync.
+    static func chargingWakeStart(
+        isSyncing: Bool,
+        isApplicationActive: Bool
+    ) -> ChargingWakeStart {
+        if isSyncing && isApplicationActive {
+            return .leaveExistingUpload
+        }
+        return .uploadInThisTask
+    }
+
+    // Keeps waiting through the foreground join timeout. A charging wake
+    // has the rest of the window, and ending on the first still-connecting
+    // miss uploads nothing. Any other error, or iOS expiring the task, stops.
+    static func waitUntilTailnetJoined(
+        isExpired: () -> Bool,
+        attemptJoin: () async -> TailnetJoinAttempt
+    ) async -> TailnetJoinOutcome {
+        while !isExpired() {
+            switch await attemptJoin() {
+            case .joined:
+                return isExpired() ? .expired : .joined
+            case .stillConnecting:
+                continue
+            case .failed:
+                return isExpired() ? .expired : .failed
+            }
+        }
+        return .expired
+    }
+
     // Records the run, then reschedules so a kill still has a next one.
-    // An upload the user already started is left alone. A long suspend
-    // reclaims the tailnet's sockets, so the upload rebuilds the node
-    // before it dials. The stay starts when the task is finished, because
-    // that is when iOS is allowed to suspend the process.
+    // An upload the user is watching is left alone. A sync left running
+    // while the app is not active is cancelled: its sockets are the ones
+    // this wake rebuilds, and reporting the task finished would suspend it.
+    // The stay starts when the task is finished, because that is when iOS
+    // is allowed to suspend the process.
     private func handle(_ task: BGProcessingTask) async {
         let runID = beginRun(at: now())
         schedule()
@@ -248,7 +305,11 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
             }
         }
 
-        if PhotoSyncManager.shared.isSyncing {
+        let wake = Self.chargingWakeStart(
+            isSyncing: PhotoSyncManager.shared.isSyncing,
+            isApplicationActive: UIApplication.shared.applicationState == .active
+        )
+        if wake == .leaveExistingUpload {
             await recordBackgroundStay()
             if control.claimFinish() {
                 task.setTaskCompleted(success: true)
@@ -261,26 +322,32 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
             )
             return
         }
+        if PhotoSyncManager.shared.isSyncing {
+            PhotoSyncManager.shared.cancelSync()
+        }
 
         var result: BackgroundUploadRunResult = .skipped
         var tally = UploadRunTally.empty
         if await passesGate(), !control.isFinished {
             control.markStarted()
-            // A still-connecting join keeps running. The upload waits on
-            // that same join, so this error is not a reason to skip the run.
-            try? await TailnetBootstrap.shared.noteBackgroundWake()
-            await PhotoSyncManager.shared.startSync(order: .smallestFirst)
-            await PhotoSyncManager.shared.syncTask?.value
-            tally = PhotoSyncManager.shared.runTally
-            if control.wasExpired {
+            if await libraryNetworkIsReady(control), !control.isFinished {
+                await PhotoSyncManager.shared.startSync(order: .smallestFirst)
+                await PhotoSyncManager.shared.syncTask?.value
+                tally = PhotoSyncManager.shared.runTally
+                if control.wasExpired {
+                    result = .expired
+                } else if case .completed = PhotoSyncManager.shared.syncState {
+                    result = .completed
+                } else {
+                    result = .unfinished
+                }
+                if await PeriodicSyncManager.shared.pushNow() {
+                    UploadedMediaCache.shared.flushPending()
+                }
+            } else if control.wasExpired {
                 result = .expired
-            } else if case .completed = PhotoSyncManager.shared.syncState {
-                result = .completed
             } else {
                 result = .unfinished
-            }
-            if await PeriodicSyncManager.shared.pushNow() {
-                UploadedMediaCache.shared.flushPending()
             }
         } else if control.wasExpired {
             result = .expired
@@ -290,6 +357,44 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
             task.setTaskCompleted(success: result == .completed)
         }
         finishRun(id: runID, at: now(), tally: tally, result: result)
+    }
+
+    // Rebuilds after a long suspend, then waits out "still connecting".
+    // The foreground timeout is what used to end the run while the node
+    // was still coming up. A different join error ends the wake.
+    private func libraryNetworkIsReady(_ control: RunControl) async -> Bool {
+        do {
+            try await TailnetBootstrap.shared.noteBackgroundWake()
+        } catch TailnetBootstrap.BootstrapError.stillConnecting {
+            // The rebuild keeps running. The wait below uses that same join.
+        } catch {
+            logError(
+                "Background upload could not rebuild the tailnet: \(error.localizedDescription)",
+                context: "BackgroundUpload"
+            )
+            return false
+        }
+        let outcome = await Self.waitUntilTailnetJoined(
+            isExpired: { control.wasExpired || control.isFinished },
+            attemptJoin: { await self.attemptTailnetJoin() }
+        )
+        return outcome == .joined
+    }
+
+    // One slice of the join wait. Still connecting is retried by the caller.
+    private func attemptTailnetJoin() async -> TailnetJoinAttempt {
+        do {
+            try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+            return .joined
+        } catch TailnetBootstrap.BootstrapError.stillConnecting {
+            return .stillConnecting
+        } catch {
+            logError(
+                "Background upload could not join the tailnet: \(error.localizedDescription)",
+                context: "BackgroundUpload"
+            )
+            return .failed
+        }
     }
 
     // The node's sockets survive only while this process does. iOS may

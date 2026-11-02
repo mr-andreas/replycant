@@ -274,6 +274,67 @@ struct BackgroundUploadSchedulerTests {
         #expect(BackgroundUploadStatusCopy.bytesText(2048) == "2 KB")
     }
 
+    // Completing the charging task while the app is open does not suspend
+    // the upload the user is watching. Completing it in the background does.
+    @Test("An open app leaves a running upload alone, and a background wake takes it over")
+    func testChargingWakeOwnership() {
+        #expect(BackgroundUploadScheduler.chargingWakeStart(
+            isSyncing: true,
+            isApplicationActive: true
+        ) == .leaveExistingUpload)
+        #expect(BackgroundUploadScheduler.chargingWakeStart(
+            isSyncing: false,
+            isApplicationActive: true
+        ) == .uploadInThisTask)
+        #expect(BackgroundUploadScheduler.chargingWakeStart(
+            isSyncing: true,
+            isApplicationActive: false
+        ) == .uploadInThisTask)
+        #expect(BackgroundUploadScheduler.chargingWakeStart(
+            isSyncing: false,
+            isApplicationActive: false
+        ) == .uploadInThisTask)
+    }
+
+    // The foreground join budget is about ten seconds. A charging wake has
+    // the rest of the window, so "still connecting" is tried again. iOS
+    // expiring the task, or any other join error, ends the wait.
+    @Test("A charging wake retries a tailnet that is still connecting")
+    func testTailnetJoinWaitRetriesUntilUpOrStopped() async {
+        let joining = ScriptedTailnetJoin(script: [.stillConnecting, .joined])
+        let joined = await BackgroundUploadScheduler.waitUntilTailnetJoined(
+            isExpired: { false },
+            attemptJoin: { joining.next() }
+        )
+        #expect(joined == .joined)
+        #expect(joining.count == 2)
+
+        let expiring = ScriptedTailnetJoin(script: [.stillConnecting], expireAfter: 1)
+        let expired = await BackgroundUploadScheduler.waitUntilTailnetJoined(
+            isExpired: { expiring.expired },
+            attemptJoin: { expiring.next() }
+        )
+        #expect(expired == .expired)
+        #expect(expiring.count == 1)
+
+        let alreadyOver = ScriptedTailnetJoin(script: [.joined])
+        alreadyOver.expired = true
+        let didNotTry = await BackgroundUploadScheduler.waitUntilTailnetJoined(
+            isExpired: { alreadyOver.expired },
+            attemptJoin: { alreadyOver.next() }
+        )
+        #expect(didNotTry == .expired)
+        #expect(alreadyOver.count == 0)
+
+        let broken = ScriptedTailnetJoin(script: [.failed, .joined])
+        let failed = await BackgroundUploadScheduler.waitUntilTailnetJoined(
+            isExpired: { false },
+            attemptJoin: { broken.next() }
+        )
+        #expect(failed == .failed)
+        #expect(broken.count == 1)
+    }
+
     @Test("Automatic upload allows Wi-Fi and refuses metered, Low Data, and offline paths")
     func testAutomaticUploadNetworkRule() {
         #expect(NetworkCostMonitor.allowsAutomaticUpload(
@@ -331,6 +392,30 @@ struct BackgroundUploadSchedulerTests {
             backlog: backlog,
             now: { now }
         )
+    }
+}
+
+// Plays join results back, and can mark the task expired after a try,
+// so the wait is tested without a real tailnet or a processing task.
+@MainActor
+private final class ScriptedTailnetJoin {
+    private let script: [TailnetJoinAttempt]
+    private let expireAfter: Int?
+    private(set) var count = 0
+    var expired = false
+
+    init(script: [TailnetJoinAttempt], expireAfter: Int? = nil) {
+        self.script = script
+        self.expireAfter = expireAfter
+    }
+
+    func next() -> TailnetJoinAttempt {
+        let attempt = script[min(count, script.count - 1)]
+        count += 1
+        if let expireAfter, count >= expireAfter {
+            expired = true
+        }
+        return attempt
     }
 }
 
