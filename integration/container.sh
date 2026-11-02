@@ -50,10 +50,11 @@ start_container() {
   remove_stale_containers
   docker build -f integration/Dockerfile -t "$image" .
   local container_id
+  # 19080 leaves 18080 for the simulator bootstrap stack.
   container_id="$(
     docker run --rm -d \
       --label replycant-integration=true \
-      -p 18080:8080 \
+      -p 19080:8080 \
       -p 18082:18082 \
       -p 18085:18085 \
       -p 18447:18447 \

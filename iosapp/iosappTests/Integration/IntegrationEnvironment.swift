@@ -99,7 +99,7 @@ enum IntegrationEnvironment {
 
     // Reads the same payload the first-device QR encodes.
     static func firstDeviceConfig() async throws -> FirstDeviceConfig {
-        guard let url = URL(string: "http://localhost:18080/config.json") else {
+        guard let url = URL(string: "http://localhost:19080/config.json") else {
             throw IntegrationEnvironmentError.invalidURL
         }
         let data = try await get(url, what: "first-device config")
