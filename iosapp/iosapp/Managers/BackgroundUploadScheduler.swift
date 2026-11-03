@@ -16,6 +16,20 @@ protocol BackgroundTaskScheduling: AnyObject {
 
 extension BGTaskScheduler: BackgroundTaskScheduling {}
 
+// How the one-shot upstream fetch at the start of a charging wake ended.
+// A normal failure is still finished: the wake uploads the local library.
+enum UpstreamPullOutcome: Equatable, Sendable {
+    case finished
+    case refused
+    case expired
+}
+
+// Whether the wake went on to warm and upload after that fetch.
+enum ChargingLibraryWorkResult: Equatable, Sendable {
+    case refreshedAndUploaded
+    case notStarted
+}
+
 // How a charging run ended, so the settings list can say more than
 // whether the task was invoked.
 enum BackgroundUploadRunResult: String, Codable, Equatable {
@@ -82,9 +96,11 @@ enum TailnetJoinOutcome: Equatable {
     case failed
 }
 
-// Asks iOS to upload while the phone is charging and online, then refuses
-// the run unless the path is unmetered. The user turns this on from the
-// timeline or from Settings. The same switch starts foreground upload.
+// Asks iOS to run while the phone is charging and online, then refuses
+// the run unless the path is unmetered. The wake fetches the latest
+// library, then uploads and fills the top thumbnail cache. The user
+// turns this on from the timeline or from Settings. The same switch
+// starts foreground upload.
 @MainActor
 final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
     static let shared = BackgroundUploadScheduler()
@@ -110,6 +126,9 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
     private let backlog: UploadBacklogTracking
     private let now: () -> Date
     private var didRegister = false
+    // The expiration handler cancels this between thumbnails. It is
+    // nil until the upstream fetch has finished and warming starts.
+    private var topCacheWarmTask: Task<Void, Never>?
 
     init(
         taskScheduler: BackgroundTaskScheduling = BGTaskScheduler.shared,
@@ -290,6 +309,35 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         return .uploadInThisTask
     }
 
+    // Fetches upstream before warming or uploading. Those two share the
+    // rest of the window. A refusal or an expired task starts neither:
+    // a refused database cannot take new commits, and iOS is about to
+    // suspend an expired one. The warm task is cancellable so expiration
+    // during the upload stops thumbnail downloads between items.
+    static func runChargingLibraryWork(
+        isExpired: () -> Bool,
+        updateUpstream: () async -> UpstreamPullOutcome,
+        upload: () async -> Void,
+        warmTopCache: @escaping () async -> Void,
+        registerWarmTask: (Task<Void, Never>) -> Void = { _ in }
+    ) async -> ChargingLibraryWorkResult {
+        if isExpired() {
+            return .notStarted
+        }
+        let update = await updateUpstream()
+        guard update == .finished, !isExpired() else {
+            return .notStarted
+        }
+        let warmTask = Task { await warmTopCache() }
+        registerWarmTask(warmTask)
+        await upload()
+        if isExpired() {
+            warmTask.cancel()
+        }
+        await warmTask.value
+        return .refreshedAndUploaded
+    }
+
     // Keeps waiting through the foreground join timeout. A charging wake
     // has the rest of the window, and ending on the first still-connecting
     // miss uploads nothing. Any other error, or iOS expiring the task, stops.
@@ -311,11 +359,13 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
     }
 
     // Records the run, then reschedules so a kill still has a next one.
-    // An upload the user is watching is left alone. A sync left running
-    // while the app is not active is cancelled: its sockets are the ones
-    // this wake rebuilds, and reporting the task finished would suspend it.
-    // The stay starts when the task is finished, because that is when iOS
-    // is allowed to suspend the process.
+    // An upload the user is watching is left alone. Otherwise the wake
+    // fetches upstream, then warms the top thumbnail cache while it
+    // uploads. A sync left running while the app is not active is
+    // cancelled: its sockets are the ones this wake rebuilds, and
+    // reporting the task finished would suspend it. The stay starts
+    // when the task is finished, because that is when iOS is allowed
+    // to suspend the process.
     private func handle(_ task: BGProcessingTask) async {
         let runID = beginRun(at: now())
         schedule()
@@ -326,6 +376,7 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
             Task { @MainActor in
                 if started {
                     PhotoSyncManager.shared.cancelSync()
+                    BackgroundUploadScheduler.shared.cancelTopCacheWarm()
                 }
                 // iOS can suspend as soon as the task is completed, which
                 // may be before this function reaches its own finish.
@@ -364,18 +415,38 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
         if gate == nil, !control.isFinished {
             control.markStarted()
             if await libraryNetworkIsReady(control), !control.isFinished {
-                await PhotoSyncManager.shared.startSync(order: .smallestFirst)
-                await PhotoSyncManager.shared.syncTask?.value
-                tally = PhotoSyncManager.shared.runTally
-                if control.wasExpired {
-                    result = .expired
-                } else if case .completed = PhotoSyncManager.shared.syncState {
-                    result = .completed
-                } else {
-                    result = .unfinished
-                }
-                if await PeriodicSyncManager.shared.pushNow() {
-                    UploadedMediaCache.shared.flushPending()
+                let work = await Self.runChargingLibraryWork(
+                    isExpired: { control.wasExpired || control.isFinished },
+                    updateUpstream: {
+                        await PeriodicSyncManager.shared.pullNow(
+                            isExpired: { control.wasExpired || control.isFinished }
+                        )
+                    },
+                    upload: {
+                        await PhotoSyncManager.shared.startSync(order: .smallestFirst)
+                        await PhotoSyncManager.shared.syncTask?.value
+                        tally = PhotoSyncManager.shared.runTally
+                        if control.wasExpired {
+                            result = .expired
+                        } else if case .completed = PhotoSyncManager.shared.syncState {
+                            result = .completed
+                        } else {
+                            result = .unfinished
+                        }
+                        if await PeriodicSyncManager.shared.pushNow() {
+                            UploadedMediaCache.shared.flushPending()
+                        }
+                    },
+                    warmTopCache: {
+                        await DiskCacheWarming.warmTopCacheFromLibrary()
+                    },
+                    registerWarmTask: { warmTask in
+                        self.topCacheWarmTask = warmTask
+                    }
+                )
+                topCacheWarmTask = nil
+                if work == .notStarted {
+                    result = control.wasExpired ? .expired : .unfinished
                 }
             } else if control.wasExpired {
                 result = .expired
@@ -436,6 +507,12 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
             )
             return .failed
         }
+    }
+
+    // Stops thumbnail downloads between items when iOS expires the wake.
+    // The in-flight download can finish; the next one does not start.
+    private func cancelTopCacheWarm() {
+        topCacheWarmTask?.cancel()
     }
 
     // The node's sockets survive only while this process does. iOS may

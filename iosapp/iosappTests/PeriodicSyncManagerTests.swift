@@ -3,6 +3,11 @@ import Testing
 @testable import iosapp
 import LibGit2
 
+// Lets a charging-wake slot wait observe expiration from another task.
+private final class ExpiryFlag: @unchecked Sendable {
+    var value = false
+}
+
 // Verifies periodic sync lifecycle and lock behavior for safe background git scheduling.
 @MainActor
 @Suite(.serialized, .sharedAppState)
@@ -199,6 +204,76 @@ struct PeriodicSyncManagerTests {
         #expect(callbackCount == 1)
 
         manager.onPushSuccess = nil
+    }
+
+    // A charging wake pulls even when the periodic loop is off, but it
+    // must not start while a tick still holds the slot, or it would warm
+    // a cache that tick is about to replace. Expiration has to give up
+    // without taking the slot from that tick.
+    @Test func pullNowWaitsForThePeriodicSlotOrStopsWhenExpired() async {
+        let manager = PeriodicSyncManager.shared
+        manager.stop()
+        manager.endNetworkOperationForTesting()
+        defer { manager.endNetworkOperationForTesting() }
+
+        let acquiredImmediately = await manager.waitForPeriodicSlotForTesting(
+            isExpired: { false }
+        )
+        #expect(acquiredImmediately)
+        #expect(manager.isNetworkOperationInProgressForTesting)
+        manager.endNetworkOperationForTesting()
+
+        #expect(manager.beginNetworkOperationIfIdleForTesting())
+        let waiting = Task {
+            await manager.waitForPeriodicSlotForTesting(isExpired: { false })
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        #expect(manager.isNetworkOperationInProgressForTesting)
+        manager.endNetworkOperationForTesting()
+        let acquiredAfterRelease = await waiting.value
+        #expect(acquiredAfterRelease)
+        #expect(manager.isNetworkOperationInProgressForTesting)
+
+        #expect(manager.beginNetworkOperationIfIdleForTesting() == false)
+        manager.endNetworkOperationForTesting()
+        #expect(manager.beginNetworkOperationIfIdleForTesting())
+        let expired = ExpiryFlag()
+        let givingUp = Task {
+            await manager.waitForPeriodicSlotForTesting(isExpired: { expired.value })
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        expired.value = true
+        let acquiredDespiteExpiry = await givingUp.value
+        #expect(acquiredDespiteExpiry == false)
+        #expect(manager.isNetworkOperationInProgressForTesting)
+        manager.endNetworkOperationForTesting()
+    }
+
+    // The wake must not warm or upload into a database the periodic
+    // loop has already refused. pullNow reports that without taking
+    // the network slot or opening the repository.
+    @Test func pullNowRefusesWhenTheDatabaseAlreadyRefused() async {
+        let manager = PeriodicSyncManager.shared
+        manager.stop()
+        manager.resetDatabaseVersionRefusalForTesting()
+        manager.endNetworkOperationForTesting()
+        DatabaseCompatibilityManager.shared.clear()
+        defer {
+            manager.resetDatabaseVersionRefusalForTesting()
+            manager.endNetworkOperationForTesting()
+            DatabaseCompatibilityManager.shared.clear()
+        }
+
+        manager.handleDatabaseVersionErrorForTesting(.markerRemoved(previouslySynced: 1))
+        let outcome = await manager.pullNow(isExpired: { false })
+
+        #expect(outcome == .refused)
+        #expect(manager.isNetworkOperationInProgressForTesting == false)
+        let reported = await waitUntil {
+            DatabaseCompatibilityManager.shared.incompatibility != nil
+        }
+        #expect(reported)
+        DatabaseCompatibilityManager.shared.clear()
     }
 
     // Ensures non-success push paths do not invoke the push-success callback.

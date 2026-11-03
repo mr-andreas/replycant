@@ -26,7 +26,7 @@ Turn upload on from the banner at the top of the timeline, from the empty timeli
 
 With upload on, opening the app starts an upload on Wi-Fi after the timeline has loaded. Newer photos go first. A progress button on the timeline opens how far the run has got. The phone stays awake while that run is on screen.
 
-The same switch also uploads while the phone is charging and on Wi-Fi with the app closed, smallest files first. Each of those runs is only a few minutes, so a large video may still be waiting. If uploads have not completed for 7 days, and you allowed the reminder, Replycant sends one notification. Tapping it opens the timeline. Finishing everything postpones that notification by another 7 days. The upload details show the same warning if you declined notifications.
+The same switch also runs while the phone is charging and on Wi-Fi with the app closed. That run fetches the latest library first, then uploads the smallest files and downloads the newest thumbnails at the same time. Each run is only a few minutes, so a large video may still be waiting. If uploads have not completed for 7 days, and you allowed the reminder, Replycant sends one notification. Tapping it opens the timeline. Finishing everything postpones that notification by another 7 days. The upload details show the same warning if you declined notifications.
 
 Uploads wait for Wi-Fi. A run that moves onto mobile data continues when Wi-Fi is back.
 

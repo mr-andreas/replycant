@@ -1194,9 +1194,9 @@ final class TimelineManager: ObservableObject {
         }
     }
 
-    /// Warms a disk cache tier with thumbnails of the newest
-    /// timeline items. Runs sequentially at low priority so it
-    /// doesn't compete with interactive browsing.
+    // Uses the shared newest-thumbnail choice so a charging wake and
+    // the open timeline fill the same cache. The tier decides whether
+    // a hit is reserved for the first screen or for later browsing.
     private func warmDiskCache(
         itemCount: Int,
         loader: ManifestLoaderProtocol,
@@ -1204,61 +1204,28 @@ final class TimelineManager: ObservableObject {
         lfsClient: GitLFS,
         isTop: Bool
     ) async {
-        do {
-            let total = try await loader.countTimelineOriginals(scope: scope)
-            guard total > 0 else { return }
-            let offset = max(0, total - itemCount)
-            let limit = min(itemCount, total)
-            let originals = try await loader.loadTimelinePage(
-                offset: offset, limit: limit, scope: scope
-            )
-            guard !Task.isCancelled else { return }
-
-            let refs = originals.map { original in
-                "\(original.metadata.deviceSpace)/media.replycant.com/v1alpha1/Original/\(original.metadata.name)"
+        await DiskCacheWarming.warmNewest(
+            itemCount: itemCount,
+            scope: scope,
+            loader: loader
+        ) { request in
+            if isTop {
+                try await ImageDiskCacheManager.shared.warmTop(
+                    priority: .topWarm,
+                    itemId: request.itemId,
+                    lfsPath: request.lfsPath,
+                    repository: repository,
+                    lfsClient: lfsClient
+                )
+            } else {
+                try await ImageDiskCacheManager.shared.warmMain(
+                    priority: .mainWarm,
+                    itemId: request.itemId,
+                    lfsPath: request.lfsPath,
+                    repository: repository,
+                    lfsClient: lfsClient
+                )
             }
-            let thumbnails = try await loader.loadThumbnailsByOriginalRefs(refs)
-            guard !Task.isCancelled else { return }
-
-            for original in originals {
-                guard !Task.isCancelled else { return }
-                let ref = "\(original.metadata.deviceSpace)/media.replycant.com/v1alpha1/Original/\(original.metadata.name)"
-                guard let thumbnailSet = thumbnails[ref],
-                      let entry = thumbnailSet.spec.thumbnails
-                        .sorted(by: { $0.width < $1.width })
-                        .first(where: { $0.width >= 225 })
-                        ?? thumbnailSet.spec.thumbnails
-                            .sorted(by: { $0.width < $1.width }).last
-                else { continue }
-
-                let deviceSpace = thumbnailSet.metadata.deviceSpace
-                let path = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(entry.name))"
-
-                do {
-                    if isTop {
-                        try await ImageDiskCacheManager.shared.warmTop(
-                            priority: .topWarm,
-                            itemId: original.spec.id,
-                            lfsPath: path,
-                            repository: repository,
-                            lfsClient: lfsClient
-                        )
-                    } else {
-                        try await ImageDiskCacheManager.shared.warmMain(
-                            priority: .mainWarm,
-                            itemId: original.spec.id,
-                            lfsPath: path,
-                            repository: repository,
-                            lfsClient: lfsClient
-                        )
-                    }
-                } catch {
-                    logDebug("Disk cache warm failed for \(original.spec.id): \(error.localizedDescription)", context: "Cache")
-                }
-            }
-            logDebug("Disk cache warm (\(isTop ? "top" : "main")) finished for \(originals.count) items", context: "Cache")
-        } catch {
-            logDebug("Disk cache warm error: \(error.localizedDescription)", context: "Cache")
         }
     }
 

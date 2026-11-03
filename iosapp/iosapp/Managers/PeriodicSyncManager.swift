@@ -136,6 +136,35 @@ final class PeriodicSyncManager {
         await performPushTick()
     }
 
+    // Fetches upstream at the start of a charging wake. The periodic
+    // loop may already be awake in this process, so this waits for that
+    // tick to finish and then pulls, waiting on the repo lock. A normal
+    // fetch failure still returns finished: the wake should upload the
+    // library it already has. A version or format refusal does not.
+    func pullNow(isExpired: () -> Bool) async -> UpstreamPullOutcome {
+        guard !hasRefusedUnsupportedDatabase(), !hasRefusedFormatTransition() else {
+            return .refused
+        }
+        guard await waitForPeriodicSlot(isExpired: isExpired) else {
+            return .expired
+        }
+        defer { endNetworkOperation() }
+        return await pullUpstream(waitsForMutationLock: true)
+    }
+
+    // Holds the same slot as a periodic push or pull. Returning without
+    // it would let the wake warm thumbnails a tick is about to replace.
+    // Expiration leaves the slot with whoever already has it.
+    private func waitForPeriodicSlot(isExpired: () -> Bool) async -> Bool {
+        while !isExpired() {
+            if beginNetworkOperationIfIdle() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
+
     // Pushes local commits to origin and logs operation duration for performance visibility.
     @discardableResult
     private func performPushTick() async -> Bool {
@@ -177,36 +206,72 @@ final class PeriodicSyncManager {
             return
         }
         defer { endNetworkOperation() }
+        _ = await pullUpstream(waitsForMutationLock: false)
+    }
 
+    // One fetch and rebase. The periodic tick skips when a commit holds
+    // the repo lock. A charging wake waits, because the cache it warms
+    // next has to be the library it just fetched.
+    private func pullUpstream(waitsForMutationLock: Bool) async -> UpstreamPullOutcome {
         let startTime = CFAbsoluteTimeGetCurrent()
+        let label = waitsForMutationLock ? "Charging wake pull" : "Periodic pull"
         do {
             // Shares a wake rebuild already in flight instead of pulling
             // through a proxy the suspend may have reclaimed.
             try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
             try ensureMTLSTransportConfigured()
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-            let pulled = try await gitDB.tryPull()
-            guard pulled else {
-                logDebug("Skipping periodic pull because another mutating git operation is running", context: "Sync")
-                return
+            if waitsForMutationLock {
+                try await gitDB.pull()
+            } else {
+                let pulled = try await gitDB.tryPull()
+                guard pulled else {
+                    logDebug(
+                        "Skipping periodic pull because another mutating git operation is running",
+                        context: "Sync"
+                    )
+                    return .finished
+                }
             }
 
             let duration = CFAbsoluteTimeGetCurrent() - startTime
-            logDebug("Periodic pull completed in \(String(format: "%.3f", duration)) seconds", context: "Sync")
+            logDebug(
+                "\(label) completed in \(String(format: "%.3f", duration)) seconds",
+                context: "Sync"
+            )
             await MainActor.run {
                 DatabaseCompatibilityManager.shared.clear()
             }
+            return .finished
         } catch let error as DatabaseVersionError {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
-            logError("Periodic pull refused unsupported database after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
+            logError(
+                "\(label) refused unsupported database after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)",
+                context: "Sync"
+            )
             refuseUnsupportedDatabase(error)
+            await MainActor.run {
+                DatabaseCompatibilityManager.shared.report(error)
+            }
+            return .refused
         } catch let error as FormatTransitionPullError {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
-            logError("Periodic pull refused format-transition rebase after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
+            logError(
+                "\(label) refused format-transition rebase after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)",
+                context: "Sync"
+            )
             refuseFormatTransition(error)
+            await MainActor.run {
+                DatabaseCompatibilityManager.shared.reportFormatTransitionDivergence(error)
+            }
+            return .refused
         } catch {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
-            logError("Periodic pull failed after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
+            logError(
+                "\(label) failed after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)",
+                context: "Sync"
+            )
+            return .finished
         }
     }
 
@@ -352,6 +417,12 @@ extension PeriodicSyncManager {
         stateLock.lock()
         defer { stateLock.unlock() }
         return pullTickInvocationCount
+    }
+
+    // Lets a charging-wake test hold and release the periodic slot
+    // without opening the repository or joining the tailnet.
+    func waitForPeriodicSlotForTesting(isExpired: @escaping () -> Bool) async -> Bool {
+        await waitForPeriodicSlot(isExpired: isExpired)
     }
 
     // Triggers the same callback path as a successful push so tests can assert subscriber wiring.

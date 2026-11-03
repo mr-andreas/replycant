@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+#### iOS app
+
+- a charging run fetches the latest library and downloads the newest thumbnails while it uploads
+
 ### Fixes
 
 #### iOS app

@@ -429,6 +429,135 @@ struct BackgroundUploadSchedulerTests {
         #expect(broken.count == 1)
     }
 
+    // The charging window is short. The library has to be current before
+    // either side of the parallel work starts, and those two sides have
+    // to share the rest of the window rather than take it in turn.
+    @Test("A finished upstream update warms the top cache and uploads together")
+    func testFinishedUpdateWarmsAndUploadsTogether() async {
+        let probe = ChargingWorkProbe()
+        let result = await BackgroundUploadScheduler.runChargingLibraryWork(
+            isExpired: { false },
+            updateUpstream: {
+                await probe.record("pull")
+                return .finished
+            },
+            upload: {
+                await probe.occupy("upload")
+            },
+            warmTopCache: {
+                await probe.occupy("warm")
+            }
+        )
+
+        let summary = await probe.summary()
+        #expect(result == .refreshedAndUploaded)
+        #expect(summary.events.first == "pull")
+        let pull = summary.events.firstIndex(of: "pull")!
+        let uploadStart = summary.events.firstIndex(of: "upload-start")!
+        let warmStart = summary.events.firstIndex(of: "warm-start")!
+        #expect(pull < uploadStart)
+        #expect(pull < warmStart)
+        #expect(summary.maxInProgress == 2)
+    }
+
+    // A bad fetch still continues: the phone should upload the library
+    // it already has. A refused database and an expired task must not,
+    // or the wake would commit into a format it has rejected or keep
+    // working after iOS has taken the process back.
+    @Test("A refused or expired upstream update does not warm or upload")
+    func testRefusedOrExpiredUpdateStartsNoLibraryWork() async {
+        let refused = WorkCounter()
+        let refusedResult = await BackgroundUploadScheduler.runChargingLibraryWork(
+            isExpired: { false },
+            updateUpstream: {
+                refused.pulls += 1
+                return .refused
+            },
+            upload: { refused.uploads += 1 },
+            warmTopCache: { refused.warms += 1 }
+        )
+        #expect(refusedResult == .notStarted)
+        #expect(refused.pulls == 1)
+        #expect(refused.uploads == 0)
+        #expect(refused.warms == 0)
+
+        let gaveUp = WorkCounter()
+        let gaveUpResult = await BackgroundUploadScheduler.runChargingLibraryWork(
+            isExpired: { false },
+            updateUpstream: {
+                gaveUp.pulls += 1
+                return .expired
+            },
+            upload: { gaveUp.uploads += 1 },
+            warmTopCache: { gaveUp.warms += 1 }
+        )
+        #expect(gaveUpResult == .notStarted)
+        #expect(gaveUp.pulls == 1)
+        #expect(gaveUp.uploads == 0)
+        #expect(gaveUp.warms == 0)
+
+        let alreadyOver = WorkCounter()
+        let alreadyOverResult = await BackgroundUploadScheduler.runChargingLibraryWork(
+            isExpired: { true },
+            updateUpstream: {
+                alreadyOver.pulls += 1
+                return .finished
+            },
+            upload: { alreadyOver.uploads += 1 },
+            warmTopCache: { alreadyOver.warms += 1 }
+        )
+        #expect(alreadyOverResult == .notStarted)
+        #expect(alreadyOver.pulls == 0)
+        #expect(alreadyOver.uploads == 0)
+        #expect(alreadyOver.warms == 0)
+
+        let expiredDuringPull = WorkCounter()
+        let expiredDuringPullResult = await BackgroundUploadScheduler.runChargingLibraryWork(
+            isExpired: { expiredDuringPull.pulls > 0 },
+            updateUpstream: {
+                expiredDuringPull.pulls += 1
+                return .finished
+            },
+            upload: { expiredDuringPull.uploads += 1 },
+            warmTopCache: { expiredDuringPull.warms += 1 }
+        )
+        #expect(expiredDuringPullResult == .notStarted)
+        #expect(expiredDuringPull.pulls == 1)
+        #expect(expiredDuringPull.uploads == 0)
+        #expect(expiredDuringPull.warms == 0)
+    }
+
+    // iOS can end the wake while an upload is still moving. The top-cache
+    // downloads have to stop with it, or they keep going until the process
+    // is suspended mid-transfer.
+    @Test("An upstream update that expires during upload cancels top-cache warming")
+    func testExpirationDuringUploadCancelsWarming() async {
+        let expiry = WorkCounter()
+        let probe = ChargingWorkProbe()
+        let result = await BackgroundUploadScheduler.runChargingLibraryWork(
+            isExpired: { expiry.uploads > 0 },
+            updateUpstream: { .finished },
+            upload: { expiry.uploads += 1 },
+            warmTopCache: {
+                await probe.record(Task.isCancelled ? "cancelled" : "started")
+                if Task.isCancelled { return }
+                for _ in 0..<20 {
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                    if Task.isCancelled {
+                        await probe.record("cancelled")
+                        return
+                    }
+                }
+                await probe.record("finished-uncancelled")
+            }
+        )
+
+        let events = await probe.summary().events
+        #expect(result == .refreshedAndUploaded)
+        #expect(events.contains("cancelled"))
+        #expect(!events.contains("finished-uncancelled"))
+    }
+
     @Test("Automatic upload allows Wi-Fi and refuses metered, Low Data, and offline paths")
     func testAutomaticUploadNetworkRule() {
         #expect(NetworkCostMonitor.allowsAutomaticUpload(
@@ -502,6 +631,40 @@ struct BackgroundUploadSchedulerTests {
             backlog: backlog,
             now: { now }
         )
+    }
+}
+
+// Counts how far a scripted charging wake got. The closures run on the
+// main actor, so a plain class is enough to share the tallies.
+private final class WorkCounter: @unchecked Sendable {
+    var pulls = 0
+    var uploads = 0
+    var warms = 0
+}
+
+// Records whether warming and uploading are in progress together.
+// Each side holds its slot briefly so a sequential run cannot look
+// overlapped just because both eventually ran.
+private actor ChargingWorkProbe {
+    private(set) var events: [String] = []
+    private var inProgress = 0
+    private(set) var maxInProgress = 0
+
+    func record(_ name: String) {
+        events.append(name)
+    }
+
+    func occupy(_ name: String) async {
+        events.append("\(name)-start")
+        inProgress += 1
+        maxInProgress = max(maxInProgress, inProgress)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        events.append("\(name)-end")
+        inProgress -= 1
+    }
+
+    func summary() -> (events: [String], maxInProgress: Int) {
+        (events, maxInProgress)
     }
 }
 
