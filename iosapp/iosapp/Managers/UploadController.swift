@@ -67,8 +67,36 @@ enum UploadPrompt: Equatable {
     }
 }
 
+// Decides when a foreground launch may scan the photo library.
+//
+// The scan enumerates every asset. Starting it when timeline metadata
+// returns runs it beside the grid's first thumbnail requests. An empty
+// or failed timeline has nothing to paint, so it starts as soon as
+// metadata is back. A library with photos waits until the visible cells
+// have resolved. The timeout keeps a stuck thumbnail from postponing
+// upload for the rest of the session.
+enum UploadLaunchGate {
+    /// Long enough for a cached first screen to paint, and short enough
+    /// that a thumbnail which never resolves still yields to upload.
+    static let fallbackDelay: Duration = .seconds(3)
+
+    // One snapshot of launch. Callers wait and ask again; this does not
+    // sleep or watch the grid itself.
+    static func shouldStart(
+        metadataReady: Bool,
+        timelineHasItems: Bool,
+        loadFailed: Bool,
+        viewportResolved: Bool,
+        timedOut: Bool
+    ) -> Bool {
+        guard metadataReady else { return false }
+        if loadFailed || !timelineHasItems { return true }
+        return viewportResolved || timedOut
+    }
+}
+
 // Turns upload on from the timeline or Settings, then starts a run only
-// after the first screen is up and the network will not bill the user.
+// after the first photos are up and the network will not bill the user.
 @MainActor
 final class UploadController: ObservableObject {
     static let shared = UploadController()
@@ -238,9 +266,10 @@ final class UploadController: ObservableObject {
         notificationsDenied = status == .denied
     }
 
-    // Called once the timeline's first load returns. Earlier scene
+    // Called once the first photos have resolved, or as soon as metadata
+    // returns when the timeline is empty or failed. Earlier scene
     // activations and network changes stay queued behind this so a
-    // library scan cannot delay the first screen.
+    // library scan cannot run during that first paint.
     func launchDidFinish() async {
         guard !didFinishLaunch else { return }
         didFinishLaunch = true

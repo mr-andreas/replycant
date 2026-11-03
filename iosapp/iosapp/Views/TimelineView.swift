@@ -482,8 +482,41 @@ struct TimelineGridScreen: View {
             TimelineRenderMilestoneTracker.shared.resetForNewTimelineLoad()
             await timelineManager.loadTimeline()
             guard !Task.isCancelled else { return }
-            onInitialLoad?()
+            await notifyInitialLoadWhenPhotosAreReady()
         }
+    }
+
+    // Foreground upload scans the whole photo library. On a timeline that
+    // has photos, that scan waits until the visible cells have resolved
+    // so it does not compete with the first thumbnails. Empty and failed
+    // loads have nothing to paint, and a short timeout covers a cell that
+    // never resolves.
+    private func notifyInitialLoadWhenPhotosAreReady() async {
+        guard let onInitialLoad else { return }
+        let tracker = TimelineRenderMilestoneTracker.shared
+        if UploadLaunchGate.shouldStart(
+            metadataReady: true,
+            timelineHasItems: timelineManager.totalCount > 0,
+            loadFailed: timelineManager.errorMessage != nil,
+            viewportResolved: tracker.isViewportHydrated,
+            timedOut: false
+        ) {
+            onInitialLoad()
+            return
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                await TimelineRenderMilestoneTracker.shared.waitUntilViewportHydrated()
+            }
+            group.addTask {
+                try? await Task.sleep(for: UploadLaunchGate.fallbackDelay)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+        guard !Task.isCancelled else { return }
+        onInitialLoad()
     }
 
     private var loadingView: some View {
@@ -1748,7 +1781,10 @@ final class InitialLayoutCollectionView: UICollectionView {
     }
 }
 
-// Tracks one-shot first-render milestones so startup profiling can separate metadata-ready from pixel-ready states.
+// Tracks one-shot first-render milestones so startup profiling can
+// separate metadata-ready from pixel-ready states. Upload waits on
+// viewport hydration so a library scan does not run beside the first
+// thumbnails.
 @MainActor
 final class TimelineRenderMilestoneTracker {
     static let shared = TimelineRenderMilestoneTracker()
@@ -1756,8 +1792,13 @@ final class TimelineRenderMilestoneTracker {
     private var hasEmittedFirstVisibleThumbnail = false
     private var hasEmittedViewportHydrated = false
     private var visiblePendingItemIds: Set<String> = []
+    private var hydrationWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
-    private init() {}
+    // Tests wait on their own tracker so one case cannot resume another.
+    init() {}
+
+    // True once every item that was visible for this load has resolved.
+    var isViewportHydrated: Bool { hasEmittedViewportHydrated }
 
     // Resets one-shot viewport milestones at the start of a fresh timeline load.
     func resetForNewTimelineLoad() {
@@ -1786,6 +1827,43 @@ final class TimelineRenderMilestoneTracker {
         guard !hasEmittedViewportHydrated, visiblePendingItemIds.isEmpty else { return }
         hasEmittedViewportHydrated = true
         AppSignposts.event("TimelineVisibleViewportHydrated")
+        resumeHydrationWaiters()
+    }
+
+    // Suspends until the visible cells have resolved. Launch uses this so
+    // photo upload does not start while those cells are still loading.
+    // Cancellation resumes the wait; a leaked continuation would pin the
+    // launch task for the rest of the session.
+    func waitUntilViewportHydrated() async {
+        if hasEmittedViewportHydrated || Task.isCancelled { return }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                hydrationWaiters[id] = continuation
+                if hasEmittedViewportHydrated || Task.isCancelled {
+                    resumeHydrationWaiter(id)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.resumeHydrationWaiter(id)
+            }
+        }
+    }
+
+    // Resumes one waiter at most once. Hydration and cancellation can both
+    // observe the same id.
+    private func resumeHydrationWaiter(_ id: UUID) {
+        hydrationWaiters.removeValue(forKey: id)?.resume()
+    }
+
+    // Releases every launch wait now that the visible cells have resolved.
+    private func resumeHydrationWaiters() {
+        let waiters = hydrationWaiters
+        hydrationWaiters.removeAll()
+        for waiter in waiters.values {
+            waiter.resume()
+        }
     }
 }
 

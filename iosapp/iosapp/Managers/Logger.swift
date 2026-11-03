@@ -124,11 +124,27 @@ public func logError(
     log(message, context: context, level: .error)
 }
 
+// One formatter for every line. Building a DateFormatter per call stalls
+// the main thread during launch, and the formatter is not safe to share
+// across the threads that log.
+private enum LogTimestamp {
+    private static let lock = NSLock()
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    static func now() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter.string(from: Date())
+    }
+}
+
 // Generates a timestamp string in format HH:mm:ss.SSS for consistent logging
 private func timestamp() -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "HH:mm:ss.SSS"
-    return formatter.string(from: Date())
+    LogTimestamp.now()
 }
 
 // Centralizes startup/timeline signposts so Instruments can correlate cold-start milestones.

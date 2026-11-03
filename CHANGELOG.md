@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+#### iOS app
+
+- opening the app reaches the first screen sooner
+- photo upload waits until the first photos finish loading
+
 ## 0.6.1 - 2026-11-02
 
 ### Breaking changes

@@ -62,6 +62,10 @@ enum ApplicationLog {
     /// Writes the line and drops oldest whole lines once the file is past
     /// the cap. Failures are ignored so logging cannot take down the
     /// operation that was being recorded.
+    ///
+    /// Launch writes a line on the caller's thread, including the main
+    /// thread. The size comes from the write handle so a line under the
+    /// cap does not read the retained file.
     private static func appendUnlocked(_ line: String) {
         let url = fileURLUnlocked()
         do {
@@ -73,14 +77,24 @@ enum ApplicationLog {
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
             }
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: payload)
+            let size = try appendedSize(of: payload, at: url)
+            guard size > UInt64(maxBytes) else { return }
             try trimUnlocked(url)
         } catch {
             return
         }
+    }
+
+    /// Appends one payload and reports the file size afterwards.
+    ///
+    /// The handle's end offset is the size. Callers use it to skip the
+    /// full-file read that trimming would otherwise do on every line.
+    private static func appendedSize(of payload: Data, at url: URL) throws -> UInt64 {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        let start = try handle.seekToEnd()
+        try handle.write(contentsOf: payload)
+        return start + UInt64(payload.count)
     }
 
     private static func readUnlocked() -> String {
