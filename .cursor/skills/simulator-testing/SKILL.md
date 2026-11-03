@@ -88,6 +88,9 @@ is already configured or a local repo exists, and the app lands on
      step 3.
    - `Error` means recovery failed. Report the on-screen message and
      stop.
+
+   If the app never reaches one of these screens, follow Broken
+   pairing below before retrying the flow.
 8. On the completion screen choose `Continue`. Append `&keep=1` to
    reusable dev keys so this screen shows only `Continue` and never
    offers `Revoke used key`. If a link lacks the flag, never tap
@@ -140,7 +143,9 @@ xcrun simctl openurl <udid> "replycant://debug-bootstrap?payload=$PAYLOAD"
    success. A 410 from `/config.json` means the library is already
    set up; reset the throwaway stack below and start again. If setup
    ends on the Error screen, mint a fresh payload and open the link
-   again. The previous preauth key may already be spent.
+   again. The previous preauth key may already be spent. If the app
+   never reaches the timeline, follow Broken pairing below before
+   retrying the flow.
 
 A debug build also shows Paste QR image on the scanner. That path is
 for a copied QR image and needs a tap. If iOS asks to allow the paste,
@@ -159,7 +164,50 @@ docker compose -p replycant-sim-bootstrap down -v && rm -rf /tmp/replycant-sim-b
 
 Always pass `-p replycant-sim-bootstrap` to `down`. Never point
 `REPLYCANT_DATA_DIR` at `./replycant-data` or at a `RecoveryKeys.md`
-`Path:`.
+`Path:`. Resetting the repo after the app has connected can leave it
+unable to reach the library. If the app then misbehaves, follow
+Broken pairing below.
+
+## Broken pairing
+
+Use this only when the app is already misbehaving. A launch that
+reaches the timeline does not need this check. Do not wait for it on
+a healthy run.
+
+The app is misbehaving when it never reaches the timeline, it stays
+off the screen the current step expects, or a later action fails
+because it cannot reach the library. Read the screen with
+`snapshot_ui`.
+
+The pairing is broken only when that screen has settled on "Local
+data was reset" together with all of these:
+
+- "Tap retry to clone fresh state from the server."
+- "Still connecting to your library's network."
+- "Retry Resync"
+
+The headline alone is the boot screen. Every configured launch shows
+it until `Git.initialize()` finishes, and a healthy boot never shows
+the red line. If the snapshot has the headline and no red line, boot
+is still in progress. Look again once, or continue when the timeline
+appears. Do not poll for this on a healthy run.
+
+"Connecting to your library's network..." on the progress view is the
+attempt, not the failure. A stack that is down can also end on the
+red line. Bring it up and tap `Retry Resync` once. If the red line
+returns, stop.
+
+Do not keep tapping `Retry Resync`. Do not open Settings and use
+Reset & Resync. That keeps the same device key and pinned CA, so it
+comes back to this screen.
+
+Then reset the stale side:
+
+- Throwaway stack: run Reset above, uninstall the app, bring the
+  stack up, and bootstrap again.
+- A recovery-key library: uninstall and recover. Do not wipe
+  `replycant-data`. If that data directory was already wiped, stop.
+  The CA wipe section says those keys are dead.
 
 ## Seeding media
 
