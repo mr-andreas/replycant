@@ -1,6 +1,15 @@
 import Foundation
 import CryptoKit
 
+/// One file found by the deferred directory walk.
+///
+/// Kept outside the cache actor so the walk can run off the actor
+/// that serves thumbnail reads.
+private struct ScannedCacheFile: Sendable {
+    let sizeBytes: Int
+    let lastAccess: Date
+}
+
 /// Disk-backed LRU cache for decrypted image bytes.
 ///
 /// Each cache instance owns a directory under the app's caches
@@ -8,6 +17,11 @@ import CryptoKit
 /// hex digest of the logical key (e.g. "t/photo-id"). An
 /// in-memory index tracks byte sizes and last-access timestamps
 /// so eviction can run without scanning the filesystem each time.
+///
+/// Until that index is published, a read opens the one file named
+/// by the key. The directory walk that publishes the index happens
+/// after the first photos, so launch does not list every cached
+/// file before those thumbnails can appear.
 ///
 /// The actor is safe to call from any task, including detached
 /// loader tasks on background threads.
@@ -23,59 +37,87 @@ actor DiskImageCache {
     private var maxBytes: Int
     private var index: [String: Entry] = [:]
     private var totalSize: Int = 0
+    /// False until a directory walk has published a complete budget.
+    /// Reads before that open the hashed file, because an empty index
+    /// would hide thumbnails that are already on disk.
+    private var indexPublished = false
+    /// Bumped when the directory is cleared so an in-flight walk
+    /// cannot put those files back into the index.
+    private var clearGeneration = 0
+    /// Names removed while a walk is in flight. The walk's snapshot
+    /// may still contain them.
+    private var tombstones: Set<String> = []
+    /// The one directory walk for this cache. Launch and Settings share it.
+    private var indexTask: Task<Void, Never>?
 
     /// Creates a cache backed by `directory` with the given byte
-    /// budget. Call `rebuild()` after init to scan the directory
-    /// and hydrate the in-memory index from existing files.
+    /// budget. The directory exists immediately so a store can land
+    /// before the size index has been built.
     init(directory: URL, maxBytes: Int) {
         self.directory = directory
         self.maxBytes = maxBytes
-    }
-
-    /// Scans the backing directory and rebuilds the in-memory
-    /// index so the cache picks up files that survived across
-    /// app launches.
-    func rebuild() {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true
         )
+    }
+
+    /// Walks the directory once. A second caller waits for that same
+    /// walk instead of listing the cache again.
+    func ensureIndex() async {
+        if indexTask == nil {
+            indexTask = Task { await self.rebuild() }
+        }
+        await indexTask?.value
+    }
+
+    /// Rebuilds the size index from the directory.
+    ///
+    /// The walk runs off this actor so a thumbnail read is not stuck
+    /// behind a listing of the whole cache. Reads during the walk
+    /// still open files by name. A clear that lands during the walk
+    /// discards the snapshot so deleted files are not restored.
+    func rebuild() async {
+        let directory = self.directory
         index.removeAll()
         totalSize = 0
-
-        guard let enumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-        ) else { return }
-
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(
-                forKeys: [.fileSizeKey, .contentModificationDateKey]
-            ) else { continue }
-            let size = values.fileSize ?? 0
-            let date = values.contentModificationDate ?? Date.distantPast
-            let filename = fileURL.lastPathComponent
-            index[filename] = Entry(
-                filename: filename, sizeBytes: size, lastAccess: date
-            )
-            totalSize += size
-        }
+        tombstones.removeAll()
+        indexPublished = false
+        let generation = clearGeneration
+        let scanned = await Task.detached(priority: .utility) {
+            Self.scan(directory)
+        }.value
+        publish(scanned, startingGeneration: generation)
     }
 
     // MARK: - Public API
 
-    /// Returns cached bytes for `key`, updating its access time,
-    /// or nil on a miss.
+    /// Returns cached bytes for `key`, or nil on a miss.
+    ///
+    /// Before the size index is published, this opens the hashed
+    /// path. A hit does not create an index entry; the directory
+    /// walk is what makes the byte budget complete. After the index
+    /// is published, a name it does not contain is a miss and does
+    /// not touch the filesystem, so scrolling through uncached
+    /// photos does not pay a failed open per tier.
     func data(forKey key: String) -> Data? {
         let filename = Self.filename(for: key)
-        guard index[filename] != nil else { return nil }
+        if indexPublished && index[filename] == nil {
+            return nil
+        }
         let url = directory.appendingPathComponent(filename)
         guard let data = try? Data(contentsOf: url) else {
-            evictCorrupt(filename: filename)
+            if index[filename] != nil {
+                discard(filename)
+            }
             return nil
         }
         let now = Date()
-        index[filename]?.lastAccess = now
+        if index[filename] != nil {
+            index[filename]?.lastAccess = now
+        }
+        // The walk uses the file's modification date as last access.
+        // Touching it here lets a read that happens during the walk
+        // count as recent once the snapshot is taken.
         try? FileManager.default.setAttributes(
             [.modificationDate: now], ofItemAtPath: url.path
         )
@@ -101,6 +143,9 @@ actor DiskImageCache {
             return
         }
 
+        // A rewrite of a name evicted during the walk has to survive
+        // the snapshot, which may still list the deleted file.
+        tombstones.remove(filename)
         let now = Date()
         index[filename] = Entry(
             filename: filename, sizeBytes: size, lastAccess: now
@@ -110,14 +155,19 @@ actor DiskImageCache {
         evictIfNeeded()
     }
 
-    /// Deletes every cached file and resets the index.
+    /// Deletes the cache directory, not only names already in the
+    /// index, so a clear before the walk still removes the previous
+    /// session's files. Recreates the directory for later stores.
     func removeAll() {
-        for entry in index.values {
-            let url = directory.appendingPathComponent(entry.filename)
-            try? FileManager.default.removeItem(at: url)
-        }
+        clearGeneration += 1
+        tombstones.removeAll()
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
         index.removeAll()
         totalSize = 0
+        indexPublished = true
     }
 
     /// Adjusts the byte budget and immediately evicts if the new
@@ -139,20 +189,77 @@ actor DiskImageCache {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Lists the cache directory. Runs off the cache actor so
+    /// thumbnail reads are not serialized behind this walk.
+    private nonisolated static func scan(_ directory: URL) -> [String: ScannedCacheFile] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return [:] }
+
+        var found: [String: ScannedCacheFile] = [:]
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(
+                forKeys: [.fileSizeKey, .contentModificationDateKey]
+            ) else { continue }
+            let filename = fileURL.lastPathComponent
+            found[filename] = ScannedCacheFile(
+                sizeBytes: values.fileSize ?? 0,
+                lastAccess: values.contentModificationDate ?? Date.distantPast
+            )
+        }
+        return found
+    }
+
+    /// Publishes the walked files as the size index.
+    ///
+    /// Stores that landed during the walk win over the snapshot.
+    /// Names evicted during the walk are dropped, because the
+    /// snapshot may still contain them. A clear during the walk
+    /// discards the snapshot entirely.
+    private func publish(
+        _ scanned: [String: ScannedCacheFile],
+        startingGeneration: Int
+    ) {
+        guard startingGeneration == clearGeneration else {
+            indexPublished = true
+            return
+        }
+
+        var merged: [String: Entry] = [:]
+        for (filename, file) in scanned {
+            if tombstones.contains(filename) { continue }
+            merged[filename] = Entry(
+                filename: filename,
+                sizeBytes: file.sizeBytes,
+                lastAccess: file.lastAccess
+            )
+        }
+        for (filename, entry) in index {
+            if tombstones.contains(filename) { continue }
+            merged[filename] = entry
+        }
+        index = merged
+        tombstones.removeAll()
+        totalSize = merged.values.reduce(0) { $0 + $1.sizeBytes }
+        indexPublished = true
+        evictIfNeeded()
+    }
+
     private func evictIfNeeded() {
         guard totalSize > maxBytes else { return }
         let sorted = index.values.sorted { $0.lastAccess < $1.lastAccess }
         for entry in sorted {
             guard totalSize > maxBytes else { break }
-            let url = directory.appendingPathComponent(entry.filename)
-            try? FileManager.default.removeItem(at: url)
-            totalSize -= entry.sizeBytes
-            index.removeValue(forKey: entry.filename)
+            discard(entry.filename)
         }
     }
 
-    /// Removes a corrupt index entry whose file can't be read.
-    private func evictCorrupt(filename: String) {
+    /// Drops one name from the budget and from disk. Recorded so an
+    /// in-flight directory walk does not restore it.
+    private func discard(_ filename: String) {
+        tombstones.insert(filename)
         if let entry = index.removeValue(forKey: filename) {
             totalSize -= entry.sizeBytes
         }

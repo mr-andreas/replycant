@@ -18,6 +18,13 @@ struct DiskImageCacheTests {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    // Writes bytes at the cache's hashed path without going through
+    // store, so a test can tell a directory read from an index hit.
+    private func plant(_ data: Data, key: String, in directory: URL) throws {
+        let url = directory.appendingPathComponent(DiskImageCache.filename(for: key))
+        try data.write(to: url)
+    }
+
     // MARK: - Round-trip
 
     @Test func storeAndRetrieve() async throws {
@@ -43,6 +50,82 @@ struct DiskImageCacheTests {
 
         let result = await cache.data(forKey: "nonexistent")
         #expect(result == nil)
+    }
+
+    // A cold start has to show a cached thumbnail before the directory
+    // listing exists. The path is derived from the key, and that read
+    // must not invent an index entry for the byte budget.
+    @Test func readReturnsPlantedFileBeforeIndexIsBuilt() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let payload = Data(repeating: 0xAB, count: 128)
+        try plant(payload, key: "t/planted", in: dir)
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+
+        #expect(await cache.data(forKey: "t/planted") == payload)
+        #expect(await cache.itemCount == 0)
+    }
+
+    // The listing is what Settings and eviction count. A file that was
+    // already read still has to be counted once after that walk.
+    @Test func rebuildCountsAFileThatWasReadBeforeTheIndex() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let payload = Data(repeating: 0xCD, count: 64)
+        try plant(payload, key: "t/counted", in: dir)
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+        #expect(await cache.data(forKey: "t/counted") == payload)
+
+        await cache.rebuild()
+
+        #expect(await cache.itemCount == 1)
+        #expect(await cache.currentSizeBytes == payload.count)
+        #expect(await cache.data(forKey: "t/counted") == payload)
+    }
+
+    // Clear cache can run before the listing. Deleting only names the
+    // index already knows would leave the previous session's files behind.
+    @Test func removeAllDeletesFilesNotYetIndexed() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let payload = Data(repeating: 0x11, count: 32)
+        try plant(payload, key: "t/clear-me", in: dir)
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+        let url = dir.appendingPathComponent(DiskImageCache.filename(for: "t/clear-me"))
+
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        await cache.removeAll()
+
+        #expect(FileManager.default.fileExists(atPath: url.path) == false)
+        #expect(await cache.data(forKey: "t/clear-me") == nil)
+    }
+
+    // A missing file is a miss even when no listing has run yet, so the
+    // caller can fall through to the network without an index.
+    @Test func missingKeyBeforeIndexReturnsNil() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+        #expect(await cache.data(forKey: "nonexistent") == nil)
+    }
+
+    // Once the listing is published, a name it does not contain is a miss
+    // even if a file appears at the hashed path afterwards. Scroll misses
+    // then stay in memory instead of opening the directory again.
+    @Test func publishedIndexHidesFilesThatWereNotStored() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+        await cache.rebuild()
+        try plant(Data(repeating: 0x22, count: 16), key: "t/sneak", in: dir)
+
+        #expect(await cache.data(forKey: "t/sneak") == nil)
+        #expect(await cache.itemCount == 0)
     }
 
     // MARK: - LRU eviction

@@ -483,16 +483,22 @@ struct TimelineGridScreen: View {
             await timelineManager.loadTimeline()
             guard !Task.isCancelled else { return }
             await notifyInitialLoadWhenPhotosAreReady()
+            guard !Task.isCancelled else { return }
+            // Eviction and the Settings counts need the size index.
+            // The walk starts only after the visible photos have
+            // resolved, so it does not compete with those reads.
+            await ImageDiskCacheManager.shared.ensureIndex()
         }
     }
 
-    // Foreground upload scans the whole photo library. On a timeline that
-    // has photos, that scan waits until the visible cells have resolved
-    // so it does not compete with the first thumbnails. Empty and failed
-    // loads have nothing to paint, and a short timeout covers a cell that
-    // never resolves.
+    // Foreground upload scans the whole photo library, and the cache
+    // size index lists every cached file. On a timeline that has
+    // photos, both wait until the visible cells have resolved so they
+    // do not compete with the first thumbnails. Empty and failed loads
+    // have nothing to paint, and a short timeout covers a cell that
+    // never resolves. The upload callback is optional so a place grid
+    // still waits before the cache walk.
     private func notifyInitialLoadWhenPhotosAreReady() async {
-        guard let onInitialLoad else { return }
         let tracker = TimelineRenderMilestoneTracker.shared
         if UploadLaunchGate.shouldStart(
             metadataReady: true,
@@ -501,7 +507,7 @@ struct TimelineGridScreen: View {
             viewportResolved: tracker.isViewportHydrated,
             timedOut: false
         ) {
-            onInitialLoad()
+            onInitialLoad?()
             return
         }
 
@@ -516,7 +522,7 @@ struct TimelineGridScreen: View {
             group.cancelAll()
         }
         guard !Task.isCancelled else { return }
-        onInitialLoad()
+        onInitialLoad?()
     }
 
     private var loadingView: some View {

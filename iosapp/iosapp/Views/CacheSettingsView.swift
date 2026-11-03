@@ -233,6 +233,10 @@ struct CacheSettingsView: View {
                     environment: ProcessInfo.processInfo.environment
                 )
             ) else { return }
+            // Counts come from the size index. This waits for the same
+            // walk the timeline starts after the first photos, so the
+            // page is not stuck at zero while that walk is running.
+            await ImageDiskCacheManager.shared.ensureIndex()
             diskStats = await ImageDiskCacheManager.shared.stats()
         }
     }

@@ -74,8 +74,18 @@ actor ImageDiskCacheManager {
         }
     }
 
-    /// Scans both cache directories so entries from previous
-    /// sessions are available immediately after launch.
+    /// Builds both size indexes once. Thumbnail reads do not wait on
+    /// this; they open files by name until the walk publishes.
+    /// Launch starts it after the first photos, and Settings waits
+    /// on the same walk so its counts are not stuck at zero.
+    func ensureIndex() async {
+        async let main: Void = mainCache.ensureIndex()
+        async let top: Void = topCache.ensureIndex()
+        _ = await (main, top)
+    }
+
+    /// Rebuilds both size indexes from disk. Prefer `ensureIndex()`
+    /// at launch so the walk happens once.
     func rebuild() async {
         await mainCache.rebuild()
         await topCache.rebuild()

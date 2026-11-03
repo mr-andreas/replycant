@@ -6,7 +6,7 @@
 
 #### iOS app
 
-- opening the app reaches the first screen sooner
+- the first photos load from the on-disk cache without waiting for the cache to be inventoried
 - photo upload waits until the first photos finish loading
 
 ## 0.6.1 - 2026-11-02

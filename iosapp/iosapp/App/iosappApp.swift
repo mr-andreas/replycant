@@ -72,12 +72,12 @@ struct iosappApp: App {
         initializeMTLSTransport()
         startTailnetJoin()
 
-        // Rebuild disk cache indices from previous sessions so
-        // cached thumbnails and originals are available immediately.
+        // Thumbnail reads open cache files by name, so launch does
+        // not walk those directories. The size index is built after
+        // the first photos. Settings observation still has to start
+        // now so a later budget change is applied.
         Task {
-            let cache = ImageDiskCacheManager.shared
-            await cache.rebuild()
-            await cache.startObservingSettings()
+            await ImageDiskCacheManager.shared.startObservingSettings()
         }
     }
     
