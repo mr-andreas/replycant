@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   release-ios:
@@ -128,4 +129,27 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             -allowProvisioningUpdates
+
+      # The draft workflow starts from this run and cannot see the tag
+      # name or the timestamp build number. The archive plist is the
+      # version that was actually uploaded.
+      - name: Record release build metadata
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          ARCHIVE="$IOS_BUILD_DIR/iosapp.xcarchive/Info.plist"
+          MARKETING_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$ARCHIVE")"
+          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$ARCHIVE")"
+          : "${MARKETING_VERSION:?archive is missing CFBundleShortVersionString}"
+          : "${BUILD_NUMBER:?archive is missing CFBundleVersion}"
+          mkdir -p release-build
+          printf 'MARKETING_VERSION=%s\nBUILD_NUMBER=%s\n' "$MARKETING_VERSION" "$BUILD_NUMBER" > release-build/build.env
+
+      - name: Upload release build metadata
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-build
+          path: release-build/build.env
+          if-no-files-found: error
 

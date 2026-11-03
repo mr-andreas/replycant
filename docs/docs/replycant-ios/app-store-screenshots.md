@@ -53,11 +53,17 @@ make ios-screenshots
 ```
 
 Captures screenshots via Fastlane `snapshot`, frames them with `frameit`
-(device bezel, background, and title from `Framefile.json`), and collects the
-final set under `iosapp/fastlane/screenshots/framed/en-US/`. Also builds a
-README-specific black-device frame (no slogan, transparent background) under
-`iosapp/fastlane/screenshots/framed/readme/`. Requires the `iosapp/Gemfile`
-fastlane pin (`make ios-bundle`) so frameit recognizes iPhone 17 sizes.
+(device bezel, background, and title from `Framefile.json`), and collects
+that framed preview under `iosapp/fastlane/screenshots/framed/en-US/`. Also
+builds a README-specific black-device frame (no slogan, transparent
+background) under `iosapp/fastlane/screenshots/framed/readme/`. Requires the
+`iosapp/Gemfile` fastlane pin (`make ios-bundle`) so frameit recognizes
+iPhone 17 sizes.
+
+The App Store listing uses the raw captures in
+`iosapp/fastlane/screenshots/en-US/`. Within each device size,
+`01-timeline` is the first image and `02-map` is the second. Framing stays
+on the README images.
 
 ```bash
 make readme-screenshots
@@ -71,8 +77,9 @@ framed iPhone timeline, the Electron desktop timeline, and the combined
 make ios-screenshots-upload
 ```
 
-Uploads screenshots to App Store Connect (requires `ASC_KEY_ID`,
-`ASC_ISSUER_ID`, and `ASC_KEY_PATH`).
+Uploads the raw captures to the editable App Store Connect version
+(requires `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_PATH`). The timeline
+is uploaded first and the map second.
 
 ```bash
 make ios-metadata-upload
@@ -83,34 +90,45 @@ Uploads listing metadata from `iosapp/fastlane/metadata` (also requires
 
 ## CI Workflow
 
-Use `.github/workflows/ios-screenshots.yml` (`workflow_dispatch`):
+`.github/workflows/ios-screenshots.yml` (`workflow_dispatch`) captures
+screenshots and uploads the raw and framed images as artifacts. With
+`upload_to_app_store=true` it uploads the raw captures to the editable App
+Store version.
 
-- always captures screenshots and uploads artifacts
-- optionally uploads to App Store Connect with `upload_to_app_store=true`
-
-The screenshot flow is intentionally separate from TestFlight release uploads.
+`.github/workflows/ios-app-store-draft.yml` runs after **iOS TestFlight
+Release** succeeds for a release tag. It checks out that tag, captures
+unframed screenshots, and leaves the uploaded build on a version in
+**Prepare for Submission**. The timeline is the first image and the map is
+the second. It does not submit for review. A manual TestFlight run does
+not start a draft. The workflow file has to be on the default branch
+before a tag push will start it.
 
 ## App Store Submission Process
 
-1. Run `make ios-release` (or the TestFlight workflow) to upload a build.
-   - Local prereq: create `iosapp/Signing.local.xcconfig` with
-     `DEVELOPMENT_TEAM = <your_team_id>`.
+1. Push a `vX.Y.Z` tag. The TestFlight workflow uploads the build.
+   - Local `make ios-release` also uploads a build. It does not open the
+     draft. Create `iosapp/Signing.local.xcconfig` with
+     `DEVELOPMENT_TEAM = <your_team_id>` first.
    - CI prereq: set the `APPLE_TEAM_ID` secret.
-2. In App Store Connect, create/select the app version and attach that build.
-3. Run `make ios-screenshots-upload` (or the screenshot workflow with
-   `upload_to_app_store=true`).
-4. Run `make ios-metadata-upload` (or the screenshot workflow with
-   `upload_metadata=true`).
-5. Complete App Store Connect fields that are still manual: app privacy
+2. The draft workflow attaches that build and uploads the unframed
+   screenshots onto the new version.
+3. Run `make ios-metadata-upload` (or the screenshot workflow with
+   `upload_metadata=true`) when the draft should use the listing text from
+   `iosapp/fastlane/metadata`.
+4. Complete App Store Connect fields that are still manual: app privacy
    questionnaire, age rating questionnaire, export-compliance answers, pricing
    and availability, DSA/trader status, final reviewer contact/credentials,
    and reviewer notes (paste from `iosapp/fastlane/review_notes.txt`).
-6. Review the draft in App Store Connect, then submit for review manually.
+5. Review the draft in App Store Connect, then submit for review manually.
 
 ## Submission behavior notes
 
-- `upload_screenshots` and `upload_metadata` do not submit for review.
-  `deliver` keeps `submit_for_review` at its default (`false`) unless set.
+- The draft workflow, `upload_screenshots`, and `upload_metadata` do not
+  submit for review. `deliver` keeps `submit_for_review` at its default
+  (`false`) unless set.
+- App Store uploads use the raw `en-US` captures. For each device size,
+  `01-timeline` is first and `02-map` is second. Framed images stay on the
+  README.
 - `upload_screenshots` uses `overwrite_screenshots: true`, so each upload
   replaces existing screenshots in the editable version.
 - `upload_metadata` intentionally does not write App Store review detail.

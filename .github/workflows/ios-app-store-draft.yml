@@ -1,0 +1,142 @@
+name: iOS App Store Draft
+
+# Runs the workflow file from the default branch. A tag push starts it
+# only after that file is on the default branch.
+on:
+  workflow_run:
+    workflows: ["iOS TestFlight Release"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve release build
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.gate.outputs.present }}
+      marketing_version: ${{ steps.meta.outputs.marketing_version }}
+      build_number: ${{ steps.meta.outputs.build_number }}
+    steps:
+      # workflow_run.head_branch is empty for a tag push. The TestFlight
+      # workflow uploads this artifact only for release tags, and a manual
+      # TestFlight run leaves it absent.
+      - name: Find release build metadata
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="${{ github.event.workflow_run.id }}"
+          artifact_id="$(gh api --paginate --jq '.artifacts[] | select(.name=="ios-release-build" and .expired==false) | .id' \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts")"
+          artifact_id="${artifact_id%%$'\n'*}"
+          if [ -z "$artifact_id" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No ios-release-build artifact; this TestFlight run was not a release tag."
+            exit 0
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download release build metadata
+        if: steps.gate.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-release-build
+          path: release-build
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Read marketing version and build number
+        id: meta
+        if: steps.gate.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          marketing="$(sed -n 's/^MARKETING_VERSION=//p' release-build/build.env)"
+          build="$(sed -n 's/^BUILD_NUMBER=//p' release-build/build.env)"
+          if ! [[ "$marketing" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected marketing version: $marketing" >&2
+            exit 1
+          fi
+          if ! [[ "$build" =~ ^[0-9]+$ ]]; then
+            echo "Unexpected build number: $build" >&2
+            exit 1
+          fi
+          echo "marketing_version=$marketing" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build" >> "$GITHUB_OUTPUT"
+
+  draft:
+    name: Capture screenshots and draft the version
+    needs: resolve
+    if: needs.resolve.outputs.present == 'true'
+    runs-on: macos-26
+    timeout-minutes: 240
+    env:
+      XCODE_VERSION: "26.5"
+    steps:
+      # github.sha on this event is the default branch. The tagged commit
+      # is the TestFlight run's head SHA.
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Build TailscaleKit
+        uses: ./.github/actions/tailscalekit
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Cache screenshot Swift package checkouts
+        uses: actions/cache@v4
+        with:
+          path: |
+            iosapp/build/screenshot-derived-data/SourcePackages
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-xcode-${{ env.XCODE_VERSION }}-screenshot-spm-${{ hashFiles('iosapp/iosapp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: iosapp
+
+      - name: Capture unframed screenshots
+        run: |
+          cd iosapp
+          bundle exec fastlane capture_screenshots
+
+      - name: Prepare App Store Connect key
+        env:
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          : "${ASC_KEY_BASE64:?Set ASC_KEY_BASE64 secret}"
+          : "${ASC_KEY_ID:?Set ASC_KEY_ID secret}"
+          : "${ASC_ISSUER_ID:?Set ASC_ISSUER_ID secret}"
+          ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          python3 -c 'import base64, os, sys; open(sys.argv[1], "wb").write(base64.b64decode(os.environ["ASC_KEY_BASE64"]))' "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          {
+            echo "ASC_KEY_PATH=$ASC_KEY_PATH"
+            echo "ASC_KEY_ID=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Draft App Store version
+        env:
+          MARKETING_VERSION: ${{ needs.resolve.outputs.marketing_version }}
+          BUILD_NUMBER: ${{ needs.resolve.outputs.build_number }}
+        run: |
+          cd iosapp
+          bundle exec fastlane draft_for_review

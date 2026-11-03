@@ -1,5 +1,10 @@
 default_platform(:ios)
-SCREENSHOT_ROOT = File.expand_path("screenshots", __dir__)
+require_relative "app_store_draft"
+
+# Captured while fastlane loads this file from the fastlane directory.
+# __dir__ inside a lane is the process working directory, not this folder.
+FASTLANE_DIR = File.expand_path(__dir__)
+SCREENSHOT_ROOT = File.expand_path("screenshots", FASTLANE_DIR)
 FRAMED_SCREENSHOT_ROOT = File.join(SCREENSHOT_ROOT, "framed", "en-US")
 README_FRAME_ROOT = File.join(SCREENSHOT_ROOT, "readme")
 README_FRAMED_ROOT = File.join(SCREENSHOT_ROOT, "framed", "readme")
@@ -34,11 +39,23 @@ platform :ios do
     frame_readme_iphone!
   end
 
-  # Uploads the framed screenshot set to the editable App Store Connect version.
+  # Captures the simulator screenshots the App Store listing uses.
+  # Framing stays a README-only step, so this lane does not run frameit.
+  lane :capture_screenshots do
+    ensure_screenshot_simulator!(SCREENSHOT_DEVICES, SCREENSHOT_IOS_VERSION)
+    snapshot(
+      devices: SCREENSHOT_DEVICES,
+      ios_version: SCREENSHOT_IOS_VERSION
+    )
+    validate_screenshot_dimensions(RAW_SCREENSHOT_ROOT)
+    assert_raw_listing_order!
+  end
+
+  # Uploads the unframed captures to the editable App Store Connect version.
   lane :upload_screenshots do
     deliver(
       api_key: asc_api_key,
-      screenshots_path: screenshot_upload_path,
+      screenshots_path: listing_upload_directory,
       overwrite_screenshots: true,
       skip_binary_upload: true,
       skip_metadata: true,
@@ -73,9 +90,24 @@ platform :ios do
   lane :frame_readme do
     frame_readme_iphone!
   end
+
+  # Leaves the uploaded TestFlight build on a version in Prepare for
+  # Submission and uploads the unframed screenshots. Does not submit.
+  lane :draft_for_review do
+    marketing_version = ENV.fetch("MARKETING_VERSION")
+    build_number = ENV.fetch("BUILD_NUMBER")
+    build = wait_for_app_store_build!(marketing_version, build_number)
+    version = ensure_draft_version!(marketing_version)
+    version.select_build(build_id: build.id)
+    UI.success(
+      "Attached #{marketing_version} (#{build_number}) without submitting for review"
+    )
+    upload_screenshots
+  end
 end
 
 # Builds an App Store Connect API key object so all upload lanes use one auth path.
+# Tokens last at most 20 minutes, so long polls call this again.
 def asc_api_key
   app_store_connect_api_key(
     key_id: ENV.fetch("ASC_KEY_ID"),
@@ -83,6 +115,104 @@ def asc_api_key
     key_filepath: ENV.fetch("ASC_KEY_PATH"),
     duration: 1200
   )
+end
+
+BUILD_PROCESSING_TIMEOUT = 90 * 60
+BUILD_POLL_SECONDS = 30
+
+# The TestFlight upload returns when Apple accepts the binary. The build
+# cannot be attached until processing finishes, which often outlasts one
+# API token.
+def wait_for_app_store_build!(marketing_version, build_number)
+  deadline = Time.now + BUILD_PROCESSING_TIMEOUT
+  platform = Spaceship::ConnectAPI::Platform::IOS
+  loop do
+    asc_api_key
+    app = Spaceship::ConnectAPI::App.find(replycant_bundle_id)
+    UI.user_error!("No App Store Connect app for #{replycant_bundle_id}") unless app
+
+    build = Spaceship::ConnectAPI::Build.all(
+      app_id: app.id,
+      version: marketing_version,
+      build_number: build_number,
+      platform: platform
+    ).first
+
+    if build
+      case build.processing_state
+      when Spaceship::ConnectAPI::Build::ProcessingState::VALID
+        UI.user_error!("Build #{marketing_version} (#{build_number}) is expired") if build.expired
+        return build
+      when Spaceship::ConnectAPI::Build::ProcessingState::FAILED,
+           Spaceship::ConnectAPI::Build::ProcessingState::INVALID
+        UI.user_error!(
+          "Build #{marketing_version} (#{build_number}) processing #{build.processing_state}"
+        )
+      else
+        UI.message("Build #{build_number} is #{build.processing_state}; waiting")
+      end
+    else
+      UI.message("Build #{marketing_version} (#{build_number}) is not listed yet")
+    end
+
+    if Time.now >= deadline
+      UI.user_error!(
+        "Build #{marketing_version} (#{build_number}) did not become VALID within 90 minutes. " \
+        "If App Store Connect is waiting on export compliance, the archive's " \
+        "ITSAppUsesNonExemptEncryption exemption did not apply."
+      )
+    end
+    sleep BUILD_POLL_SECONDS
+  end
+end
+
+# Opens the marketing version for the draft, or reuses it when it is
+# already editable. A different draft or a version in review is left as it is.
+def ensure_draft_version!(marketing_version)
+  asc_api_key
+  app = Spaceship::ConnectAPI::App.find(replycant_bundle_id)
+  UI.user_error!("No App Store Connect app for #{replycant_bundle_id}") unless app
+
+  platform = Spaceship::ConnectAPI::Platform::IOS
+  editable = app.get_edit_app_store_version(platform: platform)
+  in_review = app.get_in_review_app_store_version(platform: platform)
+  action = AppStoreDraft.version_action(
+    marketing_version: marketing_version,
+    editable_version: editable&.version_string,
+    editable_state: editable&.app_version_state,
+    in_review_version: in_review&.version_string
+  )
+
+  case action
+  when :reuse
+    UI.message("Reusing editable App Store version #{marketing_version}")
+    editable
+  when :create
+    UI.message("Creating App Store version #{marketing_version}")
+    created = Spaceship::ConnectAPI.post_app_store_version(
+      app_id: app.id,
+      attributes: {
+        versionString: marketing_version,
+        platform: platform
+      }
+    ).first
+    unless created&.version_string == marketing_version
+      created = app.get_edit_app_store_version(platform: platform)
+    end
+    unless created&.version_string == marketing_version
+      UI.user_error!("App Store Connect did not return editable version #{marketing_version}")
+    end
+    created
+  else
+    UI.user_error!("Unexpected draft action #{action}")
+  end
+rescue AppStoreDraft::Error => error
+  UI.user_error!(error.message)
+end
+
+# The Appfile identifier is the App Store Connect record the draft attaches to.
+def replycant_bundle_id
+  CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
 end
 
 # Fails fast when review notes are mistakenly stored under metadata, because
@@ -129,13 +259,30 @@ def ensure_screenshot_simulator!(device_names, ios_version)
   )
 end
 
-# Selects framed output when available so upload lanes always use final marketing images.
+# App Store listing images are the raw simulator captures. Framed PNGs
+# are a README asset and must not be uploaded in their place.
 def screenshot_upload_path
-  if File.directory?(FRAMED_SCREENSHOT_ROOT) && Dir.glob(File.join(FRAMED_SCREENSHOT_ROOT, "*.png")).any?
-    FRAMED_SCREENSHOT_ROOT
-  else
-    RAW_SCREENSHOT_ROOT
-  end
+  AppStoreDraft.screenshot_upload_directory(FASTLANE_DIR)
+end
+
+# Deliver only reads language folders inside screenshots_path, and it
+# prefers *_framed.png over the raw captures. Stage a parent directory
+# whose only language folder is the unframed set.
+def listing_upload_directory
+  require "tmpdir"
+
+  AppStoreDraft.stage_listing!(screenshot_upload_path, Dir.mktmpdir("replycant-asc-screenshots"))
+rescue AppStoreDraft::Error => error
+  UI.user_error!(error.message)
+end
+
+# Fails the capture before a draft is opened when a device would show
+# the wrong screen in the first or second listing slot.
+def assert_raw_listing_order!
+  basenames = Dir.glob(File.join(screenshot_upload_path, "*.png")).map { |path| File.basename(path) }
+  AppStoreDraft.ordered_listing!(basenames)
+rescue AppStoreDraft::Error => error
+  UI.user_error!(error.message)
 end
 
 # Supplies a local Title.ttf for Framefile without committing a proprietary font.
@@ -194,8 +341,9 @@ def frame_readme_iphone!
   UI.success("README iPhone frame written to #{dest}")
 end
 
-# Copies frameit *_framed.png outputs into framed/en-US so App Store upload
-# has a stable directory of final marketing images.
+# Copies frameit *_framed.png outputs into framed/en-US so the README
+# frame and a local preview have a stable directory. App Store upload
+# uses the raw captures instead.
 def collect_framed_screenshots!
   require "fileutils"
 
