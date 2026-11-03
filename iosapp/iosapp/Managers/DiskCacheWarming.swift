@@ -72,6 +72,8 @@ enum DiskCacheWarming {
 
     // Warms the top tier from the on-device library. A charging wake
     // has no timeline view, which is the only other place that does this.
+    // The refresh is recorded only after the library is open, so a wake
+    // that never gets that far does not appear on the Cache page.
     static func warmTopCacheFromLibrary() async {
         if Task.isCancelled { return }
         do {
@@ -98,18 +100,20 @@ enum DiskCacheWarming {
                 database: database,
                 registry: registry
             )
-            await warmNewest(
-                itemCount: CacheSettingsManager.shared.topCacheWarmItemCount,
-                scope: .all,
-                loader: loader
-            ) { request in
-                try await ImageDiskCacheManager.shared.warmTop(
-                    priority: .topWarm,
-                    itemId: request.itemId,
-                    lfsPath: request.lfsPath,
-                    repository: repository,
-                    lfsClient: lfsClient
-                )
+            await TopCacheRefreshLog.shared.record(source: .charging) {
+                await warmNewest(
+                    itemCount: CacheSettingsManager.shared.topCacheWarmItemCount,
+                    scope: .all,
+                    loader: loader
+                ) { request in
+                    try await ImageDiskCacheManager.shared.warmTop(
+                        priority: .topWarm,
+                        itemId: request.itemId,
+                        lfsPath: request.lfsPath,
+                        repository: repository,
+                        lfsClient: lfsClient
+                    )
+                }
             }
         } catch {
             logDebug(

@@ -4,6 +4,8 @@ import SwiftUI
 // in-memory preloading and the two-tier disk LRU cache.
 struct CacheSettingsView: View {
     private let previewStats: ImageDiskCacheManager.CacheStats?
+    private let previewRefreshes: [TopCacheRefresh]?
+    @ObservedObject private var refreshLog = TopCacheRefreshLog.shared
     @State private var imagesBeforeViewport: Int
     @State private var imagesAfterViewport: Int
     @State private var maxCacheSizeMB: Int
@@ -16,10 +18,14 @@ struct CacheSettingsView: View {
     @State private var diskStats: ImageDiskCacheManager.CacheStats?
     @State private var isClearing = false
 
-    // Seeds optional disk-cache numbers so gallery tiles can show the
-    // stats rows without reading the on-device cache directories.
-    init(previewStats: ImageDiskCacheManager.CacheStats? = nil) {
+    // Seeds optional disk-cache numbers and refresh rows so gallery
+    // tiles can show the stats and the list without reading this phone.
+    init(
+        previewStats: ImageDiskCacheManager.CacheStats? = nil,
+        previewRefreshes: [TopCacheRefresh]? = nil
+    ) {
         self.previewStats = previewStats
+        self.previewRefreshes = previewRefreshes
         let manager = CacheSettingsManager.shared
         _imagesBeforeViewport = State(initialValue: manager.imagesBeforeViewport)
         _imagesAfterViewport = State(initialValue: manager.imagesAfterViewport)
@@ -40,6 +46,12 @@ struct CacheSettingsView: View {
         isRunningForPreviews: Bool
     ) -> Bool {
         previewStats == nil && !isRunningForPreviews
+    }
+
+    // A gallery tile passes fixed rows. Otherwise the page follows the
+    // log, including a warm that finishes while Settings is open.
+    private var refreshes: [TopCacheRefresh] {
+        previewRefreshes ?? refreshLog.refreshes
     }
 
     var body: some View {
@@ -126,7 +138,8 @@ struct CacheSettingsView: View {
                                     diskStats = await ImageDiskCacheManager.shared.stats()
                                     isClearing = false
                                 }
-                            }
+                            },
+                            showsRefreshes: true
                         )
 
                         Divider()
@@ -243,8 +256,38 @@ struct CacheSettingsView: View {
 
     // MARK: - Reusable components
 
-    /// Builds one disk-cache settings card with size/count stats,
-    /// limit stepper, warm-count stepper, and a clear button.
+    // The warm history lives in the Top Cache card. A separate card
+    // looked like a third cache, so the rows stay with the controls
+    // they describe.
+    private var refreshRows: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Refreshes")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
+
+            if refreshes.isEmpty {
+                Text("No refreshes yet")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+            } else {
+                ForEach(refreshes) { refresh in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(TopCacheRefreshCopy.timeRange(refresh))
+                        Text(TopCacheRefreshCopy.detail(refresh))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    /// Builds one disk-cache settings card with size, limit, warm count,
+    /// and clear. The top card also lists its refresh history so those
+    /// times are not mistaken for a separate cache.
     @ViewBuilder
     private func diskCacheSection(
         title: String,
@@ -259,7 +302,8 @@ struct CacheSettingsView: View {
         itemCount: Int?,
         onLimitChange: @escaping (Int) -> Void,
         onWarmChange: @escaping (Int) -> Void,
-        onClear: @escaping () -> Void
+        onClear: @escaping () -> Void,
+        showsRefreshes: Bool = false
     ) -> some View {
         VStack(spacing: 15) {
             Text(title)
@@ -313,6 +357,13 @@ struct CacheSettingsView: View {
                 }
             }
             .buttonStyle(.bordered)
+
+            // The history belongs on this card. A divider keeps the rows
+            // from reading as another stepper.
+            if showsRefreshes {
+                Divider()
+                refreshRows
+            }
         }
         .padding()
         .background(Color(.systemGray6))

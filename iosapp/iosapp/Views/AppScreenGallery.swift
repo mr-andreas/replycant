@@ -78,6 +78,26 @@ enum AppScreenGallery {
         ]
     )
 
+    // Two fixed warms so the Cache tile shows a finished charging
+    // refresh and an open-app warm that did not finish, without
+    // reading this phone's stored history.
+    private static let sampleTopCacheRefreshes = [
+        TopCacheRefresh(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
+            startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            stoppedAt: Date(timeIntervalSince1970: 1_800_000_180),
+            source: .charging,
+            result: .completed
+        ),
+        TopCacheRefresh(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000012")!,
+            startedAt: Date(timeIntervalSince1970: 1_799_900_000),
+            stoppedAt: nil,
+            source: .open,
+            result: .unfinished
+        )
+    ]
+
     // A running node with a direct path so the Connection tile shows
     // every row a joined device can see, without talking to a tailnet.
     private static let sampleConnectionReport = try! TailnetStatusReport.decode(
@@ -412,7 +432,10 @@ enum AppScreenGallery {
             PlaybackSettingsView()
         },
         stacked("Settings / cache", section: .settings) {
-            CacheSettingsView(previewStats: .sample)
+            CacheSettingsView(
+                previewStats: .sample,
+                previewRefreshes: Self.sampleTopCacheRefreshes
+            )
         },
         stacked("Settings / application log", section: .settings) {
             ApplicationLogView(previewText: ApplicationLogView.gallerySample)

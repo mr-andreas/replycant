@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- the Top Cache card lists each time the newest thumbnails were downloaded, with when it started and stopped, whether the app was open or the phone was charging, and how it ended
 - a charging run fetches the latest library and downloads the newest thumbnails while it uploads
 
 ### Fixes

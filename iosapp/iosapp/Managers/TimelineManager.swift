@@ -1197,6 +1197,8 @@ final class TimelineManager: ObservableObject {
     // Uses the shared newest-thumbnail choice so a charging wake and
     // the open timeline fill the same cache. The tier decides whether
     // a hit is reserved for the first screen or for later browsing.
+    // Only the top tier is listed on the Cache page, and only once this
+    // warm has started, so a debounce that never runs is not a row.
     private func warmDiskCache(
         itemCount: Int,
         loader: ManifestLoaderProtocol,
@@ -1204,28 +1206,35 @@ final class TimelineManager: ObservableObject {
         lfsClient: GitLFS,
         isTop: Bool
     ) async {
-        await DiskCacheWarming.warmNewest(
-            itemCount: itemCount,
-            scope: scope,
-            loader: loader
-        ) { request in
-            if isTop {
-                try await ImageDiskCacheManager.shared.warmTop(
-                    priority: .topWarm,
-                    itemId: request.itemId,
-                    lfsPath: request.lfsPath,
-                    repository: repository,
-                    lfsClient: lfsClient
-                )
-            } else {
-                try await ImageDiskCacheManager.shared.warmMain(
-                    priority: .mainWarm,
-                    itemId: request.itemId,
-                    lfsPath: request.lfsPath,
-                    repository: repository,
-                    lfsClient: lfsClient
-                )
+        let warmThumbnails = { () async -> Void in
+            await DiskCacheWarming.warmNewest(
+                itemCount: itemCount,
+                scope: self.scope,
+                loader: loader
+            ) { request in
+                if isTop {
+                    try await ImageDiskCacheManager.shared.warmTop(
+                        priority: .topWarm,
+                        itemId: request.itemId,
+                        lfsPath: request.lfsPath,
+                        repository: repository,
+                        lfsClient: lfsClient
+                    )
+                } else {
+                    try await ImageDiskCacheManager.shared.warmMain(
+                        priority: .mainWarm,
+                        itemId: request.itemId,
+                        lfsPath: request.lfsPath,
+                        repository: repository,
+                        lfsClient: lfsClient
+                    )
+                }
             }
+        }
+        if isTop {
+            await TopCacheRefreshLog.shared.record(source: .open, warm: warmThumbnails)
+        } else {
+            await warmThumbnails()
         }
     }
 
