@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+#### iOS app
+
+- a stopped library server shows the connection warning and is not shown as connected
+- a failed upload says the library server cannot be reached
+
 ## 0.7.0 - 2026-11-03
 
 ### Features

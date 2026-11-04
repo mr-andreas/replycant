@@ -621,22 +621,15 @@ private func mtlsStreamRead(
         context.error = error
         let nsError = error as NSError
         let description: String
-        if nsError.domain == NSURLErrorDomain {
-            switch nsError.code {
-            case NSURLErrorCancelled:
-                if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-                    description = "Connection failed: \(underlying.localizedDescription)"
-                } else {
-                    description = "Connection cancelled (TLS or authentication failure)"
-                }
-            case NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost:
-                description = "Cannot connect to server"
-            case NSURLErrorTimedOut:
-                description = "Connection timed out"
-            case NSURLErrorNetworkConnectionLost:
-                description = "Network connection lost"
-            default:
-                description = nsError.localizedDescription
+        if ServerReachability.isConnectivityFailure(error) {
+            // The domain and code were already logged when the task
+            // finished. The git error is what a person reads.
+            description = ServerReachability.presented(error).localizedDescription
+        } else if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+            if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+                description = "Connection failed: \(underlying.localizedDescription)"
+            } else {
+                description = "Connection cancelled (TLS or authentication failure)"
             }
         } else {
             description = nsError.localizedDescription

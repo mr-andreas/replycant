@@ -22,6 +22,48 @@ struct ServerReachabilityTests {
         #expect(reachability.isReachable == false)
     }
 
+    // A stopped library server fails the task as a bad URL, with no HTTP
+    // response. That is the same evidence as a timeout: the server was
+    // not reached. The banner posts once, and a later response clears it.
+    @Test func aBadURLMarksTheServerUnreachable() {
+        let notifications = NotificationCenter()
+        let reachability = ServerReachability(notifications: notifications)
+        var posts = 0
+        let token = notifications.addObserver(
+            forName: .serverReachabilityDidChange,
+            object: nil,
+            queue: nil
+        ) { _ in
+            posts += 1
+        }
+        defer { notifications.removeObserver(token) }
+
+        reachability.recordFailure(URLError(.badURL))
+
+        #expect(reachability.isReachable == false)
+        #expect(posts == 1)
+
+        reachability.recordResponse()
+
+        #expect(reachability.isReachable == true)
+        #expect(posts == 2)
+    }
+
+    // The screen shows one sentence for any failure that never reached
+    // the library. A different problem keeps the caller's own wording.
+    @Test func presentedReplacesOnlyAFailureThatNeverReachedTheServer() {
+        let sentence = "The library server cannot be reached."
+        #expect(ServerReachability.presented(URLError(.badURL)).localizedDescription == sentence)
+        #expect(ServerReachability.presented(URLError(.timedOut)).localizedDescription == sentence)
+
+        let other = NSError(
+            domain: "Test",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Photo library access denied"]
+        )
+        #expect(ServerReachability.presented(other).localizedDescription == "Photo library access denied")
+    }
+
     // Cancelling a transfer is the app stopping it. Treating that as a
     // lost server would flash the banner every time a photo is dismissed.
     @Test func aCancelledRequestIsNotEvidence() {

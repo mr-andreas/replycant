@@ -70,10 +70,14 @@ struct TailnetConnectionSection: View {
     ///
     /// A missing report is "Unavailable" rather than a blank row, because
     /// a configured device whose status could not be read is not unpaired.
-    /// Only `Running` reads as healthy; every other backend state is shown
-    /// verbatim so the user can quote it when asking for help.
+    /// A running node whose library server is offline is not a healthy
+    /// connection. Every other backend state is shown verbatim so the
+    /// user can quote it when asking for help.
     static func status(of report: TailnetStatusReport?) -> (text: String, isHealthy: Bool) {
         guard let report else { return ("Unavailable", false) }
+        if report.serverPath == .offline {
+            return ("Offline", false)
+        }
         if report.isConnected { return ("Connected", true) }
         return (report.backendState, false)
     }

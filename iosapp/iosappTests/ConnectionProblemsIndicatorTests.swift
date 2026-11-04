@@ -158,6 +158,28 @@ struct ConnectionProblemsIndicatorTests {
         #expect(indicator.isUnreachable == true)
     }
 
+    // A stopped library server fails the fetch as a bad URL. The join
+    // still succeeds, so this is the only signal the banner has.
+    @Test func showsTheBannerWhenAStoppedServerFailsAsABadURL() async {
+        let script = JoinScript()
+        let notifications = NotificationCenter()
+        let reachability = ServerReachability(notifications: notifications)
+        let indicator = makeIndicator(
+            script: script,
+            notifications: notifications,
+            reachability: reachability
+        )
+        let watch = Task { await indicator.watch() }
+        defer { watch.cancel() }
+
+        await waitUntil { script.callCount >= 1 && !indicator.isUnreachable }
+
+        reachability.recordFailure(URLError(.badURL))
+        await waitUntil { indicator.isUnreachable }
+
+        #expect(indicator.isUnreachable == true)
+    }
+
     // The banner has to leave once a request reaches the server again,
     // without waiting for another join.
     @Test func hidesTheBannerWhenTheServerAnswersAgain() async {

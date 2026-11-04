@@ -389,7 +389,7 @@ public final class GitLFS: NSObject {
             delegate.completion = { error, response in
                 Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: ServerReachability.presented(error))
                     return
                 }
                 guard let response else {
@@ -482,7 +482,7 @@ public final class GitLFS: NSObject {
             let task = session.uploadTask(with: request, from: data) { data, response, error in
                 Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error = error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: ServerReachability.presented(error))
                 } else {
                     continuation.resume(returning: (data ?? Data(), response))
                 }
@@ -677,7 +677,7 @@ public final class GitLFS: NSObject {
                     data, response, error in
                     Self.noteServerOutcome(serverReachability, error: error, response: response)
                     if let error = error {
-                        continuation.resume(throwing: error)
+                        continuation.resume(throwing: ServerReachability.presented(error))
                     } else {
                         continuation.resume(
                             returning: (data ?? Data(), response)
@@ -759,7 +759,7 @@ public final class GitLFS: NSObject {
             let task = session.dataTask(with: request) { data, response, error in
                 Self.noteServerOutcome(serverReachability, error: error, response: response)
                 if let error = error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: ServerReachability.presented(error))
                 } else {
                     continuation.resume(returning: (data ?? Data(), response))
                 }
@@ -943,7 +943,7 @@ private class DownloadDelegate: MTLSURLSessionAuthDelegate, URLSessionTaskDelega
         case .success(let value):
             pending.resume(returning: value)
         case .failure(let error):
-            pending.resume(throwing: error)
+            pending.resume(throwing: ServerReachability.presented(error))
         }
     }
 

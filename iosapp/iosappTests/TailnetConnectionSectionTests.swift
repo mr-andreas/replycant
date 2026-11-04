@@ -89,6 +89,28 @@ struct TailnetConnectionSectionTests {
         #expect(status.isHealthy == true)
     }
 
+    // The local node stays Running when gitd itself is stopped. The
+    // settings row and the Connection page share this wording, so both
+    // have to stop saying the library is connected.
+    @Test func namesAnOfflineLibraryServerOffline() throws {
+        let report = try TailnetStatusReport.decode(Data("""
+        {
+          "BackendState": "Running",
+          "Peer": {
+            "nodekey:aaa": {
+              "HostName": "gitd",
+              "DNSName": "gitd.replycant.internal.",
+              "Online": false
+            }
+          }
+        }
+        """.utf8))
+        let status = TailnetConnectionSection.status(of: report)
+        #expect(report.serverPath == .offline)
+        #expect(status.text == "Offline")
+        #expect(status.isHealthy == false)
+    }
+
     // NeedsLogin is the state a user has to quote when asking for help,
     // so the row must show the backend name instead of a generic failure.
     @Test func namesALoggedOutNodeByItsBackendState() throws {
