@@ -2,8 +2,8 @@ import SwiftUI
 import Testing
 @testable import iosapp
 
-// Locks the redesigned cross-device pairing copy and visual-state contracts so
-// future edits do not regress the clearer two-step UX.
+// Locks the device-linking copy and the step-badge formatter used by the
+// recovery wizards, which are the flows that still have more than one step.
 struct DeviceLinkingUXRedesignTests {
     // Ensures step badges always render a consistent "STEP x of y" label.
     @Test func stepIndicatorBuildsExpectedBadgeText() {

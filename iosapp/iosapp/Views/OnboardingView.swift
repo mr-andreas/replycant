@@ -333,10 +333,8 @@ struct OnboardingView: View {
     private var showPublicKeyView: some View {
         ScrollView {
             VStack(spacing: 16) {
-                PairingStepIndicator(step: 1, phase: .sendKey)
-                    .padding(.top, 16)
-
                 Text("Show this to your other device")
+                    .padding(.top, 16)
                     .font(.title2)
                     .fontWeight(.semibold)
 

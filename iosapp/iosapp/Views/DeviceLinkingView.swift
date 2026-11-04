@@ -82,8 +82,6 @@ struct DeviceLinkingView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            PairingStepIndicator(step: 1, phase: .sendKey)
-
             Image(systemName: "qrcode.viewfinder")
                 .font(.system(size: 70))
                 .foregroundStyle(Color.brandGradient)
