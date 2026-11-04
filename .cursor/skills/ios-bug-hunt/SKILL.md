@@ -7,9 +7,11 @@ description: Hunts for user-facing bugs in the iOS app by driving a simulator li
 
 Drive the iOS app the way an ordinary user would and append each
 confirmed bug to `Bugs.md`. Do not fix bugs during the hunt.
-Recovery, bootstrap, device linking, the AXe binary (`$AXE`), and
-screenshot embedding live in the `simulator-testing` skill. Follow
-that skill. This skill only adds the hunt.
+Recovery, bootstrap, device linking, and the AXe binary (`$AXE`)
+live in the `simulator-testing` skill. Follow that skill. This skill
+only adds the hunt. Embed screenshots in the reply with that skill's
+image-path rules. Link them from `Bugs.md` when the screen is the
+evidence, as described under Reporting.
 
 ## Inputs
 
@@ -124,17 +126,34 @@ is fixed.
 ...
 **Actual**
 ...
+
+![what is wrong](recordings/<YYYYMMDD-HHMMSS>-<slug>.png)
+
 **Cause**
 ...
 ```
+
+Omit the image line when no screenshot belongs in the entry.
+
+Link a screenshot when the picture is what makes the bug clear: layout,
+overlapping or clipped text, the wrong month or item on screen, a
+missing warning, or a raw error string. One image is enough when one
+frame shows it. Add a second only when the bug is the difference
+between two screens. Skip it when the bug is a count, a missing file,
+a log line, or a crash with nothing distinctive on screen. Never
+capture or link the device-link QR. The caption says what is wrong on
+screen, not what a photo depicts.
+
+Exploratory shots can stay in `/tmp`. A `Bugs.md` link must point at
+the gitignored `recordings/` directory, or it dies when `/tmp` is
+cleared. The path is relative to `Bugs.md`, with no `file://` prefix.
+Do not commit the image. The reply still embeds that file with an
+absolute path, using the image-path rules in `simulator-testing`.
 
 `Bugs.md` is gitignored. A report must not include photo
 descriptions, GPS coordinates, device IDs, original filenames, recovery
 links, passwords, join payloads, or device-link pairing payloads. Refer
 to a recovered library by its key heading only.
-
-Do not commit screenshots. Keep them in `/tmp` or the gitignored
-`recordings/` directory. Never capture the device-link QR.
 
 ## Cleanup
 
@@ -145,5 +164,6 @@ container that was stopped, and, when finished, the throwaway stack
 using the reset command in `simulator-testing`.
 
 Then report one line per bug, which library was used and whether a
-second device was linked, anything that could not be tested, and key
-screenshots inline using the image-path rules in `simulator-testing`.
+second device was linked, anything that could not be tested, and the
+screenshots linked from `Bugs.md`. Embed those in the reply with the
+image-path rules in `simulator-testing`.
