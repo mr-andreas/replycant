@@ -21,6 +21,14 @@ Part of Replycant is also an open source iOS app which is published on the app s
 
 ![Replycant iOS and desktop](docs/static/img/readme/apps.png)
 
+## Server requirements
+
+The server runs as a Docker Compose stack, so the host needs
+[Docker](https://docs.docker.com/get-docker/) with Compose.
+
+A small machine is enough. A Raspberry Pi with a 2.5" USB hard drive
+runs the stack with excellent performance.
+
 ## Getting started
 
 **1. Start the server**
