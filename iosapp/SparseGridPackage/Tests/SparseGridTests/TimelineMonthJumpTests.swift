@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import iosapp
+@testable import SparseGrid
 
 // Verifies a month tap scrolls as far as the grid allows and reports
 // when that position is already showing, so the sidebar can keep the

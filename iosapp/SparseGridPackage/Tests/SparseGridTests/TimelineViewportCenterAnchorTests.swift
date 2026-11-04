@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
-@testable import iosapp
+@testable import SparseGrid
 
 // Rotation keeps the photo under the middle of the screen in the
 // middle of the new viewport. The month sidebar only changes width,

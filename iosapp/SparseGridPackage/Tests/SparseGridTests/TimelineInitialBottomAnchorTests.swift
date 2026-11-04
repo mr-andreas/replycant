@@ -1,7 +1,9 @@
 import Foundation
 import Testing
+#if os(iOS)
 import UIKit
-@testable import iosapp
+#endif
+@testable import SparseGrid
 
 // Verifies startup anchoring math keeps timeline launch pinned to the newest rows.
 struct TimelineInitialBottomAnchorTests {
@@ -118,6 +120,7 @@ struct TimelineInitialBottomAnchorTests {
         #expect(offset == nil)
     }
 
+#if os(iOS)
     // A saved anchor on the oldest row uses the top offset, the same place a
     // tab reselect asks for. Restoring that anchor has to stay put, or hiding
     // the month sidebar jumps the timeline to the newest photos.
@@ -190,8 +193,10 @@ struct TimelineInitialBottomAnchorTests {
             "offset \(grid.contentOffset.y) top \(top) size \(grid.contentSize)"
         )
     }
+#endif
 }
 
+#if os(iOS)
 // Supplies a fixed number of empty cells so a grid can be laid out tall
 // enough to scroll without a timeline manager.
 private final class OldestRowGridSource: NSObject, UICollectionViewDataSource {
@@ -210,3 +215,4 @@ private final class OldestRowGridSource: NSObject, UICollectionViewDataSource {
         collectionView.dequeueReusableCell(withReuseIdentifier: Self.reuseID, for: indexPath)
     }
 }
+#endif

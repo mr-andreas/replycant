@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import iosapp
+@testable import SparseGrid
 
 // Locks the timeline cell size so a row fills the width it is given.
 // Landscape used to stop at the side safe area, and flooring the cell

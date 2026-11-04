@@ -8,7 +8,7 @@ Replycant iOS persists manifests in SQLite (via GRDB) through GitDB so timeline 
 - `ManifestSyncEngine`: syncs git commit transitions into database mutations.
 - `ManifestRegistry`: app registers manifest kinds, extracted SQL columns, and indexes.
 - `DefaultManifestManager`: runs app SQL queries through GitDB's generic query API.
-- `TimelineManager`: consumes pagination and change events for sparse timeline rendering.
+- `TimelineManager`: supplies timeline pages and thumbnail bytes, and applies manifest changes onto the sparse grid.
 
 ## Data Flow
 
@@ -16,21 +16,21 @@ Replycant iOS persists manifests in SQLite (via GRDB) through GitDB so timeline 
 flowchart TD
     SyncEngine["ManifestSyncEngine"] -->|"applyMutation / replaceAll"| ManifestDB["ManifestDatabase"]
     ManifestDB -->|"publishes ManifestDatabaseChange"| TimelineMgr["TimelineManager"]
-    TimelineView["TimelineView"] -->|"ensureLoaded(around: index)"| TimelineMgr
+    Grid["SparseGrid"] -->|"page and prefetch index"| TimelineMgr
     TimelineMgr -->|"count / offset page / cursor page / thumbnail batch via SQL"| ManifestDB
 ```
 
 ## Sparse Timeline Loading
 
+The contiguous item window, the viewport prefetch range, and the collection view live in the SparseGrid package. `TimelineManager` supplies pages, loads thumbnail bytes, and still applies manifest changes.
+
 - Timeline length is based on `countTimelineOriginals`.
 - Grid cells are indexed by `0..<totalCount`.
-- `TimelineManager` keeps one contiguous loaded region:
-  - `loadedOffset` (global index of first loaded item)
-  - `loadedItems`
-  - `olderCursor` / `newerCursor`
-- Random jump: clear region and load via `loadTimelinePage(offset:limit:)`.
-- Sequential scroll: extend via `loadTimelinePage(before:)` or `loadTimelinePage(after:)`.
-- New thumbnail sets are loaded with `loadThumbnailsByOriginalRefs` (`[String: ThumbnailSetManifest]`).
+- SparseGrid keeps one contiguous loaded window: a global offset plus the items in that run.
+- A cell near either edge extends the window by one page. A jump farther away replaces it. An empty neighbor page leaves the window where it is.
+- The prefetch range is the visible indices plus a margin before and after them. SparseGrid asks `TimelineManager` to load or cancel each id. The manager skips a thumbnail that is already cached or already loading.
+- `TimelineManager` turns each requested page into timeline items, including the thumbnail batch from `loadThumbnailsByOriginalRefs`.
+- Manifest inserts and deletes edit that same window in place.
 
 ## Reactive Change Publishing
 

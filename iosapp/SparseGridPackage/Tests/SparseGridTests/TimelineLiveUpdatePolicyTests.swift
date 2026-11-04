@@ -1,5 +1,5 @@
 import Testing
-@testable import iosapp
+@testable import SparseGrid
 
 // A timeline reload during deceleration cancels the flick. These cases
 // lock when a structural update has to wait for that gesture to finish.

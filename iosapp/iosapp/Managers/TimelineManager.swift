@@ -3,6 +3,7 @@ import LibGit2
 import SwiftUI
 import Combine
 import GitDB
+import SparseGrid
 import os.signpost
 
 // Represents a timeline item with original manifest and optional thumbnail
@@ -50,18 +51,23 @@ final class TimelineMonthSelectionModel: ObservableObject {
 // Coordinates sparse timeline loading, viewport preloading, and reactive database mutation handling.
 @MainActor
 final class TimelineManager: ObservableObject {
-    @Published var totalCount = 0
+    @Published var totalCount = 0 {
+        didSet {
+            window.totalCount = totalCount
+            prefetch.noteTotalCount(totalCount)
+        }
+    }
     @Published var isLoading = false
     @Published var errorMessage: String?
-    private(set) var loadGeneration = 0
-    let loadGenerationPublisher = PassthroughSubject<Int, Never>()
+    var loadGeneration: Int { window.revision }
+    var loadGenerationPublisher: AnyPublisher<Int, Never> { window.revisionPublisher }
     @Published private(set) var monthIndex: [TimelineMonthEntry] = []
     let monthSelection = TimelineMonthSelectionModel()
     @Published var scrollTargetIndex: Int?
 
     // Tells the map to recluster after a sync changes which photos exist.
     let contentDidChange = PassthroughSubject<Void, Never>()
-    private let scope: TimelineScope
+    fileprivate let scope: TimelineScope
 
     // Stores the most recent viewport index so month selection can be
     // flushed after dragging settles without relying on another scroll event.
@@ -81,7 +87,7 @@ final class TimelineManager: ObservableObject {
     private(set) var thumbnailMap: [String: ThumbnailSetManifest] = [:]
     
     // Manifest reader bound to the database-backed manifest manager.
-    private var manifestLoader: ManifestLoaderProtocol?
+    fileprivate var manifestLoader: ManifestLoaderProtocol?
     private var databaseChangeCancellable: AnyCancellable?
     // Buffers per-commit notifications so a sync run refreshes the count
     // once per burst instead of once per photo.
@@ -92,23 +98,15 @@ final class TimelineManager: ObservableObject {
     // Publishing it now reloads the collection view and stops the flick.
     private var databaseChangeHeldForScroll = false
 
-    // Keeps one contiguous loaded region so sparse grid reads can map global indices to loaded items.
-    private var loadedOffset = 0
-    private(set) var loadedItems: [TimelineItem] = []
-    private var olderCursor: TimelineCursor?
-    private var newerCursor: TimelineCursor?
-    private var itemsById: [String: TimelineItem] = [:]
-    private let pageSize = 100
-    private var isLoadingPage = false
-    
-    // Tracks visible item indices for viewport-based preloading
-    private var visibleIndices: Set<Int> = []
-    
-    // Tracks item IDs that should be preloaded based on viewport position
-    private var preloadItemIds: Set<String> = []
-    
-    // Maintains ImageLoader instances for preloading items outside the viewport
-    // Keyed by item ID to allow reuse when items become visible
+    // The package owns the loaded run and which indices to warm. This
+    // manager only turns manifest pages into items and fetches thumbnail bytes.
+    private let pageSource: TimelinePageSource
+    private let window: SparseIndexWindow<TimelineItem>
+    private let prefetch: SparsePrefetchQueue<TimelineItem>
+    var loadedItems: [TimelineItem] { window.items }
+
+    // Image loaders for rows the grid asked to warm ahead of the viewport.
+    // Keyed by item id so a row that scrolls into view can reuse the fetch.
     private var preloadImageLoaders: [String: ImageLoader] = [:]
     
     // LRU cache of loaded images keyed by item ID with memory-based eviction
@@ -154,9 +152,30 @@ final class TimelineManager: ObservableObject {
         photoLibrary: PhotoLibraryProviding = PhotoLibraryManager(),
         notificationCenter: NotificationCenter = .default
     ) {
+        let pageSource = TimelinePageSource()
+        let window = SparseIndexWindow<TimelineItem>(source: pageSource)
+        let prefetch = SparsePrefetchQueue(window: window)
+        self.pageSource = pageSource
+        self.window = window
+        self.prefetch = prefetch
         self.scope = scope
         self.photoLibrary = photoLibrary
         self.notificationCenter = notificationCenter
+        pageSource.owner = self
+        prefetch.loader = self
+        window.onLoadError = { [weak self] error in
+            guard let self, !(error is TimelinePageUnavailable) else { return }
+            self.errorMessage = error.localizedDescription
+            logError(
+                "Failed to load sparse timeline page: \(error.localizedDescription)",
+                context: "Timeline"
+            )
+        }
+        window.onRegionReset = { [weak self] in
+            guard let self else { return }
+            self.thumbnailMap.removeAll()
+            self.prefetch.resetPrefetch(clearVisibleIndices: false)
+        }
         observeLFSURLChanges()
         observeDatabaseInvalidation()
     }
@@ -328,29 +347,19 @@ final class TimelineManager: ObservableObject {
 
     // Returns one loaded timeline item when the requested global index is currently present in memory.
     func item(at index: Int) -> TimelineItem? {
-        guard index >= loadedOffset, index < loadedOffset + loadedItems.count else {
-            return nil
-        }
-        return loadedItems[index - loadedOffset]
+        window.item(at: index)
     }
 
     // Maps a photo the grid is already showing back to its global index.
     // Older history synced in above the window moves that index, and the
     // grid needs the new one to keep the same photo on screen.
     func index(ofItemId id: String) -> Int? {
-        guard let position = loadedItems.firstIndex(where: { $0.id == id }) else {
-            return nil
-        }
-        return loadedOffset + position
+        window.index(of: id)
     }
 
-    var canLoadOlder: Bool {
-        loadedOffset > 0
-    }
+    var canLoadOlder: Bool { window.canLoadOlder }
 
-    var canLoadNewer: Bool {
-        loadedOffset + loadedItems.count < totalCount
-    }
+    var canLoadNewer: Bool { window.canLoadNewer }
 
     // Resolves and emits the month currently at the top of the viewport while
     // rate-limiting updates so sidebar rendering does not hurt scroll smoothness.
@@ -391,252 +400,50 @@ final class TimelineManager: ObservableObject {
     func setGridScrolling(_ isScrolling: Bool) {
         guard isGridScrolling != isScrolling else { return }
         monthSelection.isGridScrolling = isScrolling
+        prefetch.setScrolling(isScrolling)
         if !isScrolling {
             updateCurrentMonth(for: pendingMonthIndex, force: true)
-            preloadUpdateWorkItem?.cancel()
-            preloadUpdateWorkItem = nil
-            updatePreloadRange()
             flushDatabaseChangeHeldForScroll()
         }
     }
 
-    // Ensures data for one global index by extending the loaded region or cold-jumping to a new offset.
+    // Asks the window for the page that covers this index. The window
+    // extends the current run or replaces it; this manager only supplies pages.
     func ensureLoaded(around index: Int) async {
-        guard index >= 0, index < totalCount else { return }
-        guard let manifestLoader else { return }
-
-        if item(at: index) != nil {
-            return
-        }
-        guard !isLoadingPage else { return }
-        isLoadingPage = true
-        defer { isLoadingPage = false }
-
-        do {
-            if loadedItems.isEmpty {
-                let adjustedOffset = max(0, index - pageSize / 2)
-                try await loadFreshRegion(offset: adjustedOffset, loader: manifestLoader)
-                return
-            }
-
-            let regionStart = loadedOffset
-            let regionEnd = loadedOffset + loadedItems.count - 1
-            let distanceToOlderEdge = regionStart - index
-            let distanceToNewerEdge = index - regionEnd
-
-            if distanceToOlderEdge > 0, distanceToOlderEdge <= pageSize, let olderCursor {
-                let originals = try await manifestLoader.loadTimelinePage(before: olderCursor, limit: pageSize, scope: scope)
-                try await prepend(originals: originals, loader: manifestLoader)
-                return
-            }
-
-            if distanceToNewerEdge > 0, distanceToNewerEdge <= pageSize, let newerCursor {
-                let originals = try await manifestLoader.loadTimelinePage(after: newerCursor, limit: pageSize, scope: scope)
-                try await append(originals: originals, loader: manifestLoader)
-                return
-            }
-
-            // Resets sparse state for random-access jumps so one contiguous region remains authoritative.
-            resetLoadedRegion(clearVisibleIndices: false, clearCurrentMonth: false)
-            let adjustedOffset = max(0, index - pageSize / 2)
-            try await loadFreshRegion(offset: adjustedOffset, loader: manifestLoader)
-        } catch {
-            errorMessage = error.localizedDescription
-            logError("Failed to ensure sparse load near \(index): \(error.localizedDescription)", context: "Timeline")
-        }
+        await window.ensureLoaded(around: index)
     }
 
-    // Ensures a swipe window around the full-screen index to keep paging smooth at loaded edges.
+    // Loads a radius around a fullscreen index so a swipe still has rows
+    // when it reaches the edge of the run that was on screen.
     func ensureWindowLoaded(around index: Int, radius: Int = 30) async {
-        await ensureLoaded(around: index)
-        let start = max(0, index - radius)
-        let end = min(totalCount - 1, index + radius)
-        for probe in [start, end] {
-            if item(at: probe) == nil {
-                await ensureLoaded(around: probe)
-            }
-        }
+        await window.ensureWindowLoaded(around: index, radius: radius)
     }
 
+    // The fullscreen viewer is about to swipe past the loaded rows, so
+    // the window extends by one page in that direction.
     func loadOlderPage() async {
-        guard !isLoadingPage else { return }
-        guard let manifestLoader, let olderCursor, canLoadOlder else { return }
-        isLoadingPage = true
-        defer { isLoadingPage = false }
-        do {
-            let originals = try await manifestLoader.loadTimelinePage(before: olderCursor, limit: pageSize, scope: scope)
-            try await prepend(originals: originals, loader: manifestLoader)
-        } catch {
-            errorMessage = error.localizedDescription
-            logError("Failed to load older timeline page: \(error.localizedDescription)", context: "Timeline")
-        }
+        await window.loadOlderPage()
     }
 
     func loadNewerPage() async {
-        guard !isLoadingPage else { return }
-        guard let manifestLoader, let newerCursor, canLoadNewer else { return }
-        isLoadingPage = true
-        defer { isLoadingPage = false }
-        do {
-            let originals = try await manifestLoader.loadTimelinePage(after: newerCursor, limit: pageSize, scope: scope)
-            try await append(originals: originals, loader: manifestLoader)
-        } catch {
-            errorMessage = error.localizedDescription
-            logError("Failed to load newer timeline page: \(error.localizedDescription)", context: "Timeline")
-        }
-    }
-    
-    private var pendingPagingIndices: Set<Int> = []
-    private var pagingTask: Task<Void, Never>?
-
-    /// Batches multiple willDisplay paging requests into a single task
-    /// that runs after one frame (~16ms). During fast scrolling, dozens
-    /// of cells call this per frame; coalescing avoids spawning one
-    /// Task per cell through the main-actor executor.
-    func schedulePagingIfNeeded(around index: Int, edgeThreshold: Int) {
-        pendingPagingIndices.insert(index)
-        guard pagingTask == nil else { return }
-        pagingTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 16_000_000)
-            guard let self else { return }
-            let indices = self.pendingPagingIndices
-            self.pendingPagingIndices.removeAll()
-            self.pagingTask = nil
-
-            guard let target = indices.max() ?? indices.first else { return }
-            await self.ensureLoaded(around: target)
-
-            if self.item(at: max(0, target - edgeThreshold)) == nil,
-               self.canLoadOlder {
-                await self.loadOlderPage()
-            }
-            if self.item(at: min(max(0, self.totalCount - 1), target + edgeThreshold)) == nil,
-               self.canLoadNewer {
-                await self.loadNewerPage()
-            }
-        }
+        await window.loadNewerPage()
     }
 
-    // Called when a TimelineGridItem appears in the viewport.
-    // Updates visible indices and schedules a coalesced preload pass.
+    // Folds one frame of visible indices into a single neighbor-page fetch.
+    func schedulePaging(around index: Int) {
+        window.schedulePaging(around: index)
+    }
+
+    // Records a row entering the viewport so the warm span can follow it.
     func itemDidAppear(at index: Int) {
-        visibleIndices.insert(index)
-        schedulePreloadUpdate()
+        prefetch.itemDidAppear(at: index)
     }
-    
-    // Called when a TimelineGridItem disappears from the viewport.
-    // Updates visible indices and schedules a coalesced preload pass.
+
+    // Records a row leaving the viewport so the warm span can follow it.
     func itemDidDisappear(at index: Int) {
-        visibleIndices.remove(index)
-        schedulePreloadUpdate()
+        prefetch.itemDidDisappear(at: index)
     }
 
-    private var preloadUpdateWorkItem: DispatchWorkItem?
-
-    /// Coalesces rapid appear/disappear calls into a single preload
-    /// pass. During fast scrolling dozens of cells cycle per frame;
-    /// deferring the O(200) preload iteration to a 150ms trailing
-    /// edge eliminates per-cell main-thread work. Skipped entirely
-    /// while the grid is actively scrolling — the preload fires
-    /// immediately when scrolling settles via setGridScrolling(false).
-    private func schedulePreloadUpdate() {
-        guard !isGridScrolling else { return }
-        preloadUpdateWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.updatePreloadRange()
-        }
-        preloadUpdateWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-    }
-    
-    // Checks if an item should be preloaded based on current viewport position.
-    // Used by TimelineGridItem to determine if it should load its image even when not visible.
-    func shouldPreloadItem(at index: Int) -> Bool {
-        guard totalCount > 0, index >= 0, index < totalCount, let item = item(at: index) else {
-            return false
-        }
-
-        return preloadItemIds.contains(item.id)
-    }
-    
-    // Calculates which items should be preloaded based on visible range and cache settings.
-    // Updates preloadItemIds and triggers image loading for items in the preload range.
-    private func updatePreloadRange() {
-        guard !visibleIndices.isEmpty, totalCount > 0 else {
-            preloadItemIds = []
-            // Clean up preload loaders when nothing is visible
-            preloadImageLoaders.removeAll()
-            preloadCancellables.removeAll()
-            return
-        }
-
-        let sortedIndices = visibleIndices.sorted()
-        let firstVisible = sortedIndices.first!
-        let lastVisible = sortedIndices.last!
-        
-        let cacheSettings = CacheSettingsManager.shared
-        // Clamp preload counts to timeline length so persisted outlier values
-        // cannot overflow index arithmetic during range calculation.
-        let beforeCount = min(cacheSettings.imagesBeforeViewport, totalCount)
-        let afterCount = min(cacheSettings.imagesAfterViewport, totalCount)
-        
-        // Calculate preload range: [firstVisible - beforeCount, lastVisible + afterCount]
-        let preloadStart = max(0, firstVisible - beforeCount)
-        let preloadEnd = min(totalCount, lastVisible + 1 + afterCount)
-        
-        // Build set of item IDs that should be preloaded
-        var newPreloadIds = Set<String>()
-        for index in preloadStart..<preloadEnd {
-            if let item = item(at: index) {
-                newPreloadIds.insert(item.id)
-            }
-        }
-        
-        // Cancel and remove preload loaders for items no longer in range
-        // so in-flight LFS work releases concurrency slots promptly.
-        let itemsToRemove = preloadItemIds.subtracting(newPreloadIds)
-        for itemId in itemsToRemove {
-            preloadImageLoaders.removeValue(forKey: itemId)?.cancelLoading()
-            preloadCancellables.removeValue(forKey: itemId)?.cancel()
-        }
-        
-        // Create loaders and trigger loading for items in preload range that aren't visible
-        for index in preloadStart..<preloadEnd {
-            guard let item = item(at: index) else { continue }
-            let itemId = item.id
-            
-            // Skip if already visible (will be loaded by TimelineGridItem)
-            if visibleIndices.contains(index) {
-                continue
-            }
-            
-            // Skip if already cached
-            if imageCache.get(for: itemId) != nil {
-                continue
-            }
-            
-            // Create loader if it doesn't exist
-            if preloadImageLoaders[itemId] == nil {
-                let loader = ImageLoader(
-                    item: item,
-                    priority: .timelinePage,
-                    timelineManager: self
-                )
-                preloadImageLoaders[itemId] = loader
-                // Observe loader's image to cache it when loaded
-                let cancellable = loader.$image
-                    .compactMap { $0 }
-                    .sink { [weak self] loadedImage in
-                        self?.cacheImage(loadedImage, for: itemId)
-                    }
-                preloadCancellables[itemId] = cancellable
-                loader.loadImage()
-            }
-        }
-        
-        preloadItemIds = newPreloadIds
-    }
-    
     // Gets a cached image for an item if it was preloaded, or returns nil.
     // Allows TimelineGridItem ImageLoaders to reuse preloaded images instead of loading again.
     func getCachedImage(for itemId: String) -> UIImage? {
@@ -839,8 +646,7 @@ final class TimelineManager: ObservableObject {
     // Merges incremental mutation payloads into currently loaded sparse state to avoid placeholder flashes.
     private func applyIncrementalMutation(_ mutation: ManifestMutation, refreshedTotalCount: Int) {
         totalCount = refreshedTotalCount
-        visibleIndices = visibleIndices.filter { $0 >= 0 && $0 < refreshedTotalCount }
-        let loadedItemIds = Set(loadedItems.map(\.id))
+        prefetch.noteTotalCount(refreshedTotalCount)
         let loadedOriginalRefs = Set(loadedItems.map { originalRef(for: $0.original) })
         var shouldReconfigureVisibleCells = false
 
@@ -862,118 +668,117 @@ final class TimelineManager: ObservableObject {
             }
         }
 
-        let previousOffset = loadedOffset
-        var addedOriginalsWithinWindow: [OriginalManifest] = []
-        if let firstLoaded = loadedItems.first?.original,
-           let firstLoadedDate = firstLoaded.spec.takenAt {
-            let firstLoadedKey = (firstLoadedDate, firstLoaded.id)
-            let addedBeforeWindow = addedOriginals.filter {
-                guard let date = $0.spec.takenAt else { return false }
-                return (date, $0.id) < firstLoadedKey
-            }.count
-            loadedOffset += addedBeforeWindow
-
-            if let lastLoaded = loadedItems.last?.original,
-               let lastLoadedDate = lastLoaded.spec.takenAt {
-                let lastLoadedKey = (lastLoadedDate, lastLoaded.id)
-                addedOriginalsWithinWindow = addedOriginals.filter {
-                    guard let date = $0.spec.takenAt else { return false }
-                    let key = (date, $0.id)
-                    return key >= firstLoadedKey && key <= lastLoadedKey
-                }
-            }
-
-            let removedBeforeWindow = removedOriginals.filter {
-                guard let date = $0.spec.takenAt else { return false }
-                return (date, $0.id) < firstLoadedKey
-            }.count
-            loadedOffset = max(0, loadedOffset - removedBeforeWindow)
-        }
-        if loadedOffset != previousOffset {
-            shouldReconfigureVisibleCells = true
-        }
-
         if !removedOriginalIds.isEmpty {
-            loadedItems.removeAll { removedOriginalIds.contains($0.id) }
-            if !removedOriginalIds.isDisjoint(with: loadedItemIds) {
+            prefetch.forget(removedOriginalIds)
+        }
+
+        window.updateRegion { region in
+            let loadedItemIds = Set(region.items.map(\.id))
+            var knownIds = loadedItemIds
+            let previousOffset = region.loadedOffset
+            var addedOriginalsWithinWindow: [OriginalManifest] = []
+            if let firstLoaded = region.items.first?.original,
+               let firstLoadedDate = firstLoaded.spec.takenAt {
+                let firstLoadedKey = (firstLoadedDate, firstLoaded.id)
+                let addedBeforeWindow = addedOriginals.filter {
+                    guard let date = $0.spec.takenAt else { return false }
+                    return (date, $0.id) < firstLoadedKey
+                }.count
+                region.loadedOffset += addedBeforeWindow
+
+                if let lastLoaded = region.items.last?.original,
+                   let lastLoadedDate = lastLoaded.spec.takenAt {
+                    let lastLoadedKey = (lastLoadedDate, lastLoaded.id)
+                    addedOriginalsWithinWindow = addedOriginals.filter {
+                        guard let date = $0.spec.takenAt else { return false }
+                        let key = (date, $0.id)
+                        return key >= firstLoadedKey && key <= lastLoadedKey
+                    }
+                }
+
+                let removedBeforeWindow = removedOriginals.filter {
+                    guard let date = $0.spec.takenAt else { return false }
+                    return (date, $0.id) < firstLoadedKey
+                }.count
+                region.loadedOffset = max(0, region.loadedOffset - removedBeforeWindow)
+            }
+            if region.loadedOffset != previousOffset {
                 shouldReconfigureVisibleCells = true
             }
-            for removedId in removedOriginalIds {
-                itemsById.removeValue(forKey: removedId)
-                preloadItemIds.remove(removedId)
-                preloadImageLoaders.removeValue(forKey: removedId)
-                preloadCancellables.removeValue(forKey: removedId)
-            }
-        }
 
-        if !addedOriginalsWithinWindow.isEmpty {
-            let insertedItems = addedOriginalsWithinWindow
-                .filter { itemsById[$0.id] == nil && !removedOriginalIds.contains($0.id) }
-                .map { original in
-                    TimelineItem(
-                        original: original,
-                        thumbnail: thumbnailMap[originalRef(for: original)]
-                    )
+            if !removedOriginalIds.isEmpty {
+                region.items.removeAll { removedOriginalIds.contains($0.id) }
+                if !removedOriginalIds.isDisjoint(with: loadedItemIds) {
+                    shouldReconfigureVisibleCells = true
                 }
-            if !insertedItems.isEmpty {
-                loadedItems.append(contentsOf: insertedItems)
-                loadedItems.sort { lhs, rhs in
-                    guard
-                        let lhsDate = lhs.original.spec.takenAt,
-                        let rhsDate = rhs.original.spec.takenAt
-                    else {
+                knownIds.subtract(removedOriginalIds)
+            }
+
+            if !addedOriginalsWithinWindow.isEmpty {
+                let insertedItems = addedOriginalsWithinWindow
+                    .filter { !knownIds.contains($0.id) && !removedOriginalIds.contains($0.id) }
+                    .map { original in
+                        TimelineItem(
+                            original: original,
+                            thumbnail: self.thumbnailMap[self.originalRef(for: original)]
+                        )
+                    }
+                if !insertedItems.isEmpty {
+                    region.items.append(contentsOf: insertedItems)
+                    region.items.sort { lhs, rhs in
+                        guard
+                            let lhsDate = lhs.original.spec.takenAt,
+                            let rhsDate = rhs.original.spec.takenAt
+                        else {
+                            return lhs.id < rhs.id
+                        }
+                        if lhsDate != rhsDate {
+                            return lhsDate < rhsDate
+                        }
                         return lhs.id < rhs.id
                     }
-                    if lhsDate != rhsDate {
-                        return lhsDate < rhsDate
-                    }
-                    return lhs.id < rhs.id
+                    shouldReconfigureVisibleCells = true
                 }
-                shouldReconfigureVisibleCells = true
             }
-        }
 
-        if !updatedOriginalsById.isEmpty {
-            for (index, existingItem) in loadedItems.enumerated() {
-                guard let updatedOriginal = updatedOriginalsById[existingItem.id] else { continue }
-                shouldReconfigureVisibleCells = true
-                loadedItems[index] = TimelineItem(
-                    original: updatedOriginal,
-                    thumbnail: thumbnailMap[originalRef(for: updatedOriginal)]
-                )
+            if !updatedOriginalsById.isEmpty {
+                for index in region.items.indices {
+                    let existingItem = region.items[index]
+                    guard let updatedOriginal = updatedOriginalsById[existingItem.id] else { continue }
+                    shouldReconfigureVisibleCells = true
+                    region.items[index] = TimelineItem(
+                        original: updatedOriginal,
+                        thumbnail: self.thumbnailMap[self.originalRef(for: updatedOriginal)]
+                    )
+                }
             }
-        }
 
-        for index in loadedItems.indices {
-            let item = loadedItems[index]
-            let ref = originalRef(for: item.original)
-            guard let updatedThumbnail = thumbnailMap[ref] else { continue }
-            guard item.thumbnail?.id != updatedThumbnail.id || item.thumbnail?.spec.thumbnails != updatedThumbnail.spec.thumbnails else { continue }
-            shouldReconfigureVisibleCells = true
-            loadedItems[index] = TimelineItem(original: item.original, thumbnail: updatedThumbnail)
-        }
-
-        rebuildItemIndex()
-        updateRegionCursors()
-        if shouldReconfigureVisibleCells {
-            incrementLoadGeneration()
+            for index in region.items.indices {
+                let item = region.items[index]
+                let ref = self.originalRef(for: item.original)
+                guard let updatedThumbnail = self.thumbnailMap[ref] else { continue }
+                guard item.thumbnail?.id != updatedThumbnail.id
+                    || item.thumbnail?.spec.thumbnails != updatedThumbnail.spec.thumbnails else { continue }
+                shouldReconfigureVisibleCells = true
+                region.items[index] = TimelineItem(original: item.original, thumbnail: updatedThumbnail)
+            }
+            return shouldReconfigureVisibleCells
         }
     }
 
     // Seeds sparse region state for focused unit tests without requiring repository or database wiring.
     func seedLoadedRegionForTesting(offset: Int, items: [TimelineItem], totalCount: Int) {
-        loadedOffset = offset
-        loadedItems = items
         self.totalCount = totalCount
+        window.updateRegion { region in
+            region.loadedOffset = offset
+            region.items = items
+            return false
+        }
         thumbnailMap = Dictionary(uniqueKeysWithValues: items.compactMap { item in
             guard let thumbnail = item.thumbnail else { return nil }
             return (thumbnail.spec.originalRef, thumbnail)
         })
-        preloadItemIds.removeAll()
-        preloadImageLoaders.removeAll()
-        preloadCancellables.removeAll()
-        rebuildItemIndex()
-        updateRegionCursors()
+        prefetch.resetPrefetch(clearVisibleIndices: false)
     }
 
     // Lets a test count refreshes without opening the shared manifest database.
@@ -988,122 +793,34 @@ final class TimelineManager: ObservableObject {
         await databaseChangeDrainTask?.value
     }
 
-    // Resets loaded items/cursors/caches so sparse state can be rebuilt from a new jump position.
+    // Resets loaded items so sparse state can be rebuilt from a new jump position.
+    // The window's reset drops the thumbnail map and the warm set. Visible
+    // indices stay unless this reload is discarding the grid's viewport too.
     private func resetLoadedRegion(clearVisibleIndices: Bool, clearCurrentMonth: Bool = true) {
-        loadedOffset = 0
-        loadedItems = []
-        olderCursor = nil
-        newerCursor = nil
+        window.reset()
         if clearCurrentMonth {
             monthSelection.currentYearMonth = nil
         }
-        itemsById.removeAll()
-        thumbnailMap.removeAll()
-        preloadItemIds.removeAll()
-        preloadImageLoaders.removeAll()
-        preloadCancellables.removeAll()
         if clearVisibleIndices {
-            visibleIndices.removeAll()
+            prefetch.resetPrefetch(clearVisibleIndices: true)
         }
     }
 
-    // Loads one fresh region from offset after clearing old sparse state during random access.
-    private func loadFreshRegion(offset: Int, loader: ManifestLoaderProtocol) async throws {
-        let signpostLog = OSLog(subsystem: appLogSubsystem, category: "PointsOfInterest")
-        let freshRegionSignpostId = OSSignpostID(log: signpostLog)
-        var loadTimelinePageMs = 0.0
-        os_signpost(
-            .begin,
-            log: signpostLog,
-            name: "TimelineLoadFreshRegion",
-            signpostID: freshRegionSignpostId,
-            "offset=%{public}d",
-            offset
-        )
-        defer {
-            os_signpost(
-                .end,
-                log: signpostLog,
-                name: "TimelineLoadFreshRegion",
-                signpostID: freshRegionSignpostId,
-                "loadTimelinePageMs=%{public}.2f",
-                loadTimelinePageMs
+    // Pairs originals with the thumbnail sets fetched for that page.
+    // The window stores the pair so a cell does not query the manifest again.
+    fileprivate func itemsWithThumbnails(
+        from originals: [OriginalManifest],
+        loader: ManifestLoaderProtocol
+    ) async throws -> [TimelineItem] {
+        let refs = originals.map { originalRef(for: $0) }
+        let thumbnails = try await loader.loadThumbnailsByOriginalRefs(refs)
+        thumbnailMap.merge(thumbnails) { _, new in new }
+        return originals.map { original in
+            TimelineItem(
+                original: original,
+                thumbnail: thumbnailMap[originalRef(for: original)]
             )
         }
-
-        let pageLoadStart = DispatchTime.now().uptimeNanoseconds
-        let originals: [OriginalManifest]
-        do {
-            originals = try await loader.loadTimelinePage(offset: offset, limit: pageSize, scope: scope)
-        } catch {
-            let pageLoadEnd = DispatchTime.now().uptimeNanoseconds
-            loadTimelinePageMs = Double(pageLoadEnd - pageLoadStart) / 1_000_000
-            throw error
-        }
-        let pageLoadEnd = DispatchTime.now().uptimeNanoseconds
-        loadTimelinePageMs = Double(pageLoadEnd - pageLoadStart) / 1_000_000
-        let refs = originals.map { originalRef(for: $0) }
-        let thumbnails = try await loader.loadThumbnailsByOriginalRefs(refs)
-        thumbnailMap.merge(thumbnails) { _, new in new }
-        loadedOffset = offset
-        loadedItems = originals.map { original in
-            TimelineItem(original: original, thumbnail: thumbnailMap[originalRef(for: original)])
-        }
-        rebuildItemIndex()
-        updateRegionCursors()
-        incrementLoadGeneration()
-    }
-
-    // Prepends older originals to maintain one contiguous region while extending backward.
-    private func prepend(originals: [OriginalManifest], loader: ManifestLoaderProtocol) async throws {
-        guard !originals.isEmpty else { return }
-        let prependSignpost = AppSignposts.begin("TimelinePrependRegion")
-        defer {
-            AppSignposts.end("TimelinePrependRegion", prependSignpost)
-        }
-
-        let refs = originals.map { originalRef(for: $0) }
-        let thumbnails = try await loader.loadThumbnailsByOriginalRefs(refs)
-        thumbnailMap.merge(thumbnails) { _, new in new }
-        let newItems = originals.map { TimelineItem(original: $0, thumbnail: thumbnailMap[originalRef(for: $0)]) }
-        loadedItems.insert(contentsOf: newItems, at: 0)
-        loadedOffset = max(0, loadedOffset - newItems.count)
-        for item in newItems {
-            itemsById[item.id] = item
-        }
-        updateRegionCursors()
-        incrementLoadGeneration()
-    }
-
-    // Appends newer originals to maintain one contiguous region while extending forward.
-    private func append(originals: [OriginalManifest], loader: ManifestLoaderProtocol) async throws {
-        guard !originals.isEmpty else { return }
-        let appendSignpost = AppSignposts.begin("TimelineAppendRegion")
-        defer {
-            AppSignposts.end("TimelineAppendRegion", appendSignpost)
-        }
-
-        let refs = originals.map { originalRef(for: $0) }
-        let thumbnails = try await loader.loadThumbnailsByOriginalRefs(refs)
-        thumbnailMap.merge(thumbnails) { _, new in new }
-        let newItems = originals.map { TimelineItem(original: $0, thumbnail: thumbnailMap[originalRef(for: $0)]) }
-        loadedItems.append(contentsOf: newItems)
-        for item in newItems {
-            itemsById[item.id] = item
-        }
-        updateRegionCursors()
-        incrementLoadGeneration()
-    }
-
-    // Rebuilds id lookup after region replacement so mutation handlers can resolve loaded membership quickly.
-    private func rebuildItemIndex() {
-        itemsById = Dictionary(uniqueKeysWithValues: loadedItems.map { ($0.id, $0) })
-    }
-
-    // Refreshes edge cursors so cursor pagination remains aligned to current region bounds.
-    private func updateRegionCursors() {
-        olderCursor = loadedItems.first.flatMap { cursor(from: $0.original) }
-        newerCursor = loadedItems.last.flatMap { cursor(from: $0.original) }
     }
 
     // Creates an originalRef key so timeline rows can map thumbnails in O(1) by manifest path semantics.
@@ -1112,7 +829,7 @@ final class TimelineManager: ObservableObject {
     }
 
     // Converts a timeline original into cursor coordinates when takenAt is present.
-    private func cursor(from original: OriginalManifest) -> TimelineCursor? {
+    fileprivate func cursor(from original: OriginalManifest) -> TimelineCursor? {
         guard let date = original.spec.takenAt else { return nil }
         return TimelineCursor(date: date, id: original.id)
     }
@@ -1147,12 +864,6 @@ final class TimelineManager: ObservableObject {
     private func updateMonthIndex(_ entries: [TimelineMonthEntry]) {
         monthIndex = entries
         monthSelection.sections = TimelineMonthSidebarSection.sections(from: entries)
-    }
-
-    // Broadcasts load-generation increments to UIKit coordinator observers without publishing manager-wide objectWillChange.
-    private func incrementLoadGeneration() {
-        loadGeneration += 1
-        loadGenerationPublisher.send(loadGeneration)
     }
 
     // MARK: - Disk cache warming
@@ -1238,6 +949,148 @@ final class TimelineManager: ObservableObject {
         }
     }
 
+}
+
+// A page fetch ran before the manifest database was bound. The window
+// reports it, and the manager ignores it so a not-yet-loaded timeline
+// does not replace its range with an empty page.
+private struct TimelinePageUnavailable: Error {}
+
+// Turns manifest pages into timeline items. The window asks for a page
+// by offset or by the item on either edge; the cursor stays here because
+// it is the original's capture time and id.
+@MainActor
+private final class TimelinePageSource: SparsePageSource {
+    typealias Item = TimelineItem
+    weak var owner: TimelineManager?
+
+    func loadPage(offset: Int, limit: Int) async throws -> [TimelineItem] {
+        let (owner, loader) = try requireLoader()
+        let signpostLog = OSLog(subsystem: appLogSubsystem, category: "PointsOfInterest")
+        let signpostID = OSSignpostID(log: signpostLog)
+        var loadTimelinePageMs = 0.0
+        os_signpost(
+            .begin,
+            log: signpostLog,
+            name: "TimelineLoadFreshRegion",
+            signpostID: signpostID,
+            "offset=%{public}d",
+            offset
+        )
+        defer {
+            os_signpost(
+                .end,
+                log: signpostLog,
+                name: "TimelineLoadFreshRegion",
+                signpostID: signpostID,
+                "loadTimelinePageMs=%{public}.2f",
+                loadTimelinePageMs
+            )
+        }
+        let pageLoadStart = DispatchTime.now().uptimeNanoseconds
+        let originals: [OriginalManifest]
+        do {
+            originals = try await loader.loadTimelinePage(
+                offset: offset,
+                limit: limit,
+                scope: owner.scope
+            )
+        } catch {
+            let pageLoadEnd = DispatchTime.now().uptimeNanoseconds
+            loadTimelinePageMs = Double(pageLoadEnd - pageLoadStart) / 1_000_000
+            throw error
+        }
+        let pageLoadEnd = DispatchTime.now().uptimeNanoseconds
+        loadTimelinePageMs = Double(pageLoadEnd - pageLoadStart) / 1_000_000
+        return try await owner.itemsWithThumbnails(from: originals, loader: loader)
+    }
+
+    func loadPage(before item: TimelineItem, limit: Int) async throws -> [TimelineItem] {
+        let (owner, loader) = try requireLoader()
+        guard let cursor = owner.cursor(from: item.original) else { return [] }
+        let signpost = AppSignposts.begin("TimelinePrependRegion")
+        defer { AppSignposts.end("TimelinePrependRegion", signpost) }
+        let originals = try await loader.loadTimelinePage(
+            before: cursor,
+            limit: limit,
+            scope: owner.scope
+        )
+        return try await owner.itemsWithThumbnails(from: originals, loader: loader)
+    }
+
+    func loadPage(after item: TimelineItem, limit: Int) async throws -> [TimelineItem] {
+        let (owner, loader) = try requireLoader()
+        guard let cursor = owner.cursor(from: item.original) else { return [] }
+        let signpost = AppSignposts.begin("TimelineAppendRegion")
+        defer { AppSignposts.end("TimelineAppendRegion", signpost) }
+        let originals = try await loader.loadTimelinePage(
+            after: cursor,
+            limit: limit,
+            scope: owner.scope
+        )
+        return try await owner.itemsWithThumbnails(from: originals, loader: loader)
+    }
+
+    private func requireLoader() throws -> (TimelineManager, ManifestLoaderProtocol) {
+        guard let owner, let loader = owner.manifestLoader else {
+            throw TimelinePageUnavailable()
+        }
+        return (owner, loader)
+    }
+}
+
+extension TimelineManager: SparseItemLoader {
+    // The warm span reads the cache settings on each pass, so a change
+    // in Settings applies the next time the viewport settles.
+    func prefetchMargins() -> (before: Int, after: Int) {
+        let settings = CacheSettingsManager.shared
+        return (settings.imagesBeforeViewport, settings.imagesAfterViewport)
+    }
+
+    // Starts a thumbnail fetch for one row the grid is about to show.
+    // A cached image or a fetch already in flight is left alone.
+    func loadItem(id: String) {
+        if imageCache.get(for: id) != nil { return }
+        if preloadImageLoaders[id] != nil { return }
+        guard let index = window.index(of: id), let item = window.item(at: index) else { return }
+        let loader = ImageLoader(
+            item: item,
+            priority: .timelinePage,
+            timelineManager: self
+        )
+        preloadImageLoaders[id] = loader
+        preloadCancellables[id] = loader.$image
+            .compactMap { $0 }
+            .sink { [weak self] loadedImage in
+                self?.cacheImage(loadedImage, for: id)
+            }
+        loader.loadImage()
+    }
+
+    // Stops a warm fetch whose row has left the span, so it releases
+    // its LFS concurrency slot.
+    func cancelItem(id: String) {
+        preloadImageLoaders.removeValue(forKey: id)?.cancelLoading()
+        preloadCancellables.removeValue(forKey: id)?.cancel()
+    }
+}
+
+extension TimelineManager: SparseGridModel {
+    var revisionPublisher: AnyPublisher<Int, Never> { loadGenerationPublisher }
+
+    var totalCountPublisher: AnyPublisher<Int, Never> {
+        $totalCount.eraseToAnyPublisher()
+    }
+
+    var scrollTargetIndexPublisher: AnyPublisher<Int?, Never> {
+        $scrollTargetIndex.eraseToAnyPublisher()
+    }
+
+    // The id the grid binds to a cell. Nil means that index is not in
+    // the loaded window, so the cell stays a placeholder.
+    func itemId(at index: Int) -> String? {
+        item(at: index)?.id
+    }
 }
 
 enum TimelineError: Error {

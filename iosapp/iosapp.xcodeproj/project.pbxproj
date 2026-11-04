@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		EFA1B9232F00000100A1B923 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = EFA1B9222F00000100A1B923 /* GRDB */; };
 		EFB0A1013A11000100B0A101 /* GitDB in Frameworks */ = {isa = PBXBuildFile; productRef = EFB0A1003A11000100B0A101 /* GitDB */; };
+		EFB0A2013A11000200B0A201 /* SparseGrid in Frameworks */ = {isa = PBXBuildFile; productRef = EFB0A2003A11000200B0A201 /* SparseGrid */; };
 		EFDF8B2C2EA12CEC007A04E9 /* LibGit2 in Frameworks */ = {isa = PBXBuildFile; productRef = EFDF8B2B2EA12CEC007A04E9 /* LibGit2 */; };
 		EFDF8B2D2EA12CED007A04E9 /* LRUCache in Frameworks */ = {isa = PBXBuildFile; productRef = EFDF8B2E2EA12CEE007A04E9 /* LRUCache */; };
 /* End PBXBuildFile section */
@@ -85,6 +86,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EFB0A1013A11000100B0A101 /* GitDB in Frameworks */,
+				EFB0A2013A11000200B0A201 /* SparseGrid in Frameworks */,
 				EFDF8B2C2EA12CEC007A04E9 /* LibGit2 in Frameworks */,
 				EFDF8B2D2EA12CED007A04E9 /* LRUCache in Frameworks */,
 				EFA1B9232F00000100A1B923 /* GRDB in Frameworks */,
@@ -150,6 +152,7 @@
 			name = iosapp;
 			packageProductDependencies = (
 				EFB0A1003A11000100B0A101 /* GitDB */,
+				EFB0A2003A11000200B0A201 /* SparseGrid */,
 				EFDF8B2B2EA12CEC007A04E9 /* LibGit2 */,
 				EFDF8B2E2EA12CEE007A04E9 /* LRUCache */,
 				EFA1B9222F00000100A1B923 /* GRDB */,
@@ -238,6 +241,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				EFB0A1023A11000100B0A101 /* XCLocalSwiftPackageReference "GitDBPackage" */,
+				EFB0A2023A11000200B0A201 /* XCLocalSwiftPackageReference "SparseGridPackage" */,
 				EFDF8B2A2EA12C9F007A04E9 /* XCLocalSwiftPackageReference "LibGit2Package" */,
 				EFDF8B2F2EA12CEF007A04E9 /* XCRemoteSwiftPackageReference "LRUCache" */,
 				EFA1B9202F00000100A1B923 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
@@ -619,6 +623,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = GitDBPackage;
 		};
+		EFB0A2023A11000200B0A201 /* XCLocalSwiftPackageReference "SparseGridPackage" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SparseGridPackage;
+		};
 		EFDF8B2A2EA12C9F007A04E9 /* XCLocalSwiftPackageReference "LibGit2Package" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = LibGit2Package;
@@ -654,6 +662,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = EFB0A1023A11000100B0A101 /* XCLocalSwiftPackageReference "GitDBPackage" */;
 			productName = GitDB;
+		};
+		EFB0A2003A11000200B0A201 /* SparseGrid */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EFB0A2023A11000200B0A201 /* XCLocalSwiftPackageReference "SparseGridPackage" */;
+			productName = SparseGrid;
 		};
 		EFDF8B2B2EA12CEC007A04E9 /* LibGit2 */ = {
 			isa = XCSwiftPackageProductDependency;
