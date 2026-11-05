@@ -371,6 +371,7 @@ public final class Repository: @unchecked Sendable {
     public func withMutationLock<T>(_ operation: @Sendable () async throws -> T) async throws -> T {
         await mutationLock.acquire()
         do {
+            try await recoverInterruptedIndexWriteOffMainActor()
             let result = try await operation()
             await mutationLock.release()
             return result
@@ -387,6 +388,7 @@ public final class Repository: @unchecked Sendable {
             return nil
         }
         do {
+            try await recoverInterruptedIndexWriteOffMainActor()
             let result = try await operation()
             await mutationLock.release()
             return result
@@ -394,6 +396,15 @@ public final class Repository: @unchecked Sendable {
             await mutationLock.release()
             throw error
         }
+    }
+
+    // Runs the index-lock recovery off the caller so a large rebuild does not
+    // block the main actor. Both mutation entry points share this so a pull
+    // and an upload heal the same way.
+    private func recoverInterruptedIndexWriteOffMainActor() async throws {
+        try await Task.detached(priority: .utility) {
+            try self.recoverInterruptedIndexWrite()
+        }.value
     }
     
     public static func create(at path: String, bare: Bool = false) throws -> Repository {
@@ -1887,6 +1898,23 @@ public final class Repository: @unchecked Sendable {
         guard git_index_read_tree(index, headTree) == 0 else {
             throw GitError.repositoryError("Failed to sync index from HEAD tree")
         }
+    }
+
+    // Drops an index.lock left by a killed rewrite and rebuilds the index
+    // from HEAD. The lock is an unfinished write, so removing it keeps the
+    // commits. A missing lock returns immediately so a healthy mutation
+    // does not rewrite the index.
+    public func recoverInterruptedIndexWrite() throws {
+        guard let gitDir = path else {
+            throw GitError.repositoryError("Repository not initialized")
+        }
+        let lockURL = URL(fileURLWithPath: gitDir).appendingPathComponent("index.lock")
+        guard FileManager.default.fileExists(atPath: lockURL.path) else {
+            return
+        }
+        try FileManager.default.removeItem(at: lockURL)
+        log("Removed stale index lock; rebuilding index from HEAD")
+        try syncIndexFromHead()
     }
 
     func syncIndexFromHead() throws {

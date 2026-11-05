@@ -551,6 +551,105 @@ struct GitRepositoryTests {
         #expect(repo.fileExists(at: "pubkeys/keep.pub"))
     }
 
+    // A killed index rewrite leaves index.lock behind. Recovery drops that
+    // lock and rebuilds from HEAD, so the committed file stays and the next
+    // commit can be written.
+    @Test func testStaleIndexLockRecoveryKeepsHeadAndAllowsNextCommit() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("stale-index-lock-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        let repo = try Repository.create(at: root, bare: false)
+        try repo.createCommit(
+            message: "seed",
+            files: [(path: "seed.txt", content: "kept")]
+        )
+        let head = try #require(repo.headOID())
+        let lockPath = try gitIndexLockPath(for: repo)
+        try Data("stale".utf8).write(to: URL(fileURLWithPath: lockPath))
+
+        try repo.recoverInterruptedIndexWrite()
+
+        #expect(!FileManager.default.fileExists(atPath: lockPath))
+        #expect(repo.headOID() == head)
+        #expect(try repo.readFile(at: "seed.txt") == "kept")
+
+        try repo.createCommit(
+            message: "after recovery",
+            files: [(path: "next.txt", content: "next")]
+        )
+        #expect(try repo.readFile(at: "seed.txt") == "kept")
+        #expect(try repo.readFile(at: "next.txt") == "next")
+        #expect(!FileManager.default.fileExists(atPath: lockPath))
+    }
+
+    // Recovery is a no-op when nothing interrupted a write, so a healthy
+    // library does not rewrite its index on every mutation.
+    @Test func testIndexRecoveryLeavesRepositoryUnchangedWhenLockIsAbsent() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("index-recovery-clean-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        let repo = try Repository.create(at: root, bare: false)
+        try repo.createCommit(
+            message: "seed",
+            files: [(path: "seed.txt", content: "kept")]
+        )
+        let head = try #require(repo.headOID())
+        let indexPath = try gitIndexPath(for: repo)
+        let indexBefore = try Data(contentsOf: URL(fileURLWithPath: indexPath))
+
+        try repo.recoverInterruptedIndexWrite()
+
+        #expect(repo.headOID() == head)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: indexPath)) == indexBefore)
+        #expect(try repo.readFile(at: "seed.txt") == "kept")
+        #expect(!FileManager.default.fileExists(atPath: try gitIndexLockPath(for: repo)))
+    }
+
+    // Pull and upload enter through the mutation locks, so both have to
+    // clear a stale lock before their own index write.
+    @Test func testMutationLocksRecoverAStaleIndexLock() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("mutation-lock-index-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        let repo = try Repository.create(at: root, bare: false)
+        try repo.createCommit(
+            message: "seed",
+            files: [(path: "seed.txt", content: "kept")]
+        )
+        let head = try #require(repo.headOID())
+
+        let waitingLock = try gitIndexLockPath(for: repo)
+        try Data("stale".utf8).write(to: URL(fileURLWithPath: waitingLock))
+        _ = try await repo.withMutationLock { true }
+        #expect(!FileManager.default.fileExists(atPath: waitingLock))
+        #expect(repo.headOID() == head)
+        #expect(try repo.readFile(at: "seed.txt") == "kept")
+
+        let skippedLock = try gitIndexLockPath(for: repo)
+        try Data("stale".utf8).write(to: URL(fileURLWithPath: skippedLock))
+        let acquired = try await repo.tryWithMutationLock { true }
+        #expect(acquired == true)
+        #expect(!FileManager.default.fileExists(atPath: skippedLock))
+        #expect(repo.headOID() == head)
+        #expect(try repo.readFile(at: "seed.txt") == "kept")
+    }
+
+    // Resolves the git directory's index.lock so recovery tests plant the
+    // file libgit2 refuses to replace.
+    private func gitIndexLockPath(for repository: Repository) throws -> String {
+        let gitDir = try #require(repository.path)
+        return URL(fileURLWithPath: gitDir).appendingPathComponent("index.lock").path
+    }
+
+    // Resolves the on-disk index so a no-op recovery can be compared byte for byte.
+    private func gitIndexPath(for repository: Repository) throws -> String {
+        let gitDir = try #require(repository.path)
+        return URL(fileURLWithPath: gitDir).appendingPathComponent("index").path
+    }
+
     // Verifies repository mutation lock strictly serializes overlapping mutation closures.
     @Test func testRepositoryMutationLockSerializesConcurrentMutations() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("repo-mutation-lock-\(UUID().uuidString)")
