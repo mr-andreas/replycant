@@ -493,6 +493,48 @@ struct TailnetBootstrapTests {
         await probe.release()
     }
 
+    // A wake rebuild started while the control plane is down never leaves
+    // up(). Later syncs would keep waiting on that same join, so the phone
+    // stays disconnected after the control plane returns. Once the join has
+    // had as long as a suspend, the next sync starts a new one, which is
+    // what a fresh launch does. A younger join is left running so a slow
+    // launch can still finish.
+    @Test func aJoinThatNeverComesUpIsReplacedAfterTheSuspendThreshold() async throws {
+        let clock = ManualClock()
+        let probe = JoinProbe()
+        let bootstrap = TailnetBootstrap(
+            configurations: try Self.configuredStore(),
+            router: TailnetSessionRouter(),
+            rejoin: { _ in
+                let attempt = await probe.begin()
+                if attempt == 1 {
+                    await probe.waitForRelease()
+                }
+            },
+            clock: { clock.current() }
+        )
+
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+
+        clock.advance(by: TailnetBootstrap.suspendRebuildThreshold - 1)
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .milliseconds(50))
+        }
+        #expect(await probe.attempts == 1)
+
+        clock.advance(by: 1)
+        let replaced = Task {
+            try await bootstrap.ensureJoinedIfConfigured(timeout: .seconds(5))
+        }
+        #expect(await probe.waitUntilAttempts(reach: 2))
+        try await replaced.value
+        #expect(await probe.attempts == 2)
+
+        await probe.release()
+    }
+
     // The replaced join can still finish, late, after its sockets are gone.
     // That completion must not drop the replacement or look like the device
     // is back on the tailnet before the replacement has succeeded.

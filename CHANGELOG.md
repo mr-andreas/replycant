@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- coming back after a long background during an outage connects again once the control plane is back
 - a stopped library server shows the connection warning and is not shown as connected
 - a failed upload says the library server cannot be reached
 

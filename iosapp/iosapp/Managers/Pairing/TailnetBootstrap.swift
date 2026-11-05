@@ -60,6 +60,11 @@ actor TailnetBootstrap {
     private let clock: @Sendable () -> Date
     private var manager: TailnetManager?
     private var launchJoin: Task<Void, Error>?
+    /// When the current join was published. A join still not up after a
+    /// suspend's worth of time is replaced: one started while the control
+    /// plane is down does not finish when the control plane returns, and
+    /// later syncs would otherwise wait on it until the next launch.
+    private var joinStartedAt: Date?
     /// Bumped every time a join replaces the one before it. A join that
     /// finishes after that must not publish itself over the replacement:
     /// the one it replaced had its sockets reclaimed by a suspend.
@@ -110,6 +115,12 @@ actor TailnetBootstrap {
     /// the node is up the router refuses requests rather than dialling
     /// directly, and concurrent callers share the one join in flight.
     ///
+    /// A join that is still not up after as long as a suspend is replaced.
+    /// That is the join a wake started while the control plane was down:
+    /// `up()` does not finish when the control plane returns, so later syncs
+    /// would stay on "Still connecting" until the next launch. A younger join
+    /// is left running, so a slow launch can still finish.
+    ///
     /// A rejoin carries no pre-auth key: the node re-authenticates from the
     /// state directory, and mints a fresh key through hsproxy if headscale has
     /// lost track of it.
@@ -121,7 +132,17 @@ actor TailnetBootstrap {
             return
         }
 
-        let join = launchJoin ?? startJoin(configuration)
+        if let join = launchJoin {
+            if let started = joinStartedAt,
+               clock().timeIntervalSince(started) >= Self.suspendRebuildThreshold {
+                try await rebuildNode(configuration, timeout: timeout)
+                return
+            }
+            try await Self.wait(for: join, timeout: timeout)
+            return
+        }
+
+        let join = startJoin(configuration)
         try await Self.wait(for: join, timeout: timeout)
     }
 
@@ -157,14 +178,20 @@ actor TailnetBootstrap {
     ) -> Task<Void, Error> {
         joinGeneration += 1
         let generation = joinGeneration
+        // Published with the join, not when `up()` starts. A late finish
+        // must not clear the replacement's clock and make the next sync
+        // wait on a join that was already given up on.
+        joinStartedAt = clock()
         router.use(nil)
         // Inherits this actor, so it cannot start before `launchJoin` is
-        // set. Clearing that only when this generation is still current
-        // lets a failed join be retried without dropping its replacement.
+        // set. Clearing the join and its start time only when this
+        // generation is still current lets a failed join be retried
+        // without dropping its replacement.
         let join = Task {
             defer {
                 if generation == joinGeneration {
                     launchJoin = nil
+                    joinStartedAt = nil
                 }
             }
             if let beforeRejoin {
@@ -251,8 +278,12 @@ actor TailnetBootstrap {
     ///
     /// The replacement join is published before the first await. An upload
     /// that starts in this window then waits on it, instead of seeing the
-    /// old node as still joined and dialling a dead proxy.
-    private func rebuildNode(_ configuration: TailnetConfiguration) async throws {
+    /// old node as still joined and dialling a dead proxy. `timeout` is the
+    /// caller's own wait, so a short check does not block for a full launch.
+    private func rebuildNode(
+        _ configuration: TailnetConfiguration,
+        timeout: Duration = launchJoinTimeout
+    ) async throws {
         joined = false
         let previous = manager
         manager = nil
@@ -264,7 +295,7 @@ actor TailnetBootstrap {
         let join = startJoin(configuration) {
             await previous?.shutDown()
         }
-        try await Self.wait(for: join, timeout: Self.launchJoinTimeout)
+        try await Self.wait(for: join, timeout: timeout)
     }
 
     /// Tells Settings the connection it is showing may no longer exist.

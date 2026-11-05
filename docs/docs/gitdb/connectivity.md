@@ -100,7 +100,9 @@ On iOS the same rebuild happens when the app returns from a long time in
 the background. The node's status can keep reading as running across a
 suspend, because that read does not use the local proxy the system may
 have reclaimed, so a wake after that long does not trust the existing
-node. A quick switch to another app leaves it running.
+node. A quick switch to another app leaves it running. A rebuild that
+still has not reached `Running` is replaced on a later sync, the same way
+a new launch joins.
 
 Every control session goes through the hosted relay. The node cannot
 route to peers until that session has brought it up, so control traffic
