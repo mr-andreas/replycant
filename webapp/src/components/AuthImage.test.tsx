@@ -81,7 +81,7 @@ describe("AuthImage", () => {
   });
 
   it("fetches authenticated media once intersecting", async () => {
-    render(
+    const { container } = render(
       <AuthImage
         src="/api/lfs/objects/abc"
         alt="media"
@@ -98,7 +98,7 @@ describe("AuthImage", () => {
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByRole("img", { name: "media" })).toHaveAttribute("src", "blob:test");
+    expect(container.querySelector("img")).toHaveAttribute("src", "blob:test");
   });
 
   it("uses preloaded blobs without fetching again", async () => {
@@ -122,6 +122,9 @@ describe("AuthImage", () => {
   });
 
   it("delays ready until image.decode() resolves even when cache reports decoded", async () => {
+    // The viewer fade animates opacity, which would reveal a corner-pinned
+    // image. Hide with visibility and leave the fitted box unpinned so the
+    // first painted frame is the centered one.
     const src = "/api/lfs/objects/decoded-on-mount";
     cachePreloadedBlob(src, new Blob(["cached"]));
     markPreloadedObjectUrlDecoded(src);
@@ -131,20 +134,35 @@ describe("AuthImage", () => {
       value: vi.fn(() => deferred.promise),
     });
 
-    render(
+    const { container } = render(
       <AuthImage
         src={src}
         alt="decoded-on-mount"
         headers={{ authorization: "x" }}
         loading="eager"
+        style={{ width: "320px", height: "240px" }}
       />,
     );
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "decoded-on-mount" })).toHaveStyle({ opacity: "0" });
+    const image = container.querySelector("img");
+    if (!image) throw new Error("decoding image should stay mounted while hidden");
+    expect(image).toHaveStyle({
+      visibility: "hidden",
+      position: "absolute",
+      animation: "none",
+      width: "320px",
+      height: "240px",
+    });
+    expect(image.style.inset).toBe("");
+    expect(image.style.left).toBe("");
+    expect(image.style.top).toBe("");
+    expect(image.style.opacity).toBe("");
   });
 
   it("removes loading placeholder once image.decode() resolves", async () => {
+    // Once decode finishes, centering and the viewer fade must own the image
+    // again. Pending overrides would keep it hidden or stuck out of flow.
     const src = "/api/lfs/objects/decoded-after-resolve";
     cachePreloadedBlob(src, new Blob(["cached"]));
     markPreloadedObjectUrlDecoded(src);
@@ -160,6 +178,7 @@ describe("AuthImage", () => {
         alt="decoded-after-resolve"
         headers={{ authorization: "x" }}
         loading="eager"
+        style={{ width: "320px", height: "240px" }}
       />,
     );
 
@@ -169,7 +188,12 @@ describe("AuthImage", () => {
     await waitFor(() => {
       expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
     });
-    expect(screen.getByRole("img", { name: "decoded-after-resolve" })).not.toHaveStyle({ opacity: "0" });
+    const image = screen.getByRole("img", { name: "decoded-after-resolve" });
+    expect(image).toHaveStyle({ width: "320px", height: "240px" });
+    expect(image.style.visibility).toBe("");
+    expect(image.style.position).toBe("");
+    expect(image.style.animation).toBe("");
+    expect(image.style.opacity).toBe("");
   });
 
   it("keeps previous image visible while switching to a new src", async () => {
@@ -223,7 +247,7 @@ describe("AuthImage", () => {
 
   it("reuses a stable object URL across cached authenticated remounts", () => {
     cachePreloadedBlob("/api/lfs/objects/remount-cached", new Blob(["cached"]));
-    const { unmount } = render(
+    const { unmount, container } = render(
       <AuthImage
         src="/api/lfs/objects/remount-cached"
         alt="remounted-media"
@@ -231,9 +255,9 @@ describe("AuthImage", () => {
         loading="lazy"
       />,
     );
-    expect(screen.getByRole("img", { name: "remounted-media" })).toHaveAttribute("src", "blob:test");
+    expect(container.querySelector("img")).toHaveAttribute("src", "blob:test");
     unmount();
-    render(
+    const remounted = render(
       <AuthImage
         src="/api/lfs/objects/remount-cached"
         alt="remounted-media-again"
@@ -241,7 +265,7 @@ describe("AuthImage", () => {
         loading="lazy"
       />,
     );
-    expect(screen.getByRole("img", { name: "remounted-media-again" })).toHaveAttribute("src", "blob:test");
+    expect(remounted.container.querySelector("img")).toHaveAttribute("src", "blob:test");
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     expect(global.fetch).not.toHaveBeenCalled();
   });

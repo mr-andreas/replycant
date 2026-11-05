@@ -10,6 +10,10 @@
 - a stopped library server shows the connection warning and is not shown as connected
 - a failed upload says the library server cannot be reached
 
+#### Desktop app
+
+- moving to the next photo in the viewer no longer flashes the image on the left before it sits in the center
+
 ## 0.7.0 - 2026-11-03
 
 ### Features

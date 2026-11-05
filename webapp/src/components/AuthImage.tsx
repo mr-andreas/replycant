@@ -208,6 +208,9 @@ export const AuthImage = ({
             style={style}
           />
         ) : null}
+        {/* Kept out of the flex line until this element can paint. Visibility
+            hides it because the viewer fade animates opacity and would show a
+            corner-pinned frame; animation restarts once the centered style applies. */}
         <img
           ref={imageRef}
           src={blobUrl.url}
@@ -215,7 +218,7 @@ export const AuthImage = ({
           className={className}
           loading={loading}
           decoding={decoding}
-          style={!blobUrl.ready ? { ...style, inset: 0, opacity: 0, position: "absolute" } : style}
+          style={!blobUrl.ready ? { ...style, position: "absolute", visibility: "hidden", animation: "none" } : style}
           onError={() => {
             setFailed(true);
             setBlobUrl(null);
