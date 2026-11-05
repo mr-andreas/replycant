@@ -101,6 +101,9 @@ struct PlacesMapView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        // Screenshot capture looks this up directly. A
+                        // scan of every map label stalls on the iPad.
+                        .accessibilityIdentifier("placeTile")
                         .accessibilityLabel("\(cluster.count) photos")
                     }
                 }

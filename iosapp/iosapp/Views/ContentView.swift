@@ -108,7 +108,11 @@ struct ContentView: View {
                     TabView(selection: $selectedTab) {
                         TimelineView()
                             .tabItem {
+                                // iPadOS 26 puts this identifier on the
+                                // toolbar button. The iPhone tab bar keeps
+                                // only the label, so tests try both.
                                 Label("Timeline", systemImage: "clock")
+                                    .accessibilityIdentifier("timelineTabButton")
                             }
                             .tag(0)
                             .accessibilityIdentifier("timelineTab")
@@ -116,6 +120,7 @@ struct ContentView: View {
                         PlacesMapView()
                             .tabItem {
                                 Label("Map", systemImage: "map")
+                                    .accessibilityIdentifier("mapTabButton")
                             }
                             .tag(1)
                             .accessibilityIdentifier("mapTab")

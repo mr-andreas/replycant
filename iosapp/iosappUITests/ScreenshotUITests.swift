@@ -70,11 +70,9 @@ final class ScreenshotUITests: XCTestCase {
     // Captures the place tiles so the listing shows browsing photos by location.
     @MainActor
     private func captureMapScreenshot() {
-        tapTab(named: "Map", identifier: "mapTab")
+        tapTab(named: "Map", identifier: "mapTabButton", navigationTitle: "Map")
 
-        let placeTile = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label MATCHES %@", "^[0-9]+ photos$"))
-            .firstMatch
+        let placeTile = app.buttons["placeTile"].firstMatch
         XCTAssertTrue(placeTile.waitForExistence(timeout: 60), "Expected place tiles on the map before capture")
 
         // Map tiles and tile photos load without a spinner, so the settle
@@ -134,33 +132,52 @@ final class ScreenshotUITests: XCTestCase {
     @MainActor
     private func activateTimelineTab() {
         if firstTimelinePhoto().exists { return }
-        tapTab(named: "Timeline", identifier: "timelineTab")
+        tapTab(named: "Timeline", identifier: "timelineTabButton")
     }
 
-    // Switches tabs on both iPhone and iPad layouts, falling back to a
-    // coordinate tap when a tab exists but is not reported as hittable.
+    // Switches tabs on both iPhone and iPad layouts. iPadOS 26 draws the
+    // tabs as toolbar buttons, and a hittable tap() on those often does
+    // not change the selection, so a map capture must see the Map title
+    // before it waits for place tiles.
     @MainActor
-    private func tapTab(named label: String, identifier: String) {
+    private func tapTab(named label: String, identifier: String, navigationTitle: String? = nil) {
         let candidates: [XCUIElement] = [
+            app.buttons[identifier].firstMatch,
             app.tabBars.buttons[label].firstMatch,
-            app.tabBars.buttons[identifier].firstMatch,
             app.buttons[label].firstMatch
         ]
+        let title = navigationTitle.map { app.navigationBars[$0] }
+
+        if title?.exists == true { return }
 
         let deadline = Date().addingTimeInterval(30)
+        var triedCoordinate = false
         while Date() < deadline {
-            for candidate in candidates where candidate.exists && candidate.isHittable {
+            if title?.exists == true { return }
+
+            let candidate = candidates.first { $0.exists }
+            guard let candidate else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+                continue
+            }
+
+            if !triedCoordinate, candidate.isHittable {
                 candidate.tap()
-                return
-            }
-            for candidate in candidates where candidate.exists {
+            } else {
                 candidate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-                return
+                triedCoordinate = true
             }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+
+            guard let title else { return }
+            if title.waitForExistence(timeout: 2) { return }
+            triedCoordinate = true
         }
 
-        XCTFail("Expected \(label) tab to become available")
+        if let navigationTitle {
+            XCTFail("\(navigationTitle) tab did not open")
+        } else {
+            XCTFail("Expected \(label) tab to become available")
+        }
     }
 
     // Waits for LFS-backed thumbnails to finish loading before capturing marketing screenshots.
