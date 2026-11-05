@@ -65,6 +65,10 @@ public final class SparseIndexWindow<Item: Identifiable> where Item.ID == String
     private let revisionSubject = PassthroughSubject<Int, Never>()
     private var localIndexById: [String: Int] = [:]
     private var isLoadingPage = false
+    // The viewport moved while a page was already loading. One load owns
+    // the run, so this is the index to fetch when that load returns
+    // instead of leaving those rows as placeholders.
+    private var queuedIndex: Int?
     private var pendingPagingIndices: Set<Int> = []
     private var pagingTask: Task<Void, Never>?
     private let pagingDelayNanoseconds: UInt64 = 16_000_000
@@ -97,43 +101,18 @@ public final class SparseIndexWindow<Item: Identifiable> where Item.ID == String
 
     // Loads the page that covers `index`, extending the current run when
     // the index is within one page of an edge. A second call while a page
-    // is already in flight is dropped so two loads cannot each own the run.
+    // is already in flight keeps the latest index and runs it when the
+    // current page returns. One load still owns the run, and dropping the
+    // later index left the rows on screen as placeholders.
     public func ensureLoaded(around index: Int) async {
         guard index >= 0, index < totalCount else { return }
         if item(at: index) != nil { return }
-        guard !isLoadingPage else { return }
-        isLoadingPage = true
-        defer { isLoadingPage = false }
-
-        do {
-            if items.isEmpty {
-                try await loadFresh(offset: centeredOffset(for: index))
-                return
-            }
-
-            let regionStart = loadedOffset
-            let regionEnd = loadedOffset + items.count - 1
-            let distanceToOlderEdge = regionStart - index
-            let distanceToNewerEdge = index - regionEnd
-
-            if distanceToOlderEdge > 0,
-               distanceToOlderEdge <= Self.pageSize,
-               let edge = items.first {
-                try await prepend(before: edge)
-                return
-            }
-
-            if distanceToNewerEdge > 0,
-               distanceToNewerEdge <= Self.pageSize,
-               let edge = items.last {
-                try await append(after: edge)
-                return
-            }
-
-            reset()
-            try await loadFresh(offset: centeredOffset(for: index))
-        } catch {
-            onLoadError?(error)
+        if isLoadingPage {
+            queuedIndex = index
+            return
+        }
+        await performPageLoad {
+            try await self.loadRegion(around: index)
         }
     }
 
@@ -202,12 +181,8 @@ public final class SparseIndexWindow<Item: Identifiable> where Item.ID == String
     // the loaded rows asks for this, as does a viewport sitting on the edge.
     public func loadOlderPage() async {
         guard !isLoadingPage, let edge = items.first, canLoadOlder else { return }
-        isLoadingPage = true
-        defer { isLoadingPage = false }
-        do {
-            try await prepend(before: edge)
-        } catch {
-            onLoadError?(error)
+        await performPageLoad {
+            try await self.prepend(before: edge)
         }
     }
 
@@ -215,13 +190,62 @@ public final class SparseIndexWindow<Item: Identifiable> where Item.ID == String
     // the loaded rows asks for this, as does a viewport sitting on the edge.
     public func loadNewerPage() async {
         guard !isLoadingPage, let edge = items.last, canLoadNewer else { return }
+        await performPageLoad {
+            try await self.append(after: edge)
+        }
+    }
+
+    // Runs one page fetch, then the index the viewport asked for while
+    // that fetch was in flight. A neighbor page uses the same flag, so
+    // the queued index has to be drained here too.
+    private func performPageLoad(_ body: () async throws -> Void) async {
         isLoadingPage = true
-        defer { isLoadingPage = false }
         do {
-            try await append(after: edge)
+            try await body()
         } catch {
             onLoadError?(error)
         }
+        isLoadingPage = false
+        while let next = queuedIndex {
+            queuedIndex = nil
+            guard next >= 0, next < totalCount, item(at: next) == nil else { continue }
+            isLoadingPage = true
+            do {
+                try await loadRegion(around: next)
+            } catch {
+                onLoadError?(error)
+            }
+            isLoadingPage = false
+        }
+    }
+
+    private func loadRegion(around index: Int) async throws {
+        if items.isEmpty {
+            try await loadFresh(offset: centeredOffset(for: index))
+            return
+        }
+
+        let regionStart = loadedOffset
+        let regionEnd = loadedOffset + items.count - 1
+        let distanceToOlderEdge = regionStart - index
+        let distanceToNewerEdge = index - regionEnd
+
+        if distanceToOlderEdge > 0,
+           distanceToOlderEdge <= Self.pageSize,
+           let edge = items.first {
+            try await prepend(before: edge)
+            return
+        }
+
+        if distanceToNewerEdge > 0,
+           distanceToNewerEdge <= Self.pageSize,
+           let edge = items.last {
+            try await append(after: edge)
+            return
+        }
+
+        reset()
+        try await loadFresh(offset: centeredOffset(for: index))
     }
 
     private func centeredOffset(for index: Int) -> Int {

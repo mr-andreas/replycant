@@ -24,6 +24,7 @@ final class MemoryPageSource: SparsePageSource {
     private(set) var calls: [PageCall] = []
     private var gate: CheckedContinuation<Void, Never>?
     var holdNextOffsetLoad = false
+    var holdNextBeforeLoad = false
 
     init(count: Int) {
         library = (0..<count).map { GridRow(id: "\($0)") }
@@ -40,6 +41,10 @@ final class MemoryPageSource: SparsePageSource {
 
     func loadPage(before item: GridRow, limit: Int) async throws -> [GridRow] {
         calls.append(PageCall(kind: "before", detail: item.id))
+        if holdNextBeforeLoad {
+            holdNextBeforeLoad = false
+            await withCheckedContinuation { gate = $0 }
+        }
         guard let index = library.firstIndex(of: item) else { return [] }
         return slice(max(0, index - limit)..<index)
     }
@@ -130,9 +135,11 @@ struct SparseIndexWindowTests {
         #expect(window.items.map(\.id) == (0..<pageSize).map(String.init))
     }
 
-    // A second request while a page is in flight is dropped. Two
-    // overlapping loads would each try to own the one range.
-    @Test func secondEnsureLoadedWhileInFlightDoesNotFetch() async {
+    // A second request while a page is in flight waits for that page,
+    // then loads. Dropping it left the rows on screen as placeholders.
+    // One load still owns the range, so the second fetch starts only
+    // after the held page returns.
+    @Test func secondEnsureLoadedWhileInFlightLoadsAfterTheHeldPage() async {
         let source = MemoryPageSource(count: 1_000)
         source.holdNextOffsetLoad = true
         let window = SparseIndexWindow<GridRow>(source: source)
@@ -144,8 +151,56 @@ struct SparseIndexWindowTests {
         #expect(source.calls.count == 1)
         source.resumeHeldLoad()
         await first.value
+        #expect(source.calls == [
+            PageCall(kind: "offset", detail: "200:\(pageSize)"),
+            PageCall(kind: "offset", detail: "0:\(pageSize)"),
+        ])
+        #expect(window.loadedOffset == 0)
+        #expect(window.item(at: 10)?.id == "10")
+    }
+
+    // A fling replaces the index waiting on the in-flight page. Loading
+    // every index the finger passed would fetch pages the user already left.
+    @Test func newerIndexReplacesTheQueuedPage() async {
+        let source = MemoryPageSource(count: 1_000)
+        source.holdNextOffsetLoad = true
+        let window = SparseIndexWindow<GridRow>(source: source)
+        window.totalCount = 1_000
+
+        let first = Task { await window.ensureLoaded(around: 250) }
+        await waitUntil { source.calls.count == 1 }
+        await window.ensureLoaded(around: 10)
+        await window.ensureLoaded(around: 900)
         #expect(source.calls.count == 1)
-        #expect(window.loadedOffset == 200)
+        source.resumeHeldLoad()
+        await first.value
+        #expect(source.calls == [
+            PageCall(kind: "offset", detail: "200:\(pageSize)"),
+            PageCall(kind: "offset", detail: "850:\(pageSize)"),
+        ])
+        #expect(window.item(at: 900)?.id == "900")
+        #expect(window.item(at: 10) == nil)
+    }
+
+    // The neighbor-page fetch uses the same in-flight flag. A viewport
+    // request that arrives during it has to run afterwards, or the rows
+    // under the finger stay placeholders.
+    @Test func requestDuringOlderPageLoadsAfterThatPage() async {
+        let source = MemoryPageSource(count: 1_000)
+        source.holdNextBeforeLoad = true
+        let window = seeded(source: source, offset: 200, count: pageSize)
+
+        let older = Task { await window.loadOlderPage() }
+        await waitUntil { source.calls.count == 1 }
+        await window.ensureLoaded(around: 900)
+        #expect(source.calls.count == 1)
+        source.resumeHeldLoad()
+        await older.value
+        #expect(source.calls == [
+            PageCall(kind: "before", detail: "200"),
+            PageCall(kind: "offset", detail: "850:\(pageSize)"),
+        ])
+        #expect(window.item(at: 900)?.id == "900")
     }
 
     // Cells within 24 of an unloaded neighbor pull that page in, after

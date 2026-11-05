@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- scrolling the timeline no longer leaves gray placeholders for the rows on screen
 - an interrupted library sync no longer leaves uploads stuck on "Failed to write index"
 - coming back after a long background during an outage connects again once the control plane is back
 - a stopped library server shows the connection warning and is not shown as connected

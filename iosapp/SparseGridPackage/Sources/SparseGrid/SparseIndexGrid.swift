@@ -348,6 +348,11 @@ public struct SparseIndexGrid<Model: SparseGridModel>: UIViewRepresentable {
             guard collectionView.numberOfItems(inSection: 0) > newestItemIndex else { return }
             guard !collectionView.isDragging, !collectionView.isDecelerating else { return }
 
+            // The layout above created the oldest cells while paging was
+            // still off. Commit before the scroll lays out its own cells,
+            // so those cells can extend the page already on screen.
+            hasCommittedInitialPosition = true
+
             if let saved = model.savedContentOffset {
                 hasPerformedInitialScroll = true
                 var restoredOffset = saved
@@ -359,7 +364,6 @@ public struct SparseIndexGrid<Model: SparseGridModel>: UIViewRepresentable {
                 }
                 collectionView.setContentOffset(restoredOffset, animated: false)
                 collectionView.layoutIfNeeded()
-                hasCommittedInitialPosition = true
                 (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
                 lastStableContentOffsetY = collectionView.contentOffset.y
                 rememberCenterAnchor(in: collectionView)
@@ -381,7 +385,6 @@ public struct SparseIndexGrid<Model: SparseGridModel>: UIViewRepresentable {
                 collectionView.setContentOffset(anchoredOffset, animated: false)
                 collectionView.layoutIfNeeded()
             }
-            hasCommittedInitialPosition = true
             (collectionView as? InitialLayoutCollectionView)?.redirectsTopAnchorsToBottom = true
             lastStableContentOffsetY = collectionView.contentOffset.y
             rememberCenterAnchor(in: collectionView)
@@ -1024,7 +1027,7 @@ public struct SparseIndexGrid<Model: SparseGridModel>: UIViewRepresentable {
             let itemId = model.itemId(at: index)
             configure(cell, index, itemId)
             if itemId == nil {
-                model.schedulePaging(around: index)
+                pageIfAnchored(around: index)
             }
             return cell
         }
@@ -1035,6 +1038,14 @@ public struct SparseIndexGrid<Model: SparseGridModel>: UIViewRepresentable {
             let index = indexPath.item
             onWillDisplay(index, model.itemId(at: index))
             model.itemDidAppear(at: index)
+            pageIfAnchored(around: index)
+        }
+
+        // The opening layout is at the oldest rows. Asking for their page
+        // before the anchor replaces the newest page already in memory,
+        // and the rows on screen stay placeholders behind that fetch.
+        private func pageIfAnchored(around index: Int) {
+            guard hasCommittedInitialPosition else { return }
             model.schedulePaging(around: index)
         }
 
