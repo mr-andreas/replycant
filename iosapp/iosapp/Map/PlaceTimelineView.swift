@@ -27,7 +27,7 @@ struct PlaceTimelineView: View {
                 VStack(spacing: 0) {
                     Text(placeName)
                         .font(.headline)
-                    Text("\(timelineManager.totalCount) Items")
+                    Text(placeItemCountSubtitle(timelineManager.totalCount))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -52,4 +52,13 @@ struct PlaceTimelineView: View {
             ?? placemark.country
             ?? "Places"
     }
+}
+
+// A single photo in a place reads as one item. Other counts keep the
+// title-style plural this subtitle already used, including zero.
+func placeItemCountSubtitle(_ count: Int) -> String {
+    if count == 1 {
+        return "1 item"
+    }
+    return "\(count) Items"
 }
