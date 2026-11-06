@@ -869,6 +869,162 @@ func jpegWithGPSAndInterop(latRef, lngRef byte) []byte {
 	return jpeg
 }
 
+// TestAsFloat64AcceptsExifRational verifies an EXIF altitude survives.
+// GPS altitude is one rational, and dropping it leaves the photo with
+// no height even though latitude and longitude were read.
+func TestAsFloat64AcceptsExifRational(t *testing.T) {
+	cases := []struct {
+		name string
+		num  uint32
+		den  uint32
+		want float64
+	}{
+		{name: "meters with a fraction", num: 1234, den: 10, want: 123.4},
+		{name: "whole meters", num: 10000, den: 1, want: 10000},
+		{name: "thousand kilometers in meters", num: 1000000, den: 1, want: 1000000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			alt, err := imagemeta.NewRat[uint32](tc.num, tc.den)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := asFloat64(alt)
+			if !ok {
+				t.Fatal("expected rational altitude to convert")
+			}
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+		})
+	}
+
+	below, err := imagemeta.NewRat[int32](-1234, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := asFloat64(below)
+	if !ok {
+		t.Fatal("expected a signed rational to convert")
+	}
+	if math.Abs(got-(-123.4)) > 1e-9 {
+		t.Fatalf("expected -123.4, got %v", got)
+	}
+}
+
+// TestExtractImageMetadataKeepsGPSAltitude verifies a photo keeps the
+// height written in its GPS block. The tag is a rational, which is the
+// form cameras use for 123.4 m as well as a whole number of meters.
+func TestExtractImageMetadataKeepsGPSAltitude(t *testing.T) {
+	cases := []struct {
+		name string
+		num  uint32
+		den  uint32
+		want float64
+	}{
+		{name: "123.4 meters", num: 1234, den: 10, want: 123.4},
+		{name: "10000 meters", num: 10000, den: 1, want: 10000},
+		{name: "1000 kilometers", num: 1000000, den: 1, want: 1000000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "photo.jpg")
+			alt := [2]uint32{tc.num, tc.den}
+			if err := os.WriteFile(path, jpegWithGPS(57, 'N', 18, 'E', &alt), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, got, _ := extractImageMetadata(path)
+			if got == nil || got.Altitude == nil {
+				t.Fatal("expected a location with an altitude")
+			}
+			if math.Abs(*got.Altitude-tc.want) > 1e-6 {
+				t.Fatalf("expected altitude %v, got %v", tc.want, *got.Altitude)
+			}
+		})
+	}
+}
+
+// jpegWithGPS builds a JPEG whose only metadata is a GPS fix.
+// latDeg and lngDeg are whole degrees. A nil altitude omits that tag,
+// which is how a photo with no height is distinguished from height 0.
+func jpegWithGPS(latDeg uint32, latRef byte, lngDeg uint32, lngRef byte, altitude *[2]uint32) []byte {
+	var b []byte
+	u16 := func(v uint16) { b = binary.BigEndian.AppendUint16(b, v) }
+	u32 := func(v uint32) { b = binary.BigEndian.AppendUint32(b, v) }
+	entry := func(tag, typ uint16, count, value uint32) {
+		u16(tag)
+		u16(typ)
+		u32(count)
+		u32(value)
+	}
+	patch := func(entryAt int, value uint32) {
+		binary.BigEndian.PutUint32(b[entryAt+8:entryAt+12], value)
+	}
+
+	u16(0x4D4D)
+	u16(42)
+	u32(8)
+
+	u16(1)
+	gpsPtr := len(b)
+	entry(0x8825, 4, 1, 0)
+	u32(0)
+
+	gpsAt := uint32(len(b))
+	gpsCount := uint16(4)
+	if altitude != nil {
+		gpsCount = 5
+	}
+	u16(gpsCount)
+	entry(0x0001, 2, 2, uint32(latRef)<<24)
+	latPtr := len(b)
+	entry(0x0002, 5, 3, 0)
+	entry(0x0003, 2, 2, uint32(lngRef)<<24)
+	lngPtr := len(b)
+	entry(0x0004, 5, 3, 0)
+	altPtr := 0
+	if altitude != nil {
+		altPtr = len(b)
+		entry(0x0006, 5, 1, 0)
+	}
+	u32(0)
+
+	latAt := uint32(len(b))
+	u32(latDeg)
+	u32(1)
+	u32(0)
+	u32(1)
+	u32(0)
+	u32(1)
+	lngAt := uint32(len(b))
+	u32(lngDeg)
+	u32(1)
+	u32(0)
+	u32(1)
+	u32(0)
+	u32(1)
+	altAt := uint32(0)
+	if altitude != nil {
+		altAt = uint32(len(b))
+		u32(altitude[0])
+		u32(altitude[1])
+	}
+
+	patch(gpsPtr, gpsAt)
+	patch(latPtr, latAt)
+	patch(lngPtr, lngAt)
+	if altitude != nil {
+		patch(altPtr, altAt)
+	}
+
+	payload := append([]byte("Exif\x00\x00"), b...)
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE1}
+	jpeg = binary.BigEndian.AppendUint16(jpeg, uint16(2+len(payload)))
+	jpeg = append(jpeg, payload...)
+	jpeg = append(jpeg, 0xFF, 0xDA)
+	return jpeg
+}
+
 // TestNormalizePhotoOrientation verifies HEIF avoids double-rotation while other formats keep EXIF orientation.
 func TestNormalizePhotoOrientation(t *testing.T) {
 	if got := normalizePhotoOrientation(imagemeta.HEIF, 6); got != 1 {

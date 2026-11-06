@@ -1966,7 +1966,10 @@ func parseTimestamp(v string) string {
 	return ""
 }
 
-// asFloat64 coerces metadata values to float64 when possible.
+// asFloat64 reads a metadata number, including an EXIF rational.
+// GPS altitude arrives as a rational. Leaving that type unmatched
+// dropped the height while latitude and longitude, already converted
+// to degrees, were kept.
 func asFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
@@ -1997,6 +2000,10 @@ func asFloat64(v any) (float64, bool) {
 			return 0, false
 		}
 		return f, true
+	case imagemeta.Rat[uint32]:
+		return n.Float64(), true
+	case imagemeta.Rat[int32]:
+		return n.Float64(), true
 	default:
 		return 0, false
 	}
