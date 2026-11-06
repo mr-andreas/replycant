@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import AVFoundation
+import CoreLocation
 import UIKit
 
 // Upload shows this description directly, so a denied library or an
@@ -48,6 +49,16 @@ struct MediaMetadata {
         let latitude: Double
         let longitude: Double
         let altitude: Double?
+
+        // PhotoKit reports altitude 0 when the fix has no altitude. Core
+        // Location marks that with a negative vertical accuracy. Those
+        // photos omit the altitude so details do not show 0.0 m. A real
+        // altitude of 0, such as sea level, has a non-negative vertical
+        // accuracy and is kept.
+        static func altitudeMeters(from location: CLLocation) -> Double? {
+            guard location.verticalAccuracy >= 0 else { return nil }
+            return location.altitude
+        }
     }
 }
 
@@ -621,7 +632,7 @@ final class PhotoLibraryManager: PhotoLibraryProviding, PhotoAccessRequesting, @
             location = MediaMetadata.Location(
                 latitude: assetLocation.coordinate.latitude,
                 longitude: assetLocation.coordinate.longitude,
-                altitude: assetLocation.altitude
+                altitude: MediaMetadata.Location.altitudeMeters(from: assetLocation)
             )
         } else {
             location = nil

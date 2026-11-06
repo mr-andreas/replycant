@@ -7,6 +7,7 @@
 #### iOS app
 
 - a place with one photo says 1 item
+- photo details leave out an altitude when the photo has none
 
 ## 0.7.1 - 2026-11-05
 
