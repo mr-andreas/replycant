@@ -36,6 +36,8 @@ Keys use SSH public key format for compatibility:
 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABB...
 ```
 
+A `.pub` file that is not a P-256 SSH key is ignored, and the other keys in that commit stay authorized.
+
 ### Access Control Flow
 
 1. Device generates key pair during first launch

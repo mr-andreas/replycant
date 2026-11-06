@@ -9,6 +9,10 @@
 - a place with one photo says 1 item
 - photo details leave out an altitude when the photo has none
 
+#### Server
+
+- one unreadable key no longer locks every device out of the library
+
 #### replycant-importer
 
 - imported photos keep their GPS altitude

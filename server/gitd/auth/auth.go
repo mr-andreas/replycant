@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -208,6 +209,8 @@ func CertFingerprint(cert *x509.Certificate) (string, error) {
 }
 
 // Reads all .pub files from the pubkeys/ tree of a specific main commit.
+// A file that is not a P-256 SSH key is skipped so one bad file cannot
+// lock out every device that still has a valid key in the same commit.
 func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecdsa.PublicKey, error) {
 	repo, err := git.PlainOpen(a.repoPath)
 	if err != nil {
@@ -243,7 +246,12 @@ func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecds
 
 		pubKey, err := parseSSHPublicKey(content)
 		if err != nil {
-			return fmt.Errorf("failed to parse %s: %w", f.Name, err)
+			// Skipping the file keeps the rest of this commit
+			// authorized, so a device can still push a repair.
+			// A blob that cannot be read still fails above:
+			// skipping that would look like a revocation.
+			log.Printf("skipping unreadable pubkey %s: %v", f.Name, err)
+			return nil
 		}
 
 		username := strings.TrimSuffix(f.Name, ".pub")

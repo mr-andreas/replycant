@@ -460,6 +460,96 @@ func TestReadAuthorizedKeysReflectsMainAfterEachPush(t *testing.T) {
 	assert.Contains(t, keys, "alice")
 }
 
+// A file that is not a P-256 key must not fail the whole load. Devices that
+// already have valid keys stay authorized, including after a second bad
+// file, and deleting the bad files leaves those keys in place. Otherwise
+// one unreadable pubkey locks every device out and blocks the repair push.
+func TestAuthenticator_UnreadablePubkeyDoesNotLockOutValidKeys(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
+
+	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
+	aliceCert := createTestCertificate(t, &alice.PublicKey, alice)
+	username, err := auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+
+	commitPubkeyContents(t, testRepo, "not-a-key.pub", "not a key\n")
+
+	username, err = auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.True(t, keys["alice"].Equal(&alice.PublicKey))
+
+	commitPubkeyContents(t, testRepo, "also-not-a-key.pub", "still not a key\n")
+
+	username, err = auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+
+	keys, err = ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.Contains(t, keys, "alice")
+
+	removeKeyFromRepo(t, testRepo, "not-a-key.pub")
+	removeKeyFromRepo(t, testRepo, "also-not-a-key.pub")
+
+	username, err = auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+}
+
+// Replacing one device's pubkey with garbage revokes that device. It must
+// not fail the load. The other device stays authorized even when the
+// authenticator already cached the previous set, so a bad rewrite cannot
+// freeze membership on the old commit.
+func TestAuthenticator_ReplacingKeyWithGarbageDropsOnlyThatKey(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	bob, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
+	addKeyToRepo(t, testRepo, "bob.pub", &bob.PublicKey)
+
+	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
+	aliceCert := createTestCertificate(t, &alice.PublicKey, alice)
+	bobCert := createTestCertificate(t, &bob.PublicKey, bob)
+	username, err := auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+	username, err = auth.Authenticate(bobCert)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", username)
+
+	commitPubkeyContents(t, testRepo, "bob.pub", "not a key\n")
+
+	_, err = auth.Authenticate(bobCert)
+	assert.ErrorIs(t, err, ErrUnauthorized)
+
+	username, err = auth.Authenticate(aliceCert)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", username)
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.True(t, keys["alice"].Equal(&alice.PublicKey))
+}
+
 // An empty repository authorizes nobody by key. Reporting that as an empty set
 // rather than an error lets revocation run on a fresh deployment without
 // treating the absence of history as a failure.
@@ -798,6 +888,35 @@ func simulateBootstrapPush(t *testing.T, bareRepo string, username string, pubKe
 		BareRepo: bareRepo,
 		WorkDir:  workDir,
 	}
+}
+
+// Commits raw bytes at pubkeys/<fileName> so a test can put a file that
+// is not a P-256 key on main without going through the SSH encoder.
+func commitPubkeyContents(t *testing.T, testRepo gittest.TestRepo, fileName string, contents string) {
+	repo, err := git.PlainOpen(testRepo.WorkDir)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	keyFile := filepath.Join(testRepo.WorkDir, "pubkeys", fileName)
+	err = os.WriteFile(keyFile, []byte(contents), 0644)
+	require.NoError(t, err)
+
+	_, err = worktree.Add("pubkeys/" + fileName)
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Set "+fileName, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	err = repo.Push(&git.PushOptions{})
+	require.NoError(t, err)
 }
 
 // Commits an explicit pubkey filename so tests can cover both device
