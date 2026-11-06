@@ -12,6 +12,7 @@
 #### replycant-importer
 
 - imported photos keep their GPS altitude
+- a photo whose GPS coordinate cannot exist is stored without a location
 
 ## 0.7.1 - 2026-11-05
 

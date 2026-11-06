@@ -944,6 +944,53 @@ func TestExtractImageMetadataKeepsGPSAltitude(t *testing.T) {
 	}
 }
 
+// TestExtractImageMetadataDropsLatitudePastThePole verifies a photo with
+// an impossible GPS latitude is stored without a location. Videos already
+// drop a latitude outside the real range, and a photo past the pole would
+// otherwise stay on the map at a coordinate that cannot exist.
+func TestExtractImageMetadataDropsLatitudePastThePole(t *testing.T) {
+	cases := []struct {
+		name    string
+		latDeg  uint32
+		latRef  byte
+		lngDeg  uint32
+		lngRef  byte
+		wantLat *float64
+		wantLng *float64
+	}{
+		{name: "north of the pole", latDeg: 100, latRef: 'N', lngDeg: 18, lngRef: 'E'},
+		{name: "south of the pole", latDeg: 95, latRef: 'S', lngDeg: 18, lngRef: 'E'},
+		{name: "longitude past the dateline", latDeg: 57, latRef: 'N', lngDeg: 181, lngRef: 'E'},
+		{name: "north pole", latDeg: 90, latRef: 'N', lngDeg: 18, lngRef: 'E', wantLat: ptrFloat(90), wantLng: ptrFloat(18)},
+		{name: "ordinary fix", latDeg: 57, latRef: 'N', lngDeg: 18, lngRef: 'E', wantLat: ptrFloat(57), wantLng: ptrFloat(18)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "photo.jpg")
+			if err := os.WriteFile(path, jpegWithGPS(tc.latDeg, tc.latRef, tc.lngDeg, tc.lngRef, nil), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, got, _ := extractImageMetadata(path)
+			if tc.wantLat == nil {
+				if got != nil {
+					t.Fatalf("expected no location, got lat %v lon %v", got.Latitude, got.Longitude)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a location")
+			}
+			if got.Latitude != *tc.wantLat || got.Longitude != *tc.wantLng {
+				t.Fatalf("expected lat %v lon %v, got lat %v lon %v", *tc.wantLat, *tc.wantLng, got.Latitude, got.Longitude)
+			}
+		})
+	}
+}
+
+func ptrFloat(v float64) *float64 {
+	return &v
+}
+
 // jpegWithGPS builds a JPEG whose only metadata is a GPS fix.
 // latDeg and lngDeg are whole degrees. A nil altitude omits that tag,
 // which is how a photo with no height is distinguished from height 0.

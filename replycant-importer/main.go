@@ -1840,10 +1840,15 @@ func extractImageMetadata(path string) (takenAt string, loc *OriginalLocation, o
 		if lngRef == "W" {
 			gpsLng = -gpsLng
 		}
-		loc = &OriginalLocation{
-			Latitude:  gpsLat,
-			Longitude: gpsLng,
-			Altitude:  gpsAlt,
+		// A latitude past the pole is not a place. Videos already drop
+		// those tags, and storing them would pin the photo to a
+		// coordinate that cannot exist.
+		if gpsLat >= -90 && gpsLat <= 90 && gpsLng >= -180 && gpsLng <= 180 {
+			loc = &OriginalLocation{
+				Latitude:  gpsLat,
+				Longitude: gpsLng,
+				Altitude:  gpsAlt,
+			}
 		}
 	}
 
