@@ -31,6 +31,9 @@ runs the stack with excellent performance.
 
 ## Getting started
 
+The [getting started guide](https://mr-andreas.github.io/replycant/docs/getting-started/start-a-server)
+covers these steps in more detail.
+
 **1. Start the server**
 
 Download [`docker-compose.yaml`](https://github.com/mr-andreas/replycant/releases/latest/download/docker-compose.yaml)
