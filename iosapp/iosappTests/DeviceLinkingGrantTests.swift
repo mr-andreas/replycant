@@ -6,8 +6,9 @@ import Testing
 //
 // The existing device used to do commit+push on the view's MainActor Task,
 // which froze the UI for the whole network round trip. These cases exist so
-// that hop cannot silently move back onto the main thread, and so a failed
-// key-add cannot still fire tailnet authorization.
+// that hop cannot silently move back onto the main thread, so a failed
+// key-add cannot still fire tailnet authorization, and so the push cannot
+// run before this device has joined its tailnet.
 struct DeviceLinkingGrantTests {
     private enum GrantTestError: Error {
         case addFailed
@@ -18,11 +19,20 @@ struct DeviceLinkingGrantTests {
     private final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
         private var events: [String] = []
+        private var progress: [String] = []
         private var addDeviceKeyOnMainThread: Bool?
 
         func record(_ event: String) {
             lock.lock()
             events.append(event)
+            lock.unlock()
+        }
+
+        // The grant reports "connecting" before it joins. The callback is
+        // sendable, so the message is stored under the same lock as events.
+        func recordProgress(_ message: String) {
+            lock.lock()
+            progress.append(message)
             lock.unlock()
         }
 
@@ -32,20 +42,32 @@ struct DeviceLinkingGrantTests {
             lock.unlock()
         }
 
-        func snapshot() -> (events: [String], addDeviceKeyOnMainThread: Bool?) {
+        func snapshot() -> (
+            events: [String],
+            progress: [String],
+            addDeviceKeyOnMainThread: Bool?
+        ) {
             lock.lock()
             defer { lock.unlock() }
-            return (events, addDeviceKeyOnMainThread)
+            return (events, progress, addDeviceKeyOnMainThread)
         }
     }
 
     // Builds operations that record isolation and step order without touching
-    // a real repository or gitd.
+    // a real repository or gitd. The trailing closure is the key-add, matching
+    // the failure case that must not reach authorize.
     private func operations(
         recorder: Recorder,
+        joinTailnet: (@Sendable () async throws -> Void)? = nil,
         addDeviceKey: (@Sendable () async throws -> Void)? = nil
     ) -> DeviceLinking.Operations {
         DeviceLinking.Operations(
+            joinTailnet: {
+                recorder.record("join")
+                if let joinTailnet {
+                    try await joinTailnet()
+                }
+            },
             addDeviceKey: { _, _, _, _, _ in
                 recorder.recordAddDeviceKeyIsolation()
                 recorder.record("add")
@@ -75,7 +97,7 @@ struct DeviceLinkingGrantTests {
 
         let snapshot = recorder.snapshot()
         #expect(snapshot.addDeviceKeyOnMainThread == false)
-        #expect(snapshot.events == ["add", "authorize"])
+        #expect(snapshot.events == ["join", "add", "authorize"])
     }
 
     // Tailnet onboarding is waiting on a sealed record. Skipping authorize
@@ -92,7 +114,54 @@ struct DeviceLinkingGrantTests {
             operations: operations(recorder: recorder)
         )
 
-        #expect(recorder.snapshot().events == ["add", "authorize"])
+        #expect(recorder.snapshot().events == ["join", "add", "authorize"])
+    }
+
+    // The push and the /pair call both dial gitd through the tailnet. Joining
+    // first is what keeps a scan made before the node is up from committing
+    // keys it cannot push.
+    @Test
+    func joinRunsBeforeAddingKeys() async throws {
+        let recorder = Recorder()
+        try await DeviceLinking.grantAccess(
+            pubkey: "ssh-ed25519 AAAA",
+            agePubkey: "age1example",
+            name: "iphone",
+            uuid: "device-uuid",
+            pairingSecret: "pairing-secret",
+            operations: operations(recorder: recorder)
+        ) { message in
+            recorder.recordProgress(message)
+        }
+
+        let snapshot = recorder.snapshot()
+        #expect(snapshot.events == ["join", "add", "authorize"])
+        #expect(snapshot.progress.first == "Connecting to your library's network...")
+    }
+
+    // A join that is still coming up must not commit. That commit would be
+    // stranded locally, and a retry would add another one, while the new
+    // device keeps polling for a record that was never published.
+    @Test
+    func joinFailureSkipsAddingKeysAndAuthorize() async {
+        let recorder = Recorder()
+        await #expect(throws: TailnetBootstrap.BootstrapError.stillConnecting) {
+            try await DeviceLinking.grantAccess(
+                pubkey: "ssh-ed25519 AAAA",
+                agePubkey: "age1example",
+                name: "iphone",
+                uuid: "device-uuid",
+                pairingSecret: "pairing-secret",
+                operations: operations(
+                    recorder: recorder,
+                    joinTailnet: {
+                        throw TailnetBootstrap.BootstrapError.stillConnecting
+                    }
+                )
+            )
+        }
+
+        #expect(recorder.snapshot().events == ["join"])
     }
 
     // The new device is still unknown to gitd until the key is pushed.
@@ -107,12 +176,15 @@ struct DeviceLinkingGrantTests {
                 name: "iphone",
                 uuid: "device-uuid",
                 pairingSecret: "pairing-secret",
-                operations: operations(recorder: recorder) {
-                    throw GrantTestError.addFailed
-                }
+                operations: operations(
+                    recorder: recorder,
+                    addDeviceKey: {
+                        throw GrantTestError.addFailed
+                    }
+                )
             )
         }
 
-        #expect(recorder.snapshot().events == ["add"])
+        #expect(recorder.snapshot().events == ["join", "add"])
     }
 }

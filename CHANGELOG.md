@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- linking a new device no longer fails when started before the app has connected to your library's network
 - dragging toward the next photo no longer plays a video that is still off screen
 - Share and Save to Photos respond when tapped
 - a thumbnail that cannot be read is loaded again instead of staying blank

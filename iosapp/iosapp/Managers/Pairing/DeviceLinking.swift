@@ -24,7 +24,14 @@ enum DeviceLinking {
 
     /// Injected grant steps so tests can prove isolation and authorize
     /// branching without a real repository or gitd.
+    ///
+    /// `joinTailnet` is first on purpose. The push and the `/pair` call both
+    /// dial gitd through the node, and launch does not wait for that node.
+    /// Joining before the commit means a scan made too early fails without
+    /// leaving a key commit that was never pushed.
     struct Operations: Sendable {
+        var joinTailnet: @Sendable () async throws -> Void
+
         var addDeviceKey: @Sendable (
             _ pubkey: String,
             _ agePubkey: String,
@@ -45,6 +52,8 @@ enum DeviceLinking {
     /// Add-keys is the freeze: it is synchronous libgit2, including the
     /// tailnet session hop. It always runs in a detached task so a
     /// MainActor caller cannot block the UI for the network round trip.
+    /// The tailnet join runs first, on the caller's task, because it is
+    /// already async and must finish before anything is committed.
     static func grantAccess(
         pubkey: String,
         agePubkey: String,
@@ -54,6 +63,9 @@ enum DeviceLinking {
         operations: Operations = .live,
         onProgress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws {
+        onProgress("Connecting to your library's network...")
+        try await operations.joinTailnet()
+
         try await Task.detached(priority: .userInitiated) {
             try await operations.addDeviceKey(
                 pubkey,
@@ -171,9 +183,17 @@ enum DeviceLinking {
 }
 
 extension DeviceLinking.Operations {
-    /// Production grant: real git commit/push, then gitd `/pair`.
+    /// Production grant: join the tailnet, then commit and push the keys,
+    /// then ask gitd to seal the pairing record.
+    ///
+    /// The join shares one already started at launch. When it is not up
+    /// within the launch timeout the grant stops here, before the key
+    /// commit, and the linking screen can be retried.
     static var live: DeviceLinking.Operations {
         DeviceLinking.Operations(
+            joinTailnet: {
+                try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+            },
             addDeviceKey: { pubkey, agePubkey, name, uuid, onProgress in
                 try await DeviceLinking.addDeviceKeyToRepository(
                     pubkey: pubkey,
