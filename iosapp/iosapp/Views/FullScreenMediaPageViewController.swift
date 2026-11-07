@@ -41,6 +41,11 @@ final class FullScreenMediaPageViewController: UIViewController {
     // Set while a share sheet or alert is covering the viewer, so that
     // cover is not treated as the user leaving the photo.
     private var isCoveringViewer = false
+    // One tap delivers both touch-up and the primary action. The flag
+    // collapses those into a single export so the second event cannot
+    // cancel the download the first event just started.
+    private var isDeliveringExportTap = false
+    private var exportTouchGates: [ExportTouchGate] = []
 
     // Dismiss gesture state
     private var dismissPanRecognizer: UIPanGestureRecognizer!
@@ -61,6 +66,16 @@ final class FullScreenMediaPageViewController: UIViewController {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    // The root view prefers Share and Save over the pager, which can
+    // be ordered above those buttons after a swipe.
+    override func loadView() {
+        let container = FullScreenContainerView()
+        container.exportHitTest = { [weak self] point, event in
+            self?.exportControl(at: point, with: event)
+        }
+        view = container
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -105,9 +120,28 @@ final class FullScreenMediaPageViewController: UIViewController {
 
     // Keeps the download ring circular after rotation. The path is in
     // the button's bounds, which are zero until the first layout.
+    // Share and Save stay above the pager, which can be reordered
+    // above them when a page is built.
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if exportBar != nil {
+            view.bringSubviewToFront(exportBar)
+            installExportTouchGate()
+        }
         updateProgressRingPath()
+    }
+
+    // A point inside Share or Save, even when the pager is the later
+    // subview. Nil lets the pager handle the rest of the screen.
+    func exportControl(at point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard let exportBar, !exportBar.isHidden, exportBar.alpha > 0.01 else {
+            return nil
+        }
+        let local = exportBar.convert(point, from: view)
+        guard let hit = exportBar.hitTest(local, with: event), hit is UIControl else {
+            return nil
+        }
+        return hit
     }
 
     // Starts the video that is actually on screen. Appearance of a
@@ -115,6 +149,7 @@ final class FullScreenMediaPageViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         beginVisibleVideoPlayback()
+        installExportTouchGate()
     }
 
     // Stops every video this pager has vended, including ones created during
@@ -278,13 +313,15 @@ final class FullScreenMediaPageViewController: UIViewController {
             imageName: "square.and.arrow.up",
             identifier: "shareMediaButton",
             label: "Share",
-            action: #selector(shareTapped)
+            action: #selector(shareTapped),
+            onTap: { [weak self] in self?.shareTapped() }
         )
         saveButton = makeExportButton(
             imageName: "square.and.arrow.down",
             identifier: "saveMediaButton",
             label: "Save to Photos",
-            action: #selector(saveTapped)
+            action: #selector(saveTapped),
+            onTap: { [weak self] in self?.saveTapped() }
         )
         shareImage = shareButton.image(for: .normal)
         saveImage = saveButton.image(for: .normal)
@@ -306,9 +343,10 @@ final class FullScreenMediaPageViewController: UIViewController {
         imageName: String,
         identifier: String,
         label: String,
-        action: Selector
+        action: Selector,
+        onTap: @escaping () -> Void
     ) -> UIButton {
-        let button = UIButton(type: .custom)
+        let button = ExportButton(frame: .zero)
         let image = UIImage(
             systemName: imageName,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
@@ -321,7 +359,12 @@ final class FullScreenMediaPageViewController: UIViewController {
         button.accessibilityIdentifier = identifier
         button.accessibilityLabel = label
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.addTarget(self, action: action, for: .touchUpInside)
+        button.onTap = onTap
+        button.addTarget(
+            self,
+            action: action,
+            for: [.touchUpInside, .primaryActionTriggered]
+        )
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: 44),
             button.heightAnchor.constraint(equalToConstant: 44),
@@ -345,6 +388,11 @@ final class FullScreenMediaPageViewController: UIViewController {
     // A photo export is short, so a second tap does nothing until it
     // finishes.
     private func handleExportTap(_ destination: ExportDestination) {
+        if isDeliveringExportTap { return }
+        isDeliveringExportTap = true
+        DispatchQueue.main.async { [weak self] in
+            self?.isDeliveringExportTap = false
+        }
         let button = destination == .share ? shareButton : saveButton
         if exportCanCancel, exportTask != nil, button === activeExportButton {
             cancelExport()
@@ -710,6 +758,28 @@ extension FullScreenMediaPageViewController: UIPageViewControllerDelegate {
     private func beginVisibleVideoPlayback() {
         (currentChild as? VideoPreviewViewController)?.beginSettledPlayback()
     }
+
+    // Share and Save sit on top of the pager, but a gesture on a parent
+    // view was cancelling the touch before the button action ran. Those
+    // gestures ignore touches that land on the buttons. Paging gestures
+    // stay on the page scroll view and are left alone.
+    private func installExportTouchGate() {
+        guard exportBar != nil else { return }
+        var ancestor: UIView? = view
+        while let current = ancestor, !(current is UIWindow) {
+            for recognizer in current.gestureRecognizers ?? [] {
+                if recognizer.delegate is ExportTouchGate { continue }
+                let gate = ExportTouchGate(
+                    original: recognizer.delegate,
+                    shareButton: shareButton,
+                    saveButton: saveButton
+                )
+                exportTouchGates.append(gate)
+                recognizer.delegate = gate
+            }
+            ancestor = current.superview
+        }
+    }
 }
 
 // MARK: - UIGestureRecognizerDelegate
@@ -750,3 +820,120 @@ extension FullScreenMediaPageViewController {
     var testingPageViewController: UIPageViewController { pageController }
 }
 #endif
+
+// The fullscreen root view. Share and Save have to win hit testing
+// when the pager is later in the subview order.
+private final class FullScreenContainerView: UIView {
+    var exportHitTest: ((CGPoint, UIEvent?) -> UIView?)?
+
+    // Share and Save sit in a corner of this view. They have to receive
+    // the press even when the pager was ordered above them.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let hit = exportHitTest?(point, event) {
+            return hit
+        }
+        return super.hitTest(point, with: event)
+    }
+}
+
+// A tap on Share or Save has to reach the button. Parent gestures were
+// taking that touch and cancelling it before the action ran.
+enum ExportTouchPolicy {
+    // False when the touch is on Share or Save, so the parent gesture
+    // lets the button run its action.
+    static func gestureShouldReceiveTouch(on view: UIView?, exportButtons: [UIView]) -> Bool {
+        guard let view else { return true }
+        let onButton = exportButtons.contains { button in
+            view === button || view.isDescendant(of: button)
+        }
+        return !onButton
+    }
+}
+
+// VoiceOver and other taps activate a button without a touch-up.
+// Share and Save used to listen only for that touch-up, so the tap
+// did nothing. The whole bounds stay the hit target so a symbol
+// image cannot swallow the press.
+private final class ExportButton: UIButton {
+    var onTap: (() -> Void)?
+
+    // Returns the button itself so the symbol image cannot become the
+    // view that receives the press.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01, self.point(inside: point, with: event) else {
+            return nil
+        }
+        return self
+    }
+
+    // Accessibility taps never send the touch-up action. This is the
+    // path those taps take.
+    override func accessibilityActivate() -> Bool {
+        guard isEnabled, let onTap else { return super.accessibilityActivate() }
+        onTap()
+        return true
+    }
+}
+
+// Forwards a parent gesture's other answers, and refuses touches that
+// land on Share or Save so the button can finish the tap.
+private final class ExportTouchGate: NSObject, UIGestureRecognizerDelegate {
+    private weak var original: UIGestureRecognizerDelegate?
+    private weak var shareButton: UIButton?
+    private weak var saveButton: UIButton?
+
+    // Keeps the gesture's previous delegate so only the button-touch
+    // decision changes.
+    init(original: UIGestureRecognizerDelegate?, shareButton: UIButton?, saveButton: UIButton?) {
+        self.original = original
+        self.shareButton = shareButton
+        self.saveButton = saveButton
+    }
+
+    // Keeps a touch on Share or Save out of the parent gesture.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        let buttons = [shareButton, saveButton].compactMap { $0 }
+        if !ExportTouchPolicy.gestureShouldReceiveTouch(on: touch.view, exportButtons: buttons) {
+            return false
+        }
+        return original?.gestureRecognizer?(gestureRecognizer, shouldReceive: touch) ?? true
+    }
+
+    // Preserves the gesture's own begin rule for every other touch.
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        original?.gestureRecognizerShouldBegin?(gestureRecognizer) ?? true
+    }
+
+    // Preserves whether this gesture may run alongside another one.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        original?.gestureRecognizer?(
+            gestureRecognizer,
+            shouldRecognizeSimultaneouslyWith: otherGestureRecognizer
+        ) ?? false
+    }
+
+    // Preserves the failure order the original delegate asked for.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        original?.gestureRecognizer?(
+            gestureRecognizer,
+            shouldRequireFailureOf: otherGestureRecognizer
+        ) ?? false
+    }
+
+    // Preserves the reverse failure order the original delegate asked for.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        original?.gestureRecognizer?(
+            gestureRecognizer,
+            shouldBeRequiredToFailBy: otherGestureRecognizer
+        ) ?? false
+    }
+}

@@ -7,6 +7,7 @@
 #### iOS app
 
 - dragging toward the next photo no longer plays a video that is still off screen
+- Share and Save to Photos respond when tapped
 - a thumbnail that cannot be read is loaded again instead of staying blank
 - a place with one photo says 1 item
 - photo details leave out an altitude when the photo has none
