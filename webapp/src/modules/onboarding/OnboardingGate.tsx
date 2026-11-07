@@ -196,7 +196,7 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
           </>
         ) : null}
         <button type="button" className="setup-secondary-action" onClick={flow.handleStartOver}>
-          Start over
+          Cancel
         </button>
       </div>
     </div>

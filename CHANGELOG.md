@@ -12,6 +12,10 @@
 - a place with one photo says 1 item
 - photo details leave out an altitude when the photo has none
 
+#### Desktop app
+
+- the library setup screen calls the abort action cancel
+
 #### Server
 
 - one unreadable key no longer locks every device out of the library

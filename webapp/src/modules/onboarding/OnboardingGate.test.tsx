@@ -124,7 +124,7 @@ describe("OnboardingGate", () => {
     expect(handleUnlockIdentity).toHaveBeenCalledTimes(1);
   });
 
-  it("shows start over action on every setup step", () => {
+  it("shows start over on setup steps and cancel while the library is setting up", () => {
     const createFlow = buildFlow({ setupMode: "create" });
     const unlockFlow = buildFlow({ setupMode: "unlock" });
     const pairingFlow = buildFlow({ setupMode: "tailnetPairing" });
@@ -140,7 +140,7 @@ describe("OnboardingGate", () => {
     expect(screen.getByRole("button", { name: "Start over" })).toBeVisible();
 
     rerender(<OnboardingGate flow={rehydratingFlow} snapshot={snapshot}><div>app</div></OnboardingGate>);
-    expect(screen.getByRole("button", { name: "Start over" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible();
   });
 
   it("calls handleStartOver when start over action is clicked", async () => {
