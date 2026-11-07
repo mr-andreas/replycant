@@ -175,4 +175,142 @@ struct FullscreenVideoDismissPlaybackTests {
         #expect(player.rate == 0)
         #expect(player.currentItem == nil)
     }
+
+    // A sideways drag builds the next page before it is visible. That
+    // page must not open a stream until the swipe settles on it.
+    @Test func partialSwipeDoesNotStartNeighborVideo() throws {
+        let image = makeItem(id: "image-1", mediaType: "photo")
+        let video = makeItem(id: "video-1", mediaType: "video")
+        let manager = makeIsolatedManager()
+        manager.seedLoadedRegionForTesting(offset: 0, items: [image, video], totalCount: 2)
+
+        let pageController = FullScreenMediaPageViewController(
+            initialItemId: image.id,
+            timelineManager: manager,
+            onDismiss: {},
+            networkCost: StubNetworkCost(isMetered: false)
+        )
+        pageController.loadViewIfNeeded()
+        let current = try #require(pageController.testingPageViewController.viewControllers?.first)
+        let next = pageController.pageViewController(
+            pageController.testingPageViewController,
+            viewControllerAfter: current
+        )
+        let videoController = try #require(next as? VideoPreviewViewController)
+        videoController.loadViewIfNeeded()
+        videoController.viewWillAppear(false)
+        videoController.viewDidAppear(false)
+
+        #expect(!videoController.testingDidStartVideoLoad)
+
+        pageController.pageViewController(
+            pageController.testingPageViewController,
+            didFinishAnimating: true,
+            previousViewControllers: [current],
+            transitionCompleted: false
+        )
+
+        #expect(!videoController.testingDidStartVideoLoad)
+    }
+
+    // Finishing the swipe is what starts the video that landed on screen.
+    @Test func completedSwipeStartsTheVideoThatLanded() throws {
+        let image = makeItem(id: "image-1", mediaType: "photo")
+        let video = makeItem(id: "video-1", mediaType: "video")
+        let manager = makeIsolatedManager()
+        manager.seedLoadedRegionForTesting(offset: 0, items: [image, video], totalCount: 2)
+
+        let pageController = FullScreenMediaPageViewController(
+            initialItemId: image.id,
+            timelineManager: manager,
+            onDismiss: {},
+            networkCost: StubNetworkCost(isMetered: false)
+        )
+        pageController.loadViewIfNeeded()
+        let current = try #require(pageController.testingPageViewController.viewControllers?.first)
+        let next = pageController.pageViewController(
+            pageController.testingPageViewController,
+            viewControllerAfter: current
+        )
+        let videoController = try #require(next as? VideoPreviewViewController)
+        videoController.loadViewIfNeeded()
+        #expect(!videoController.testingDidStartVideoLoad)
+
+        pageController.testingPageViewController.setViewControllers(
+            [videoController],
+            direction: .forward,
+            animated: false
+        )
+        pageController.pageViewController(
+            pageController.testingPageViewController,
+            didFinishAnimating: true,
+            previousViewControllers: [current],
+            transitionCompleted: true
+        )
+
+        #expect(videoController.testingDidStartVideoLoad)
+    }
+
+    // The video that the pager actually lands on is the one that plays.
+    @Test func settledPageStartsVideoPlayback() throws {
+        let video = makeItem(id: "video-1", mediaType: "video")
+        let manager = makeIsolatedManager()
+        manager.seedLoadedRegionForTesting(offset: 0, items: [video], totalCount: 1)
+
+        let pageController = FullScreenMediaPageViewController(
+            initialItemId: video.id,
+            timelineManager: manager,
+            onDismiss: {},
+            networkCost: StubNetworkCost(isMetered: false)
+        )
+        pageController.loadViewIfNeeded()
+        let videoController = try #require(
+            pageController.testingPageViewController.viewControllers?.first
+                as? VideoPreviewViewController
+        )
+        #expect(!videoController.testingDidStartVideoLoad)
+
+        pageController.viewDidAppear(false)
+
+        #expect(videoController.testingDidStartVideoLoad)
+    }
+
+    // Letting go of a short drag leaves the current video playing.
+    // The drag's own disappear pauses it, and the cancelled transition
+    // has to continue that same video without starting the neighbor.
+    @Test func cancelledSwipeResumesTheVisibleVideo() throws {
+        let video = makeItem(id: "video-1", mediaType: "video")
+        let image = makeItem(id: "image-1", mediaType: "photo")
+        let manager = makeIsolatedManager()
+        manager.seedLoadedRegionForTesting(offset: 0, items: [video, image], totalCount: 2)
+
+        let pageController = FullScreenMediaPageViewController(
+            initialItemId: video.id,
+            timelineManager: manager,
+            onDismiss: {},
+            networkCost: StubNetworkCost(isMetered: false)
+        )
+        pageController.loadViewIfNeeded()
+        pageController.viewDidAppear(false)
+        let videoController = try #require(
+            pageController.testingPageViewController.viewControllers?.first
+                as? VideoPreviewViewController
+        )
+        let player = makePlayer()
+        videoController.testingInjectPlayerForLifecycle(player)
+        player.play()
+        #expect(player.rate > 0)
+
+        videoController.viewWillDisappear(false)
+        #expect(player.rate == 0)
+
+        pageController.pageViewController(
+            pageController.testingPageViewController,
+            didFinishAnimating: true,
+            previousViewControllers: [],
+            transitionCompleted: false
+        )
+
+        #expect(player.rate > 0)
+    }
 }

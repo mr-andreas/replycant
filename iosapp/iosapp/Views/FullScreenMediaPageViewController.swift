@@ -10,6 +10,7 @@ final class FullScreenMediaPageViewController: UIViewController {
     private let timelineManager: TimelineManager
     private let initialItemId: String
     private let onDismiss: () -> Void
+    private let networkCost: NetworkCostProviding
 
     private var pageController: UIPageViewController!
     private var currentItemId: String
@@ -44,11 +45,17 @@ final class FullScreenMediaPageViewController: UIViewController {
     // Dismiss gesture state
     private var dismissPanRecognizer: UIPanGestureRecognizer!
 
-    init(initialItemId: String, timelineManager: TimelineManager, onDismiss: @escaping () -> Void) {
+    init(
+        initialItemId: String,
+        timelineManager: TimelineManager,
+        onDismiss: @escaping () -> Void,
+        networkCost: NetworkCostProviding = NetworkCostMonitor.shared
+    ) {
         self.initialItemId = initialItemId
         self.currentItemId = initialItemId
         self.timelineManager = timelineManager
         self.onDismiss = onDismiss
+        self.networkCost = networkCost
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -103,6 +110,13 @@ final class FullScreenMediaPageViewController: UIViewController {
         updateProgressRingPath()
     }
 
+    // Starts the video that is actually on screen. Appearance of a
+    // neighbor during a drag is not this moment.
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        beginVisibleVideoPlayback()
+    }
+
     // Stops every video this pager has vended, including ones created during
     // a page swipe that never became the visible child, so dismiss cannot
     // leave audio running in the background.
@@ -127,7 +141,12 @@ final class FullScreenMediaPageViewController: UIViewController {
         }
         let isVideo = item.original.spec.mediaType == "video"
         if isVideo {
-            let controller = VideoPreviewViewController(item: item, timelineManager: timelineManager, onDismiss: onDismiss)
+            let controller = VideoPreviewViewController(
+                item: item,
+                timelineManager: timelineManager,
+                onDismiss: onDismiss,
+                networkCost: networkCost
+            )
             vendedVideoControllers.add(controller)
             wireDetailsStateCallback(for: controller)
             return controller
@@ -649,8 +668,11 @@ extension FullScreenMediaPageViewController: UIPageViewControllerDataSource {
 extension FullScreenMediaPageViewController: UIPageViewControllerDelegate {
 
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
-        guard completed,
-              let visibleVC = pageViewController.viewControllers?.first,
+        if !completed {
+            settlePlaybackAfterCancelledSwipe()
+            return
+        }
+        guard let visibleVC = pageViewController.viewControllers?.first,
               let newId = itemId(for: visibleVC) else {
             return
         }
@@ -667,6 +689,26 @@ extension FullScreenMediaPageViewController: UIPageViewControllerDelegate {
                 videoVC.pausePlayback()
             }
         }
+        beginVisibleVideoPlayback()
+    }
+
+    // The finger let go before the next page settled. Stop a neighbor
+    // the drag created, and continue the video that is still on screen.
+    private func settlePlaybackAfterCancelledSwipe() {
+        let visible = pageController.viewControllers?.first as? VideoPreviewViewController
+        for videoVC in vendedVideoControllers.allObjects {
+            if videoVC === visible {
+                videoVC.resumeSettledPlayback()
+            } else {
+                videoVC.pausePlayback()
+            }
+        }
+    }
+
+    // Opens the stream for the page the pager settled on. A neighbor
+    // created by a drag is not this child until the swipe finishes.
+    private func beginVisibleVideoPlayback() {
+        (currentChild as? VideoPreviewViewController)?.beginSettledPlayback()
     }
 }
 

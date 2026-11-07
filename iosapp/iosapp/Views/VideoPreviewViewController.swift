@@ -30,7 +30,10 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     private var posterLoadTask: Task<Void, Never>?
     private var playerReadyObservation: NSKeyValueObservation?
     private var playerRateObservation: NSKeyValueObservation?
-    private var hasAppeared = false
+    // False while this page is only a neighbor pulled in by a drag.
+    // A stream that becomes ready then must not call play().
+    private var playbackAllowed = false
+    private var didRequestPlayback = false
 #if DEBUG
     private(set) var testingPausePlaybackCallCount = 0
     private(set) var testingRestartPlaybackInvocationCount = 0
@@ -55,8 +58,9 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    // Chooses autoplay or a mobile-data hold before any bytes are requested,
-    // so opening a video on cellular does not start the full-quality stream.
+    // Shows the poster without opening the stream. A sideways drag builds
+    // this page before it is visible, and starting playback here would
+    // play a video that is still off screen.
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -68,6 +72,30 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
 
         setupPosterView()
         loadPosterImage()
+    }
+
+    // Stops playback when this page leaves, including a drag that never
+    // settles, so a neighbor cannot keep playing after the finger lifts.
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        pausePlayback()
+    }
+
+    // The page is the one on screen. Cellular still waits for confirmation
+    // before any bytes move. A later call, after the user swipes back,
+    // replays from the start instead of the paused position.
+    func beginSettledPlayback() {
+        playbackAllowed = true
+        if let player = fullResLoader?.player {
+            if player.currentItem != nil {
+                restartPlayback()
+            } else {
+                player.play()
+            }
+            return
+        }
+        guard !didRequestPlayback else { return }
+        didRequestPlayback = true
         if networkCost.isMetered {
             resolveLocalOrHoldForConfirmation()
         } else {
@@ -75,29 +103,22 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         }
     }
 
-    // Restarts video when users return to this cached page so swipe-back always
-    // replays from the beginning instead of showing a paused prior position.
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        guard hasAppeared else {
-            hasAppeared = true
-            return
-        }
-        restartPlayback()
+    // A cancelled swipe paused the page that stayed up. Continue it
+    // instead of seeking back to the start.
+    func resumeSettledPlayback() {
+        guard didRequestPlayback else { return }
+        playbackAllowed = true
+        fullResLoader?.player?.play()
     }
 
-    // Stops playback when the fullscreen controller leaves the screen so
-    // dismissal gestures never leave audio running in the background.
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        pausePlayback()
-    }
-
-    // Centralizes pause behavior so all dismissal paths share one cleanup step.
+    // Centralizes pause behavior so dismissal and a half-finished swipe
+    // share one cleanup step. A stream that becomes ready afterwards
+    // stays paused, because this page is no longer the one on screen.
     func pausePlayback() {
 #if DEBUG
         testingPausePlaybackCallCount += 1
 #endif
+        playbackAllowed = false
         fullResLoader?.player?.pause()
     }
 
@@ -275,7 +296,9 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         }
 
         observePlayerReadiness(player)
-        player.play()
+        if playbackAllowed {
+            player.play()
+        }
     }
 
     // Shows the same thumbnail users saw in the timeline so fullscreen video
@@ -478,9 +501,6 @@ extension VideoPreviewViewController {
 
     // Reports whether replay logic requested AVPlayer to resume playback.
     var testingRestartRequestedPlay: Bool { testingDidRequestPlayAfterRestart }
-
-    // Reports appearance lifecycle state so tests can verify first-entry guard.
-    var testingHasAppeared: Bool { hasAppeared }
 
     // Injects a known player so lifecycle tests can verify pause semantics.
     @MainActor

@@ -49,10 +49,14 @@ struct VideoCellularPlaybackGateTests {
     }
 
     // A remote video on mobile data must not open a stream until the user
-    // accepts the warning. The play button is the only affordance.
+    // accepts the warning. The play button is the only affordance, and
+    // it waits until this page is the one on screen.
     @Test func meteredRemoteVideoWaitsForConfirmation() async {
         let controller = makeController(metered: true)
         controller.loadViewIfNeeded()
+        #expect(!controller.testingDidStartVideoLoad)
+        #expect(!controller.testingHasCellularPlayButton)
+        controller.beginSettledPlayback()
 
         for _ in 0..<50 where !controller.testingHasCellularPlayButton {
             await Task.yield()
@@ -66,6 +70,7 @@ struct VideoCellularPlaybackGateTests {
     @Test func confirmingMeteredPlaybackStartsTheLoad() async {
         let controller = makeController(metered: true)
         controller.loadViewIfNeeded()
+        controller.beginSettledPlayback()
         for _ in 0..<50 where !controller.testingHasCellularPlayButton {
             await Task.yield()
         }
@@ -76,10 +81,18 @@ struct VideoCellularPlaybackGateTests {
         #expect(!controller.testingHasCellularPlayButton)
     }
 
-    // Wi-Fi keeps today's autoplay and never shows the mobile-data button.
-    @Test func unmeteredVideoStartsImmediately() {
+    // Wi-Fi starts playback once the page is the one on screen. Building
+    // the page during a drag must not open the stream.
+    @Test func unmeteredVideoStartsWhenThePageSettles() {
         let controller = makeController(metered: false)
         controller.loadViewIfNeeded()
+        controller.viewWillAppear(false)
+        controller.viewDidAppear(false)
+
+        #expect(!controller.testingDidStartVideoLoad)
+        #expect(!controller.testingHasCellularPlayButton)
+
+        controller.beginSettledPlayback()
 
         #expect(controller.testingDidStartVideoLoad)
         #expect(!controller.testingHasCellularPlayButton)

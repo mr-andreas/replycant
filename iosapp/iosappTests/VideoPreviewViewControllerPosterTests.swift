@@ -145,23 +145,45 @@ struct VideoPreviewViewControllerPosterTests {
         #expect(controller.testingRestartRequestedPlay)
     }
 
-    // Ensures second appearance (after paging away and back) triggers restart
-    // while first appearance keeps initial launch path unchanged.
-    @Test func viewWillAppearRestartsPlaybackOnlyAfterFirstAppearance() {
+    // A drag calls appearance before the page has settled. That must not
+    // open the stream or replay a cached video that is still off screen.
+    @Test func swipeAppearanceDoesNotStartOrRestartPlayback() {
+        let controller = VideoPreviewViewController(
+            item: makeVideoItem(),
+            timelineManager: makeIsolatedManager(),
+            onDismiss: {},
+            networkCost: StubNetworkCost(isMetered: false)
+        )
+        controller.loadViewIfNeeded()
+        controller.viewWillAppear(false)
+        controller.viewDidAppear(false)
+        #expect(!controller.testingDidStartVideoLoad)
+        #expect(controller.testingRestartPlaybackCount == 0)
+
+        let player = AVPlayer(playerItem: AVPlayerItem(url: URL(fileURLWithPath: "/dev/null")))
+        controller.testingInjectPlayerForLifecycle(player)
+        controller.beginSettledPlayback()
+
+        #expect(controller.testingRestartRequestedSeekToStart)
+        #expect(controller.testingRestartRequestedPlay)
+    }
+
+    // The player view can be embedded after the page has already left.
+    // Play then would start audio for a video that is not on screen.
+    @Test func embedDoesNotPlayUntilThePageHasSettled() {
         let controller = VideoPreviewViewController(
             item: makeVideoItem(),
             timelineManager: makeIsolatedManager(),
             onDismiss: {}
         )
-        #expect(controller.testingRestartPlaybackCount == 0)
-        #expect(!controller.testingHasAppeared)
+        controller.loadViewIfNeeded()
+        let player = AVPlayer()
+        controller.testingEmbedVideoPlayer(player)
+        #expect(player.rate == 0)
 
-        controller.viewWillAppear(false)
-        #expect(controller.testingHasAppeared)
-        #expect(controller.testingRestartPlaybackCount == 0)
-
-        controller.viewWillAppear(false)
-        #expect(controller.testingRestartPlaybackCount == 1)
+        controller.beginSettledPlayback()
+        controller.testingEmbedVideoPlayer(player)
+        #expect(player.rate > 0)
     }
 
     // Ensures replay buffering re-shows poster and spinner so swipe-back feels
