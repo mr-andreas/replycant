@@ -273,6 +273,41 @@ struct DiskImageCacheTests {
         #expect(data == Data(repeating: 0x02, count: 200))
     }
 
+    // A damaged thumbnail is bytes under the photo's cache name.
+    // Until that file is removed, every read returns it again.
+    @Test func removeDropsAPlantedFileBeforeTheIndexExists() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let payload = Data(repeating: 0xAB, count: 32)
+        try plant(payload, key: "t/damaged", in: dir)
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+
+        #expect(await cache.data(forKey: "t/damaged") == payload)
+        await cache.remove(forKey: "t/damaged")
+
+        #expect(await cache.data(forKey: "t/damaged") == nil)
+        let url = dir.appendingPathComponent(DiskImageCache.filename(for: "t/damaged"))
+        #expect(FileManager.default.fileExists(atPath: url.path) == false)
+    }
+
+    @Test func removeDropsAnIndexedEntry() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let cache = DiskImageCache(directory: dir, maxBytes: 1_000_000)
+        let payload = Data(repeating: 0xCD, count: 40)
+        await cache.store(payload, forKey: "t/indexed")
+        await cache.rebuild()
+        #expect(await cache.itemCount == 1)
+
+        await cache.remove(forKey: "t/indexed")
+
+        #expect(await cache.itemCount == 0)
+        #expect(await cache.currentSizeBytes == 0)
+        #expect(await cache.data(forKey: "t/indexed") == nil)
+    }
+
     // MARK: - Entry too large for cache
 
     @Test func entryLargerThanMaxIsNotStored() async throws {

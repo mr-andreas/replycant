@@ -6,6 +6,7 @@
 
 #### iOS app
 
+- a thumbnail that cannot be read is loaded again instead of staying blank
 - a place with one photo says 1 item
 - photo details leave out an altitude when the photo has none
 

@@ -180,6 +180,15 @@ actor ImageDiskCacheManager {
 
     // MARK: - Management
 
+    /// Drops one item from both tiers. A damaged thumbnail is stored
+    /// under the name the next read trusts, so the cell stays blank
+    /// until both copies are gone.
+    func invalidate(kind: Kind, itemId: String) async {
+        let key = Self.key(kind: kind, itemId: itemId)
+        await topCache.remove(forKey: key)
+        await mainCache.remove(forKey: key)
+    }
+
     func clearMain() async {
         await mainCache.removeAll()
     }

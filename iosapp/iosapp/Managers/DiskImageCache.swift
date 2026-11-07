@@ -155,6 +155,12 @@ actor DiskImageCache {
         evictIfNeeded()
     }
 
+    /// Drops one cached file so the next read misses. A thumbnail
+    /// that cannot be decoded stays blank until this entry is gone.
+    func remove(forKey key: String) {
+        discard(Self.filename(for: key))
+    }
+
     /// Deletes the cache directory, not only names already in the
     /// index, so a clear before the walk still removes the previous
     /// session's files. Recreates the directory for later stores.

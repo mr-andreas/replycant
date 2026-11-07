@@ -1629,6 +1629,40 @@ func pickBestThumbnailEntry(
     return sorted.first(where: { $0.width >= targetWidth }) ?? sorted.last
 }
 
+// Turns cached thumbnail bytes into an image. A file that does not
+// decode is dropped and read once more from the library, because
+// leaving those bytes in place keeps the cell on the empty placeholder.
+@MainActor
+enum ThumbnailImageDecode {
+    // Returns the image, or nil when neither the cached bytes nor one
+    // fresh read can be decoded. The cache entry is removed on failure
+    // so the next visit does not show the empty placeholder again.
+    static func image(
+        from data: Data,
+        invalidate: () async -> Void,
+        refetch: () async throws -> Data
+    ) async throws -> UIImage? {
+        if let image = await decode(data) {
+            return image
+        }
+        await invalidate()
+        let fresh = try await refetch()
+        if let image = await decode(fresh) {
+            return image
+        }
+        await invalidate()
+        return nil
+    }
+
+    // Keeps the decode off the main actor so a timeline scroll is not
+    // stuck turning bytes into a bitmap.
+    private static func decode(_ data: Data) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            UIImage(data: data)
+        }.value
+    }
+}
+
 @MainActor
 final class ImageLoader: ObservableObject {
     @Published var image: UIImage?
@@ -1728,13 +1762,40 @@ final class ImageLoader: ObservableObject {
                         return
                     }
                     
-                    // Decode image off the main thread
+                    // A cached file that is not an image used to stay in
+                    // place, so every later visit showed the empty placeholder.
                     let decodeSignpost = AppSignposts.begin("TimelineThumbnailDecode")
-                    let loadedImage = await Task.detached(priority: .userInitiated) {
-                        UIImage(data: imageData)
-                    }.value
+                    let itemID = item.id
+                    let loadedImage = try await ThumbnailImageDecode.image(
+                        from: imageData,
+                        invalidate: {
+                            logWarning(
+                                "Dropping unreadable thumbnail for \(itemID)",
+                                context: "Timeline"
+                            )
+                            await ImageDiskCacheManager.shared.invalidate(
+                                kind: .thumbnail,
+                                itemId: itemID
+                            )
+                        },
+                        refetch: {
+                            try await ImageDiskCacheManager.shared.loadImageData(
+                                kind: .thumbnail,
+                                priority: self.priority,
+                                itemId: itemID,
+                                lfsPath: thumbnailPath,
+                                repository: repository,
+                                lfsClient: lfsClient
+                            )
+                        }
+                    )
                     AppSignposts.end("TimelineThumbnailDecode", decodeSignpost)
-                    
+
+                    if Task.isCancelled {
+                        resolveIfNeeded(didRenderImage: false)
+                        return
+                    }
+
                     guard let loadedImage = loadedImage else {
                         logError("Failed to create UIImage from data for \(item.id)", context: "Timeline")
                         resolveIfNeeded(didRenderImage: false)
