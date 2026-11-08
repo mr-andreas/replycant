@@ -68,7 +68,7 @@ When a repository already has authorized devices, new devices must be explicitly
 
 ### Durable writes
 
-Device A publishes that key as one step, and the same step creates or removes a recovery key. The phone waits until it is on the library network, checks that its copy of the library matches the server, then commits and pushes. If the push does not succeed, the commit is removed. A failure does not always mean the server missed the change: the connection can drop after the server has accepted it. The next sync brings that commit back, and the phone asks you to sync before trying again.
+Device A publishes that key as one step. The same step creates or removes a recovery key, or removes another device. Removing a device also starts a new encryption epoch in that commit, so the removed device cannot read anything added afterwards. The phone waits until it is on the library network, checks that its copy of the library matches the server, then commits and pushes. If the push does not succeed, the commit is removed. A failure does not always mean the server missed the change: the connection can drop after the server has accepted it. The next sync brings that commit back, and the phone asks you to sync before trying again.
 
 ### Phase 2: Reaching the server
 
@@ -234,7 +234,7 @@ An authorized device connects on its first attempt after the pubkey push lands o
 | Authorization | First push wins | Explicit by existing device |
 | Key exchange | Via CA page QR | Pubkey QR, then tailnet pairing |
 | Audit trail | Git history of pubkeys/ | Git history of pubkeys/ |
-| Revocation | Remove key from pubkeys/ | Remove key from pubkeys/ |
+| Revocation | Remove key from pubkeys/ and start a new KEK epoch, from **Settings** > **Devices** | Remove key from pubkeys/ and start a new KEK epoch, from **Settings** > **Devices** |
 
 ## Related Documentation
 

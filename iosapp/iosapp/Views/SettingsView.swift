@@ -34,6 +34,10 @@ struct SettingsView: View {
                         Label("Link a New Device", systemImage: "plus.circle")
                     }
 
+                    NavigationLink(destination: AuthorizedDevicesView()) {
+                        Label("Devices", systemImage: "laptopcomputer.and.iphone")
+                    }
+
                     NavigationLink(destination: RecoveryKeyView()) {
                         HStack {
                             Label("Recovery Key", systemImage: "key")

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+#### iOS app
+
+- remove a linked device from Settings: it loses access immediately, and photos added afterwards are encrypted with a key it never receives
+
 ### Fixes
 
 #### iOS app

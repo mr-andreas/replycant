@@ -66,6 +66,28 @@ public final class KEKEpochManager {
         ]
     }
 
+    // Starts the next KEK epoch for the devices that remain so a removed
+    // device cannot read anything encrypted from then on. Older epoch
+    // files stay as they are: that device already holds those keys from
+    // git history, and rewriting them would not take that access away.
+    public func nextEpochFiles(recipientAgePubkeys: [String]) throws -> [(path: String, content: String)] {
+        guard let epoch = try currentEpoch() else {
+            throw IdentityError.noAgeIdentity
+        }
+        let recipients = try parseRecipients(agePubkeys: recipientAgePubkeys)
+        let kek = EncryptionUtils.randomKey(length: 32)
+        let encryptedEpoch = try AgeCrypto.encrypt(plaintext: kek, recipients: recipients)
+        guard let encryptedText = String(data: encryptedEpoch, encoding: .utf8) else {
+            throw IdentityError.certificateCreationFailed
+        }
+        let next = epoch + 1
+        kekCache[next] = kek
+        return [
+            (path: "encryption/current", content: "\(next)\n"),
+            (path: "encryption/epochs/\(next).age", content: encryptedText)
+        ]
+    }
+
     // Re-wraps all existing epochs for a new recipient set so newly linked devices can decrypt historical KEKs.
     public func rewrappedEpochFilesIncludingRecipients(_ recipientAgePubkeys: [String]) throws -> [(path: String, content: String)] {
         let recipients = try parseRecipients(agePubkeys: recipientAgePubkeys)

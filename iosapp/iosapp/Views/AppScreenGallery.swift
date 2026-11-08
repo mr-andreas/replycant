@@ -7,6 +7,7 @@ import SwiftUI
 enum GallerySection: String, CaseIterable, Identifiable {
     case onboarding
     case linking
+    case devices
     case recoveryKeys
     case createRecoveryKey
     case recovery
@@ -23,6 +24,7 @@ enum GallerySection: String, CaseIterable, Identifiable {
         switch self {
         case .onboarding: return "Onboarding"
         case .linking: return "Link a new device"
+        case .devices: return "Devices"
         case .recoveryKeys: return "Recovery keys"
         case .createRecoveryKey: return "Create recovery key"
         case .recovery: return "Recover access"
@@ -108,7 +110,7 @@ enum AppScreenGallery {
     )
 
     static let all: [GalleryScreen] =
-        onboarding + linking + recoveryKeys + createRecoveryKey
+        onboarding + linking + devices + recoveryKeys + createRecoveryKey
         + recovery + appShell + timeline + settings + components
 
     // Filters the catalog so a section preview only instantiates that
@@ -231,6 +233,20 @@ enum AppScreenGallery {
                 preview: .error,
                 errorMessage: "mTLS credentials not configured. Please complete initial setup first."
             )
+        }
+    ]
+
+    // Shows a removable device, a removal in flight, and a failed
+    // removal so the device list can be reviewed without a library.
+    private static let devices: [GalleryScreen] = [
+        stacked("Devices / listed", section: .devices) {
+            AuthorizedDevicesView(previewState: .listed)
+        },
+        stacked("Devices / revoking", section: .devices) {
+            AuthorizedDevicesView(previewState: .revoking)
+        },
+        stacked("Devices / revoke failed", section: .devices) {
+            AuthorizedDevicesView(previewState: .revokeFailed)
         }
     ]
 
@@ -539,6 +555,13 @@ struct AppScreenGalleryBoard: View {
     AppScreenGalleryBoard(
         screens: AppScreenGallery.screens(in: .linking),
         columns: 4
+    )
+}
+
+#Preview("Devices", traits: .fixedLayout(width: 1318, height: 958)) {
+    AppScreenGalleryBoard(
+        screens: AppScreenGallery.screens(in: .devices),
+        columns: 3
     )
 }
 

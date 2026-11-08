@@ -113,6 +113,17 @@ struct AppScreenGalleryTests {
         #expect(byId["Settings / recovery warning"] == .settings)
     }
 
+    // Pins Devices to the populated list and both revoke outcomes so
+    // a missing trash button or a failed removal cannot ship unseen.
+    @Test func devicesSectionCoversListAndRevokeStates() {
+        let ids = AppScreenGallery.screens(in: .devices).map(\.id)
+        #expect(ids == [
+            "Devices / listed",
+            "Devices / revoking",
+            "Devices / revoke failed",
+        ])
+    }
+
     // Pins Recovery keys to the empty status plus the parked list
     // and delete-flow tiles so a populated or revoke state cannot
     // ship without a canvas tile.
