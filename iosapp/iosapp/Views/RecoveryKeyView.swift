@@ -537,12 +537,10 @@ struct RecoveryKeyView: View {
             guard let serverConfiguration = ServerConfigurationManager.shared.loadConfiguration() else {
                 throw RecoveryKeyManager.Error.missingServerConfiguration
             }
-            let repository = try await MainActor.run { try RepositoryManager.shared.getRepository() }
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
             let created = try await manager.createRecoveryKey(
                 label: label,
                 password: password,
-                repository: repository,
                 gitDB: gitDB,
                 serverConfiguration: serverConfiguration
             )

@@ -43,7 +43,16 @@ final class GitDBManager {
         let repository = try RepositoryManager.shared.getRepository()
         let database = try ManifestLoaderManager.shared.getDatabase()
         let registry = ManifestLoaderManager.shared.getRegistry()
-        let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
+        // Durable key writes wait on this join. GitDB cannot see the
+        // tailnet, and a commit made before the node is up cannot be pushed.
+        let gitDB = GitDatabase(
+            repository: repository,
+            database: database,
+            registry: registry,
+            ensureConnected: {
+                try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
+            }
+        )
         self.gitDB = gitDB
         return gitDB
     }

@@ -326,6 +326,225 @@ struct GitDBIntegrationTests {
         #expect(try await localDB.readSyncedCommitHash() == remoteHead)
     }
 
+    // A key write is only done when the commit is also on the server.
+    // The cache records that same HEAD, so readers never observe a
+    // change that was not published.
+    @Test func durableCommitPublishesFilesAndSyncsCache() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry
+        )
+
+        try await localGitDB.durableCommit(message: "add device key") { _ in
+            GitFileChange(files: [("pubkeys/new.pub", "ssh-ed25519 AAAATEST new")])
+        }
+
+        let published = try #require(fixture.local.headOID())
+        let remote = try Repository(path: (fixture.root as NSString).appendingPathComponent("remote.git"))
+        #expect(remote.headOID() == published)
+        #expect(fixture.local.oid(forRef: "refs/remotes/origin/main") == published)
+        #expect(fixture.local.fileExists(at: "pubkeys/new.pub"))
+        #expect(try await localDB.readSyncedCommitHash() == published)
+    }
+
+    // The tailnet wait happens before any git work. A device that is
+    // still joining must not commit a key it cannot push.
+    @Test func durableCommitSkipsChangeWhenConnectionFails() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let calls = DurableCallFlag()
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry,
+            ensureConnected: { throw DurableConnectError.unavailable }
+        )
+        let headBefore = fixture.local.headOID()
+
+        await #expect(throws: DurableConnectError.unavailable) {
+            try await localGitDB.durableCommit(message: "should not commit") { _ in
+                calls.mark()
+                return GitFileChange(files: [("pubkeys/new.pub", "ssh")])
+            }
+        }
+
+        #expect(calls.wasCalled() == false)
+        #expect(fixture.local.headOID() == headBefore)
+        #expect(fixture.local.fileExists(at: "pubkeys/new.pub") == false)
+    }
+
+    // Unpublished local commits would make this push a non-fast-forward
+    // later, or replay onto someone else's history. Refuse before writing.
+    @Test func durableCommitRefusesWhenLocalIsAhead() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        try fixture.local.createCommit(
+            message: "local unpublished",
+            files: [("local.txt", "local")]
+        )
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let calls = DurableCallFlag()
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry
+        )
+        let headBefore = fixture.local.headOID()
+
+        await #expect(throws: GitDatabase.Error.headNotAtRemote) {
+            try await localGitDB.durableCommit(message: "should not commit") { _ in
+                calls.mark()
+                return GitFileChange(files: [("pubkeys/new.pub", "ssh")])
+            }
+        }
+
+        #expect(calls.wasCalled() == false)
+        #expect(fixture.local.headOID() == headBefore)
+        #expect(fixture.local.fileExists(at: "pubkeys/new.pub") == false)
+    }
+
+    // Another device can publish while this one still shows a matching
+    // tracking ref. The fetch is what makes that visible before we write.
+    @Test func durableCommitRefusesWhenRemoteIsAhead() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        try fixture.writer.createCommit(
+            message: "remote advance",
+            files: [("remote.txt", "remote")]
+        )
+        try fixture.writer.push(remoteName: "origin", branchName: "main")
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let calls = DurableCallFlag()
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry
+        )
+        let headBefore = fixture.local.headOID()
+
+        await #expect(throws: GitDatabase.Error.headNotAtRemote) {
+            try await localGitDB.durableCommit(message: "should not commit") { _ in
+                calls.mark()
+                return GitFileChange(files: [("pubkeys/new.pub", "ssh")])
+            }
+        }
+
+        #expect(calls.wasCalled() == false)
+        #expect(fixture.local.headOID() == headBefore)
+        #expect(fixture.local.fileExists(at: "pubkeys/new.pub") == false)
+        #expect(fixture.local.fileExists(at: "remote.txt") == false)
+    }
+
+    // The server can move between the check and the push. That push is
+    // rejected, and the commit we just created has to disappear so the
+    // next attempt does not rebase a key change onto unknown history.
+    @Test func durableCommitRollsBackWhenPushIsRejected() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry
+        )
+        let base = try #require(fixture.local.headOID())
+
+        await #expect(throws: Error.self) {
+            try await localGitDB.durableCommit(message: "add device key") { _ in
+                try fixture.writer.createCommit(
+                    message: "race",
+                    files: [("race.txt", "remote")]
+                )
+                try fixture.writer.push(remoteName: "origin", branchName: "main")
+                return GitFileChange(files: [("pubkeys/ours.pub", "ssh")])
+            }
+        }
+
+        let remote = try Repository(path: (fixture.root as NSString).appendingPathComponent("remote.git"))
+        #expect(fixture.local.headOID() == base)
+        #expect(fixture.local.fileExists(at: "pubkeys/ours.pub") == false)
+        #expect(remote.fileExists(at: "pubkeys/ours.pub") == false)
+        #expect(remote.fileExists(at: "race.txt"))
+        #expect(try await localDB.readSyncedCommitHash() == nil)
+    }
+
+    // Fetch, commit, and push are one critical section. A photo upload
+    // that starts inside the change has to wait until the publish ends.
+    @Test func durableCommitHoldsMutationLockDuringChange() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry
+        )
+
+        try await localGitDB.durableCommit(message: "add device key") { repository in
+            let contended = try await repository.tryWithMutationLock { true }
+            #expect(contended == nil)
+            return GitFileChange(files: [("pubkeys/new.pub", "ssh")])
+        }
+
+        #expect(fixture.local.fileExists(at: "pubkeys/new.pub"))
+    }
+
+    // The settings refresh fetches on the shared repository, so it has
+    // to wait out a durable write instead of racing its remote-tracking
+    // refs. The ref stays at the old tip until the holder lets go.
+    @Test func fetchWaitsUntilMutationLockIsReleased() async throws {
+        let fixture = try makeRemoteFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let localDB = try ManifestDatabase(databaseURL: fixture.localDBURL, registry: fixture.registry)
+        let localGitDB = GitDatabase(
+            repository: fixture.local,
+            database: localDB,
+            registry: fixture.registry
+        )
+        let trackingRef = "refs/remotes/origin/main"
+        let oldTip = try #require(fixture.local.oid(forRef: trackingRef))
+        let entered = MutationLockSignal()
+        let release = MutationLockSignal()
+
+        let holding = Task {
+            try await fixture.local.withMutationLock {
+                await entered.markAcquired()
+                await release.waitUntilAcquired()
+            }
+        }
+        await entered.waitUntilAcquired()
+
+        try fixture.writer.createCommit(
+            message: "remote advance",
+            files: [("remote.txt", "remote")]
+        )
+        try fixture.writer.push(remoteName: "origin", branchName: "main")
+        let writerHead = try #require(fixture.writer.headOID())
+
+        let fetching = Task {
+            try await localGitDB.fetch()
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(fixture.local.oid(forRef: trackingRef) == oldTip)
+
+        await release.markAcquired()
+        try await holding.value
+        try await fetching.value
+        #expect(fixture.local.oid(forRef: trackingRef) == writerHead)
+    }
+
     // Builds a bare remote plus two clones so pull tests can diverge
     // local and origin history without touching a real server.
     private func makeRemoteFixture() throws -> (
@@ -359,5 +578,52 @@ struct GitDBIntegrationTests {
         let localDBURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitdb-remote-db-\(UUID().uuidString).sqlite")
         return (root, local, writer, localDBURL, makeTestRegistry())
+    }
+}
+
+// Names a connection failure so the durable-write test can prove the
+// change closure never ran.
+private enum DurableConnectError: Error, Equatable {
+    case unavailable
+}
+
+// Records whether a durable change ran. The closure is sendable, so a
+// plain Bool captured from the test would not compile.
+private final class DurableCallFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var called = false
+
+    func mark() {
+        lock.lock()
+        called = true
+        lock.unlock()
+    }
+
+    func wasCalled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return called
+    }
+}
+
+// Lets a test hold the repository lock until it has observed that a
+// fetch is still waiting, then release it.
+private actor MutationLockSignal {
+    private var isAcquired = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func markAcquired() {
+        isAcquired = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func waitUntilAcquired() async {
+        if isAcquired {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
     }
 }

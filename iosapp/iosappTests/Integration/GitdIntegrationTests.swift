@@ -129,14 +129,13 @@ struct GitdIntegrationTests {
     @Test
     func recoveryKeyCreationPublishesMarkedPubkeys() async throws {
         let context = try await IntegrationHarness.prepareSeededAndProvisioned()
-        let repository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        _ = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
         let gitDB = try GitDBManager.shared.getGitDB()
         let config = try #require(ServerConfigurationManager.shared.loadConfiguration())
         let manager = RecoveryKeyManager()
         let created = try await manager.createRecoveryKey(
             label: "integration-recovery",
             password: "correct horse battery staple",
-            repository: repository,
             gitDB: gitDB,
             serverConfiguration: config
         )
@@ -150,14 +149,13 @@ struct GitdIntegrationTests {
     @Test
     func recoveryWithWrongPasswordFails() async throws {
         let context = try await IntegrationHarness.prepareSeededAndProvisioned()
-        let repository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
+        _ = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
         let gitDB = try GitDBManager.shared.getGitDB()
         let config = try #require(ServerConfigurationManager.shared.loadConfiguration())
         let manager = RecoveryKeyManager()
         let created = try await manager.createRecoveryKey(
             label: "wrong-password-recovery",
             password: "correct horse battery staple",
-            repository: repository,
             gitDB: gitDB,
             serverConfiguration: config
         )
@@ -205,7 +203,6 @@ struct GitdIntegrationTests {
         let created = try await manager.createRecoveryKey(
             label: "wipe-recover",
             password: "correct horse battery staple",
-            repository: repository,
             gitDB: gitDB,
             serverConfiguration: config
         )

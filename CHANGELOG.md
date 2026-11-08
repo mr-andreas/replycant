@@ -6,7 +6,7 @@
 
 #### iOS app
 
-- linking a new device no longer fails when started before the app has connected to your library's network
+- linking a new device no longer fails when started before the app has connected to your library's network, and a device or recovery key change that cannot be published is discarded instead of being left on this phone
 - dragging toward the next photo no longer plays a video that is still off screen
 - Share and Save to Photos respond when tapped
 - a thumbnail that cannot be read is loaded again instead of staying blank

@@ -273,7 +273,7 @@ struct RepositorySettingsView: View {
         Task {
             defer { isCheckingStatus = false }
             do {
-                let snapshot = try await fetchStatusSnapshot(repoDir: repoDir, fetchLogContext: "initial status check")
+                let snapshot = try await fetchStatusSnapshot(fetchLogContext: "initial status check")
                 
                 currentBranch = snapshot.branch
                 lfsUrl = lfs
@@ -305,7 +305,7 @@ struct RepositorySettingsView: View {
         Task {
             defer { isCheckingStatus = false }
             do {
-                let snapshot = try await fetchStatusSnapshot(repoDir: repoDir, fetchLogContext: "status refresh")
+                let snapshot = try await fetchStatusSnapshot(fetchLogContext: "status refresh")
                 gitStatus = snapshot.status
                 currentBranch = snapshot.branch
                 lfsUrl = ServerConfigurationManager.shared.loadLFSURL() ?? ""
@@ -321,24 +321,23 @@ struct RepositorySettingsView: View {
         }
     }
 
-    // Runs blocking fetch + status work off the main thread while preserving "fetch before status".
-    private func fetchStatusSnapshot(repoDir: String, fetchLogContext: String) async throws -> (branch: String, remoteUrl: String?, status: String) {
-        try await Task.detached(priority: .userInitiated) {
-            log("Opening repository...", context: "UI")
-            let repo = try Repository(path: repoDir)
-            
-            do {
-                try repo.fetch(remoteName: "origin")
-                log("Fetched from remote during \(fetchLogContext)", context: "UI")
-            } catch {
-                logWarning("Failed to fetch during \(fetchLogContext): \(error.localizedDescription)", context: "UI")
-            }
-            
-            let branch = repo.currentBranch() ?? "No commits yet"
-            let remoteUrl = repo.getRemoteUrl()
-            let status = repo.getStatus()
-            return (branch, remoteUrl, status)
-        }.value
+    // Fetches through GitDB so a status refresh waits for a key write
+    // instead of moving remote-tracking refs on a second repository.
+    // A failed fetch still shows the last known status.
+    private func fetchStatusSnapshot(fetchLogContext: String) async throws -> (branch: String, remoteUrl: String?, status: String) {
+        let gitDB = try GitDBManager.shared.getGitDB()
+        do {
+            try await gitDB.fetch()
+            log("Fetched from remote during \(fetchLogContext)", context: "UI")
+        } catch {
+            logWarning("Failed to fetch during \(fetchLogContext): \(error.localizedDescription)", context: "UI")
+        }
+
+        let repo = try RepositoryManager.shared.getRepository()
+        let branch = repo.currentBranch() ?? "No commits yet"
+        let remoteUrl = repo.getRemoteUrl()
+        let status = repo.getStatus()
+        return (branch, remoteUrl, status)
     }
 
     // Applies a user-provided origin URL so repository operations and mTLS HTTP requests target the same server.

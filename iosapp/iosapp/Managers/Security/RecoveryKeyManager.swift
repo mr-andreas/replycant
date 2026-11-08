@@ -5,7 +5,9 @@ import LibGit2
 import UIKit
 
 // Coordinates recovery-key creation and revocation so users can regain repository access after key loss.
-final class RecoveryKeyManager {
+// It keeps no mutable state, so a durable write can re-read pubkeys/ from
+// the commit it is about to publish without hopping actors.
+final class RecoveryKeyManager: Sendable {
     // Captures shareable outputs generated when a recovery key is created.
     struct CreatedRecoveryKey {
         let label: String
@@ -119,10 +121,11 @@ final class RecoveryKeyManager {
     }
 
     // Creates a new recovery key, publishes marked pubkeys, re-wraps epochs, and returns share payloads.
+    // The re-wrap reads GitDB's repository after it matches the server, so
+    // callers no longer pass a repository of their own.
     func createRecoveryKey(
         label: String,
         password: String,
-        repository: Repository,
         gitDB: GitDatabase,
         serverConfiguration: ServerConfigurationManager.Configuration,
         tailnetConfiguration: TailnetConfiguration? = TailnetConfigurationManager.shared.load()
@@ -147,22 +150,24 @@ final class RecoveryKeyManager {
         let recoveryAgePublic = try Bech32.encode(hrp: "age", data: recoveryAgeIdentity.publicKey.rawRepresentation)
         let recoverySSH = try sshPublicKey(from: p256Key.publicKey, comment: baseName)
 
-        let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
-        let allAgeRecipients = Array(Set(existingAgeRecipients + [recoveryAgePublic]))
-        let epochFiles = try KEKEpochManager(repository: repository).rewrappedEpochFilesIncludingRecipients(allAgeRecipients)
-
-        var files: [(path: String, content: String)] = [
-            (path: recoveryPubPath, content: recoverySSH),
-            (path: recoveryAgePath, content: recoveryAgePublic),
-        ]
-        files.append(contentsOf: epochFiles)
-
-        try await gitDB.commitFiles(
-            message: "Add recovery key \(normalizedLabel) (\(uuid))",
-            files: files
-        )
+        // The epoch re-wrap has to see the commit the push will extend.
+        // Wrapping beforehand can publish a key set that already missed
+        // a device another phone just added.
+        try await gitDB.durableCommit(
+            message: "Add recovery key \(normalizedLabel) (\(uuid))"
+        ) { repository in
+            let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
+            let allAgeRecipients = Array(Set(existingAgeRecipients + [recoveryAgePublic]))
+            let epochFiles = try KEKEpochManager(repository: repository)
+                .rewrappedEpochFilesIncludingRecipients(allAgeRecipients)
+            var files: [(path: String, content: String)] = [
+                (path: recoveryPubPath, content: recoverySSH),
+                (path: recoveryAgePath, content: recoveryAgePublic),
+            ]
+            files.append(contentsOf: epochFiles)
+            return GitFileChange(files: files)
+        }
         Self.postRecoveryKeysDidChange()
-        try await gitDB.push()
 
         guard let pinnedHash = ServerConfigurationManager.certificateHash(fromPEM: serverConfiguration.caCertificate) else {
             throw Error.invalidServerConfiguration
@@ -202,13 +207,19 @@ final class RecoveryKeyManager {
             throw Error.noMatchingRecoveryKey
         }
 
-        try await gitDB.commitFiles(
-            message: "Remove recovery key \(record.label) (\(record.uuid))",
-            files: [],
-            deletions: [record.pubPath, record.agePath]
-        )
+        // The paths are read again under the durable write. The name
+        // above only exists so a missing key fails before the fetch,
+        // and so the commit message still names the key.
+        try await gitDB.durableCommit(
+            message: "Remove recovery key \(record.label) (\(record.uuid))"
+        ) { repository in
+            let current = try listRecoveryKeys(repository: repository)
+            guard let match = current.first(where: { $0.uuid.caseInsensitiveCompare(uuid) == .orderedSame }) else {
+                throw Error.noMatchingRecoveryKey
+            }
+            return GitFileChange(deletions: [match.pubPath, match.agePath])
+        }
         Self.postRecoveryKeysDidChange()
-        try await gitDB.push()
     }
 
     // Recovers repository access by authenticating with the recovery identity once, then rotating back to device identity.

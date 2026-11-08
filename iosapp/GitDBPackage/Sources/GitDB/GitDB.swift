@@ -19,21 +19,42 @@ private enum GitDBSignposts {
     }
 }
 
+// The files a durable write commits, computed only after HEAD is known
+// to match the server. Building them earlier would publish a key wrap
+// that was read from a commit the push can no longer fast-forward.
+public struct GitFileChange: Sendable {
+    public var files: [(path: String, content: String)]
+    public var deletions: [String]
+
+    public init(
+        files: [(path: String, content: String)] = [],
+        deletions: [String] = []
+    ) {
+        self.files = files
+        self.deletions = deletions
+    }
+}
+
 // Enforces that HEAD mutations route through GitDB so SQL cache
 // consistency is not left to each caller. Recovery may skip the
 // first sync only before the cache has ever been hydrated.
 public final class GitDatabase: Sendable {
-    // Names bootstrap-commit failures so recovery cannot skip sync
-    // after the cache has already been hydrated.
+    // Names failures of the two commit paths that must not leave a
+    // half-applied result: bootstrap sync, and a key write that is
+    // not based on the server's current main.
     public enum Error: Swift.Error, Equatable, LocalizedError {
         case cacheAlreadyHydrated
+        case headNotAtRemote
 
-        // Explains why a pre-hydration commit was refused so callers
-        // fall back to the syncing commit path.
+        // Tells the caller what to do next. A key write that is ahead
+        // or behind cannot be published without a later conflict, so
+        // the user has to sync before retrying.
         public var errorDescription: String? {
             switch self {
             case .cacheAlreadyHydrated:
                 return "commitFilesWithoutSync is only valid before the cache has been hydrated."
+            case .headNotAtRemote:
+                return "This device is not in sync with the server. Sync your library, then try again."
             }
         }
     }
@@ -41,17 +62,27 @@ public final class GitDatabase: Sendable {
     private let repository: Repository
     private let database: ManifestDatabase
     private let syncEngine: ManifestSyncEngine
+    private let ensureConnected: @Sendable () async throws -> Void
 
     // Exposes manifest DB change notifications for timeline and other subscribers.
     public var changes: PassthroughSubject<ManifestDatabaseChange, Never> {
         database.changes
     }
 
-    // Binds one repository to one manifest database for deterministic git->SQL consistency.
-    public init(repository: Repository, database: ManifestDatabase, registry: ManifestRegistry) {
+    // Binds one repository to one manifest database. `ensureConnected`
+    // is how the app waits for the tailnet without GitDB importing it.
+    // A key write that starts before the node is up would otherwise
+    // commit and then fail the push.
+    public init(
+        repository: Repository,
+        database: ManifestDatabase,
+        registry: ManifestRegistry,
+        ensureConnected: @escaping @Sendable () async throws -> Void = {}
+    ) {
         self.repository = repository
         self.database = database
         self.syncEngine = ManifestSyncEngine(repository: repository, database: database, registry: registry)
+        self.ensureConnected = ensureConnected
     }
 
     // Commits manifest/LFS items and immediately mirrors the resulting change into SQL state.
@@ -158,6 +189,84 @@ public final class GitDatabase: Sendable {
             try repository.createCommit(message: message, files: files, deletions: deletions)
         }
         succeeded = true
+    }
+
+    // Commits a change only when it can also be published.
+    //
+    // Key and recovery-key writes cannot sit unpublished: the next push
+    // would conflict with whatever another device published meanwhile.
+    // The connection wait stays outside the lock so a slow join does not
+    // block photo uploads. Fetch, the HEAD check, the commit, and the
+    // push then hold the repository lock. `change` runs after that check
+    // so it reads the commit the push will fast-forward from.
+    //
+    // A thrown error does not always mean the server missed the commit.
+    // The server can accept the push and the connection can drop before
+    // the reply arrives; the local commit is removed in that case too.
+    // The next pull fast-forwards to it, and a retry asks the user to
+    // sync first.
+    public func durableCommit(
+        message: String,
+        remoteName: String = "origin",
+        branchName: String? = nil,
+        change: @Sendable (Repository) async throws -> GitFileChange
+    ) async throws {
+        try await ensureConnected()
+        let resolved = resolvedBranch(branchName)
+        let signpost = GitDBSignposts.begin("GitDBDurableCommit")
+        var succeeded = false
+        defer {
+            if succeeded {
+                GitDBSignposts.signposter.endInterval(
+                    "GitDBDurableCommit",
+                    signpost,
+                    "branch=\(resolved, privacy: .public)"
+                )
+            } else {
+                GitDBSignposts.end("GitDBDurableCommit", signpost)
+            }
+        }
+        try await repository.withMutationLock {
+            try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
+            try repository.fetch(remoteName: remoteName)
+            guard let base = repository.headOID(),
+                  let remoteOID = repository.oid(forRef: "refs/remotes/\(remoteName)/\(resolved)"),
+                  base == remoteOID else {
+                throw Error.headNotAtRemote
+            }
+            let fileChange = try await change(self.repository)
+            try repository.createCommit(
+                message: message,
+                files: fileChange.files,
+                deletions: fileChange.deletions
+            )
+            do {
+                try repository.push(remoteName: remoteName, branchName: resolved)
+            } catch {
+                do {
+                    try repository.fastForward(toOID: base, branchName: resolved)
+                } catch let rollbackError {
+                    logError(
+                        "Push failed (\(error.localizedDescription)) and removing the unpublished commit also failed: \(rollbackError.localizedDescription)"
+                    )
+                    throw rollbackError
+                }
+                throw error
+            }
+            try await syncEngine.syncToHead(progressHandler: nil)
+        }
+        succeeded = true
+    }
+
+    // Fetches under the same lock as commits and pushes. The settings
+    // screen used to open a second repository, so its fetch could move
+    // remote-tracking refs while a key write was being published.
+    public func fetch(remoteName: String = "origin") async throws {
+        let signpost = GitDBSignposts.begin("GitDBFetch")
+        defer { GitDBSignposts.end("GitDBFetch", signpost) }
+        try await repository.withMutationLock {
+            try repository.fetch(remoteName: remoteName)
+        }
     }
 
     // Resolves an omitted branch to HEAD or `main` so callers do not
