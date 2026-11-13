@@ -237,6 +237,15 @@ struct ContentView: View {
                   !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment)
             else { return }
             updatePeriodicSyncLifecycle()
+            // This task also runs on first appearance, before the launch
+            // check. The git walk for the settings badge then blocked the
+            // timeline load on the main thread. Wait until the grid has
+            // painted; the badge is not on that screen.
+            guard hasFinishedLaunchCheck else { return }
+            await TimelineRenderMilestoneTracker.shared.waitUntilViewportHydrated(
+                orAfter: UploadLaunchGate.fallbackDelay
+            )
+            guard !Task.isCancelled else { return }
             await refreshRecoveryWarning()
         }
         .task(id: shouldShowMainTabs) {

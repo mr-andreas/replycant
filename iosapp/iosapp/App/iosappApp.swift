@@ -7,6 +7,7 @@
 
 import SwiftUI
 import LibGit2
+import GitDB
 import UserNotifications
 
 @main
@@ -78,6 +79,28 @@ struct iosappApp: App {
         // now so a later budget change is applied.
         Task {
             await ImageDiskCacheManager.shared.startObservingSettings()
+        }
+
+        // The count and month grouping scan the whole library. Starting
+        // them here overlaps that read with the first frame, which
+        // otherwise waits until the timeline view appears. Unit tests
+        // launch this process and then delete or replace the documents
+        // cache, so opening it here would hold the file they remove.
+        let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        if !isUnitTesting,
+           ContentView.repositoryExistsAtLaunch(
+               path: RepositoryManager.shared.repositoryPath()
+           ) {
+            do {
+                TimelineLaunchPrefetch.shared.start(
+                    database: try ManifestLoaderManager.shared.getDatabase()
+                )
+            } catch {
+                logError(
+                    "Timeline prefetch skipped: \(error.localizedDescription)",
+                    context: "Timeline"
+                )
+            }
         }
     }
     

@@ -50,6 +50,54 @@ struct TimelineRenderMilestoneTrackerTests {
         #expect(tracker.isViewportHydrated)
     }
 
+    // The badge and the upload scan share this wait. Hydration has to
+    // beat the timeout, or they sit out the whole fallback after the
+    // photos are already on screen.
+    @Test(.timeLimit(.minutes(1)))
+    func testWaitWithTimeoutReturnsWhenTheViewportResolves() async {
+        let tracker = TimelineRenderMilestoneTracker()
+        tracker.trackVisibleItem("photo")
+        let started = ContinuousClock.now
+        let waiter = Task {
+            await tracker.waitUntilViewportHydrated(orAfter: .seconds(30))
+        }
+
+        tracker.markVisibleItemResolved(itemId: "photo", didRenderImage: true)
+        await waiter.value
+
+        #expect(ContinuousClock.now - started < .seconds(5))
+    }
+
+    // An empty grid never hydrates. The wait has to end on its own so
+    // the settings badge still appears.
+    @Test(.timeLimit(.minutes(1)))
+    func testWaitWithTimeoutReturnsWhenHydrationNeverComes() async {
+        let tracker = TimelineRenderMilestoneTracker()
+        tracker.trackVisibleItem("photo")
+        let started = ContinuousClock.now
+
+        await tracker.waitUntilViewportHydrated(orAfter: .milliseconds(300))
+
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed >= .milliseconds(200))
+        #expect(elapsed < .seconds(3))
+        #expect(!tracker.isViewportHydrated)
+    }
+
+    // A grid that painted before the waiter subscribed must not sit
+    // through the timeout.
+    @Test(.timeLimit(.minutes(1)))
+    func testWaitWithTimeoutReturnsImmediatelyOnceHydrated() async {
+        let tracker = TimelineRenderMilestoneTracker()
+        tracker.trackVisibleItem("photo")
+        tracker.markVisibleItemResolved(itemId: "photo", didRenderImage: true)
+        let started = ContinuousClock.now
+
+        await tracker.waitUntilViewportHydrated(orAfter: .seconds(30))
+
+        #expect(ContinuousClock.now - started < .seconds(2))
+    }
+
     // Leaving the timeline cancels the wait. A leaked continuation would
     // hold the launch task open until the test's time limit.
     @Test(.timeLimit(.minutes(1)))

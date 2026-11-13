@@ -106,8 +106,17 @@ final class DefaultManifestManager: ManifestManager {
 
     // Counts timeline-eligible originals so sparse timeline rendering can compute total scrollable length.
     func countTimelineOriginals(scope: TimelineScope) async throws -> Int {
+        try await Self.countTimelineOriginals(database: database, scope: scope)
+    }
+
+    // Launch counts the library before a manager exists, while the first
+    // frame is still being built. Screens keep calling the instance method.
+    nonisolated static func countTimelineOriginals(
+        database: ManifestDatabase,
+        scope: TimelineScope
+    ) async throws -> Int {
         let table = try await database.tableName(for: OriginalManifest.self)
-        let (whereSQL, arguments) = timelineScopeClause(scope)
+        let (whereSQL, arguments) = Self.timelineScopeClause(scope)
         return try await database.queryCount(sql: """
             SELECT COUNT(*)
             FROM \(table)
@@ -120,7 +129,7 @@ final class DefaultManifestManager: ManifestManager {
         guard limit > 0 else { return [] }
         let table = try await database.tableName(for: OriginalManifest.self)
         let safeOffset = max(0, offset)
-        let (whereSQL, arguments) = timelineScopeClause(scope, extra: [limit, safeOffset])
+        let (whereSQL, arguments) = Self.timelineScopeClause(scope, extra: [limit, safeOffset])
         return try await database.query(OriginalManifest.self, sql: """
             SELECT data
             FROM \(table)
@@ -135,7 +144,7 @@ final class DefaultManifestManager: ManifestManager {
         guard limit > 0 else { return [] }
         let table = try await database.tableName(for: OriginalManifest.self)
         let timestamp = before.date.timeIntervalSince1970
-        let (whereSQL, arguments) = timelineScopeClause(
+        let (whereSQL, arguments) = Self.timelineScopeClause(
             scope,
             extra: [timestamp, timestamp, before.id, limit]
         )
@@ -155,7 +164,7 @@ final class DefaultManifestManager: ManifestManager {
         guard limit > 0 else { return [] }
         let table = try await database.tableName(for: OriginalManifest.self)
         let timestamp = after.date.timeIntervalSince1970
-        let (whereSQL, arguments) = timelineScopeClause(
+        let (whereSQL, arguments) = Self.timelineScopeClause(
             scope,
             extra: [timestamp, timestamp, after.id, limit]
         )
@@ -171,8 +180,17 @@ final class DefaultManifestManager: ManifestManager {
 
     // Aggregates month buckets directly in SQL so timeline jump UI can render only months that contain media.
     func loadTimelineMonthCounts(scope: TimelineScope) async throws -> [TimelineMonthCount] {
+        try await Self.loadTimelineMonthCounts(database: database, scope: scope)
+    }
+
+    // Same grouping as the instance method, so launch can run it before
+    // the timeline has a manager. The SQL stays in this one place.
+    nonisolated static func loadTimelineMonthCounts(
+        database: ManifestDatabase,
+        scope: TimelineScope
+    ) async throws -> [TimelineMonthCount] {
         let table = try await database.tableName(for: OriginalManifest.self)
-        let (whereSQL, arguments) = timelineScopeClause(scope)
+        let (whereSQL, arguments) = Self.timelineScopeClause(scope)
         let rows = try await database.queryIntRows(sql: """
             SELECT
                 CAST(strftime('%Y', takenAt, 'unixepoch', 'localtime') AS INTEGER),
@@ -229,7 +247,7 @@ final class DefaultManifestManager: ManifestManager {
     // Builds the shared predicate for timeline reads. A place grid is the
     // same query with a bounding box added, so paging and month counts
     // stay correct without a second index of ids.
-    private func timelineScopeClause(
+    private nonisolated static func timelineScopeClause(
         _ scope: TimelineScope,
         extra: [(any DatabaseValueConvertible)?] = []
     ) -> (String, QueryArguments) {

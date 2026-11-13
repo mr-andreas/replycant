@@ -297,8 +297,17 @@ final class TimelineManager: ObservableObject {
                 defer {
                     AppSignposts.end("TimelineCountItems", countSignpost)
                 }
-                totalCount = try await manifestManager.countTimelineOriginals(scope: scope)
-                updateMonthIndex(try await buildMonthIndex(loader: manifestManager))
+                // A launch prefetch may already have these numbers.
+                // Pull-to-refresh and the map pass on it: the snapshot is
+                // the full library, and it is applied at most once.
+                if !force, scope == .all,
+                   let prefetched = await TimelineLaunchPrefetch.shared.take(database: database) {
+                    totalCount = prefetched.totalCount
+                    updateMonthIndex(Self.monthEntries(from: prefetched.monthCounts))
+                } else {
+                    totalCount = try await manifestManager.countTimelineOriginals(scope: scope)
+                    updateMonthIndex(try await buildMonthIndex(loader: manifestManager))
+                }
             } catch {
                 throw error
             }

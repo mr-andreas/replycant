@@ -15,6 +15,23 @@ struct ThumbnailImageDecodeTests {
         return image.pngData() ?? Data()
     }
 
+    // preparingForDisplay builds a new image. The grid lays cells out
+    // from the thumbnail's pixel size, so that copy has to keep it.
+    @Test func decodedImageKeepsTheSourcePixelSize() async throws {
+        let bytes = png()
+        let source = try #require(UIImage(data: bytes)?.cgImage)
+
+        let image = try await ThumbnailImageDecode.image(
+            from: bytes,
+            invalidate: {},
+            refetch: { bytes }
+        )
+
+        let decoded = try #require(image?.cgImage)
+        #expect(decoded.width == source.width)
+        #expect(decoded.height == source.height)
+    }
+
     @Test func readableBytesAreKept() async throws {
         let bytes = png()
         var drops = 0
