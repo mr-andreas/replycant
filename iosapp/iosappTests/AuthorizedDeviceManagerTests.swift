@@ -265,13 +265,20 @@ struct AuthorizedDeviceManagerTests {
         return CommitObject(parents: parents, message: message)
     }
 
-    // Inflates a loose git object. NSData's decompressor rejects the
-    // zlib wrapper libgit2 writes, so this uses the Compression decoder.
+    // Compression's COMPRESSION_ZLIB is raw DEFLATE, so the zlib header
+    // and Adler-32 trailer that libgit2 writes have to come off first.
+    // Decoding the wrapper as the stream yields garbage, and the commit
+    // check then fails as unreadable.
     private func zlibInflate(_ source: Data) throws -> Data {
-        let capacity = max(source.count * 16, 4096)
+        guard source.count > 6, source.first == 0x78 else {
+            let prefix = source.prefix(8).map { String(format: "%02x", $0) }.joined()
+            throw CommitObjectError.unreadable(prefix)
+        }
+        let payload = source.dropFirst(2).dropLast(4)
+        let capacity = max(payload.count * 16, 4096)
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
         defer { buffer.deallocate() }
-        let written = source.withUnsafeBytes { raw -> Int in
+        let written = payload.withUnsafeBytes { raw -> Int in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else {
                 return 0
             }
@@ -279,7 +286,7 @@ struct AuthorizedDeviceManagerTests {
                 buffer,
                 capacity,
                 base,
-                source.count,
+                payload.count,
                 nil,
                 COMPRESSION_ZLIB
             )
