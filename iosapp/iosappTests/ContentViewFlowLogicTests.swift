@@ -1,5 +1,7 @@
+import Foundation
 import Testing
 @testable import iosapp
+import LibGit2
 
 // Verifies ContentView flow decisions use shared auto-resync behavior for fresh installs.
 struct ContentViewFlowLogicTests {
@@ -96,6 +98,53 @@ struct ContentViewFlowLogicTests {
                 isRepoInitialized: false,
                 isServerConfigured: false,
                 isTailnetConfigured: false
+            ) == false
+        )
+    }
+
+    // An existing library has to be recognized before the first frame, so a
+    // paired device opens on the timeline instead of a resync retry screen.
+    @Test func repositoryExistsAtLaunchDetectsAnInitializedRepository() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launch-repo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let empty = root.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        #expect(ContentView.repositoryExistsAtLaunch(path: empty.path) == false)
+
+        let repoPath = root.appendingPathComponent("repo", isDirectory: true).path
+        _ = try Repository.create(at: repoPath)
+        #expect(ContentView.repositoryExistsAtLaunch(path: repoPath) == true)
+    }
+
+    // The retry screen means a resync was attempted and the library is still
+    // missing. Before the launch check finishes, that screen would hide the
+    // timeline on every cold start.
+    @Test func shouldShowResyncRetryOnlyAfterTheLaunchCheckFinishes() {
+        #expect(
+            ContentView.shouldShowResyncRetry(
+                canAutoResync: true,
+                hasFinishedLaunchCheck: false
+            ) == false
+        )
+        #expect(
+            ContentView.shouldShowResyncRetry(
+                canAutoResync: true,
+                hasFinishedLaunchCheck: true
+            ) == true
+        )
+        #expect(
+            ContentView.shouldShowResyncRetry(
+                canAutoResync: false,
+                hasFinishedLaunchCheck: true
+            ) == false
+        )
+        #expect(
+            ContentView.shouldShowResyncRetry(
+                canAutoResync: false,
+                hasFinishedLaunchCheck: false
             ) == false
         )
     }

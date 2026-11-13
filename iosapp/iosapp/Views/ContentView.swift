@@ -32,6 +32,9 @@ struct ContentView: View {
     @State private var hasEmittedRootVisible = false
     @State private var hasEmittedMainTabsVisible = false
     @State private var hasEmittedOnboardingVisible = false
+    // Stays false until launch finishes deciding which flow to show, so the
+    // resync retry screen cannot cover the timeline on a cold start.
+    @State private var hasFinishedLaunchCheck = false
     @State private var showRecoveryWarning = false
     @State private var pendingRecoveryInput: String?
     @State private var showRecoveryFlow = false
@@ -42,10 +45,22 @@ struct ContentView: View {
     @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
+    // A real launch reads whether a library is on disk here, before the first
+    // frame, so the timeline is the first screen instead of a resync retry.
     init(previewState: PreviewState? = nil) {
         self.previewState = previewState
         _errorMessage = State(initialValue: previewState?.errorMessage)
-        _isRepoInitialized = State(initialValue: previewState?.isRepoInitialized ?? false)
+        let libraryExists: Bool
+        if let previewState {
+            libraryExists = previewState.isRepoInitialized
+        } else if Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment) {
+            libraryExists = false
+        } else {
+            libraryExists = Self.repositoryExistsAtLaunch(
+                path: RepositoryManager.shared.repositoryPath()
+            )
+        }
+        _isRepoInitialized = State(initialValue: libraryExists)
         _selectedTab = State(initialValue: previewState?.selectedTab ?? 0)
         _isResyncing = State(initialValue: previewState?.isResyncing ?? false)
         _resyncProgress = State(initialValue: previewState?.resyncProgress ?? 0)
@@ -159,7 +174,10 @@ struct ContentView: View {
                 .onAppear {
                     emitMainTabsVisibleIfNeeded()
                 }
-            } else if canAutoResync {
+            } else if Self.shouldShowResyncRetry(
+                canAutoResync: canAutoResync,
+                hasFinishedLaunchCheck: hasFinishedLaunchCheck
+            ) {
                 VStack(spacing: 12) {
                     Text("Local data was reset")
                         .font(.headline)
@@ -177,6 +195,11 @@ struct ContentView: View {
                         Task { await performResync(shouldWipeLocalState: false) }
                     }
                 }
+            } else if !hasFinishedLaunchCheck {
+                // Blank until launch decides. Onboarding here would flash
+                // on a device that is about to open its library.
+                Color(.systemBackground)
+                    .ignoresSafeArea()
             } else {
                 OnboardingView(onComplete: {
                     checkRepositoryStatus()
@@ -209,7 +232,7 @@ struct ContentView: View {
             else { return }
             await initializeRepositoryState()
         }
-        .task(id: shouldShowMainTabs && !isResyncing) {
+        .task(id: shouldShowMainTabs && !isResyncing && hasFinishedLaunchCheck) {
             guard previewState == nil,
                   !Self.isRunningForPreviews(environment: ProcessInfo.processInfo.environment)
             else { return }
@@ -261,6 +284,7 @@ struct ContentView: View {
         let initStateSignpost = AppSignposts.begin("ContentInitializeRepositoryState")
         defer {
             AppSignposts.end("ContentInitializeRepositoryState", initStateSignpost)
+            hasFinishedLaunchCheck = true
         }
 
         errorMessage = nil
@@ -297,8 +321,9 @@ struct ContentView: View {
             log("Git.initialize() completed in \(String(format: "%.3f", gitInitDuration)) seconds", context: "Git")
 
             // The hydration check opens (and maybe erases) the cache before
-            // the tabs appear, so a schema wipe does not start periodic sync
-            // against a database that is about to be rebuilt.
+            // launch is marked finished. Periodic sync waits for that, so a
+            // schema wipe does not sync against a database about to be
+            // rebuilt. The timeline can already be on screen.
             let repoDir = RepositoryManager.shared.repositoryPath()
             let repoExists = Repository.exists(at: repoDir)
             // A kill during pairing saves the server before the tailnet
@@ -489,6 +514,28 @@ struct ContentView: View {
         }
     }
 
+    // Recognizes a library already on disk before the first frame. Waiting
+    // for this answer inside the launch task painted a resync retry screen
+    // on every cold start, and the timeline could not load until it cleared.
+    static func repositoryExistsAtLaunch(path: String) -> Bool {
+        do {
+            try Git.initialize()
+        } catch {
+            return false
+        }
+        return Repository.exists(at: path)
+    }
+
+    // The retry screen is for a resync that already failed. Showing it
+    // before the launch check finishes hides the timeline while a paired
+    // device is still confirming that its library is on disk.
+    static func shouldShowResyncRetry(
+        canAutoResync: Bool,
+        hasFinishedLaunchCheck: Bool
+    ) -> Bool {
+        canAutoResync && hasFinishedLaunchCheck
+    }
+
     // Isolates onboarding skip decisions so tests can verify simulator installs do not bypass onboarding implicitly.
     static func shouldSkipOnboarding(environment: [String: String]) -> Bool {
         environment["SKIP_ONBOARDING"] == "1"
@@ -627,9 +674,11 @@ struct ContentView: View {
         !hasRecoveryKey
     }
 
-    // Keeps periodic sync active only while the main authenticated tab flow is visible.
+    // Starts periodic sync only once launch has confirmed the cache is the
+    // one the timeline should use. Starting earlier would sync against an
+    // index that a schema rebuild is about to replace.
     private func updatePeriodicSyncLifecycle() {
-        if shouldShowMainTabs && !isResyncing {
+        if shouldShowMainTabs && !isResyncing && hasFinishedLaunchCheck {
             // Flushes upload cache only after a server-confirmed push to avoid caching rolled-back local commits.
             PeriodicSyncManager.shared.onPushSuccess = {
                 Task { @MainActor in
