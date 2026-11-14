@@ -227,17 +227,40 @@ tree is `clean` when `git status --porcelain` is empty, and `dirty`
 otherwise. Write only that word. Do not copy the status list into the
 file.
 
+Record the device in that same stamp. Write the phone model, whether
+the run was a `simulator` or a `device`, and its identifier. A later
+run uses that identifier so it measures the same device. For the
+booted simulator, the model is its name in `xcrun simctl list devices
+-j` and the identifier is its UDID.
+
+Record how many media the timeline is showing. After the warmup
+launch has opened the timeline, count originals with `takenAt` set.
+That is the count the timeline uses for the whole library. On a
+simulator:
+
+```bash
+DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)
+sqlite3 "$DATA/Documents/replycant-manifest-cache.sqlite" \
+  "SELECT COUNT(*) FROM manifests_Original WHERE takenAt IS NOT NULL;"
+```
+
+Write `unavailable` when that database is not there. A run with no
+count cannot be compared on library size.
+
 ```markdown
 # iOS cold start timings
 
-Each entry is one Release simulator profile into the timeline.
+Each entry is one Release profile into the timeline.
 Headline times are the uninstrumented FrontBoard log. Signpost times
-are from AppInit and use a different origin. These are simulator
-times, not device times.
+are from AppInit and use a different origin. A simulator time is
+not a device time.
 
 ## YYYY-MM-DD HH:MM:SS ±HHMM — `<full git hash>` (clean|dirty)
 
-Release, simulator, accessibility off, debugger detached.
+Device: <model>, <simulator|device> `<identifier>`
+Timeline media: <count>
+
+Release, accessibility off, debugger detached.
 
 ### Time to first scene
 
