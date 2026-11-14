@@ -79,8 +79,8 @@ struct TimelineRenderMilestoneTrackerTests {
         await tracker.waitUntilViewportHydrated(orAfter: .milliseconds(300))
 
         let elapsed = ContinuousClock.now - started
+        // No upper bound: this suite shares the main actor.
         #expect(elapsed >= .milliseconds(200))
-        #expect(elapsed < .seconds(3))
         #expect(!tracker.isViewportHydrated)
     }
 

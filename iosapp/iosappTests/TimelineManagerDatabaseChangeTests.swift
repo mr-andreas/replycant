@@ -304,7 +304,7 @@ struct TimelineManagerDatabaseChangeTests {
 
         manager.receiveDatabaseChange(.fullReplace)
 
-        try await Task.sleep(nanoseconds: 600_000_000)
+        await manager.waitForDatabaseChangeDrainForTesting()
         #expect(manager.index(ofItemId: "a") != nil)
         #expect(manager.index(ofItemId: "b") != nil)
     }
