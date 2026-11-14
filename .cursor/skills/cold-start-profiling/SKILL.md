@@ -4,9 +4,10 @@ description: >-
   Profiles the iOS app cold start through the first painted timeline grid.
   Covers a Release install, turning simulator accessibility off, the
   uninstrumented FrontBoard clock, os_signpost traces, and when a Time
-  Profiler trace is worth taking. Use when asked to profile cold start,
-  launch time, time to first frame, time to first screen, or how long
-  the timeline takes to appear.
+  Profiler trace is worth taking. Writes each profile to
+  IosColdStartTimings.md in the repo root. Use when asked to profile cold
+  start, launch time, time to first frame, time to first screen, or how
+  long the timeline takes to appear.
 ---
 
 # Cold Start Profiling
@@ -215,13 +216,28 @@ simulator launch time is not a device launch time.
 
 ## Report
 
+Write the report to `IosColdStartTimings.md` in the repo root, then
+give that same entry in the chat. The file is a log: add a new entry
+at the top and leave older entries as they are. Create the file, with
+the header below, when it is missing.
+
+Record the stamp immediately before the first measured launch, after
+the Release build is installed. The hash is `git rev-parse HEAD`. The
+tree is `clean` when `git status --porcelain` is empty, and `dirty`
+otherwise. Write only that word. Do not copy the status list into the
+file.
+
 ```markdown
-## Cold start
+# iOS cold start timings
+
+Each entry is one Release simulator profile into the timeline.
+Headline times are the uninstrumented FrontBoard log. Signpost times
+are from AppInit and use a different origin. These are simulator
+times, not device times.
+
+## YYYY-MM-DD HH:MM:SS ±HHMM — `<full git hash>` (clean|dirty)
 
 Release, simulator, accessibility off, debugger detached.
-Headline times are the uninstrumented FrontBoard log, from
-"Creating process". Signpost times are from AppInit and use a
-different origin.
 
 ### Time to first scene
 
@@ -246,9 +262,12 @@ Typical scene ready: <the steady runs>. <Name any run excluded as warmup or an o
 | First thumbnail | | | |
 | Viewport painted | | | |
 
-### Gaps
+### What takes the time
 
-<Only when a Time Profiler trace was taken. Label every duration as sampled under Instruments.>
+<A short explanation of the slow stretches: what they are, and why
+they cost what they cost. Use the reading notes above. Name a gap
+only when a Time Profiler trace was taken, and label every such
+duration as sampled under Instruments.>
 ```
 
 ## Restore
