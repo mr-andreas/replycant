@@ -158,6 +158,32 @@ struct ContentViewFlowLogicTests {
         #expect(ContentView.shouldRebuildIndexOnLaunch(isRepoInitialized: false, isHydrated: true) == false)
     }
 
+    // The first screen is the timeline. Building the map and settings in
+    // that same commit creates a second timeline manager before anything
+    // is on screen, so those tabs stay unbuilt until they are chosen.
+    @Test func shouldBuildOnlyTheSelectedTabBeforeAnyTabHasBeenOpened() {
+        #expect(ContentView.shouldBuildTab(0, selectedTab: 0, openedTabs: []) == true)
+        #expect(ContentView.shouldBuildTab(1, selectedTab: 0, openedTabs: []) == false)
+        #expect(ContentView.shouldBuildTab(3, selectedTab: 0, openedTabs: []) == false)
+    }
+
+    // Choosing a tab has to show that screen in the same update, before
+    // the opened-tab memory has recorded the visit.
+    @Test func shouldBuildATabWhenItIsSelected() {
+        #expect(ContentView.shouldBuildTab(1, selectedTab: 1, openedTabs: []) == true)
+        #expect(ContentView.shouldBuildTab(3, selectedTab: 3, openedTabs: []) == true)
+        #expect(ContentView.shouldBuildTab(0, selectedTab: 1, openedTabs: []) == false)
+    }
+
+    // Switching back to the timeline must keep an opened map or settings
+    // screen, including its camera and navigation stack, and must still
+    // skip a tab that has never been opened.
+    @Test func shouldKeepAnOpenedTabBuiltAfterSwitchingAway() {
+        #expect(ContentView.shouldBuildTab(1, selectedTab: 0, openedTabs: [1]) == true)
+        #expect(ContentView.shouldBuildTab(3, selectedTab: 0, openedTabs: [1]) == false)
+        #expect(ContentView.shouldBuildTab(0, selectedTab: 0, openedTabs: [1]) == true)
+    }
+
     // Keeps the Settings badge visible only while no recovery key exists so
     // users are nudged before a lockout, then cleared after a key is created.
     @Test func shouldShowRecoveryWarningWhenNoRecoveryKeyExists() {

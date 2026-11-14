@@ -35,6 +35,9 @@ struct ContentView: View {
     // Stays false until launch finishes deciding which flow to show, so the
     // resync retry screen cannot cover the timeline on a cold start.
     @State private var hasFinishedLaunchCheck = false
+    // Remembers tabs the person has opened so switching away does not
+    // throw away the map camera or the settings navigation stack.
+    @State private var openedTabs: Set<Int> = []
     @State private var showRecoveryWarning = false
     @State private var pendingRecoveryInput: String?
     @State private var showRecoveryFlow = false
@@ -132,23 +135,53 @@ struct ContentView: View {
                             .tag(0)
                             .accessibilityIdentifier("timelineTab")
 
-                        PlacesMapView()
-                            .tabItem {
-                                Label("Map", systemImage: "map")
-                                    .accessibilityIdentifier("mapTabButton")
+                        // The tab item has to exist on first paint. The map
+                        // itself does not: its init builds a second timeline
+                        // manager, which the first screen never shows.
+                        Group {
+                            if Self.shouldBuildTab(
+                                1,
+                                selectedTab: selectedTab,
+                                openedTabs: openedTabs
+                            ) {
+                                PlacesMapView()
+                            } else {
+                                Color.clear
                             }
-                            .tag(1)
-                            .accessibilityIdentifier("mapTab")
+                        }
+                        .tabItem {
+                            Label("Map", systemImage: "map")
+                                .accessibilityIdentifier("mapTabButton")
+                        }
+                        .tag(1)
+                        .accessibilityIdentifier("mapTab")
 
-                        SettingsView(onWipeAndResync: {
-                            Task { await performResync(shouldWipeLocalState: true) }
-                        }, showRecoveryWarning: showRecoveryWarning)
-                            .tabItem {
-                                Label("Settings", systemImage: "gearshape")
+                        // Settings builds every destination link up front,
+                        // and none of that is on the first screen.
+                        Group {
+                            if Self.shouldBuildTab(
+                                3,
+                                selectedTab: selectedTab,
+                                openedTabs: openedTabs
+                            ) {
+                                SettingsView(onWipeAndResync: {
+                                    Task { await performResync(shouldWipeLocalState: true) }
+                                }, showRecoveryWarning: showRecoveryWarning)
+                            } else {
+                                Color.clear
                             }
-                            .badge(showRecoveryWarning ? "!" : nil)
-                            .tag(3)
-                            .accessibilityIdentifier("settingsTab")
+                        }
+                        .tabItem {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                        .badge(showRecoveryWarning ? "!" : nil)
+                        .tag(3)
+                        .accessibilityIdentifier("settingsTab")
+                    }
+                    .onChange(of: selectedTab) { _, tab in
+                        // The selection check builds the tab in this update.
+                        // Remembering it keeps that screen after a switch.
+                        openedTabs.insert(tab)
                     }
                     .toolbarBackground(.ultraThinMaterial, for: .tabBar)
                     .toolbarBackground(.visible, for: .tabBar)
@@ -553,6 +586,13 @@ struct ContentView: View {
     // Detects Xcode Canvas so launch and repository tasks can stay inert in previews.
     static func isRunningForPreviews(environment: [String: String]) -> Bool {
         environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+    }
+
+    // The timeline is the first screen, so the map and settings stay out
+    // of the first commit. A tab the person has already opened stays
+    // built, so its camera and navigation stack survive a switch away.
+    static func shouldBuildTab(_ tag: Int, selectedTab: Int, openedTabs: Set<Int>) -> Bool {
+        tag == selectedTab || openedTabs.contains(tag)
     }
 
     // A schema change erases the SQL cache but leaves the git checkout.
