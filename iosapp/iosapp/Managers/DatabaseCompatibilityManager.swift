@@ -1,9 +1,10 @@
 import Combine
 import GitDB
 
-// Holds a permanent gitdb/version refusal so the banner and write
-// paths share one source of truth instead of each retry looking like
-// a transient sync blip.
+// Holds the current gitdb/version refusal so the banner and write
+// paths share one source of truth. An older library stays visible
+// while pulls wait for the server to upgrade it. Any other refusal
+// stays up for the rest of the process.
 @MainActor
 final class DatabaseCompatibilityManager: ObservableObject {
     static let shared = DatabaseCompatibilityManager()
@@ -13,14 +14,14 @@ final class DatabaseCompatibilityManager: ObservableObject {
 
     private init() {}
 
-    // Records a version refusal so the shell can keep showing it after
-    // periodic sync has stopped retrying.
+    // Records a version refusal so the shell can keep showing it while
+    // sync decides whether another pull could clear it.
     func report(_ error: DatabaseVersionError) {
         incompatibility = DatabaseIncompatibility(error)
     }
 
-    // Clears the banner after a successful sync against a compatible
-    // repository, which only happens if the user starts a new library.
+    // Clears the banner after a pull of a compatible repository,
+    // including gitd finishing an upgrade the client was waiting on.
     func clear() {
         incompatibility = nil
     }

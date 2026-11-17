@@ -29,6 +29,16 @@ public enum DatabaseVersionError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         userGuidance
     }
+
+    // An older library starts working again after gitd's boot
+    // migration, so a later pull can clear it. A newer marker, a
+    // damaged marker, or a removed marker cannot.
+    public var isFixedByServerUpgrade: Bool {
+        guard case .unsupported(let found, let required) = self else {
+            return false
+        }
+        return found < required
+    }
 }
 
 // Names a pull that would rebase unpublished local commits onto a

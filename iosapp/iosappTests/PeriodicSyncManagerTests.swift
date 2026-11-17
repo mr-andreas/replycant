@@ -292,8 +292,103 @@ struct PeriodicSyncManagerTests {
         manager.onPushSuccess = nil
     }
 
-    // A version mismatch is permanent, so the loops must stop and
-    // stay stopped even if start() is called again from tab lifecycle.
+    // An older library starts working again after gitd's boot
+    // migration, so the pull loop has to stay up until that commit
+    // arrives. Pushes stay skipped: a commit against the old HEAD is
+    // already refused, and a successful pull is what clears the banner.
+    @Test func olderDatabaseFormatKeepsPullingUntilTheServerUpgrades() async {
+        resetSyncDefaults()
+        DatabaseCompatibilityManager.shared.clear()
+        let settings = SyncSettingsManager.shared
+        settings.isPushEnabled = true
+        settings.isPullEnabled = true
+        settings.pushIntervalSeconds = 30
+        settings.pullIntervalSeconds = 30
+
+        let manager = PeriodicSyncManager.shared
+        manager.resetDatabaseVersionRefusalForTesting()
+        manager.stop()
+        defer {
+            manager.stop()
+            manager.resetDatabaseVersionRefusalForTesting()
+            manager.endNetworkOperationForTesting()
+            DatabaseCompatibilityManager.shared.clear()
+        }
+
+        let released = await waitUntil(timeoutNanoseconds: 12_000_000_000) {
+            !manager.isNetworkOperationInProgressForTesting
+        }
+        #expect(released)
+
+        manager.handleDatabaseVersionErrorForTesting(
+            .unsupported(found: 1, required: 2)
+        )
+        #expect(manager.isAwaitingServerUpgradeForTesting)
+        let pushed = await manager.performPushTickForTesting()
+        #expect(pushed == false)
+        #expect(manager.isNetworkOperationInProgressForTesting == false)
+
+        manager.start()
+        #expect(manager.isRunningForTesting)
+        #expect(manager.hasPullTaskForTesting)
+        manager.handleDatabaseVersionErrorForTesting(
+            .unsupported(found: 1, required: 2)
+        )
+        #expect(manager.isRunningForTesting)
+        #expect(manager.hasPullTaskForTesting)
+        #expect(manager.hasPushTaskForTesting)
+        #expect(manager.isAwaitingServerUpgradeForTesting)
+        let reported = await waitUntil {
+            DatabaseCompatibilityManager.shared.incompatibility != nil
+        }
+        #expect(reported)
+
+        await manager.noteSuccessfulPullForTesting()
+        #expect(manager.isAwaitingServerUpgradeForTesting == false)
+        #expect(DatabaseCompatibilityManager.shared.incompatibility == nil)
+        #expect(manager.isRunningForTesting)
+        #expect(manager.hasPullTaskForTesting)
+    }
+
+    // A newer marker cannot be fixed by waiting on the server, so the
+    // loops must stop and stay stopped even if start() is called again.
+    @Test func newerDatabaseFormatStopsLoopsAndRefusesRestart() async {
+        resetSyncDefaults()
+        DatabaseCompatibilityManager.shared.clear()
+        let settings = SyncSettingsManager.shared
+        settings.isPushEnabled = true
+        settings.isPullEnabled = true
+        settings.pushIntervalSeconds = 30
+        settings.pullIntervalSeconds = 30
+
+        let manager = PeriodicSyncManager.shared
+        manager.resetDatabaseVersionRefusalForTesting()
+        manager.stop()
+        manager.start()
+        #expect(manager.isRunningForTesting)
+        #expect(manager.hasPullTaskForTesting)
+
+        manager.handleDatabaseVersionErrorForTesting(
+            .unsupported(found: 3, required: 2)
+        )
+        #expect(manager.isAwaitingServerUpgradeForTesting == false)
+        #expect(manager.isRunningForTesting == false)
+        #expect(manager.hasPushTaskForTesting == false)
+        #expect(manager.hasPullTaskForTesting == false)
+        let reported = await waitUntil {
+            DatabaseCompatibilityManager.shared.incompatibility != nil
+        }
+        #expect(reported)
+
+        manager.start()
+        #expect(manager.isRunningForTesting == false)
+
+        manager.resetDatabaseVersionRefusalForTesting()
+        DatabaseCompatibilityManager.shared.clear()
+    }
+
+    // A removed marker is permanent, so the loops must stop and stay
+    // stopped even if start() is called again from tab lifecycle.
     @Test func databaseVersionErrorStopsLoopsAndRefusesRestart() async {
         resetSyncDefaults()
         DatabaseCompatibilityManager.shared.clear()

@@ -93,6 +93,25 @@ struct DatabaseVersionTests {
         }
     }
 
+    // A later pull can only help when gitd has not yet migrated an
+    // older library. A newer marker, a damaged marker, or a removed
+    // marker stays refused no matter how many times the client fetches.
+    @Test func olderFormatIsFixedByServerUpgrade() {
+        #expect(
+            DatabaseVersionError.unsupported(found: 1, required: 2)
+                .isFixedByServerUpgrade
+        )
+        #expect(
+            DatabaseVersionError.unsupported(found: 3, required: 2)
+                .isFixedByServerUpgrade == false
+        )
+        #expect(DatabaseVersionError.malformed.isFixedByServerUpgrade == false)
+        #expect(
+            DatabaseVersionError.markerRemoved(previouslySynced: 1)
+                .isFixedByServerUpgrade == false
+        )
+    }
+
     @Test func userGuidanceWarnsWhenMarkerWasRemoved() {
         #expect(
             DatabaseVersionError.markerRemoved(previouslySynced: 1).userGuidance

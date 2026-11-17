@@ -12,6 +12,10 @@ final class PeriodicSyncManager {
     private var isRunning = false
     private var refusedUnsupportedDatabase = false
     private var refusedFormatTransition = false
+    // An older library is waiting on gitd's boot migration. Pulls keep
+    // running so the next compatible fetch can clear the banner. Pushes
+    // stay skipped because commits against that HEAD are already refused.
+    private var awaitingServerUpgrade = false
     private var isNetworkOperationInProgress = false
     private var pushTask: Task<Void, Never>?
     private var pullTask: Task<Void, Never>?
@@ -165,10 +169,14 @@ final class PeriodicSyncManager {
         return false
     }
 
-    // Pushes local commits to origin and logs operation duration for performance visibility.
+    // Skips while the local HEAD is an older format: a commit against
+    // it is already refused. Pulls stay armed so the server's migration
+    // commit can land without an app restart.
     @discardableResult
     private func performPushTick() async -> Bool {
-        guard !hasRefusedUnsupportedDatabase(), !hasRefusedFormatTransition() else { return false }
+        guard !hasRefusedUnsupportedDatabase(),
+              !hasRefusedFormatTransition(),
+              !isAwaitingServerUpgrade() else { return false }
         guard beginNetworkOperationIfIdle() else {
             logDebug("Skipping periodic push because another periodic network operation is running", context: "Sync")
             return false
@@ -239,11 +247,16 @@ final class PeriodicSyncManager {
                 "\(label) completed in \(String(format: "%.3f", duration)) seconds",
                 context: "Sync"
             )
-            await MainActor.run {
-                DatabaseCompatibilityManager.shared.clear()
-            }
+            await finishSuccessfulPull()
             return .finished
         } catch let error as DatabaseVersionError {
+            // A charging wake must not upload into a library it could
+            // not read. An older format still returns refused, but the
+            // pull loop stays up until gitd migrates it.
+            if error.isFixedByServerUpgrade {
+                noteAwaitingServerUpgrade(error)
+                return .refused
+            }
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logError(
                 "\(label) refused unsupported database after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)",
@@ -275,8 +288,59 @@ final class PeriodicSyncManager {
         }
     }
 
-    // Stops retrying a format mismatch so a permanent refusal is not
-    // mistaken for a flaky network error.
+    // Records that gitd has not migrated this library yet. The banner
+    // stays up, but the next pull can still notice the upgrade. The
+    // log fires once so a two-second pull interval does not spam it.
+    private func noteAwaitingServerUpgrade(_ error: DatabaseVersionError) {
+        var shouldLog = false
+        stateLock.lock()
+        if !awaitingServerUpgrade {
+            awaitingServerUpgrade = true
+            shouldLog = true
+        }
+        stateLock.unlock()
+        if shouldLog {
+            logError(
+                "Waiting for the library server to upgrade the database; pulls continue: \(error.localizedDescription)",
+                context: "Sync"
+            )
+        }
+        Task { @MainActor in
+            DatabaseCompatibilityManager.shared.report(error)
+        }
+    }
+
+    // Drops the waiting flag after a compatible pull and restarts
+    // uploads. A foreground app would otherwise sit idle until the
+    // next scene activation. The upload itself can outlast this tick,
+    // so it must not hold the periodic network slot.
+    private func finishSuccessfulPull() async {
+        let resumeUploads = takeAwaitingServerUpgrade()
+        await MainActor.run {
+            DatabaseCompatibilityManager.shared.clear()
+        }
+        guard resumeUploads else { return }
+        Task { @MainActor in
+            await UploadController.shared.startIfReady()
+        }
+    }
+
+    private func isAwaitingServerUpgrade() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return awaitingServerUpgrade
+    }
+
+    private func takeAwaitingServerUpgrade() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let wasWaiting = awaitingServerUpgrade
+        awaitingServerUpgrade = false
+        return wasWaiting
+    }
+
+    // Stops retrying a mismatch a later pull cannot fix, so a newer,
+    // damaged, or removed marker is not mistaken for a flaky network.
     private func refuseUnsupportedDatabase(_ error: DatabaseVersionError) {
         stateLock.lock()
         refusedUnsupportedDatabase = true
@@ -433,17 +497,40 @@ extension PeriodicSyncManager {
     // Leaves callbacks untouched to model failed pushes that should not notify subscribers.
     func notifyPushFailureForTesting() {}
 
-    // Drives the same refusal path as a real version mismatch so tests
-    // can assert loops stop without cloning an unsupported repository.
+    // Drives the same version-error path as a pull so tests can cover
+    // an older library separately from a permanent refusal.
     func handleDatabaseVersionErrorForTesting(_ error: DatabaseVersionError) {
-        refuseUnsupportedDatabase(error)
+        if error.isFixedByServerUpgrade {
+            noteAwaitingServerUpgrade(error)
+        } else {
+            refuseUnsupportedDatabase(error)
+        }
     }
 
     // Restores the singleton so later tests can start loops again.
     func resetDatabaseVersionRefusalForTesting() {
         stateLock.lock()
         refusedUnsupportedDatabase = false
+        awaitingServerUpgrade = false
         stateLock.unlock()
+    }
+
+    // Exposes the older-library wait so a test can tell a kept-alive
+    // pull loop from a permanent refusal.
+    var isAwaitingServerUpgradeForTesting: Bool {
+        isAwaitingServerUpgrade()
+    }
+
+    // Runs one push tick, which returns immediately while the library
+    // is waiting on a server upgrade.
+    func performPushTickForTesting() async -> Bool {
+        await performPushTick()
+    }
+
+    // Runs the same cleanup as a compatible pull, including clearing
+    // the banner and the waiting flag.
+    func noteSuccessfulPullForTesting() async {
+        await finishSuccessfulPull()
     }
 
     // Drives the same refusal path as a format-change rebase so tests

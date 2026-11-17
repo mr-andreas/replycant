@@ -35,12 +35,13 @@ can change it; the only safe response is to stop.
 
 Clients accept only the current version. A newer marker means update the
 app. An older marker means restart the library server so it can upgrade
-the database, then try again. A malformed or missing marker means this
-library cannot be opened: create a new library. A cache that recorded a
-higher format than the marker now on the server is treated as tampering:
-restore the marker. An unreadable marker is a retryable sync failure, not
-a verdict: absence is only concluded after the commit tree itself is
-readable.
+the database. The client keeps pulling and recovers once gitd migrates;
+a newer, missing, or removed marker still stops sync. A malformed or
+missing marker means this library cannot be opened: create a new library.
+A cache that recorded a higher format than the marker now on the server
+is treated as tampering: restore the marker. An unreadable marker is a
+retryable sync failure, not a verdict: absence is only concluded after
+the commit tree itself is readable.
 
 ## Boot-time migration
 
