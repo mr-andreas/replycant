@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,34 @@ func TestChainedStepsCommitOnce(t *testing.T) {
 	require.Equal(t, "two", readBlob(t, dir, "step-2"))
 	require.Equal(t, "keep", readBlob(t, dir, "notes/keep.txt"))
 	require.Equal(t, 2, commitCount(t, dir))
+}
+
+// TestMigrationLogsVersionsBeforeRewriting tells an operator that a
+// boot is about to rewrite the library, and which formats are involved,
+// before any step runs. The completion line comes only after the commit.
+func TestMigrationLogsVersionsBeforeRewriting(t *testing.T) {
+	t.Parallel()
+	repo, dir := initRepo(t)
+	commitFiles(t, repo, dir, "seed", map[string]string{
+		"gitdb/version": "1\n",
+	})
+	var lines []string
+	logged := false
+	steps := []Step{{From: 1, Apply: func(*Tree) error {
+		if !logged {
+			return errors.New("rewrite started before the migration was logged")
+		}
+		return nil
+	}}}
+
+	_, err := run(dir, steps, 2, runConfig{
+		logf: func(format string, args ...any) {
+			lines = append(lines, fmt.Sprintf(format, args...))
+			logged = true
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"Migrating gitdb from version 1 to 2"}, lines)
 }
 
 // TestCurrentVersionDoesNothing keeps a restarted gitd from adding an

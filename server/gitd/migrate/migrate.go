@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path"
 	"sort"
 	"strings"
@@ -52,9 +53,11 @@ type blob struct {
 
 // runConfig.beforeAdvance runs after the migration commit object
 // exists and before main moves. Tests use it to land a competing
-// push in that window.
+// push in that window. logf records the start of a rewrite; tests
+// capture it, and Run sends it to the process log.
 type runConfig struct {
 	beforeAdvance func(*git.Repository) error
+	logf          func(string, ...any)
 }
 
 // Run brings the repository at repoPath up to this binary's database
@@ -62,7 +65,9 @@ type runConfig struct {
 // create main. Any other failure is returned so gitd can exit before
 // it listens.
 func Run(repoPath string) (Result, error) {
-	return run(repoPath, productionSteps, gitcrypt.DatabaseFormatVersion, runConfig{})
+	return run(repoPath, productionSteps, gitcrypt.DatabaseFormatVersion, runConfig{
+		logf: log.Printf,
+	})
 }
 
 func run(repoPath string, steps []Step, target int, cfg runConfig) (Result, error) {
@@ -105,6 +110,12 @@ func run(repoPath string, steps []Step, target int, cfg runConfig) (Result, erro
 	}
 
 	from := version
+	// The rewrite can fail or take long enough that the later
+	// "migrated" line never appears. Say which versions are in
+	// play before the first step changes the tree.
+	if cfg.logf != nil {
+		cfg.logf("Migrating gitdb from version %d to %d", from, target)
+	}
 	for version < target {
 		step, ok := stepFrom(steps, version)
 		if !ok {
