@@ -41,33 +41,16 @@ evidence, as described under Reporting.
 
 ## Driving the simulator
 
-- `$AXE describe-ui --udid` prints the accessibility tree as JSON.
-  `$AXE screenshot --udid --output /tmp/<name>.png` saves a screenshot.
-- Prefer `--id` selectors, as `simulator-testing` says. Timeline cells
-  are the exception: each exposes two elements with the same
-  `timelinePhoto_<id>`. `$AXE tap --id` then fails as ambiguous, and an
-  MCP `tap` can report success without opening the photo. Read the cell
-  frame from `describe-ui` and tap it with
-  `$AXE tap -x <x> -y <y> --tap-style physical`.
-- The top grid row starts above the screen (`y` is negative) because it
-  sits under the navigation bar. Tap a cell from the second row or lower.
-- Put rapid gestures in one `$AXE batch --file` with explicit `sleep`
-  steps. A long batch can outlast a 30 second shell wait, so run it in
-  the background and wait on it.
-- To read on-screen text without a screenshot:
+Drive the UI as `simulator-testing` describes under Driving the UI.
+Use `$AXE` from that section. Do not search for the binary or run
+`--help`.
 
-```bash
-"$AXE" describe-ui --udid <udid> | python3 -c '
-import json,sys
-def walk(n):
-    if isinstance(n, dict):
-        label, ident = n.get("AXLabel") or "", n.get("AXUniqueId") or ""
-        if label and "timelinePhoto" not in ident: print(label[:80])
-        for v in n.values(): walk(v)
-    elif isinstance(n, list):
-        for i in n: walk(i)
-walk(json.load(sys.stdin))'
-```
+An MCP `tap` on a timeline cell can report success without opening
+the photo. Use the coordinate tap from Driving the UI.
+
+Put rapid gestures in one `$AXE batch --file` with explicit `sleep`
+steps. A long batch can outlast a 30 second shell wait, so run it in
+the background and wait on it.
 
 ## Where to look
 

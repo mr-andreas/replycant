@@ -52,6 +52,57 @@ Stop if any check fails, and say what to fix.
 3. Use the already booted simulator. If none is booted, boot
    `iPhone 17 Pro Max` to match `IOS_TEST_DESTINATION` in the Makefile.
 
+## Driving the UI
+
+Use XcodeBuildMCP `snapshot_ui`, `tap`, `swipe`, and `type_text` for
+one action on the session-default simulator. Use the bundled AXe
+binary for a batch, for a simulator that is not the session default,
+or when a tap needs `--tap-style physical`. Resolve it once per
+session. Do not search for the binary and do not run `--help`:
+
+```bash
+AXE=$(ls -d "$HOME"/.npm/_npx/*/node_modules/xcodebuildmcp/bundled/axe | head -1)
+```
+
+Every command takes `--udid <u>`:
+
+- `"$AXE" describe-ui --udid <u>` prints the accessibility tree as
+  JSON. Pipe it through the filter below. Do not print the raw tree.
+- `"$AXE" tap --udid <u> --id <id>`
+- `"$AXE" tap --udid <u> --label "<text>" --element-type Button`
+- `"$AXE" tap --udid <u> -x <x> -y <y> --tap-style physical`
+- `"$AXE" swipe --udid <u> --start-x <x> --start-y <y> --end-x <x> --end-y <y> --duration <s>`
+- `"$AXE" type "<text>" --udid <u>`
+- `"$AXE" key-sequence --keycodes 42 --udid <u>` sends one backspace
+  (HID keycode 42).
+- `"$AXE" button home --udid <u>`. Also `lock`, `side-button`, `siri`,
+  and `apple-pay`.
+- `"$AXE" batch --udid <u> --file <steps> --ax-cache perStep --wait-timeout 5`
+- `"$AXE" screenshot --udid <u> --output <path>`
+
+The default `--tap-style` is `automatic`. A tap can still report
+success and leave a SwiftUI switch or button unchanged. Retry that
+tap with `--tap-style physical`. Timeline cells expose two elements
+with the same `timelinePhoto_<uuid>`, so `--id` is ambiguous. Read
+the frame from `describe-ui` and tap a cell on the second row or
+lower. The top row starts above the screen. The share sheet is
+outside the app accessibility tree, so tap it by coordinates.
+
+To read on-screen text without a screenshot:
+
+```bash
+"$AXE" describe-ui --udid <u> | python3 -c '
+import json,sys
+def walk(n):
+    if isinstance(n, dict):
+        label, ident = n.get("AXLabel") or "", n.get("AXUniqueId") or ""
+        if label and "timelinePhoto" not in ident: print(label[:80])
+        for v in n.values(): walk(v)
+    elif isinstance(n, list):
+        for i in n: walk(i)
+walk(json.load(sys.stdin))'
+```
+
 ## Recovery workflow
 
 Recovery only runs on a fresh install.
@@ -552,10 +603,8 @@ walkthrough one tap at a time therefore fills the clip with dead air.
 Script the interactions into one AXe batch so pauses are explicit
 `sleep` steps, not round-trip latency.
 
-The MCP `batch` tool is tap-only and same-screen. Use the bundled AXe
-binary instead, at
-`~/.npm/_npx/*/node_modules/xcodebuildmcp/bundled/axe`. Resolve the
-path once per session. Do not commit a wrapper.
+The MCP `batch` tool is tap-only and same-screen. Use `$AXE` from
+Driving the UI. Do not commit a wrapper.
 
 ### 1. Rehearse off camera
 
