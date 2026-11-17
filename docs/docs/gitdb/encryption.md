@@ -74,12 +74,11 @@ Manifest schemas are versioned separately, by each resource's `apiVersion`.
 The first device creates epoch 1 for its own age key. After that, epochs
 change only when devices come and go:
 
-| Event | Action | Re-encrypts objects? |
-|-------|--------|----------------------|
-| Device added | Re-wrap every epoch file for the new age key | No |
-| Device removed | New KEK for the remaining devices; bump `current` | No |
-| Key rotation | Same as device removal | No |
-| Full revocation | Re-wrap all epochs without the key; rewrite Git history | Yes (destructive) |
+| Event | Action |
+|-------|--------|
+| Device added | Re-wrap every epoch file for the new age key |
+| Device removed | New KEK for the remaining devices; bump `current` |
+| Key rotation | Same as device removal |
 
 New objects always use the current epoch. A removed device keeps the old
 KEKs from Git history and can still read old objects, but it cannot read
@@ -91,9 +90,7 @@ device can read the whole history. The app flows for these events are in
 
 Manifests are encrypted directly with the current KEK using AES-256-GCM.
 They are small and numerous and never shared one at a time, so a
-per-manifest DEK would add cost without benefit. Encrypting the whole file
-keeps clients simple; structured encryption such as SOPS can be layered on
-later if needed.
+per-manifest DEK would add cost without benefit.
 
 The encrypted file keeps its `.yaml` name and
 [path](./manifests.md), but its content becomes:
@@ -134,8 +131,9 @@ into the [LFS pointer](#lfs-pointer).
 - **Rotation**: rotating the KEK never re-encrypts binaries.
 
 DEKs are random rather than derived from the content. Convergent encryption
-would allow LFS deduplication and can be added later, but random keys are
-the standard, safer default.
+would let the LFS server deduplicate identical files, but clients never
+upload the same binary twice: they deduplicate by plaintext SHA-256 before
+any upload. Random keys are the safer choice and lose nothing.
 
 ### Chunk format
 

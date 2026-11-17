@@ -37,6 +37,9 @@ Pick one type per page. If a page needs two, split it and link.
   "it is important to".
 - Describe how things work now. Explain why a design exists, but leave
   change history ("previously", "we switched") to the changelog.
+- Document only what exists. Leave out planned or possible features
+  ("can be added later", "may support"). When you explain why an
+  alternative was rejected, give the real reason, not a future option.
 
 ## Structure for skimming
 
