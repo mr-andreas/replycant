@@ -1,62 +1,44 @@
 # Encryption
 
-GitDB encrypts all data at rest using a KEK/DEK envelope encryption scheme. The server stores only opaque encrypted blobs and never has access to plaintext. All encryption and decryption happens on the client device.
+GitDB treats the server as untrusted storage. Every manifest and binary is
+encrypted on the client before it leaves the device, so a server compromise
+exposes only opaque blobs. [mTLS](./authentication.md) protects data in
+transit; the encryption described here protects it at rest.
 
-## Threat Model
+## How the keys fit together
 
-The server is an untrusted storage layer. A server compromise should not expose user data. Transport security ([mTLS](./authentication.md)) protects data in transit; encryption at rest protects data on the server.
+Three layers of keys protect the data:
 
-## Overview
-
-Three layers of encryption protect data:
-
-1. **age key wrapping** (X25519) -- wraps the KEK for each authorized device
-2. **KEK** (Key Encryption Key, AES-256) -- encrypts manifests directly, wraps per-object DEKs for binaries
-3. **DEK** (Data Encryption Key, AES-256, per binary) -- encrypts individual binary objects
+1. Each device has an **age key** (X25519). It unwraps the library's KEK.
+2. The **KEK** (key encryption key) is a random AES-256 key. It encrypts
+   manifests directly and wraps the per-binary DEKs.
+3. Each binary has its own **DEK** (data encryption key), also AES-256. It
+   encrypts that one binary.
 
 ```mermaid
-flowchart TD
-    subgraph devices [Devices]
-        A["Device A (age key)"]
-        B["Device B (age key)"]
-        C["Device C (age key)"]
-    end
-    subgraph kekFile [KEK Epoch File in Repo]
-        KEK["KEK (AES-256)<br/>wrapped with age<br/>for each device"]
-    end
-    subgraph manifests [Manifests]
-        M["Manifest YAML<br/>encrypted with KEK"]
-    end
-    subgraph binaries [Binaries]
-        PTR["LFS pointer<br/>contains wrapped DEK"]
-        DEK["Per-object DEK<br/>unwrapped with KEK"]
-        BIN["Binary data<br/>chunked AES-256-GCM<br/>with DEK"]
-    end
-    A -->|"unwrap"| KEK
-    B -->|"unwrap"| KEK
-    C -->|"unwrap"| KEK
-    KEK -->|"encrypts"| M
-    KEK -->|"unwraps"| PTR
-    PTR --> DEK
-    DEK -->|"decrypts"| BIN
+flowchart LR
+    Device["Device age key"] -->|unwraps| KEK
+    KEK -->|encrypts| Manifests
+    KEK -->|unwraps| DEK["Per-binary DEK"]
+    DEK -->|encrypts| Binary["Binary chunks"]
 ```
 
-Any device whose age public key is registered in `pubkeys/` can decrypt all objects. Adding a device only requires re-wrapping the small KEK epoch file. Revoking a device only requires creating a new KEK epoch.
+Any device whose age public key is in `pubkeys/` can decrypt everything.
+Adding a device only re-wraps the small KEK file, and revoking one only
+creates a new KEK. Neither touches the encrypted objects.
 
-## Encryption Keys
+Each device holds two key pairs, both stored in the iOS Keychain or, on
+desktop, in encrypted localStorage (protected by the OS keyring or a
+password):
 
-Each device has two key pairs:
+| Key | Algorithm | Used for |
+|-----|-----------|----------|
+| Identity key | ECDSA P-256 | [mTLS authentication](./authentication.md) |
+| Encryption key | age (X25519) | Unwrapping the KEK |
 
-| Key | Algorithm | Purpose | Storage |
-|-----|-----------|---------|---------|
-| Identity key | ECDSA P-256 | [mTLS authentication](./authentication.md) | iOS Keychain / webapp encrypted localStorage (OS keyring or password wrap) |
-| Encryption key | age (X25519) | KEK unwrapping | iOS Keychain / webapp encrypted localStorage (OS keyring or password wrap) |
+Both public keys live side by side in the repository:
 
-### age Public Key Storage
-
-Encryption public keys are stored alongside identity public keys in the repository:
-
-```
+```text
 pubkeys/
   device-a.pub        # P-256 SSH key (mTLS)
   device-a.age        # age public key (encryption)
@@ -64,138 +46,133 @@ pubkeys/
   device-b.age
 ```
 
-### Why age
+[age](https://github.com/FiloSottile/age) is used instead of GPG or ECIES
+with P-256 because it has no configuration, key servers, or web of trust,
+and a public key is one ~62-character string. It is also small enough to
+implement natively with Apple CryptoKit (Curve25519 and ChaCha20-Poly1305)
+and the `age-encryption` npm package, without shelling out to a CLI.
 
-[age](https://github.com/FiloSottile/age) was chosen over GPG and raw ECIES with P-256 because:
+## Key epochs
 
-- Minimal protocol with no configuration, key servers, or web of trust
-- A public key is a single ~62-character string
-- Small enough to implement natively using Apple CryptoKit (Curve25519 + ChaCha20-Poly1305) and the `age-encryption` npm package, without shelling out to a CLI
+The KEK is a random 32-byte key, stored in the repository encrypted with age
+for every authorized device. Each KEK is an epoch:
 
-## KEK Epoch Management
-
-The KEK is a random 32-byte AES-256 key used to encrypt manifests and wrap per-object DEKs. It is stored in the repository encrypted with age for all authorized devices.
-
-### Repository Structure
-
-```
+```text
 gitdb/
-  version              # plain text: database format version (e.g., "1")
+  version              # database format version, for example "1"
 encryption/
-  current              # plain text: active epoch number (e.g., "2")
+  current              # active epoch number, for example "2"
   epochs/
     1.age              # KEK epoch 1, age-encrypted for all recipients
-    2.age              # KEK epoch 2 (after key rotation)
+    2.age              # KEK epoch 2, after a key rotation
 ```
 
-`gitdb/version` pins the repository layout and crypto handling. Clients refuse
-any other value. See [Database format version](./database-version.md). Manifest
-schemas stay under each resource's `apiVersion`.
+`gitdb/version` pins the repository layout and crypto handling, and clients
+refuse any other value. See [Database format version](./database-version.md).
+Manifest schemas are versioned separately, by each resource's `apiVersion`.
 
-### Key Lifecycle
+The first device creates epoch 1 for its own age key. After that, epochs
+change only when devices come and go:
 
 | Event | Action | Re-encrypts objects? |
 |-------|--------|----------------------|
-| New device added | Decrypt all KEK epoch files, re-encrypt including new device's age key, commit | No |
-| Device removed | Generate new KEK, encrypt for remaining devices, bump `current` | No |
-| Key rotation | Same as device removal -- new KEK epoch, old epochs remain in history | No |
-| Full revocation | Re-encrypt all epochs without revoked key and rewrite Git history | Yes (destructive) |
+| Device added | Re-wrap every epoch file for the new age key | No |
+| Device removed | New KEK for the remaining devices; bump `current` | No |
+| Key rotation | Same as device removal | No |
+| Full revocation | Re-wrap all epochs without the key; rewrite Git history | Yes (destructive) |
 
-After creating a new KEK epoch, all new objects are encrypted with the new KEK. A revoked device retains old KEKs from Git history and can decrypt old objects, but cannot decrypt anything encrypted with the new KEK. This provides "from now on" forward secrecy.
+New objects always use the current epoch. A removed device keeps the old
+KEKs from Git history and can still read old objects, but it cannot read
+anything added afterwards. Adding a device re-wraps every epoch, so the new
+device can read the whole history. The app flows for these events are in
+[Device onboarding](./device-onboarding.md).
 
-## Manifest Encryption
+## Manifests
 
-Manifests are encrypted directly with the current KEK using AES-256-GCM. No per-manifest DEK is used -- manifests are small, numerous, and don't require granular sharing.
+Manifests are encrypted directly with the current KEK using AES-256-GCM.
+They are small and numerous and never shared one at a time, so a
+per-manifest DEK would add cost without benefit. Encrypting the whole file
+keeps clients simple; structured encryption such as SOPS can be layered on
+later if needed.
 
-### Encrypted Format
+The encrypted file keeps its `.yaml` name and
+[path](./manifests.md), but its content becomes:
 
-The encrypted manifest replaces the plaintext YAML in the repository:
-
-```
+```text
 REPLYCANT-ENC-V1
 kek-epoch: 2
 ---
 <12-byte nonce><ciphertext><16-byte GCM tag>
 ```
 
-- The plaintext is the original YAML manifest
-- The nonce is random per file
-- The `kek-epoch` header identifies which KEK to use for decryption
+The plaintext is the original YAML, the nonce is random per file, and
+`kek-epoch` names the KEK to decrypt with.
 
-Manifests keep the `.yaml` extension and same [directory structure](./manifests.md). The content is opaque in the repository but decrypted transparently on the client.
+Clients fail closed. They reject any manifest without the `REPLYCANT-ENC-V1`
+envelope and any LFS pointer without `x-replycant-*` metadata. There is no
+plaintext fallback, so a hostile server that strips encryption cannot make
+clients parse attacker-controlled data.
 
-Clients reject any manifest blob that lacks the `REPLYCANT-ENC-V1` envelope.
-There is no plaintext YAML fallback: a hostile server that strips encryption
-cannot have clients parse attacker-controlled manifests. The same fail-closed
-rule applies to LFS objects missing `x-replycant-*` pointer metadata.
+For development, a Git clean/smudge filter encrypts on commit and decrypts on
+checkout, so standard Git tooling works. Smudge rejects plaintext repository
+objects. The one exception is `textconv` (path-argument smudge), which shows
+already-decrypted worktree files in `git diff` and never writes back.
 
-### Git Filter Support
+## Binaries
 
-A clean/smudge filter can automate encrypt-on-commit and decrypt-on-checkout for development workflows using standard Git tooling. Smudge rejects plaintext repository objects. The only exception is git `textconv` (path-argument smudge), which displays already-decrypted worktree files for `git diff` and never writes back to the repository.
+Each binary gets a random DEK. The binary is split into fixed-size chunks,
+each encrypted and authenticated with AES-256-GCM, and the wrapped DEK goes
+into the [LFS pointer](#lfs-pointer).
 
-## Binary Encryption
+### Why each binary has its own key
 
-Each binary gets its own random DEK (Data Encryption Key). The binary is split into fixed-size chunks, each independently encrypted and authenticated with AES-256-GCM. The wrapped DEK is stored in the [LFS pointer](#lfs-pointer-format).
+- **Blast radius**: a leaked DEK exposes one file, not the library.
+- **Nonce safety**: chunk nonces come from the chunk index. Each DEK
+  encrypts one file, so no key and nonce pair is ever reused.
+- **Sharing**: a single DEK can grant access to one object without exposing
+  the KEK.
+- **Rotation**: rotating the KEK never re-encrypts binaries.
 
-### Why Per-Object DEKs
+DEKs are random rather than derived from the content. Convergent encryption
+would allow LFS deduplication and can be added later, but random keys are
+the standard, safer default.
 
-Manifests use the KEK directly, but binaries get individual DEKs because:
+### Chunk format
 
-- **Blast radius**: A leaked DEK compromises one file, not the entire library
-- **Nonce safety**: Per-chunk nonces are derived from the chunk index and never stored; since each DEK is unique to one file, no (key, nonce) pair is ever reused
-- **Per-chunk authentication**: Tampering, reordering, or trailing truncation is detected via GCM tags bound to index/isLast AAD
-- **Granular sharing**: A single DEK can grant access to one object without exposing the KEK
-- **Key rotation**: Rotating the KEK does not require re-encrypting any binaries
+The encrypted binary on the LFS server is a headerless sequence of chunks:
 
-### Chunked Encryption
-
-The encrypted binary on the LFS server is a headerless concatenation of
-position-authenticated chunks. Nonces are derived and never stored:
-
-```
+```text
 [chunk 0: ciphertext | 16-byte GCM tag]
 [chunk 1: ciphertext | 16-byte GCM tag]
 ...
 [chunk N-1: ciphertext | 16-byte GCM tag]
 ```
 
-Each seal uses:
+Nonces are derived, never stored. Each chunk is sealed with:
 
-- **nonce** (not on wire): `0x00000000 || uint64BE(index)`
+- **nonce**: `0x00000000 || uint64BE(index)`
 - **AAD**: `"replycant-lfs-chunk-v1" || uint64BE(index) || uint8(isLast)`
 
-Wrapped DEKs use AAD `"replycant-dek-wrap-v1" || uint64BE(kekEpoch)`.
-Chunk size is a compile-time constant, not pointer metadata.
+Binding the index and the last-chunk flag into the AAD means tampering,
+reordering, and truncation all fail authentication. Wrapped DEKs use the AAD
+`"replycant-dek-wrap-v1" || uint64BE(kekEpoch)`.
 
 | Property | Value |
 |----------|-------|
 | Chunk size | 64 KiB (65,536 bytes) of plaintext |
-| Per-chunk nonce | Derived: zero-padded big-endian chunk index |
-| Per-chunk overhead | 16 bytes (GCM tag only) |
-| Overhead for 1 GB file | ~256 KB (~0.025%) |
+| Per-chunk overhead | 16 bytes (GCM tag) |
+| Overhead for a 1 GB file | ~256 KB (~0.025%) |
 
-Empty plaintext produces zero chunks. The last chunk may be smaller than 64 KiB.
+Chunk size is a compile-time constant, not pointer metadata. The last chunk
+may be shorter, and empty plaintext produces zero chunks. Chunked GCM was
+chosen over single-block or CTR mode because it gives both per-chunk
+authentication and random access.
 
-### Random Access
+### LFS pointer
 
-Chunked encryption enables reading arbitrary byte ranges without decrypting the entire file, which is required for video transcoding and HLS streaming.
+The standard LFS pointer carries two extra fields:
 
-To read N plaintext bytes at offset O:
-
-1. Unwrap the DEK from the LFS pointer using the KEK (with epoch-bound AAD)
-2. Compute which chunks span the range: `start_chunk = O / 65536`, `end_chunk = (O + N - 1) / 65536`
-3. Compute encrypted offsets: `encrypted_chunk_size = 65536 + 16`
-4. Seek to `start_chunk * encrypted_chunk_size` in the encrypted file
-5. Download and decrypt only the needed chunks (HTTP range requests if supported)
-6. Extract the requested byte range from the decrypted chunks
-
-Worst case: reading 1 byte requires decrypting one full 64 KiB chunk.
-
-### LFS Pointer Format
-
-The standard LFS pointer is extended with custom fields for encryption metadata:
-
-```
+```text
 version https://git-lfs.github.com/spec/v1
 oid sha256:4d7a2146...
 size 4821033
@@ -203,82 +180,43 @@ x-replycant-kek-epoch 2
 x-replycant-wrapped-dek <base64>
 ```
 
-| Field | Description |
-|-------|-------------|
-| `oid` / `size` | SHA-256 and size of the **encrypted** content (standard LFS) |
-| `x-replycant-kek-epoch` | Which KEK epoch was used to wrap the DEK |
-| `x-replycant-wrapped-dek` | The per-object DEK encrypted with the KEK (epoch-bound AAD) |
+| Field | Meaning |
+|-------|---------|
+| `oid` / `size` | SHA-256 and size of the **encrypted** content |
+| `x-replycant-kek-epoch` | KEK epoch that wrapped the DEK |
+| `x-replycant-wrapped-dek` | The DEK, wrapped with the KEK |
 
-The [manifest's `sha256` field](./media-storage.md) remains the hash of the **plaintext** binary for integrity verification after decryption.
+The DEK lives in the pointer rather than the manifest because the pointer
+already owns retrieval, so it owns decryption too. The
+[manifest's `sha256`](./media-storage.md) stays the hash of the
+**plaintext**, for verification after decryption.
 
-### Encryption Flow
+### Reading a binary
 
-```mermaid
-flowchart LR
-    subgraph client [Client]
-        P[Plaintext binary]
-        DEK["Generate random DEK<br/>(32 bytes)"]
-        CHUNK["Split into 64 KiB chunks<br/>encrypt each with DEK<br/>(AES-256-GCM + AAD)"]
-        WRAP["Wrap DEK with KEK<br/>(epoch AAD)"]
-        PTR["LFS pointer<br/>+ wrapped DEK"]
-        P --> DEK
-        DEK --> CHUNK
-        CHUNK --> WRAP
-        WRAP --> PTR
-    end
-    subgraph server [Server]
-        PTR -->|"git push"| REPO[Git repo]
-        CHUNK -->|"LFS upload"| LFS[LFS store]
-    end
-```
+1. Read `x-replycant-kek-epoch` and `x-replycant-wrapped-dek` from the LFS
+   pointer.
+2. Unwrap the KEK for that epoch with the device's age private key.
+3. Unwrap the DEK with the KEK and the epoch-bound AAD.
+4. Download the chunks you need from LFS.
+5. Decrypt each chunk with the DEK, deriving its nonce and AAD from the
+   chunk index and last-chunk flag.
+6. Concatenate the plaintext. For a whole file, verify its SHA-256 against
+   the manifest's `sha256`.
 
-### Decryption Flow
+Video transcoding and HLS streaming read byte ranges without decrypting the
+whole file. To read N bytes at offset O, fetch chunks
+`O / 65536` through `(O + N - 1) / 65536`. Each encrypted chunk is
+`65536 + 16` bytes, so the range starts at `start_chunk * 65552`, and HTTP
+range requests fetch only those chunks. At worst, reading one byte decrypts
+one 64 KiB chunk.
 
-1. Read LFS pointer -- extract `kek-epoch`, `wrapped-dek`
-2. Unwrap KEK for that epoch using local age private key
-3. Unwrap DEK using the KEK and epoch-bound AAD
-4. Download encrypted binary from LFS
-5. For each chunk: derive nonce and AAD from chunk index / isLast, decrypt with DEK
-6. Concatenate plaintext chunks
-7. Verify SHA-256 of plaintext matches manifest's `sha256`
+## Recovery keys
 
-## Device Onboarding
+Recovery keys are an emergency path for when every normal device key is
+lost. They are marked and managed separately from device keys, but their
+public halves sit in the same `pubkeys/` directory:
 
-Encryption integrates with the existing [device onboarding](./device-onboarding.md) flows.
-
-### Bootstrap (First Device)
-
-1. Device generates P-256 identity key + age encryption key
-2. Pushes `pubkeys/{name}.pub` and `pubkeys/{name}.age`
-3. Generates KEK epoch 1, encrypts for own age key
-4. Commits `encryption/epochs/1.age` and `encryption/current`
-5. All subsequent objects are encrypted
-
-### Device Linking
-
-1. New device generates P-256 identity key + age encryption key
-2. QR payload includes the age public key: `{"pubkey":"...","name":"...","uuid":"...","age_pubkey":"age1..."}`
-3. Existing device commits `pubkeys/{name}.pub` and `pubkeys/{name}.age`
-4. Existing device re-wraps all KEK epoch files to include the new device's age key
-5. New device can now decrypt all KEKs, and therefore all manifests and binary DEKs
-
-### Device Revocation
-
-1. Remove `pubkeys/{name}.pub` and `pubkeys/{name}.age`
-2. Generate new KEK, encrypt for remaining devices
-3. Bump `encryption/current` to the new epoch number
-4. New objects are encrypted with the new KEK -- the revoked device cannot decrypt them
-
-## Recovery Keys
-
-Recovery keys provide an emergency path when every normal device key is lost.
-They are intentionally marked and managed separately from normal device keys.
-
-### Repository layout
-
-Recovery key public components live in `pubkeys/`:
-
-```
+```text
 pubkeys/
   my-phone-<uuid>.pub
   my-phone-<uuid>.age
@@ -286,75 +224,41 @@ pubkeys/
   home-safe-<uuid>.recovery.age
 ```
 
-`*.recovery.pub` is still a P-256 SSH-form public key, so gitd authorization
-continues to use the same matching logic as normal device keys.
+`*.recovery.pub` is a P-256 SSH-form public key, so gitd authorizes it with
+the same matching logic as a device key.
 
-### Bundle format and transport
+### Bundle format
 
-Recovery private material is exported as an encrypted JSON envelope:
+The private halves are exported as an encrypted JSON envelope:
 
-- KDF: `PBKDF2-HMAC-SHA256` (600k iterations)
+- KDF: `PBKDF2-HMAC-SHA256`, 600k iterations
 - Cipher: `AES-256-GCM`
-- Plaintext includes: recovery P-256 PEM key, recovery age private key,
-  pinned CA SHA-256 hash, and the deployment's `headscale_url`.
+- Plaintext: the recovery P-256 PEM key, the recovery age private key, the
+  pinned CA SHA-256 hash, and the deployment's `headscale_url`
 
-The app exports:
+The app exports the envelope as a QR code containing the raw JSON, or as a
+deep link `replycant://recover?v=1&d=<base64url envelope>`. Neither needs a
+hosted web domain.
 
-- QR payload: raw envelope JSON
-- Deep link: `replycant://recover?v=1&d=<base64url envelope>`
-  (`&keep=1` is an optional transport hint that skips the post-recovery
-  revoke prompt; `&pw=` starts recovery without a password prompt.
-  Both are for automated testing and App Review only: `pw` collapses
-  the two-channel split of key and password. Neither changes
-  authentication or crypto.)
+Recovery runs only on a fresh install. The app decrypts the bundle, joins
+the library with the recovery identity, re-wraps the KEK epochs for a new
+device age key, and then switches to that new device identity. See
+[Recovery onboarding path](./device-onboarding.md#recovery-onboarding-path)
+for the full flow and the optional deep link parameters.
 
-No hosted web domain is required for recovery transport.
+### Manual recovery
 
-### Recovery behavior
+If the app cannot run recovery, you can process the bundle by hand:
 
-Recovery is allowed only on fresh installs (no configured server and no local
-repository). On iOS, recovery starts from **Connect to an existing library**
-by scanning the recovery QR (or pasting backup text). The flow:
-
-1. Decrypt bundle with user password
-2. Build temporary mTLS identity from recovery P-256 key
-3. Obtain the CA from hsproxy's TLS chain while joining the tailnet as the
-   recovery identity, and verify its hash
-4. Clone repo
-5. Re-wrap KEK epochs for the new device age key
-6. Commit/push a new normal device key
-7. Switch transport back to the normal device identity
-
-### Manual emergency recovery procedure
-
-If app automation is unavailable, the bundle can be processed manually:
-
-1. Decode envelope JSON from the QR or from deep-link `d` parameter.
-2. Derive AES key using bundle KDF parameters (`PBKDF2-HMAC-SHA256`).
-3. Decrypt envelope ciphertext (`AES-256-GCM`) to recover plaintext JSON.
+1. Decode the envelope JSON from the QR code or from the deep link's `d`
+   parameter.
+2. Derive the AES key with the bundle's KDF parameters
+   (`PBKDF2-HMAC-SHA256`).
+3. Decrypt the envelope ciphertext (`AES-256-GCM`) to get the plaintext JSON.
 4. Connect to `headscale_url`, take the CA from the certificate chain hsproxy
-   presents, and verify its hash matches `ca_sha256`.
-5. Use `p256_private_key` for temporary mTLS git access.
-6. Use `age_private_key` to decrypt/re-wrap KEK epoch files and add a new
-   device key pair in `pubkeys/`.
+   presents, and check that its hash matches `ca_sha256`.
+5. Use `p256_private_key` for temporary mTLS Git access.
+6. Use `age_private_key` to re-wrap the KEK epoch files and add a new device
+   key pair in `pubkeys/`.
 
-This is why the payload stays JSON and includes both identity private keys.
-
-## Design Decisions
-
-| Decision | Choice | Alternative | Rationale |
-|----------|--------|-------------|-----------|
-| Encryption key type | age (X25519) | GPG, ECIES with P-256 | Minimal, modern, implementable natively without CLI |
-| Key hierarchy | KEK + per-object DEK | Single key for all objects | Limits blast radius, trivial nonce management, future sharing |
-| KEK distribution | Epoch-based, age-wrapped | Per-object multi-recipient | Adding a device doesn't require re-encrypting objects |
-| DEK storage | LFS pointer custom fields | Manifest spec field | Separation of concerns: pointer owns retrieval and decryption |
-| Manifest encryption | KEK direct (opaque) | SOPS + age (structured) | Simpler client implementation; SOPS can be layered on later |
-| Binary encryption | Chunked AES-256-GCM | Single-block or CTR mode | Per-chunk authentication + random access reads |
-| Binary DEK generation | Random per object | Deterministic (convergent) | Standard security; convergent encryption can be added later for LFS dedup |
-
-## Related Documentation
-
-- [Authentication](./authentication.md) -- mTLS and identity keys
-- [Device Onboarding](./device-onboarding.md) -- bootstrap and device linking flows
-- [Media Storage](./media-storage.md) -- manifest and LFS pointer structure
-- [Manifests](./manifests.md) -- manifest format and storage paths
+This is why the bundle is plain JSON and carries both private keys.
