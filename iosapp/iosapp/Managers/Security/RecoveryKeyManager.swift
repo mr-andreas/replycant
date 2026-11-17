@@ -12,8 +12,7 @@ final class RecoveryKeyManager: Sendable {
     struct CreatedRecoveryKey {
         let label: String
         let uuid: String
-        let recoveryPubPath: String
-        let recoveryAgePath: String
+        let path: String
         let envelopeJSON: String
         let deepLink: String
     }
@@ -22,8 +21,7 @@ final class RecoveryKeyManager: Sendable {
     struct RecoveryKeyRecord: Equatable {
         let label: String
         let uuid: String
-        let pubPath: String
-        let agePath: String
+        let path: String
     }
 
     // Carries the key metadata used in a successful recovery so callers can offer immediate key replacement.
@@ -93,31 +91,24 @@ final class RecoveryKeyManager: Sendable {
         try !listRecoveryKeys(repository: repository).isEmpty
     }
 
-    // Lists repository recovery key records by pairing .recovery.pub and .recovery.age entries.
+    // Lists recovery key sets. A sealed name is shown when this device
+    // can open it; otherwise the slug, which is all a migrated key has.
     func listRecoveryKeys(repository: Repository) throws -> [RecoveryKeyRecord] {
-        let files = try repository.listFiles(in: "pubkeys")
-        let recoveryPubFiles = files
-            .filter { $0.hasSuffix(".recovery.pub") }
-            .sorted()
-        var records: [RecoveryKeyRecord] = []
-
-        for pubPath in recoveryPubFiles {
-            guard let (label, uuid) = parseRecoveryKeyName(path: pubPath) else {
-                throw Error.malformedRecoveryFilename
-            }
-            let agePath = "pubkeys/\(label)-\(uuid).recovery.age"
-            if files.contains(agePath) {
-                records.append(
-                    RecoveryKeyRecord(
-                        label: label,
-                        uuid: uuid,
-                        pubPath: pubPath,
-                        agePath: agePath
-                    )
+        let epochs = KEKEpochManager(repository: repository)
+        return try KeySet.readAll(in: repository)
+            .filter { $0.keySet.spec.type == KeySet.typeRecovery }
+            .map { stored in
+                let identity = labelAndUUID(from: stored.keySet.metadata.name)
+                let kek = stored.keySet.spec.displayName.flatMap { sealed in
+                    try? epochs.loadKEK(epoch: sealed.kekEpoch)
+                }
+                return RecoveryKeyRecord(
+                    label: stored.keySet.resolvedDisplayName(kek: kek),
+                    uuid: identity.uuid,
+                    path: stored.path
                 )
             }
-        }
-        return records
+            .sorted { $0.path < $1.path }
     }
 
     // Creates a new recovery key, publishes marked pubkeys, re-wraps epochs, and returns share payloads.
@@ -142,8 +133,10 @@ final class RecoveryKeyManager: Sendable {
         let normalizedLabel = sanitizeLabel(label)
         let uuid = UUID().uuidString.lowercased()
         let baseName = "\(normalizedLabel)-\(uuid)"
-        let recoveryPubPath = "pubkeys/\(baseName).recovery.pub"
-        let recoveryAgePath = "pubkeys/\(baseName).recovery.age"
+        let recoveryPath = KeySet.path(name: baseName)
+        let shownName = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? normalizedLabel
+            : label.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let p256Key = P256.Signing.PrivateKey()
         let recoveryAgeIdentity = Curve25519.KeyAgreement.PrivateKey()
@@ -156,16 +149,25 @@ final class RecoveryKeyManager: Sendable {
         try await gitDB.durableCommit(
             message: "Add recovery key \(normalizedLabel) (\(uuid))"
         ) { repository in
+            let epochs = KEKEpochManager(repository: repository)
+            let current = try epochs.loadCurrentKEK()
+            let sealed = try KeySet.encryptDisplayName(
+                kek: current.kek,
+                epoch: current.epoch,
+                name: baseName,
+                plaintext: shownName
+            )
+            let keyFile = try keySetFile(
+                name: baseName,
+                type: KeySet.typeRecovery,
+                mtls: recoverySSH,
+                age: recoveryAgePublic,
+                displayName: sealed
+            )
             let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
             let allAgeRecipients = Array(Set(existingAgeRecipients + [recoveryAgePublic]))
-            let epochFiles = try KEKEpochManager(repository: repository)
-                .rewrappedEpochFilesIncludingRecipients(allAgeRecipients)
-            var files: [(path: String, content: String)] = [
-                (path: recoveryPubPath, content: recoverySSH),
-                (path: recoveryAgePath, content: recoveryAgePublic),
-            ]
-            files.append(contentsOf: epochFiles)
-            return GitFileChange(files: files)
+            let epochFiles = try epochs.rewrappedEpochFilesIncludingRecipients(allAgeRecipients)
+            return GitFileChange(files: [keyFile] + epochFiles)
         }
         Self.postRecoveryKeysDidChange()
 
@@ -189,8 +191,7 @@ final class RecoveryKeyManager: Sendable {
         return CreatedRecoveryKey(
             label: label,
             uuid: uuid,
-            recoveryPubPath: recoveryPubPath,
-            recoveryAgePath: recoveryAgePath,
+            path: recoveryPath,
             envelopeJSON: envelopeJSON,
             deepLink: deepLink
         )
@@ -217,7 +218,7 @@ final class RecoveryKeyManager: Sendable {
             guard let match = current.first(where: { $0.uuid.caseInsensitiveCompare(uuid) == .orderedSame }) else {
                 throw Error.noMatchingRecoveryKey
             }
-            return GitFileChange(deletions: [match.pubPath, match.agePath])
+            return GitFileChange(deletions: [match.path])
         }
         Self.postRecoveryKeysDidChange()
     }
@@ -356,26 +357,38 @@ final class RecoveryKeyManager: Sendable {
             try GitDBManager.shared.getGitDB()
         }
         let ageIdentity = try parseRecoveryAgePrivateKey(plaintext.agePrivateKey)
-        let ownDeviceName = normalizedDeviceName()
+        let shownName = await MainActor.run {
+            UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let ownDeviceName = KeySet.metadataName(from: shownName)
         let ownDeviceUUID = UUID().uuidString.lowercased()
-        let ownPublicKey = try ClientIdentityManager.shared.sshPublicKey(comment: "\(ownDeviceName)-\(ownDeviceUUID)")
+        let ownMetadataName = "\(ownDeviceName)-\(ownDeviceUUID)"
+        let ownPublicKey = try ClientIdentityManager.shared.sshPublicKey(comment: ownMetadataName)
         let ownAgePublic = try ClientIdentityManager.shared.agePublicKey()
-        let ownPubPath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).pub"
-        let ownAgePath = "pubkeys/\(ownDeviceName)-\(ownDeviceUUID).age"
 
         progress?("Re-wrapping encryption keys for this device...", 70)
-        let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
-        let allRecipients = Array(Set(existingAgeRecipients + [ownAgePublic]))
-        let epochFiles = try KEKEpochManager(
+        let epochs = KEKEpochManager(
             repository: repository,
             ageIdentityLoader: { ageIdentity }
-        ).rewrappedEpochFilesIncludingRecipients(allRecipients)
-
-        var files: [(path: String, content: String)] = [
-            (path: ownPubPath, content: ownPublicKey),
-            (path: ownAgePath, content: ownAgePublic),
-        ]
-        files.append(contentsOf: epochFiles)
+        )
+        let current = try epochs.loadCurrentKEK()
+        let sealed = try KeySet.encryptDisplayName(
+            kek: current.kek,
+            epoch: current.epoch,
+            name: ownMetadataName,
+            plaintext: shownName.isEmpty ? ownMetadataName : shownName
+        )
+        let ownKey = try keySetFile(
+            name: ownMetadataName,
+            type: KeySet.typeDevice,
+            mtls: ownPublicKey,
+            age: ownAgePublic,
+            displayName: sealed
+        )
+        let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
+        let allRecipients = Array(Set(existingAgeRecipients + [ownAgePublic]))
+        let epochFiles = try epochs.rewrappedEpochFilesIncludingRecipients(allRecipients)
+        let files = [ownKey] + epochFiles
         try await gitDB.commitFilesWithoutSync(
             message: "Recover device key for \(ownDeviceName) (\(ownDeviceUUID))",
             files: files
@@ -408,43 +421,66 @@ final class RecoveryKeyManager: Sendable {
         )
     }
 
-    // Parses recovery key filenames of form pubkeys/<label>-<uuid>.recovery.pub.
-    private func parseRecoveryKeyName(path: String) -> (label: String, uuid: String)? {
-        let fileName = (path as NSString).lastPathComponent
-        guard fileName.hasSuffix(".recovery.pub") else {
-            return nil
-        }
-        let stripped = String(fileName.dropLast(".recovery.pub".count))
+    // Peels a trailing UUID off a key-set name so the row can show it
+    // separately. A name without one keeps the whole slug as its id.
+    private func labelAndUUID(from slug: String) -> (label: String, uuid: String) {
         let uuidLength = 36
-        guard stripped.count > uuidLength else {
-            return nil
+        guard slug.count > uuidLength + 1 else {
+            return (slug, slug)
         }
-        let uuidStart = stripped.index(stripped.endIndex, offsetBy: -uuidLength)
-        let separatorIndex = stripped.index(before: uuidStart)
-        guard stripped[separatorIndex] == "-" else {
-            return nil
+        let uuidStart = slug.index(slug.endIndex, offsetBy: -uuidLength)
+        let separator = slug.index(before: uuidStart)
+        guard slug[separator] == "-" else {
+            return (slug, slug)
         }
-        let label = String(stripped[..<separatorIndex])
-        let uuid = String(stripped[uuidStart...])
+        let label = String(slug[..<separator])
+        let uuid = String(slug[uuidStart...])
         guard !label.isEmpty, UUID(uuidString: uuid) != nil else {
-            return nil
+            return (slug, slug)
         }
         return (label, uuid)
     }
 
-    // Loads repository age recipients so epoch re-wrap keeps every already-authorized client decryptable.
+    // Loads every key set's age key, including recovery keys, so a new
+    // epoch stays readable by devices that are not being removed.
     private func loadAgeRecipientKeys(repository: Repository) throws -> [String] {
-        let files = try repository.listFiles(in: "pubkeys")
-        let ageFiles = files.filter { $0.hasSuffix(".age") }
-        return try ageFiles.map { try repository.readFile(at: $0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        try KeySet.readAll(in: repository).map {
+            $0.keySet.spec.agePublicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 
-    // Normalizes labels into filename-safe prefixes for deterministic pubkey path generation.
+    // The filename is a slug. The words the user typed are sealed
+    // separately, so an empty label still needs a usable file name.
     private func sanitizeLabel(_ label: String) -> String {
-        let lower = label.lowercased()
-        let replaced = lower.replacingOccurrences(of: " ", with: "-")
-        let safe = replaced.replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
-        return safe.isEmpty ? "recovery" : safe
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasToken = trimmed.contains { character in
+            character.isASCII && (character.isLetter || character.isNumber)
+        }
+        guard hasToken else {
+            return "recovery"
+        }
+        return KeySet.metadataName(from: trimmed)
+    }
+
+    private func keySetFile(
+        name: String,
+        type: String,
+        mtls: String,
+        age: String,
+        displayName: KeySet.DisplayName?
+    ) throws -> (path: String, content: String) {
+        let keySet = KeySet(
+            apiVersion: KeySet.apiVersionValue,
+            kind: KeySet.kindValue,
+            metadata: .init(name: name),
+            spec: .init(
+                type: type,
+                mtlsPublicKey: mtls,
+                agePublicKey: age,
+                displayName: displayName
+            )
+        )
+        return (KeySet.path(name: name), try keySet.yaml())
     }
 
     // Formats a CryptoKit P-256 public key into SSH ecdsa-sha2-nistp256 form for gitd auth lookup.
@@ -475,14 +511,6 @@ final class RecoveryKeyManager: Sendable {
             throw Error.malformedRecoveryAgeKey
         }
         return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: decoded.data)
-    }
-
-    // Produces stable path-safe names for recovered device key files.
-    private func normalizedDeviceName() -> String {
-        UIDevice.current.name
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: "'", with: "")
-            .lowercased()
     }
 
     // Broadcasts local key-set changes so Settings can drop or restore the

@@ -25,18 +25,21 @@ ECDSA P-256 (secp256r1) was chosen over Ed25519 because:
 Public keys are stored in the repository for auditable access control:
 
 ```
-pubkeys/{device-identifier}.pub
+pubkeys/{device-identifier}.yaml
 ```
+
+The file is a key set. `spec.mtlsPublicKey` is the SSH public key, and
+`metadata.name` must equal the file name. See [Encryption](./encryption.md).
 
 ### Format
 
-Keys use SSH public key format for compatibility:
+The mTLS key uses SSH public key format for compatibility:
 
 ```
 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABB...
 ```
 
-A `.pub` file that is not a P-256 SSH key is ignored, and the other keys in that commit stay authorized.
+A key set that does not parse, or whose name does not match the file, is ignored, and the other keys in that commit stay authorized.
 
 ### Access Control Flow
 

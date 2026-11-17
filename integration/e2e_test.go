@@ -699,7 +699,7 @@ func readCloneDevice(t *testing.T, containerID string, cloneDir string) cloneDev
 	base := "pubkeys/" + identity.DeviceName + "-" + identity.DeviceUUID
 	return cloneDevice{
 		fingerprint: auth.KeyFingerprint(key),
-		pubkeyFiles: []string{base + ".pub", base + ".age"},
+		pubkeyFiles: []string{base + ".yaml"},
 	}
 }
 

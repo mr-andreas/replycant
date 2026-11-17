@@ -11,6 +11,7 @@ enum DeviceLinking {
     /// Why a grant cannot start. Surfaces as the linking error screen.
     enum Error: Swift.Error, LocalizedError {
         case noMTLSCredentials
+        case invalidDeviceName
 
         // Tells the user to finish first-device setup when this phone
         // has no client identity or pinned CA to push with.
@@ -18,6 +19,8 @@ enum DeviceLinking {
             switch self {
             case .noMTLSCredentials:
                 return "mTLS credentials not configured. Please complete initial setup first."
+            case .invalidDeviceName:
+                return "That device name cannot be saved. Rename the device and try again."
             }
         }
     }
@@ -35,6 +38,7 @@ enum DeviceLinking {
             _ agePubkey: String,
             _ name: String,
             _ uuid: String,
+            _ displayName: String?,
             _ onProgress: @Sendable (String) -> Void
         ) async throws -> Void
 
@@ -56,6 +60,7 @@ enum DeviceLinking {
         agePubkey: String,
         name: String,
         uuid: String,
+        displayName: String? = nil,
         pairingSecret: String,
         operations: Operations = .live,
         onProgress: @escaping @Sendable (String) -> Void = { _ in }
@@ -66,6 +71,7 @@ enum DeviceLinking {
                 agePubkey,
                 name,
                 uuid,
+                displayName,
                 onProgress
             )
         }.value
@@ -80,6 +86,7 @@ enum DeviceLinking {
         agePubkey: String,
         name: String,
         uuid: String,
+        displayName: String? = nil,
         onProgress: @Sendable (String) -> Void
     ) async throws {
         onProgress("Adding device key...")
@@ -89,11 +96,11 @@ enum DeviceLinking {
             try GitDBManager.shared.getGitDB()
         }
 
-        let fileName = "\(name)-\(uuid).pub"
-        let pubkeyPath = "pubkeys/\(fileName)"
-        let agePath = "pubkeys/\(name)-\(uuid).age"
+        let metadataName = try metadataName(slug: name, uuid: uuid)
+        let shown = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let plaintext = (shown?.isEmpty == false) ? shown! : metadataName
 
-        log("Adding device key: \(pubkeyPath)", context: "DeviceLinking")
+        log("Adding device key: \(KeySet.path(name: metadataName))", context: "DeviceLinking")
 
         // Recipient lists and epoch re-wrap are read from the commit the
         // durable write just verified. Doing that before the HEAD check
@@ -101,21 +108,35 @@ enum DeviceLinking {
         try await gitDB.durableCommit(
             message: "Add device key for \(name) (\(uuid))"
         ) { repository in
+            let epochs = KEKEpochManager(repository: repository)
+            let current = try epochs.loadCurrentKEK()
+            let sealed = try KeySet.encryptDisplayName(
+                kek: current.kek,
+                epoch: current.epoch,
+                name: metadataName,
+                plaintext: plaintext
+            )
+            let keySet = KeySet(
+                apiVersion: KeySet.apiVersionValue,
+                kind: KeySet.kindValue,
+                metadata: .init(name: metadataName),
+                spec: .init(
+                    type: KeySet.typeDevice,
+                    mtlsPublicKey: pubkey,
+                    agePublicKey: agePubkey,
+                    displayName: sealed
+                )
+            )
+            let keyFile = (path: KeySet.path(name: metadataName), content: try keySet.yaml())
             let existingRecipientAgePubkeys = try loadAgeRecipientKeys(
                 repository: repository
             )
             let allRecipientAgePubkeys = Array(
                 Set(existingRecipientAgePubkeys + [agePubkey])
             )
-            let epochFiles = try KEKEpochManager(repository: repository)
+            let epochFiles = try epochs
                 .rewrappedEpochFilesIncludingRecipients(allRecipientAgePubkeys)
-
-            var files: [(path: String, content: String)] = [
-                (path: pubkeyPath, content: pubkey),
-                (path: agePath, content: agePubkey)
-            ]
-            files.append(contentsOf: epochFiles)
-            return GitFileChange(files: files)
+            return GitFileChange(files: [keyFile] + epochFiles)
         }
 
         log("Successfully added and pushed device key", context: "DeviceLinking")
@@ -145,16 +166,23 @@ enum DeviceLinking {
         )
     }
 
-    // Loads repository age public keys so epoch re-wrap includes every
-    // currently authorized device.
+    // The QR name is a slug the user can read. The file name also
+    // carries the UUID, and it has to be a name gitd will accept.
+    private static func metadataName(slug: String, uuid: String) throws -> String {
+        let name = "\(KeySet.metadataName(from: slug))-\(uuid.lowercased())"
+        guard KeySet.isValidName(name) else {
+            throw Error.invalidDeviceName
+        }
+        return name
+    }
+
+    // Loads every key set's age key so the new device joins a wrap
+    // the devices already on the library can still open.
     private static func loadAgeRecipientKeys(
         repository: Repository
     ) throws -> [String] {
-        let files = try repository.listFiles(in: "pubkeys")
-        let ageFiles = files.filter { $0.hasSuffix(".age") }
-        return try ageFiles.map {
-            try repository.readFile(at: $0)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        try KeySet.readAll(in: repository).map {
+            $0.keySet.spec.agePublicKey.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 
@@ -178,12 +206,13 @@ extension DeviceLinking.Operations {
     /// pairing record. The publish waits for the tailnet itself.
     static var live: DeviceLinking.Operations {
         DeviceLinking.Operations(
-            addDeviceKey: { pubkey, agePubkey, name, uuid, onProgress in
+            addDeviceKey: { pubkey, agePubkey, name, uuid, displayName, onProgress in
                 try await DeviceLinking.addDeviceKeyToRepository(
                     pubkey: pubkey,
                     agePubkey: agePubkey,
                     name: name,
                     uuid: uuid,
+                    displayName: displayName,
                     onProgress: onProgress
                 )
             },

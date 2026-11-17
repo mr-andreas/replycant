@@ -102,14 +102,12 @@ struct RecoveryKeyView: View {
             RecoveryKeyManager.RecoveryKeyRecord(
                 label: "home-safe",
                 uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                pubPath: "pubkeys/home-safe-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.recovery.pub",
-                agePath: "pubkeys/home-safe-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.recovery.age"
+                path: "pubkeys/home-safe-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.yaml"
             ),
             RecoveryKeyManager.RecoveryKeyRecord(
                 label: "office-drawer",
                 uuid: "11111111-2222-3333-4444-555555555555",
-                pubPath: "pubkeys/office-drawer-11111111-2222-3333-4444-555555555555.recovery.pub",
-                agePath: "pubkeys/office-drawer-11111111-2222-3333-4444-555555555555.recovery.age"
+                path: "pubkeys/office-drawer-11111111-2222-3333-4444-555555555555.yaml"
             )
         ]
     }

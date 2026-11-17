@@ -1,6 +1,6 @@
 // Pins the only gitdb/version this client will open so a plaintext
 // marker cannot steer decryption onto a weaker path.
-export const DATABASE_FORMAT_VERSION = 1;
+export const DATABASE_FORMAT_VERSION = 2;
 export const DATABASE_VERSION_PATH = "gitdb/version";
 
 // Names gitdb/version failures so sync and rewind can refuse without
@@ -29,8 +29,9 @@ export class DatabaseVersionUnreadableError extends Error {
 
 // Turns a reject-only version check into the action the user can
 // actually take. A newer marker means update the app; an older
-// marker means run the migration tool; a stripped marker is a
-// tamper warning; malformed means this library cannot be opened.
+// marker means restart the server so it can migrate; a stripped
+// marker is a tamper warning; malformed means this library cannot
+// be opened.
 export const describeDatabaseVersionFailure = (error: DatabaseVersionError): string => {
   if (error.message.includes("was removed after this cache was built")) {
     const stored = error.required ?? Number(
@@ -49,7 +50,7 @@ export const describeDatabaseVersionFailure = (error: DatabaseVersionError): str
     return `This library uses database format ${found}. This app supports format ${required}. Update the app to continue.`;
   }
   if (Number.isFinite(found) && Number.isFinite(required) && found < required) {
-    return `This library uses database format ${found}. This app supports format ${required}. Run the migration tool to continue.`;
+    return `This library uses database format ${found}. This app supports format ${required}. Restart the library server so it can upgrade the database, then try again.`;
   }
   return "This library uses an incompatible database format and cannot be opened. Create a new library to continue - resyncing will not help.";
 };
@@ -68,12 +69,11 @@ export const parseDatabaseVersion = (raw: Uint8Array | string): number => {
   return Number(trimmed);
 };
 
-// Accepts the compiled pin and the pre-marker integer 0 so old alpha
-// libraries stay readable until a later migration writes 1. The check
-// is an explicit set, not `<= current`, so a future bump to 2 does
-// not silently keep accepting 1.
+// Accepts only the compiled pin. An older library stays unreadable
+// until gitd migrates it, and the check is exact rather than
+// `<= current` so a future bump does not keep accepting this format.
 export const isAcceptedDatabaseVersion = (version: number): boolean =>
-  version === 0 || version === DATABASE_FORMAT_VERSION;
+  version === DATABASE_FORMAT_VERSION;
 
 // Refuses any integer that is not in the accepted set so a tampered
 // value can only deny service.

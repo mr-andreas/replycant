@@ -103,8 +103,8 @@ export class ManifestBlobReader {
 
   // Reads gitdb/version by filepath after proving the commit exists
   // so sync can compare the observed format against the local cache.
-  // Absence is version 0 only when the root tree is readable and has
-  // no `gitdb` path. A failed object read is not version 0.
+  // A readable tree with no `gitdb` path is a missing marker, which
+  // is an error. A failed object read is not absence.
   async inspectDatabaseVersion(commitHash: string): Promise<{ version: number; rootPaths: string[] }> {
     let commit;
     try {
@@ -155,7 +155,7 @@ export class ManifestBlobReader {
         );
       }
       if (isNotFoundError(error) && !rootPaths.includes("gitdb")) {
-        return { version: 0, rootPaths };
+        throw new DatabaseVersionError("gitdb/version is missing");
       }
       throw new DatabaseVersionUnreadableError(
         `could not read gitdb/version at ${commitHash}`,

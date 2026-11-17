@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted. The version-0 stand-in and the "no server enforcement" rule
+are superseded by
+[ADR-0038](0038-keyset-and-exact-database-version.md).
 
 ## Context
 

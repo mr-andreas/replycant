@@ -131,7 +131,7 @@ export const OnboardingGate = ({ flow, snapshot, children }: OnboardingGateProps
           agePublicKey: flow.identityRecord.agePublicKey,
           deviceName: flow.identityRecord.deviceName,
           deviceUUID: flow.identityRecord.deviceUUID,
-        }, flow.pairingSecret.encoded)
+        }, flow.pairingSecret.encoded, flow.deviceNameInput)
       : null;
 
     return (

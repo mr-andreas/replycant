@@ -2500,7 +2500,8 @@ func initTempRepo(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(repo, "gitdb"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "gitdb", "version"), []byte("1\n"), 0o644); err != nil {
+	version := fmt.Sprintf("%d\n", gitcrypt.DatabaseFormatVersion)
+	if err := os.WriteFile(filepath.Join(repo, "gitdb", "version"), []byte(version), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(repo, "encryption", "epochs"), 0o755); err != nil {

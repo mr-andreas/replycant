@@ -54,8 +54,22 @@ struct QRScanValidationTests {
         #expect(payload.agePubkey == "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq")
         #expect(payload.name == "laptop")
         #expect(payload.uuid == "abcd")
+        #expect(payload.displayName == nil)
         #expect(payload.pairingSecret == "cGFpcmluZy1zZWNyZXQ")
         #expect(payload.rawJSON == code)
+    }
+
+    // The name the user typed is optional. Older codes only have the
+    // slug, and the scanner still has to accept those.
+    @Test func devicePublicKeyKeepsAnOptionalDisplayName() {
+        let code = #"{"pubkey":"ssh-ed25519 AAAA test","age_pubkey":"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","name":"laptop","display_name":"Andreas's iPhone","uuid":"abcd","pairing_secret":"cGFpcmluZy1zZWNyZXQ"}"#
+        let decision = QRScanValidation.validate(code: code, mode: .devicePublicKey)
+        guard case .acceptDevicePublicKey(let payload) = decision else {
+            Issue.record("Expected device payload acceptance")
+            return
+        }
+        #expect(payload.name == "laptop")
+        #expect(payload.displayName == "Andreas's iPhone")
     }
 
     // Without a secret the new device could never receive its join record,

@@ -171,21 +171,23 @@ func TestMatchesIndexManifestPlaintextStaged(t *testing.T) {
 	assert.False(t, matched)
 }
 
-// TestRequireFilterDatabaseVersion accepts a missing marker as version
-// 0 and refuses any other unsupported integer.
+// TestRequireFilterDatabaseVersion rejects a missing marker and any
+// integer other than the compiled pin.
 func TestRequireFilterDatabaseVersion(t *testing.T) {
 	t.Parallel()
 	repoDir := testInitRepo(t)
 	rt := testFilterRuntime(repoDir, []byte("0123456789abcdef0123456789abcdef"), 1)
+	err := requireFilterDatabaseVersion(rt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing")
+
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
 	require.NoError(t, requireFilterDatabaseVersion(rt))
 
 	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("1\n"), 0o644)
-	require.NoError(t, requireFilterDatabaseVersion(rt))
-
-	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
-	err := requireFilterDatabaseVersion(rt)
+	err = requireFilterDatabaseVersion(rt)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported gitdb database version 2")
+	assert.Contains(t, err.Error(), "unsupported gitdb database version 1")
 }
 
 // TestSmudgeRejectsPlaintextManifest ensures a hostile server cannot strip the

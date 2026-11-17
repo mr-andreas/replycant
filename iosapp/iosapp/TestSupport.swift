@@ -558,12 +558,18 @@ class TestSupport {
     // Seeds a recovery-key pair so marketing screenshots show a healthy
     // Settings tab instead of the missing-key warning badge.
     static func screenshotRecoveryKeyFiles() -> [(path: String, content: String)] {
-        let uuid = "00000000-0000-4000-8000-000000000001"
-        let label = "home"
-        return [
-            (path: "pubkeys/\(label)-\(uuid).recovery.pub", content: "ssh"),
-            (path: "pubkeys/\(label)-\(uuid).recovery.age", content: "age"),
-        ]
+        let name = "home-00000000-0000-4000-8000-000000000001"
+        let keySet = KeySet(
+            apiVersion: KeySet.apiVersionValue,
+            kind: KeySet.kindValue,
+            metadata: .init(name: name),
+            spec: .init(
+                type: KeySet.typeRecovery,
+                mtlsPublicKey: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHRl+gi7RtSRc6vdZ+Yi9UDbHAjG6AU7bGguZE6PrPipUw+vUZxniQRRaMy/rwuKaIM/KRmDaslS/CpN5+1NvJE= phone",
+                agePublicKey: "age1gffmd3cp4aae4ellqlqladxvtej9za6qsqpyquudjrwj06j4q95qqn5m8a"
+            )
+        )
+        return [(path: KeySet.path(name: name), content: (try? keySet.yaml()) ?? "")]
     }
 
     // Clears local repository/config leftovers so the privacy screenshot relaunch cannot reopen the seeded library.

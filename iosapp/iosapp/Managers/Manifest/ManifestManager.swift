@@ -2,6 +2,7 @@ import Foundation
 import LibGit2
 import GitDB
 import GRDB
+import UIKit
 
 // Unifies manifest reads, git writes, and git-to-database sync so callers do not manage consistency steps manually.
 // Declares write APIs locally to preserve main-actor isolation instead of inheriting a nonisolated protocol.
@@ -331,8 +332,49 @@ final class DefaultManifestManager: ManifestManager {
     }
 
     // Synchronizes the database with git HEAD, reporting hydration progress when available.
+    // A migrated library has no sealed device name, because the server
+    // never holds the key that would write one. Filling this phone's
+    // own name in afterwards must not fail the photo sync that just
+    // succeeded.
     func syncToHead(progressHandler: SyncProgressHandler? = nil) async throws {
         try await gitDB.syncToHead(progressHandler: progressHandler)
+        await backfillOwnDisplayNameIfNeeded()
+    }
+
+    private enum DisplayNameBackfill: Error {
+        case alreadyNamed
+    }
+
+    private func backfillOwnDisplayNameIfNeeded() async {
+        let displayName = UIDevice.current.name
+        do {
+            let ssh = try ClientIdentityManager.shared.sshPublicKey()
+            let repository = try RepositoryManager.shared.getRepository()
+            guard try AuthorizedDeviceManager().ownDisplayNameBackfill(
+                repository: repository,
+                displayName: displayName,
+                ownSSHPublicKey: ssh
+            ) != nil else {
+                return
+            }
+            try await gitDB.durableCommit(message: "Name this device") { repository in
+                guard let file = try AuthorizedDeviceManager().ownDisplayNameBackfill(
+                    repository: repository,
+                    displayName: displayName,
+                    ownSSHPublicKey: ssh
+                ) else {
+                    throw DisplayNameBackfill.alreadyNamed
+                }
+                return GitFileChange(files: [(path: file.path, content: file.content)])
+            }
+        } catch DisplayNameBackfill.alreadyNamed {
+            return
+        } catch {
+            log(
+                "Device name backfill skipped: \(error.localizedDescription)",
+                context: "ManifestManager"
+            )
+        }
     }
 
     // Finds an existing original by sha256 so uploads can perform content-based deduplication.

@@ -36,14 +36,16 @@ struct DatabaseVersionTests {
     }
 
     @Test func requireSupportedAcceptsPinnedVersionAndRejectsOthers() throws {
-        try DatabaseVersion.requireSupported("1\n")
-        try DatabaseVersion.requireAccepted(0)
-        try DatabaseVersion.requireAccepted(1)
-        #expect(throws: DatabaseVersionError.unsupported(found: 2, required: 1)) {
-            try DatabaseVersion.requireSupported("2\n")
+        try DatabaseVersion.requireSupported("2\n")
+        try DatabaseVersion.requireAccepted(2)
+        #expect(throws: DatabaseVersionError.unsupported(found: 1, required: 2)) {
+            try DatabaseVersion.requireSupported("1\n")
         }
-        #expect(throws: DatabaseVersionError.unsupported(found: 2, required: 1)) {
-            try DatabaseVersion.requireAccepted(2)
+        #expect(throws: DatabaseVersionError.unsupported(found: 0, required: 2)) {
+            try DatabaseVersion.requireAccepted(0)
+        }
+        #expect(throws: DatabaseVersionError.unsupported(found: 3, required: 2)) {
+            try DatabaseVersion.requireAccepted(3)
         }
     }
 
@@ -56,7 +58,7 @@ struct DatabaseVersionTests {
         let repository = try Repository.create(at: repoPath, bare: false)
         try repository.createCommit(
             message: "seed",
-            files: [("gitdb/version", "1\n")]
+            files: [("gitdb/version", "2\n")]
         )
         let head = try #require(repository.headOID())
         try DatabaseVersion.requireSupported(in: repository, commitOid: head)
@@ -64,15 +66,15 @@ struct DatabaseVersionTests {
 
     @Test func userGuidanceAsksToUpdateWhenMarkerIsNewer() {
         #expect(
-            DatabaseVersionError.unsupported(found: 2, required: 1).userGuidance
-                == "This library uses database format 2. This app supports format 1. Update the app to continue."
+            DatabaseVersionError.unsupported(found: 3, required: 2).userGuidance
+                == "This library uses database format 3. This app supports format 2. Update the app to continue."
         )
     }
 
     @Test func userGuidanceAsksToMigrateWhenMarkerIsOlder() {
         #expect(
             DatabaseVersionError.unsupported(found: 1, required: 2).userGuidance
-                == "This library uses database format 1. This app supports format 2. Run the migration tool to continue."
+                == "This library uses database format 1. This app supports format 2. Restart the library server so it can upgrade the database, then try again."
         )
     }
 
@@ -108,7 +110,7 @@ struct DatabaseVersionTests {
         try DatabaseVersion.requireSupportedIfHeadExists(in: repository)
     }
 
-    @Test func readTreatsAbsentMarkerAsZero() throws {
+    @Test func readRejectsAbsentMarker() throws {
         let repoPath = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitdb-version-missing-\(UUID().uuidString)")
             .path
@@ -120,7 +122,11 @@ struct DatabaseVersionTests {
             files: [("notes/readme.txt", "hello")]
         )
         let head = try #require(repository.headOID())
-        #expect(try DatabaseVersion.read(in: repository, commitOid: head) == 0)
-        try DatabaseVersion.requireSupported(in: repository, commitOid: head)
+        #expect(throws: DatabaseVersionError.malformed) {
+            _ = try DatabaseVersion.read(in: repository, commitOid: head)
+        }
+        #expect(throws: DatabaseVersionError.malformed) {
+            try DatabaseVersion.requireSupported(in: repository, commitOid: head)
+        }
     }
 }

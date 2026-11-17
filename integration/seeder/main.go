@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/keyset"
 	"gopkg.in/yaml.v3"
 )
 
@@ -180,16 +181,11 @@ func initializeRepository(cfg seederConfig) error {
 	if err := disableAutoMaintenance(workDir); err != nil {
 		return fmt.Errorf("disable worktree auto maintenance: %w", err)
 	}
-	if err := writeFile(filepath.Join(workDir, "pubkeys", "integration-device.pub"), []byte(identity.PublicKeySSH+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write pubkey: %w", err)
+	if err := writeDeviceKeySet(workDir, "integration-device", identity, kek, 1); err != nil {
+		return err
 	}
-	if err := writeFile(filepath.Join(workDir, "pubkeys", "integration-device.age"), []byte(identity.AgePublicKey+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write age pubkey: %w", err)
-	}
-	if cfg.databaseVersion > 0 {
-		if err := writeFile(filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", cfg.databaseVersion)), 0o644); err != nil {
-			return fmt.Errorf("write gitdb version: %w", err)
-		}
+	if err := writeFile(filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", cfg.databaseVersion)), 0o644); err != nil {
+		return fmt.Errorf("write gitdb version: %w", err)
 	}
 	if err := writeFile(filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("write current epoch: %w", err)
@@ -412,6 +408,34 @@ func min(a int, b int) int {
 	return b
 }
 
+// writeDeviceKeySet publishes the seeder as a device key set. The
+// display name is sealed with the same KEK as manifests so a reader
+// that holds the epoch can show it, and gitd can still read the keys.
+func writeDeviceKeySet(workDir, name string, identity gitcrypt.Identity, kek []byte, epoch int) error {
+	display, err := keyset.EncryptDisplayName(kek, epoch, name, identity.DeviceName)
+	if err != nil {
+		return fmt.Errorf("encrypt display name: %w", err)
+	}
+	body, err := keyset.Marshal(keyset.KeySet{
+		APIVersion: keyset.APIVersion,
+		Kind:       keyset.Kind,
+		Metadata:   keyset.Metadata{Name: name},
+		Spec: keyset.Spec{
+			Type:          keyset.TypeDevice,
+			MTLSPublicKey: strings.TrimSpace(identity.PublicKeySSH),
+			AgePublicKey:  strings.TrimSpace(identity.AgePublicKey),
+			DisplayName:   &display,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal key set: %w", err)
+	}
+	if err := writeFile(filepath.Join(workDir, keyset.Path(name)), body, 0o644); err != nil {
+		return fmt.Errorf("write key set: %w", err)
+	}
+	return nil
+}
+
 // validateConfig catches invalid combinations early so test failures are explicit.
 func validateConfig(cfg seederConfig) error {
 	if strings.TrimSpace(cfg.bareRepo) == "" {
@@ -429,8 +453,8 @@ func validateConfig(cfg seederConfig) error {
 	if cfg.commitCount < 1 {
 		return fmt.Errorf("--commit-count must be >= 1")
 	}
-	if cfg.databaseVersion < 0 {
-		return fmt.Errorf("--database-version must be >= 0")
+	if cfg.databaseVersion < 1 {
+		return fmt.Errorf("--database-version must be >= 1")
 	}
 	if cfg.mediaCount > 0 && cfg.commitCount > cfg.mediaCount {
 		return fmt.Errorf("--commit-count cannot exceed --media-count when media is requested")
@@ -446,7 +470,7 @@ func main() {
 	flag.IntVar(&cfg.mediaCount, "media-count", 0, "Number of media records to seed")
 	flag.IntVar(&cfg.commitCount, "commit-count", 1, "Number of commits to distribute seeded media across")
 	flag.BoolVar(&cfg.addMediaOnly, "add-media-only", false, "Only append media commits to an existing seeded repository")
-	flag.IntVar(&cfg.databaseVersion, "database-version", gitcrypt.DatabaseFormatVersion, "gitdb/version marker written during initialize; 0 omits the file")
+	flag.IntVar(&cfg.databaseVersion, "database-version", gitcrypt.DatabaseFormatVersion, "gitdb/version marker written during initialize")
 	flag.Parse()
 	if err := validateConfig(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())

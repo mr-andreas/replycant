@@ -150,7 +150,7 @@ read it.
 
 ## Key Caching
 
-Authorized keys from the `pubkeys/` directory are cached to minimize tree walks and blob parses. The cache is keyed on the `main` commit hash, so a push that adds or removes a `.pub` file is picked up on the next request.
+Authorized keys from the `pubkeys/` directory are cached to minimize tree walks and blob parses. The cache is keyed on the `main` commit hash, so a push that adds or removes a key set is picked up on the next request.
 
 ### Cache Behavior
 
@@ -158,7 +158,7 @@ Authorized keys from the `pubkeys/` directory are cached to minimize tree walks 
 - **Refresh bound**: `--cache-ttl` (default 5 minutes) only limits cache age while `main` has not moved.
 - **Enrollment and revocation**: both take effect on the next request after the push.
 
-A deleted `.pub` never fails authentication against a stale cache, so revocation cannot wait on a failed-auth retry. Reloading when `main` moves is what makes revocation immediate.
+A deleted key set never fails authentication against a stale cache, so revocation cannot wait on a failed-auth retry. Reloading when `main` moves is what makes revocation immediate.
 
 ## Bootstrap Mode
 

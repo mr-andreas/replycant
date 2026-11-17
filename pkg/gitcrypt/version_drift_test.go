@@ -27,9 +27,12 @@ func TestPinnedConstantsMatchAcrossLanguages(t *testing.T) {
 	swiftSource := mustRead(t, filepath.Join(root, "iosapp", "GitDBPackage", "Sources", "GitDB", "DatabaseVersion.swift"))
 	tsSource := mustRead(t, filepath.Join(root, "webapp", "src", "modules", "gitdb", "databaseVersion.ts"))
 	goSource := mustRead(t, filepath.Join(root, "pkg", "gitcrypt", "version.go"))
-	require.Contains(t, swiftSource, "version == 0 || version == current")
-	require.Contains(t, tsSource, "version === 0 || version === DATABASE_FORMAT_VERSION")
-	require.Contains(t, goSource, "version == 0 || version == DatabaseFormatVersion")
+	require.Contains(t, swiftSource, "version == current")
+	require.NotContains(t, swiftSource, "version == 0 || version == current")
+	require.Contains(t, tsSource, "version === DATABASE_FORMAT_VERSION")
+	require.NotContains(t, tsSource, "version === 0 || version === DATABASE_FORMAT_VERSION")
+	require.Contains(t, goSource, "version == DatabaseFormatVersion")
+	require.NotContains(t, goSource, "version == 0 || version == DatabaseFormatVersion")
 
 	swiftEnvelope := mustExtractString(t, filepath.Join(root, "iosapp", "GitDBPackage", "Sources", "GitDB", "ManifestSyncEngine.swift"),
 		`"(REPLYCANT-ENC-V1)\\n"`)

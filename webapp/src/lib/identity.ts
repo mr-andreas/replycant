@@ -388,11 +388,13 @@ export const buildMtlsHeaders = (
 export const buildPublicKeyQrPayload = (
   identity: Pick<DecryptedIdentity, "publicKeySsh" | "deviceName" | "deviceUUID" | "agePublicKey">,
   pairingSecret: string,
+  displayName?: string,
 ): string =>
   JSON.stringify({
     pubkey: identity.publicKeySsh,
     age_pubkey: identity.agePublicKey,
     name: identity.deviceName,
+    display_name: displayName?.trim() || identity.deviceName,
     uuid: identity.deviceUUID,
     pairing_secret: pairingSecret.trim(),
   });

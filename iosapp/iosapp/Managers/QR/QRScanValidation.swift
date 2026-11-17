@@ -19,6 +19,7 @@ enum QRScanValidation {
         let agePubkey: String
         let name: String
         let uuid: String
+        let displayName: String?
         let pairingSecret: String
         let rawJSON: String
     }
@@ -58,6 +59,7 @@ enum QRScanValidation {
                     agePubkey: agePubkey,
                     name: name,
                     uuid: uuid,
+                    displayName: nonBlank(json["display_name"]),
                     pairingSecret: pairingSecret,
                     rawJSON: code
                 )

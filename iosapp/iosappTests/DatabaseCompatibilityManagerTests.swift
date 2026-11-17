@@ -40,7 +40,7 @@ struct DatabaseCompatibilityManagerTests {
         #expect(manager.incompatibility?.isNewerThanClient == false)
         #expect(
             manager.incompatibility?.userMessage
-                == "This library uses database format 1. This app supports format 2. Run the migration tool to continue."
+                == "This library uses database format 1. This app supports format 2. Restart the library server so it can upgrade the database, then try again."
         )
         manager.clear()
     }

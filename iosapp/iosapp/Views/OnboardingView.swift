@@ -1,4 +1,5 @@
 import SwiftUI
+import GitDB
 import LibGit2
 #if DEBUG
 import UIKit
@@ -518,6 +519,7 @@ struct OnboardingView: View {
                     publicKeySSH: publicKey,
                     agePublicKey: agePublicKey,
                     deviceName: name,
+                    displayName: UIDevice.current.name,
                     deviceUUID: uuid,
                     pairingSecret: secret.encoded
                 )
@@ -681,18 +683,39 @@ struct OnboardingView: View {
         
         // Step 5: Build key files and encryption bootstrap files.
         updateProgress(55, message: "Preparing public key...")
-        let deviceName = getDeviceName()
+        let shownName = UIDevice.current.name
+        let deviceName = KeySet.metadataName(from: shownName)
         let publicKey = try ClientIdentityManager.shared.sshPublicKey(comment: deviceName)
         let agePublicKey = try ClientIdentityManager.shared.agePublicKey()
-        let pubkeyPath = "pubkeys/\(deviceName).pub"
-        let agePath = "pubkeys/\(deviceName).age"
-        let kekBootstrapFiles = try KEKEpochManager(repository: repository).bootstrapFilesForFirstEpoch(recipientAgePubkeys: [agePublicKey])
+        let epochs = KEKEpochManager(repository: repository)
+        let kekBootstrapFiles = try epochs.bootstrapFilesForFirstEpoch(recipientAgePubkeys: [agePublicKey])
+        guard let kek = epochs.cachedKEK(epoch: 1) else {
+            throw OnboardingError.repositoryError("Failed to prepare encryption keys")
+        }
+        let sealedName = try KeySet.encryptDisplayName(
+            kek: kek,
+            epoch: 1,
+            name: deviceName,
+            plaintext: shownName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? deviceName
+                : shownName
+        )
+        let keySet = KeySet(
+            apiVersion: KeySet.apiVersionValue,
+            kind: KeySet.kindValue,
+            metadata: .init(name: deviceName),
+            spec: .init(
+                type: KeySet.typeDevice,
+                mtlsPublicKey: publicKey,
+                agePublicKey: agePublicKey,
+                displayName: sealedName
+            )
+        )
         
         // Step 6: Create initial commit.
         updateProgress(70, message: "Creating initial commit...")
         var initialFiles: [(path: String, content: String)] = [
-            (path: pubkeyPath, content: publicKey),
-            (path: agePath, content: agePublicKey)
+            (path: KeySet.path(name: deviceName), content: try keySet.yaml())
         ]
         initialFiles.append(contentsOf: kekBootstrapFiles)
         let gitDB = try GitDBManager.shared.getGitDB()
@@ -763,12 +786,9 @@ struct OnboardingView: View {
 
     @MainActor
     private func getDeviceName() -> String {
-        // Use device name or generate a unique identifier
-        let deviceName = UIDevice.current.name
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: "'", with: "")
-            .lowercased()
-        return deviceName
+        // The QR carries a filename-safe slug. The words on the device
+        // stay in display_name, which the other phone seals.
+        KeySet.metadataName(from: UIDevice.current.name)
     }
 }
 

@@ -11,6 +11,11 @@ import Testing
 @Suite(.serialized)
 struct AuthorizedDeviceManagerTests {
     private let manager = AuthorizedDeviceManager()
+    // A real P-256 line so a key set parses. The current device uses
+    // the identity manager's own key instead, which is how the row is
+    // recognized.
+    private let sampleSSH = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHRl+gi7RtSRc6vdZ+Yi9UDbHAjG6AU7bGguZE6PrPipUw+vUZxniQRRaMy/rwuKaIM/KRmDaslS/CpN5+1NvJE= phone"
+    private let sampleAge = "age1gffmd3cp4aae4ellqlqladxvtej9za6qsqpyquudjrwj06j4q95qqn5m8a"
 
     // The list is what Settings shows: recovery keys are not devices,
     // a bootstrap key may have no UUID, and this phone is recognized
@@ -19,51 +24,34 @@ struct AuthorizedDeviceManagerTests {
         try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "revocation-test")
         let currentUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         let otherUUID = "11111111-2222-3333-4444-555555555555"
+        let currentName = "zeta-phone-\(currentUUID)"
+        let otherName = "iphone-15-pro-\(otherUUID)"
         let issued = try ClientIdentityManager.shared.sshPublicKey(
-            comment: "zeta-phone-\(currentUUID)"
+            comment: "different-comment"
         )
-        let tokens = issued.split(separator: " ", maxSplits: 2).map(String.init)
-        let storedCurrent = "\(tokens[0]) \(tokens[1]) different-comment\n"
-
-        let currentPub = "pubkeys/zeta-phone-\(currentUUID).pub"
-        let otherPub = "pubkeys/iphone-15-pro-\(otherUUID).pub"
-        let bootstrapPub = "pubkeys/kitchen-ipad.pub"
-        let noAgePub = "pubkeys/no-age.pub"
+        let current = try keySetFile(name: currentName, ssh: issued, age: sampleAge)
+        let other = try keySetFile(name: otherName, ssh: sampleSSH, age: sampleAge)
+        let bootstrap = try keySetFile(name: "kitchen-ipad", ssh: sampleSSH, age: sampleAge)
+        let recovery = try keySetFile(
+            name: "home-safe-22222222-3333-4444-5555-666666666666",
+            type: KeySet.typeRecovery,
+            ssh: sampleSSH,
+            age: sampleAge
+        )
         let repo = try commitPubkeys([
-            (path: currentPub, content: storedCurrent),
-            (path: "pubkeys/zeta-phone-\(currentUUID).age", content: "age-current\n"),
-            (path: otherPub, content: "ecdsa-sha2-nistp256 AAAAOTHER iphone-15-pro\n"),
-            (path: "pubkeys/iphone-15-pro-\(otherUUID).age", content: "age-other\n"),
-            (path: bootstrapPub, content: "ecdsa-sha2-nistp256 AAAABOOT kitchen-ipad\n"),
-            (path: "pubkeys/kitchen-ipad.age", content: "age-bootstrap\n"),
-            (path: noAgePub, content: "ecdsa-sha2-nistp256 AAAANOAGE no-age\n"),
-            (
-                path: "pubkeys/home-safe-22222222-3333-4444-5555-666666666666.recovery.pub",
-                content: "ecdsa-sha2-nistp256 AAAARECOVERY recovery\n"
-            ),
-            (
-                path: "pubkeys/home-safe-22222222-3333-4444-5555-666666666666.recovery.age",
-                content: "age-recovery\n"
-            ),
+            current,
+            other,
+            bootstrap,
+            recovery,
+            (path: "pubkeys/notes.yaml", content: "not a key set\n"),
         ])
         defer { try? FileManager.default.removeItem(atPath: repo.workdir ?? "") }
 
         let devices = try manager.listDevices(repository: repo)
-        #expect(devices.map(\.name) == [
-            "zeta-phone",
-            "iphone-15-pro",
-            "kitchen-ipad",
-            "no-age",
-        ])
-        #expect(devices.map(\.isCurrentDevice) == [true, false, false, false])
-        #expect(devices.map(\.uuid) == [currentUUID, otherUUID, nil, nil])
-        #expect(devices.map(\.agePath) == [
-            "pubkeys/zeta-phone-\(currentUUID).age",
-            "pubkeys/iphone-15-pro-\(otherUUID).age",
-            "pubkeys/kitchen-ipad.age",
-            nil,
-        ])
-        #expect(devices.map(\.pubPath) == [currentPub, otherPub, bootstrapPub, noAgePub])
+        #expect(devices.map(\.name) == [currentName, otherName, "kitchen-ipad"])
+        #expect(devices.map(\.isCurrentDevice) == [true, false, false])
+        #expect(devices.map(\.uuid) == [currentUUID, otherUUID, nil])
+        #expect(devices.map(\.path) == [current.path, other.path, bootstrap.path])
     }
 
     // One change deletes the other device's keys, wraps the new epoch
@@ -76,27 +64,37 @@ struct AuthorizedDeviceManagerTests {
         let recoveryIdentity = Curve25519.KeyAgreement.PrivateKey()
         let currentUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         let otherUUID = "11111111-2222-3333-4444-555555555555"
-        let currentPub = "pubkeys/zeta-phone-\(currentUUID).pub"
-        let otherPub = "pubkeys/kitchen-ipad-\(otherUUID).pub"
-        let otherAge = "pubkeys/kitchen-ipad-\(otherUUID).age"
+        let currentName = "zeta-phone-\(currentUUID)"
+        let otherName = "kitchen-ipad-\(otherUUID)"
         let issued = try ClientIdentityManager.shared.sshPublicKey(comment: "zeta-phone")
+        let current = try keySetFile(
+            name: currentName,
+            ssh: issued,
+            age: try agePublic(currentIdentity)
+        )
+        let other = try keySetFile(
+            name: otherName,
+            ssh: sampleSSH,
+            age: try agePublic(revokedIdentity)
+        )
+        let recovery = try keySetFile(
+            name: "home-safe-22222222-3333-4444-5555-666666666666",
+            type: KeySet.typeRecovery,
+            ssh: sampleSSH,
+            age: try agePublic(recoveryIdentity)
+        )
         let repo = try commitPubkeys([
-            (path: "gitdb/version", content: "1\n"),
+            (path: "gitdb/version", content: "\(DatabaseVersion.current)\n"),
             (path: "encryption/current", content: "1\n"),
             (path: "encryption/epochs/1.age", content: "epoch-one\n"),
-            (path: currentPub, content: issued + "\n"),
-            (path: "pubkeys/zeta-phone-\(currentUUID).age", content: try agePublic(currentIdentity) + "\n"),
-            (path: otherPub, content: "ecdsa-sha2-nistp256 AAAAOTHER kitchen-ipad\n"),
-            (path: otherAge, content: try agePublic(revokedIdentity) + "\n"),
-            (
-                path: "pubkeys/home-safe-22222222-3333-4444-5555-666666666666.recovery.age",
-                content: try agePublic(recoveryIdentity) + "\n"
-            ),
+            current,
+            other,
+            recovery,
         ])
         defer { try? FileManager.default.removeItem(atPath: repo.workdir ?? "") }
 
-        let change = try manager.revocationChange(pubPath: otherPub, repository: repo)
-        #expect(Set(change.deletions) == [otherPub, otherAge])
+        let change = try manager.revocationChange(path: other.path, repository: repo)
+        #expect(Set(change.deletions) == [other.path])
         #expect(Set(change.files.map(\.path)) == [
             "encryption/current",
             "encryption/epochs/2.age",
@@ -118,10 +116,10 @@ struct AuthorizedDeviceManagerTests {
         }
 
         #expect(throws: AuthorizedDeviceManager.Error.cannotRevokeCurrentDevice) {
-            try manager.revocationChange(pubPath: currentPub, repository: repo)
+            try manager.revocationChange(path: current.path, repository: repo)
         }
         #expect(throws: AuthorizedDeviceManager.Error.deviceNotFound) {
-            try manager.revocationChange(pubPath: "pubkeys/missing.pub", repository: repo)
+            try manager.revocationChange(path: "pubkeys/missing.yaml", repository: repo)
         }
     }
 
@@ -134,10 +132,9 @@ struct AuthorizedDeviceManagerTests {
         let recoveryIdentity = Curve25519.KeyAgreement.PrivateKey()
         let currentUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         let otherUUID = "11111111-2222-3333-4444-555555555555"
-        let currentPub = "pubkeys/zeta-phone-\(currentUUID).pub"
-        let otherPub = "pubkeys/kitchen-ipad-\(otherUUID).pub"
-        let otherAge = "pubkeys/kitchen-ipad-\(otherUUID).age"
-        let recoveryAge = "pubkeys/home-safe-22222222-3333-4444-5555-666666666666.recovery.age"
+        let currentName = "zeta-phone-\(currentUUID)"
+        let otherName = "kitchen-ipad-\(otherUUID)"
+        let recoveryName = "home-safe-22222222-3333-4444-5555-666666666666"
         let firstKEK = Data(repeating: 0x21, count: 32)
         let firstEpoch = try AgeCrypto.encrypt(
             plaintext: firstKEK,
@@ -146,6 +143,22 @@ struct AuthorizedDeviceManagerTests {
         let firstEpochText = try #require(String(data: firstEpoch, encoding: .utf8))
         let issued = try ClientIdentityManager.shared.sshPublicKey(
             comment: "zeta-phone-\(currentUUID)"
+        )
+        let current = try keySetFile(
+            name: currentName,
+            ssh: issued,
+            age: try ClientIdentityManager.shared.agePublicKey()
+        )
+        let other = try keySetFile(
+            name: otherName,
+            ssh: sampleSSH,
+            age: try agePublic(revokedIdentity)
+        )
+        let recovery = try keySetFile(
+            name: recoveryName,
+            type: KeySet.typeRecovery,
+            ssh: sampleSSH,
+            age: try agePublic(recoveryIdentity)
         )
 
         let root = try makeTempRoot("device-revoke-remote")
@@ -164,14 +177,12 @@ struct AuthorizedDeviceManagerTests {
         try seed.createCommit(
             message: "seed",
             files: [
-                (path: "gitdb/version", content: "1\n"),
+                (path: "gitdb/version", content: "\(DatabaseVersion.current)\n"),
                 (path: "encryption/current", content: "1\n"),
                 (path: "encryption/epochs/1.age", content: firstEpochText),
-                (path: currentPub, content: issued),
-                (path: "pubkeys/zeta-phone-\(currentUUID).age", content: try ClientIdentityManager.shared.agePublicKey()),
-                (path: otherPub, content: "ecdsa-sha2-nistp256 AAAAOTHER kitchen-ipad"),
-                (path: otherAge, content: try agePublic(revokedIdentity)),
-                (path: recoveryAge, content: try agePublic(recoveryIdentity)),
+                current,
+                other,
+                recovery,
             ]
         )
         try seed.addRemote(name: "origin", url: remotePath)
@@ -182,7 +193,7 @@ struct AuthorizedDeviceManagerTests {
         let registry = ManifestRegistry()
         let database = try ManifestDatabase(databaseURL: dbURL, registry: registry)
         let gitDB = GitDatabase(repository: local, database: database, registry: registry)
-        try await manager.revokeDevice(pubPath: otherPub, gitDB: gitDB)
+        try await manager.revokeDevice(path: other.path, gitDB: gitDB)
 
         let published = try #require(local.headOID())
         #expect(published != seedOID)
@@ -194,10 +205,9 @@ struct AuthorizedDeviceManagerTests {
 
         let verifyPath = (root as NSString).appendingPathComponent("verify")
         let verify = try Repository.clone(from: remotePath, to: verifyPath)
-        #expect(!verify.fileExists(at: otherPub))
-        #expect(!verify.fileExists(at: otherAge))
-        #expect(verify.fileExists(at: currentPub))
-        #expect(verify.fileExists(at: recoveryAge))
+        #expect(!verify.fileExists(at: other.path))
+        #expect(verify.fileExists(at: current.path))
+        #expect(verify.fileExists(at: recovery.path))
         #expect(try verify.readFile(at: "encryption/epochs/1.age") == firstEpochText)
         #expect(
             try verify.readFile(at: "encryption/current")
@@ -211,6 +221,52 @@ struct AuthorizedDeviceManagerTests {
         #expect(throws: (any Error).self) {
             _ = try AgeCrypto.decrypt(ciphertext: epoch2, identity: revokedIdentity)
         }
+    }
+
+    // A migrated library has no sealed name. Sync fills in only this
+    // phone's, and leaves a name that is already there untouched.
+    @Test func backfillWritesOnlyThisDevicesMissingName() throws {
+        try ClientIdentityManager.shared.generateIdentityIfNeeded(commonName: "revocation-test")
+        let age = try ClientIdentityManager.shared.agePrivateKey()
+        let kek = Data(repeating: 0x11, count: 32)
+        let epoch = try AgeCrypto.encrypt(plaintext: kek, recipients: [age.publicKey])
+        let epochText = try #require(String(data: epoch, encoding: .utf8))
+        let ownSSH = try ClientIdentityManager.shared.sshPublicKey()
+        let ownName = "zeta-phone-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let otherName = "kitchen-ipad"
+        let own = try keySetFile(name: ownName, ssh: ownSSH, age: sampleAge)
+        let other = try keySetFile(name: otherName, ssh: sampleSSH, age: sampleAge)
+        let repo = try commitPubkeys([
+            (path: "encryption/current", content: "1\n"),
+            (path: "encryption/epochs/1.age", content: epochText),
+            own,
+            other,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: repo.workdir ?? "") }
+
+        let written = try #require(
+            try manager.ownDisplayNameBackfill(
+                repository: repo,
+                displayName: "Andreas's iPhone",
+                ownSSHPublicKey: ownSSH
+            )
+        )
+        #expect(written.path == own.path)
+        try repo.createCommit(message: "name this device", files: [written])
+
+        let named = try KeySet.parse(try repo.readFile(at: own.path))
+        #expect(try named.decryptDisplayName(kek: kek) == "Andreas's iPhone")
+        #expect(try KeySet.parse(try repo.readFile(at: other.path)).spec.displayName == nil)
+        #expect(
+            try manager.ownDisplayNameBackfill(
+                repository: repo,
+                displayName: "Someone else",
+                ownSSHPublicKey: ownSSH
+            ) == nil
+        )
+        let listed = try manager.listDevices(repository: repo)
+        #expect(listed.first { $0.path == own.path }?.name == "Andreas's iPhone")
+        #expect(listed.first { $0.path == other.path }?.name == otherName)
     }
 
     // Commits pubkey fixtures so listing reads them from HEAD the same
@@ -233,6 +289,21 @@ struct AuthorizedDeviceManagerTests {
             withIntermediateDirectories: true
         )
         return root
+    }
+
+    private func keySetFile(
+        name: String,
+        type: String = KeySet.typeDevice,
+        ssh: String,
+        age: String
+    ) throws -> (path: String, content: String) {
+        let keySet = KeySet(
+            apiVersion: KeySet.apiVersionValue,
+            kind: KeySet.kindValue,
+            metadata: .init(name: name),
+            spec: .init(type: type, mtlsPublicKey: ssh, agePublicKey: age)
+        )
+        return (KeySet.path(name: name), try keySet.yaml())
     }
 
     private func agePublic(_ key: Curve25519.KeyAgreement.PrivateKey) throws -> String {

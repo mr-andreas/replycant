@@ -31,7 +31,7 @@ struct GitDBIntegrationTests {
         try await gitDB.commitFiles(
             message: "seed non-manifest files",
             files: [
-                (path: "gitdb/version", content: "1\n"),
+                (path: "gitdb/version", content: "\(DatabaseVersion.current)\n"),
                 (path: "pubkeys/device-a.pub", content: "ssh-ed25519 AAAATEST device-a"),
                 (path: "pubkeys/device-a.age", content: "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"),
             ]
@@ -51,7 +51,7 @@ struct GitDBIntegrationTests {
         try repository.createCommit(
             message: "c1",
             files: [
-                ("gitdb/version", "1\n"),
+                ("gitdb/version", "\(DatabaseVersion.current)\n"),
                 ("pubkeys/a.pub", "ssh-ed25519 AAAATEST a"),
             ]
         )
@@ -85,7 +85,7 @@ struct GitDBIntegrationTests {
         try await gitDB.commitFilesWithoutSync(
             message: "enroll device key",
             files: [
-                (path: "gitdb/version", content: "1\n"),
+                (path: "gitdb/version", content: "\(DatabaseVersion.current)\n"),
                 (path: "pubkeys/device-a.pub", content: "ssh-ed25519 AAAATEST device-a"),
             ]
         )
@@ -109,7 +109,7 @@ struct GitDBIntegrationTests {
         try repository.createCommit(
             message: "c1",
             files: [
-                ("gitdb/version", "1\n"),
+                ("gitdb/version", "\(DatabaseVersion.current)\n"),
                 ("pubkeys/a.pub", "ssh-ed25519 AAAATEST a"),
             ]
         )
@@ -142,7 +142,7 @@ struct GitDBIntegrationTests {
 
         try repository.createCommit(
             message: "unsupported",
-            files: [("gitdb/version", "2\n")]
+            files: [("gitdb/version", "3\n")]
         )
         let headBefore = try #require(repository.headOID())
 
@@ -154,7 +154,7 @@ struct GitDBIntegrationTests {
             )
             Issue.record("commitFiles unexpectedly succeeded on an unsupported database version")
         } catch let error as DatabaseVersionError {
-            #expect(error == .unsupported(found: 2, required: 1))
+            #expect(error == .unsupported(found: 3, required: DatabaseVersion.current))
         }
         #expect(repository.headOID() == headBefore)
     }
@@ -172,7 +172,7 @@ struct GitDBIntegrationTests {
         let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
         try await gitDB.commitFiles(
             message: "bootstrap",
-            files: [(path: "gitdb/version", content: "1\n")]
+            files: [(path: "gitdb/version", content: "\(DatabaseVersion.current)\n")]
         )
         #expect(repository.headOID() != nil)
         #expect(try await database.readSyncedCommitHash() == repository.headOID())
@@ -189,7 +189,7 @@ struct GitDBIntegrationTests {
 
         try repository.createCommit(
             message: "unsupported",
-            files: [("gitdb/version", "2\n")]
+            files: [("gitdb/version", "3\n")]
         )
         let headBefore = try #require(repository.headOID())
 
@@ -201,15 +201,15 @@ struct GitDBIntegrationTests {
             )
             Issue.record("commitFilesWithoutSync unexpectedly succeeded on an unsupported database version")
         } catch let error as DatabaseVersionError {
-            #expect(error == .unsupported(found: 2, required: 1))
+            #expect(error == .unsupported(found: 3, required: DatabaseVersion.current))
         }
         #expect(repository.headOID() == headBefore)
         #expect(try await database.readSyncedCommitHash() == nil)
     }
 
-    // Old-alpha libraries without gitdb/version must still accept
-    // commits and pulls so a later migration can write format 1.
-    @Test func commitAndPullSucceedAgainstMissingVersion() async throws {
+    // A library with no gitdb/version cannot be written. Every library
+    // carries a marker, and a missing one is not an older format.
+    @Test func commitFilesRefusesMissingVersion() async throws {
         let (repository, database, registry, repoPath, dbURL) = try makeFixture()
         defer {
             try? FileManager.default.removeItem(atPath: repoPath)
@@ -217,16 +217,18 @@ struct GitDBIntegrationTests {
         }
 
         try repository.createCommit(
-            message: "old-alpha",
+            message: "no-marker",
             files: [("notes/readme.txt", "hello")]
         )
+        let headBefore = try #require(repository.headOID())
         let gitDB = GitDatabase(repository: repository, database: database, registry: registry)
-        try await gitDB.commitFiles(
-            message: "local write",
-            files: [(path: "notes/more.txt", content: "more")]
-        )
-        #expect(try await database.readCacheFormatVersion() == 0)
-        #expect(try await database.readSyncedCommitHash() == repository.headOID())
+        await #expect(throws: DatabaseVersionError.malformed) {
+            try await gitDB.commitFiles(
+                message: "local write",
+                files: [(path: "notes/more.txt", content: "more")]
+            )
+        }
+        #expect(repository.headOID() == headBefore)
     }
 
     // Diverged unpublished commits cannot be rebased onto a remote
@@ -568,7 +570,7 @@ struct GitDBIntegrationTests {
         let seed = try Repository.create(at: seedPath, bare: false)
         try seed.createCommit(
             message: "seed",
-            files: [("gitdb/version", "1\n")]
+            files: [("gitdb/version", "\(DatabaseVersion.current)\n")]
         )
         try seed.addRemote(name: "origin", url: remotePath)
         try seed.push(remoteName: "origin", branchName: "main")

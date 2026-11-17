@@ -27,12 +27,12 @@ describe("parseDatabaseVersion", () => {
 });
 
 describe("requireSupportedDatabaseVersion", () => {
-  it("accepts the pinned version and version 0, and rejects any other", () => {
-    expect(() => requireSupportedDatabaseVersion("1\n")).not.toThrow();
-    expect(() => requireAcceptedDatabaseVersion(0)).not.toThrow();
-    expect(() => requireAcceptedDatabaseVersion(1)).not.toThrow();
-    expect(() => requireSupportedDatabaseVersion("2\n")).toThrow(/unsupported gitdb database version 2/);
-    expect(() => requireAcceptedDatabaseVersion(2)).toThrow(/unsupported gitdb database version 2/);
+  it("accepts only the pinned version", () => {
+    expect(() => requireSupportedDatabaseVersion("2\n")).not.toThrow();
+    expect(() => requireAcceptedDatabaseVersion(2)).not.toThrow();
+    expect(() => requireSupportedDatabaseVersion("1\n")).toThrow(/unsupported gitdb database version 1/);
+    expect(() => requireAcceptedDatabaseVersion(0)).toThrow(/unsupported gitdb database version 0/);
+    expect(() => requireAcceptedDatabaseVersion(3)).toThrow(/unsupported gitdb database version 3/);
   });
 });
 
@@ -74,12 +74,12 @@ describe("describeDatabaseVersionFailure", () => {
     );
   });
 
-  it("asks the user to run the migration tool when the marker is older than this client", () => {
+  it("asks the user to restart the server when the marker is older than this client", () => {
     expect(describeDatabaseVersionFailure(new DatabaseVersionError(
       "unsupported gitdb database version 1 (this client requires 2)",
       { found: 1, required: 2 },
     ))).toBe(
-      "This library uses database format 1. This app supports format 2. Run the migration tool to continue.",
+      "This library uses database format 1. This app supports format 2. Restart the library server so it can upgrade the database, then try again.",
     );
   });
 

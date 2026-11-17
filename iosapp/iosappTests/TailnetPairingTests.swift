@@ -195,6 +195,7 @@ struct PairingQRPayloadTests {
             publicKeySSH: "ssh-ed25519 AAAA example",
             agePublicKey: "age1example",
             deviceName: "example-device",
+            displayName: "Example Device",
             deviceUUID: "00000000-0000-0000-0000-000000000000",
             pairingSecret: secret.encoded
         )
@@ -206,6 +207,7 @@ struct PairingQRPayloadTests {
         #expect(decoded["age_pubkey"] == "age1example")
         #expect(decoded["pubkey"] == "ssh-ed25519 AAAA example")
         #expect(decoded["name"] == "example-device")
+        #expect(decoded["display_name"] == "Example Device")
         #expect(decoded["uuid"] == "00000000-0000-0000-0000-000000000000")
     }
 

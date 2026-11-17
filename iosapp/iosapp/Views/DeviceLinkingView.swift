@@ -169,6 +169,7 @@ struct DeviceLinkingView: View {
                     agePubkey: payload.agePubkey,
                     name: payload.name,
                     uuid: payload.uuid,
+                    displayName: payload.displayName,
                     pairingSecret: payload.pairingSecret
                 ) { message in
                     Task { @MainActor in

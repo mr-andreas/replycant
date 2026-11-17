@@ -100,6 +100,17 @@ Every object must specify a `deviceSpace` in its metadata. Device spaces provide
 
 Device space identifiers are generated per-device and remain stable for the device's lifetime.
 
+## Key sets live outside manifests/
+
+A device's public keys are a `KeySet` at `pubkeys/{name}.yaml`, not a
+manifest. gitd and hsproxy have to read the mTLS key before any device has
+unwrapped the KEK, so the file cannot be encrypted. Everything under
+`manifests/` is fail-closed encrypted: the iOS sync engine, the desktop
+blob reader, the `git-replycant` `manifests/**` attribute, and the gitcrypt
+smudge filter all refuse a plaintext file there. Keeping key sets outside
+that tree leaves the rule with no path exceptions, and it does not need a
+reserved device space for server-owned files.
+
 ## Schema Evolution
 
 The `apiVersion` field enables schema evolution:

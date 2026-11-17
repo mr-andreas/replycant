@@ -397,7 +397,7 @@ struct ManifestManagerIntegrationTests {
         let repository = try Repository.create(at: repoPath, bare: false)
         try repository.createCommit(
             message: "unsupported database version",
-            files: [("gitdb/version", "2\n")]
+            files: [("gitdb/version", "3\n")]
         )
         defer { try? FileManager.default.removeItem(atPath: repoPath) }
 
@@ -434,7 +434,7 @@ struct ManifestManagerIntegrationTests {
             burstIdentifier: nil
         )
 
-        await #expect(throws: DatabaseVersionError.unsupported(found: 2, required: 1)) {
+        await #expect(throws: DatabaseVersionError.unsupported(found: 3, required: DatabaseVersion.current)) {
             try await manager.createCommit(message: "should fail", items: [.manifest(manifest)])
         }
     }

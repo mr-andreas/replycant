@@ -7,13 +7,12 @@ import LibGit2
 // one commit, so the device loses server access and cannot read
 // photos added afterwards.
 final class AuthorizedDeviceManager: Sendable {
-    // One authorized device derived from pubkeys/, so Settings can show
-    // who has access and which row is this phone.
+    // One authorized device derived from a key set, so Settings can
+    // show who has access and which row is this phone.
     struct DeviceRecord: Equatable {
         let name: String
         let uuid: String?
-        let pubPath: String
-        let agePath: String?
+        let path: String
         let isCurrentDevice: Bool
     }
 
@@ -34,23 +33,24 @@ final class AuthorizedDeviceManager: Sendable {
         }
     }
 
-    // Lists every device key, leaving recovery keys out, so the screen
-    // shows phones and computers rather than backup credentials.
+    // Lists every device key set, leaving recovery keys out, so the
+    // screen shows phones and computers rather than backup credentials.
     func listDevices(repository: Repository) throws -> [DeviceRecord] {
         let currentIdentity = currentDeviceSSHIdentity()
-        let files = try repository.listFiles(in: "pubkeys")
-        let pubFiles = files.filter { path in
-            path.hasSuffix(".pub") && !path.hasSuffix(".recovery.pub")
-        }
-        let records = try pubFiles.map { pubPath -> DeviceRecord in
-            let identity = deviceIdentity(from: pubPath)
-            let content = try repository.readFile(at: pubPath)
+        let epochs = KEKEpochManager(repository: repository)
+        let records = try KeySet.readAll(in: repository).compactMap { stored -> DeviceRecord? in
+            guard stored.keySet.spec.type == KeySet.typeDevice else {
+                return nil
+            }
+            let identity = slugIdentity(stored.keySet.metadata.name)
+            let kek = stored.keySet.spec.displayName.flatMap { sealed in
+                try? epochs.loadKEK(epoch: sealed.kekEpoch)
+            }
             return DeviceRecord(
-                name: identity.name,
+                name: stored.keySet.resolvedDisplayName(kek: kek),
                 uuid: identity.uuid,
-                pubPath: pubPath,
-                agePath: matchingAgePath(for: pubPath, in: files),
-                isCurrentDevice: sshIdentity(of: content) == currentIdentity
+                path: stored.path,
+                isCurrentDevice: sshIdentity(of: stored.keySet.spec.mtlsPublicKey) == currentIdentity
                     && currentIdentity != nil
             )
         }
@@ -61,7 +61,7 @@ final class AuthorizedDeviceManager: Sendable {
             if lhs.name != rhs.name {
                 return lhs.name < rhs.name
             }
-            return lhs.pubPath < rhs.pubPath
+            return lhs.path < rhs.path
         }
     }
 
@@ -69,11 +69,11 @@ final class AuthorizedDeviceManager: Sendable {
     // for everyone still listed, including recovery keys. Kept separate
     // from the push so tests can check the change without a server.
     func revocationChange(
-        pubPath: String,
+        path: String,
         repository: Repository
     ) throws -> GitFileChange {
         let devices = try listDevices(repository: repository)
-        guard let device = devices.first(where: { $0.pubPath == pubPath }) else {
+        guard let device = devices.first(where: { $0.path == path }) else {
             throw Error.deviceNotFound
         }
         guard !device.isCurrentDevice else {
@@ -81,22 +81,18 @@ final class AuthorizedDeviceManager: Sendable {
         }
         let recipients = try remainingRecipientAgePubkeys(
             repository: repository,
-            excluding: device.agePath
+            excluding: device.path
         )
         let epochFiles = try KEKEpochManager(repository: repository)
             .nextEpochFiles(recipientAgePubkeys: recipients)
-        var deletions = [device.pubPath]
-        if let agePath = device.agePath {
-            deletions.append(agePath)
-        }
-        return GitFileChange(files: epochFiles, deletions: deletions)
+        return GitFileChange(files: epochFiles, deletions: [device.path])
     }
 
     // Publishes a revocation only when this phone's copy matches the
     // server. The key list is read again inside the commit, so a device
     // another phone just removed cannot be wrapped into a stale epoch.
-    func revokeDevice(pubPath: String, gitDB: GitDatabase) async throws {
-        let identity = deviceIdentity(from: pubPath)
+    func revokeDevice(path: String, gitDB: GitDatabase) async throws {
+        let identity = slugIdentity(stem(of: path))
         let message: String
         if let uuid = identity.uuid {
             message = "Remove device \(identity.name) (\(uuid))"
@@ -104,62 +100,81 @@ final class AuthorizedDeviceManager: Sendable {
             message = "Remove device \(identity.name)"
         }
         try await gitDB.durableCommit(message: message) { repository in
-            try self.revocationChange(pubPath: pubPath, repository: repository)
+            try self.revocationChange(path: path, repository: repository)
         }
     }
 
-    // Splits pubkeys/<name>-<uuid>.pub. The first device's key has no
-    // UUID, and a name may itself contain hyphens, so only a trailing
-    // UUID is peeled off.
-    private func deviceIdentity(from path: String) -> (name: String, uuid: String?) {
-        let fileName = (path as NSString).lastPathComponent
-        guard fileName.hasSuffix(".pub") else {
-            return (fileName, nil)
+    // Fills in this device's sealed name after a server migration, which
+    // cannot write one. Other key sets are left alone: this phone does
+    // not know what they are called.
+    func ownDisplayNameBackfill(
+        repository: Repository,
+        displayName: String,
+        ownSSHPublicKey: String
+    ) throws -> (path: String, content: String)? {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let ownIdentity = sshIdentity(of: ownSSHPublicKey) else {
+            return nil
         }
-        let stripped = String(fileName.dropLast(".pub".count))
+        guard let stored = try KeySet.readAll(in: repository).first(where: { item in
+            item.keySet.spec.type == KeySet.typeDevice
+                && sshIdentity(of: item.keySet.spec.mtlsPublicKey) == ownIdentity
+        }) else {
+            return nil
+        }
+        if stored.keySet.spec.displayName != nil {
+            return nil
+        }
+        let current = try KEKEpochManager(repository: repository).loadCurrentKEK()
+        var updated = stored.keySet
+        updated.spec.displayName = try KeySet.encryptDisplayName(
+            kek: current.kek,
+            epoch: current.epoch,
+            name: updated.metadata.name,
+            plaintext: trimmed
+        )
+        return (stored.path, try updated.yaml())
+    }
+
+    // Splits a slug of the form <name>-<uuid>. The first device's key
+    // has no UUID, and a name may itself contain hyphens, so only a
+    // trailing UUID is peeled off.
+    private func slugIdentity(_ slug: String) -> (name: String, uuid: String?) {
         let uuidLength = 36
-        guard stripped.count > uuidLength + 1 else {
-            return (stripped, nil)
+        guard slug.count > uuidLength + 1 else {
+            return (slug, nil)
         }
-        let uuidStart = stripped.index(stripped.endIndex, offsetBy: -uuidLength)
-        let separator = stripped.index(before: uuidStart)
-        guard stripped[separator] == "-" else {
-            return (stripped, nil)
+        let uuidStart = slug.index(slug.endIndex, offsetBy: -uuidLength)
+        let separator = slug.index(before: uuidStart)
+        guard slug[separator] == "-" else {
+            return (slug, nil)
         }
-        let name = String(stripped[..<separator])
-        let uuid = String(stripped[uuidStart...])
+        let name = String(slug[..<separator])
+        let uuid = String(slug[uuidStart...])
         guard !name.isEmpty, UUID(uuidString: uuid) != nil else {
-            return (stripped, nil)
+            return (slug, nil)
         }
         return (name, uuid)
     }
 
-    // Pairs a device public key with its age key when one was published.
-    // A key with no age file can still be removed from server access.
-    private func matchingAgePath(for pubPath: String, in files: [String]) -> String? {
-        let agePath = (pubPath as NSString).deletingPathExtension + ".age"
-        return files.contains(agePath) ? agePath : nil
+    private func stem(of path: String) -> String {
+        ((path as NSString).lastPathComponent as NSString).deletingPathExtension
     }
 
     // Collects age recipients that should still decrypt, including
     // recovery keys, and drops the device being removed.
     private func remainingRecipientAgePubkeys(
         repository: Repository,
-        excluding excludedAgePath: String?
+        excluding excludedPath: String?
     ) throws -> [String] {
-        let files = try repository.listFiles(in: "pubkeys")
-        let ageFiles = files.filter { path in
-            path.hasSuffix(".age") && path != excludedAgePath
-        }
-        let keys = try ageFiles.map { path in
-            try repository.readFile(at: path)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return Array(Set(keys.filter { !$0.isEmpty }))
+        try KeySet.readAll(in: repository)
+            .filter { $0.path != excludedPath }
+            .map { $0.keySet.spec.agePublicKey.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     // The SSH key is what mTLS checks, so it is how this phone recognizes
-    // its own pubkey file. The comment is not part of that identity.
+    // its own key set. The comment is not part of that identity.
     private func currentDeviceSSHIdentity() -> String? {
         guard let line = try? ClientIdentityManager.shared.sshPublicKey() else {
             return nil

@@ -444,20 +444,19 @@ struct ManifestSyncEngineTests {
         }
         try repository.createCommit(
             message: "unsupported-version",
-            files: [("gitdb/version", "2\n")]
+            files: [("gitdb/version", "3\n")]
         )
         let engine = makeEngine(repository: repository, database: database, registry: registry)
         do {
             try await engine.syncToHead(progressHandler: nil)
             Issue.record("expected unsupported database version rejection")
         } catch let error as DatabaseVersionError {
-            #expect(error == .unsupported(found: 2, required: 1))
+            #expect(error == .unsupported(found: 3, required: DatabaseVersion.current))
         }
     }
 
-    // A marker-less old-alpha repository is version 0 and must hydrate
-    // without churning on every later incremental sync.
-    @Test func syncToHeadAcceptsMissingMarkerAsVersionZero() async throws {
+    // A populated repository with no marker is not an old library.
+    @Test func syncToHeadRejectsMissingMarker() async throws {
         let (repository, database, registry, repoPath, _) = try makeFixture()
         defer {
             try? FileManager.default.removeItem(atPath: repoPath)
@@ -471,44 +470,8 @@ struct ManifestSyncEngineTests {
             ]
         )
         let engine = makeEngine(repository: repository, database: database, registry: registry)
-        try await engine.syncToHead(progressHandler: nil)
-        #expect(try await database.readCacheFormatVersion() == 0)
-        #expect(try await database.readSyncedCommitHash() == repository.headOID())
-
-        try repository.createCommit(
-            message: "notes-only",
-            files: [("notes/readme2.txt", "again")]
-        )
-        try await engine.syncToHead(progressHandler: nil)
-        #expect(try await database.readCacheFormatVersion() == 0)
-        #expect(try await database.readSyncedCommitHash() == repository.headOID())
-    }
-
-    // Stored format 1 plus an absent marker is a downgrade, not an
-    // old library, so a hostile strip cannot look like version 0.
-    @Test func syncToHeadRefusesWhenMarkerRemovedAfterVersionedCache() async throws {
-        let (repository, database, registry, repoPath, _) = try makeFixture()
-        defer {
-            try? FileManager.default.removeItem(atPath: repoPath)
-        }
-        try repository.createCommit(
-            message: "old-alpha",
-            files: [
-                ("encryption/current", "1\n"),
-                ("encryption/epochs/1.age", "placeholder\n"),
-                ("notes/readme.txt", "hello"),
-            ]
-        )
-        let engine = makeEngine(repository: repository, database: database, registry: registry)
-        try await engine.syncToHead(progressHandler: nil)
-        #expect(try await database.readCacheFormatVersion() == 0)
-        try await database.writeCacheFormatVersionOnly(1)
-
-        do {
+        await #expect(throws: DatabaseVersionError.malformed) {
             try await engine.syncToHead(progressHandler: nil)
-            Issue.record("expected marker-removed refusal")
-        } catch let error as DatabaseVersionError {
-            #expect(error == .markerRemoved(previouslySynced: 1))
         }
     }
 

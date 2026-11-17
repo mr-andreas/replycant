@@ -132,7 +132,7 @@ CA, so it cannot be the thing that authenticates devices. `hsproxy` sits in
 front of it: it terminates TLS with a certificate from the deployment CA,
 requires a client certificate, and authorizes the presented public key against
 the repository's `pubkeys/` directory — the same authorizer gitd uses. Removing
-a `.pub` file therefore revokes tailnet access and Git access at once.
+a key set therefore revokes tailnet access and Git access at once.
 
 `hsproxy` splices raw bytes rather than proxying HTTP. Tailscale's control
 protocol upgrades a `POST` into a long-lived bidirectional stream, which no

@@ -132,7 +132,9 @@ func LoadLocalIdentity(repoRoot string) (LocalIdentity, error) {
 }
 
 // BuildPublicKeyQrPayload encodes the request a new device shows to an
-// already-authorized one.
+// already-authorized one. display_name repeats the slug: the CLI does
+// not keep a separate unsanitized name, and the scanner treats a
+// missing field as the slug.
 //
 // The new device cannot reach the server yet, so it has no trust anchor to
 // name. Instead it carries a pairing secret: the scanner hands it to gitd,
@@ -148,6 +150,7 @@ func BuildPublicKeyQrPayload(identity Identity, pairingSecret string) (string, e
 		"pubkey":         identity.PublicKeySSH,
 		"age_pubkey":     identity.AgePublicKey,
 		"name":           identity.DeviceName,
+		"display_name":   identity.DeviceName,
 		"uuid":           identity.DeviceUUID,
 		"pairing_secret": secret,
 	}

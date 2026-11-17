@@ -5,8 +5,6 @@ import (
 	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/mr-andreas/replycant/pkg/keyset"
 )
 
 var (
@@ -39,8 +38,9 @@ type Authenticator struct {
 	cacheExpiry time.Time
 }
 
-// Creates an authenticator that loads authorized keys from pubkeys/ on the main branch.
-// Keys are cached to avoid reading the repository on every request.
+// Creates an authenticator that loads authorized keys from pubkeys/*.yaml
+// on the main branch. Keys are cached to avoid reading the repository on
+// every request.
 func NewAuthenticator(repoPath string, cacheTTL time.Duration) *Authenticator {
 	return &Authenticator{
 		repoPath:   repoPath,
@@ -98,7 +98,7 @@ func (a *Authenticator) HasBranch() (bool, error) {
 }
 
 // Validates that the client certificate contains an authorized P-256 public key.
-// Returns the username (filename without .pub extension) if authorized.
+// Returns the key set name if authorized.
 // For empty repositories, returns ErrUnauthorizedBootstrap to signal that bootstrap mode
 // should be used (allows any valid P-256 certificate to push).
 func (a *Authenticator) Authenticate(clientCert *x509.Certificate) (string, error) {
@@ -166,8 +166,8 @@ func (a *Authenticator) loadAuthorizedKeys(head plumbing.Hash) (map[string]*ecds
 	return keys, nil
 }
 
-// Lists every key pubkeys/ on main authorizes right now, keyed by file name
-// without .pub, bypassing any cache.
+// Lists every key pubkeys/ on main authorizes right now, keyed by key set
+// name, bypassing any cache.
 //
 // Exists for tailnet revocation, which has to notice a removed key as soon as
 // a push lands and must read the set exactly the way authentication does, so
@@ -186,8 +186,8 @@ func ReadAuthorizedKeys(repoPath string) (map[string]*ecdsa.PublicKey, error) {
 }
 
 // Identifies a key independently of the file it was committed under, so a
-// renamed .pub file is not mistaken for a revocation. Hashes the uncompressed
-// point, which is the same bytes the SSH encoding in pubkeys/ carries.
+// renamed key set is not mistaken for a revocation. Hashes the uncompressed
+// point, which is the same bytes the SSH encoding in the key set carries.
 func KeyFingerprint(key *ecdsa.PublicKey) string {
 	point := make([]byte, 0, 65)
 	point = append(point, 0x04)
@@ -199,7 +199,7 @@ func KeyFingerprint(key *ecdsa.PublicKey) string {
 
 // Fingerprints the key a client certificate carries, in the same form as
 // KeyFingerprint, so a tailnet node seen authenticating with it can be
-// compared against pubkeys/ on main.
+// compared against the key sets on main.
 func CertFingerprint(cert *x509.Certificate) (string, error) {
 	key, err := extractP256PublicKey(cert)
 	if err != nil {
@@ -208,9 +208,10 @@ func CertFingerprint(cert *x509.Certificate) (string, error) {
 	return KeyFingerprint(key), nil
 }
 
-// Reads all .pub files from the pubkeys/ tree of a specific main commit.
-// A file that is not a P-256 SSH key is skipped so one bad file cannot
-// lock out every device that still has a valid key in the same commit.
+// Reads KeySet YAML from the pubkeys/ tree of a specific main commit.
+// A file that is not a valid key set, or whose metadata.name does not
+// match the file stem, is skipped so one bad file cannot lock out every
+// device that still has a valid key in the same commit.
 func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecdsa.PublicKey, error) {
 	repo, err := git.PlainOpen(a.repoPath)
 	if err != nil {
@@ -235,7 +236,7 @@ func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecds
 	keys := make(map[string]*ecdsa.PublicKey)
 
 	err = pubkeysTree.Files().ForEach(func(f *object.File) error {
-		if !strings.HasSuffix(f.Name, ".pub") {
+		if !strings.HasSuffix(f.Name, ".yaml") {
 			return nil
 		}
 
@@ -244,19 +245,27 @@ func (a *Authenticator) readKeysFromCommit(head plumbing.Hash) (map[string]*ecds
 			return fmt.Errorf("failed to read %s: %w", f.Name, err)
 		}
 
-		pubKey, err := parseSSHPublicKey(content)
+		parsed, err := keyset.Parse([]byte(content))
 		if err != nil {
 			// Skipping the file keeps the rest of this commit
 			// authorized, so a device can still push a repair.
 			// A blob that cannot be read still fails above:
 			// skipping that would look like a revocation.
-			log.Printf("skipping unreadable pubkey %s: %v", f.Name, err)
+			log.Printf("skipping unreadable key set %s: %v", f.Name, err)
+			return nil
+		}
+		stem := strings.TrimSuffix(f.Name, ".yaml")
+		if parsed.Metadata.Name != stem {
+			log.Printf("skipping key set %s: metadata.name %q does not match the file name", f.Name, parsed.Metadata.Name)
 			return nil
 		}
 
-		username := strings.TrimSuffix(f.Name, ".pub")
-		keys[username] = pubKey
-
+		pubKey, err := keyset.ParseMTLSPublicKey(parsed.Spec.MTLSPublicKey)
+		if err != nil {
+			log.Printf("skipping unreadable key set %s: %v", f.Name, err)
+			return nil
+		}
+		keys[parsed.Metadata.Name] = pubKey
 		return nil
 	})
 
@@ -285,92 +294,5 @@ func extractP256PublicKey(cert *x509.Certificate) (*ecdsa.PublicKey, error) {
 // Parses SSH format P-256 public key (ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY...).
 // This format is standard for SSH keys and can be generated with ssh-keygen.
 func parseSSHPublicKey(content string) (*ecdsa.PublicKey, error) {
-	content = strings.TrimSpace(content)
-	parts := strings.Fields(content)
-
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid SSH public key format")
-	}
-
-	if parts[0] != "ecdsa-sha2-nistp256" {
-		return nil, fmt.Errorf("not a P-256 key (type: %s)", parts[0])
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64: %w", err)
-	}
-
-	// SSH wire format for ECDSA:
-	// 4 bytes: length of key type string
-	// N bytes: key type string ("ecdsa-sha2-nistp256")
-	// 4 bytes: length of curve identifier
-	// M bytes: curve identifier ("nistp256")
-	// 4 bytes: length of public key point
-	// K bytes: public key point (uncompressed: 0x04 || X || Y)
-
-	offset := 0
-
-	// Read key type
-	if len(decoded) < 4 {
-		return nil, fmt.Errorf("decoded key too short")
-	}
-	keyTypeLen := binary.BigEndian.Uint32(decoded[offset:])
-	offset += 4
-
-	if len(decoded) < offset+int(keyTypeLen) {
-		return nil, fmt.Errorf("decoded key too short for key type")
-	}
-	keyType := string(decoded[offset : offset+int(keyTypeLen)])
-	offset += int(keyTypeLen)
-
-	if keyType != "ecdsa-sha2-nistp256" {
-		return nil, fmt.Errorf("unexpected key type: %s", keyType)
-	}
-
-	// Read curve identifier
-	if len(decoded) < offset+4 {
-		return nil, fmt.Errorf("decoded key too short for curve length")
-	}
-	curveLen := binary.BigEndian.Uint32(decoded[offset:])
-	offset += 4
-
-	if len(decoded) < offset+int(curveLen) {
-		return nil, fmt.Errorf("decoded key too short for curve")
-	}
-	curveID := string(decoded[offset : offset+int(curveLen)])
-	offset += int(curveLen)
-
-	if curveID != "nistp256" {
-		return nil, fmt.Errorf("unexpected curve: %s", curveID)
-	}
-
-	// Read public key point
-	if len(decoded) < offset+4 {
-		return nil, fmt.Errorf("decoded key too short for point length")
-	}
-	pointLen := binary.BigEndian.Uint32(decoded[offset:])
-	offset += 4
-
-	if len(decoded) < offset+int(pointLen) {
-		return nil, fmt.Errorf("decoded key too short for point data")
-	}
-	pointData := decoded[offset : offset+int(pointLen)]
-
-	// Parse uncompressed point (0x04 || X || Y)
-	if len(pointData) != 65 || pointData[0] != 0x04 {
-		return nil, fmt.Errorf("invalid uncompressed point format")
-	}
-
-	curve := elliptic.P256()
-	x, y := elliptic.Unmarshal(curve, pointData)
-	if x == nil {
-		return nil, fmt.Errorf("failed to unmarshal point")
-	}
-
-	return &ecdsa.PublicKey{
-		Curve: curve,
-		X:     x,
-		Y:     y,
-	}, nil
+	return keyset.ParseMTLSPublicKey(content)
 }

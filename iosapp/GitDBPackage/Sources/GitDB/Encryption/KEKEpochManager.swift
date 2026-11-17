@@ -42,6 +42,13 @@ public final class KEKEpochManager {
         return kek
     }
 
+    // The first epoch's key exists only in memory until bootstrap
+    // commits the epoch file. The same manager seals this device's
+    // name into that commit, before the file can be decrypted back.
+    public func cachedKEK(epoch: Int) -> Data? {
+        kekCache[epoch]
+    }
+
     // Resolves the active KEK and epoch in one call so encryption sites can use consistent metadata.
     public func loadCurrentKEK() throws -> (epoch: Int, kek: Data) {
         guard let epoch = try currentEpoch() else {
@@ -60,7 +67,7 @@ public final class KEKEpochManager {
         }
         kekCache[1] = kek
         return [
-            (path: "gitdb/version", content: "1\n"),
+            (path: "gitdb/version", content: "\(DatabaseVersion.current)\n"),
             (path: "encryption/current", content: "1\n"),
             (path: "encryption/epochs/1.age", content: encryptedText)
         ]

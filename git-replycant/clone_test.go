@@ -215,27 +215,29 @@ func TestRunGitStreaming(t *testing.T) {
 	assert.Contains(t, string(stderrOutput), "streamed stderr line")
 }
 
-// TestRequireSupportedDatabaseVersionAtRef accepts a missing marker as
-// version 0 and refuses any other unsupported integer.
+// TestRequireSupportedDatabaseVersionAtRef rejects a missing marker and
+// any integer other than the compiled pin.
 func TestRequireSupportedDatabaseVersionAtRef(t *testing.T) {
 	t.Parallel()
 	repoDir := testInitRepo(t)
 	testWriteFile(t, filepath.Join(repoDir, "notes", "readme.txt"), []byte("hello"), 0o644)
 	testRunGit(t, repoDir, "add", ".")
 	testRunGit(t, repoDir, "commit", "-m", "seed")
-	require.NoError(t, RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD"))
+	err := RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing")
 
-	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("1\n"), 0o644)
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
 	testRunGit(t, repoDir, "add", ".")
 	testRunGit(t, repoDir, "commit", "-m", "marker")
 	require.NoError(t, RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD"))
 
-	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("1\n"), 0o644)
 	testRunGit(t, repoDir, "add", ".")
-	testRunGit(t, repoDir, "commit", "-m", "bump")
-	err := RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD")
+	testRunGit(t, repoDir, "commit", "-m", "old")
+	err = RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported gitdb database version 2")
+	assert.Contains(t, err.Error(), "unsupported gitdb database version 1")
 }
 
 // TestInitializeRepository confirms init + origin setup works before network authorization.

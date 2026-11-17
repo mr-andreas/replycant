@@ -15,7 +15,7 @@ struct GitDBRemoteTests {
         let repository = try Repository.create(at: repoPath, bare: false)
         try repository.createCommit(
             message: "seed",
-            files: [("gitdb/version", "1\n")]
+            files: [("gitdb/version", "\(DatabaseVersion.current)\n")]
         )
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitdb-remote-db-\(UUID().uuidString).sqlite")

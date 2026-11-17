@@ -89,6 +89,7 @@ final class DebugDeviceLinkRouter {
             agePubkey: payload.agePubkey,
             name: payload.name,
             uuid: payload.uuid,
+            displayName: payload.displayName,
             pairingSecret: payload.pairingSecret
         )
     }

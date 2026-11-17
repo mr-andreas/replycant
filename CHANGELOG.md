@@ -2,10 +2,15 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- the server converts existing libraries to format 2 when it starts. Every app must be updated, because older apps refuse the converted library
+
 ### Features
 
 #### iOS app
 
+- Settings shows descriptive device and recovery key names
 - remove a linked device from Settings: it loses access immediately, and photos added afterwards are encrypted with a key it never receives
 
 ### Fixes

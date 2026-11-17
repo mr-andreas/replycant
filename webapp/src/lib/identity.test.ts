@@ -171,11 +171,14 @@ describe("identity lifecycle", () => {
       deviceUUID: "uuid-1",
     });
     const unlocked = await unlockIdentity(record, { wrap: "password", password: "secret" });
-    const payload = JSON.parse(buildPublicKeyQrPayload(unlocked, " cGFpcmluZy1zZWNyZXQ ")) as Record<string, string>;
+    const payload = JSON.parse(
+      buildPublicKeyQrPayload(unlocked, " cGFpcmluZy1zZWNyZXQ ", "My Device"),
+    ) as Record<string, string>;
     expect(payload).toEqual({
       pubkey: unlocked.publicKeySsh,
       age_pubkey: unlocked.agePublicKey,
       name: "my-device",
+      display_name: "My Device",
       uuid: "uuid-1",
       pairing_secret: "cGFpcmluZy1zZWNyZXQ",
     });

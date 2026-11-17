@@ -6,30 +6,32 @@ import Testing
 
 // Verifies recovery key filename conventions so auth and encryption recipient scans keep working.
 struct RecoveryKeyNamingTests {
-    // Confirms listRecoveryKeys only returns entries that include both marked pub and age files.
-    @Test func listRecoveryKeysRequiresPubAndAgePair() throws {
+    // Recovery keys are key sets with type recovery. A device key set
+    // and a file that does not parse are not recovery keys.
+    @Test func listRecoveryKeysReturnsRecoveryKeySets() throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("recovery-naming-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(atPath: root) }
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
 
         let repo = try Repository.create(at: root, bare: false)
         let validUUID = UUID().uuidString.lowercased()
-        let missingAgeUUID = UUID().uuidString.lowercased()
-        let validLabel = "home-safe-primary"
+        let validName = "home-safe-primary-\(validUUID)"
+        let device = try keySetFile(name: "device-main", type: KeySet.typeDevice)
+        let recovery = try keySetFile(name: validName, type: KeySet.typeRecovery)
         try repo.createCommit(
-            message: "seed recovery pubkeys",
+            message: "seed recovery key sets",
             files: [
-                (path: "pubkeys/\(validLabel)-\(validUUID).recovery.pub", content: "ssh"),
-                (path: "pubkeys/\(validLabel)-\(validUUID).recovery.age", content: "age"),
-                (path: "pubkeys/missing-age-\(missingAgeUUID).recovery.pub", content: "ssh"),
-                (path: "pubkeys/device-main.pub", content: "ssh"),
+                recovery,
+                device,
+                (path: "pubkeys/notes.yaml", content: "not a key set\n"),
             ]
         )
 
         let records = try RecoveryKeyManager().listRecoveryKeys(repository: repo)
         #expect(records.count == 1)
-        #expect(records[0].label == validLabel)
+        #expect(records[0].label == validName)
         #expect(records[0].uuid == validUUID)
+        #expect(records[0].path == recovery.path)
     }
 
     // Confirms create/delete broadcasts so Settings can drop the recovery
@@ -90,15 +92,13 @@ struct RecoveryKeyNamingTests {
         _ = try Repository.create(at: remotePath, bare: true)
 
         let uuid = UUID().uuidString.lowercased()
-        let pubPath = "pubkeys/home-\(uuid).recovery.pub"
-        let agePath = "pubkeys/home-\(uuid).recovery.age"
+        let recovery = try keySetFile(name: "home-\(uuid)", type: KeySet.typeRecovery)
         let repository = try Repository.create(at: localPath, bare: false)
         try repository.createCommit(
             message: "seed recovery key",
             files: [
-                (path: "gitdb/version", content: "1\n"),
-                (path: pubPath, content: "ssh"),
-                (path: agePath, content: "age"),
+                (path: "gitdb/version", content: "\(DatabaseVersion.current)\n"),
+                recovery,
             ]
         )
         try repository.addRemote(name: "origin", url: remotePath)
@@ -131,7 +131,23 @@ struct RecoveryKeyNamingTests {
         try await holdingTask.value
         try await deleteTask.value
 
-        #expect(!repository.fileExists(at: pubPath))
-        #expect(!repository.fileExists(at: agePath))
+        #expect(!repository.fileExists(at: recovery.path))
+    }
+
+    private func keySetFile(
+        name: String,
+        type: String
+    ) throws -> (path: String, content: String) {
+        let keySet = KeySet(
+            apiVersion: KeySet.apiVersionValue,
+            kind: KeySet.kindValue,
+            metadata: .init(name: name),
+            spec: .init(
+                type: type,
+                mtlsPublicKey: "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHRl+gi7RtSRc6vdZ+Yi9UDbHAjG6AU7bGguZE6PrPipUw+vUZxniQRRaMy/rwuKaIM/KRmDaslS/CpN5+1NvJE= phone",
+                agePublicKey: "age1gffmd3cp4aae4ellqlqladxvtej9za6qsqpyquudjrwj06j4q95qqn5m8a"
+            )
+        )
+        return (KeySet.path(name: name), try keySet.yaml())
     }
 }

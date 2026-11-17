@@ -23,7 +23,7 @@ flowchart LR
     DEK -->|encrypts| Binary["Binary chunks"]
 ```
 
-Any device whose age public key is in `pubkeys/` can decrypt everything.
+Any device whose age public key is in a key set under `pubkeys/` can decrypt everything.
 Adding a device only re-wraps the small KEK file, and revoking one only
 creates a new KEK. Neither touches the encrypted objects.
 
@@ -36,15 +36,36 @@ password):
 | Identity key | ECDSA P-256 | [mTLS authentication](./authentication.md) |
 | Encryption key | age (X25519) | Unwrapping the KEK |
 
-Both public keys live side by side in the repository:
+Both public keys live in one plaintext file per key holder:
 
 ```text
 pubkeys/
-  device-a.pub        # P-256 SSH key (mTLS)
-  device-a.age        # age public key (encryption)
-  device-b.pub
-  device-b.age
+  iphone-16e.yaml
+  kitchen-ipad-<uuid>.yaml
 ```
+
+```yaml
+apiVersion: gitdb.replycant.com/v1alpha1
+kind: KeySet
+metadata:
+  name: iphone-16e          # must equal the file name
+spec:
+  type: device              # device or recovery
+  mtlsPublicKey: ecdsa-sha2-nistp256 AAAA...
+  agePublicKey: age1...
+  displayName:              # optional; only a device with the KEK can read it
+    kekEpoch: 2
+    ciphertext: <base64 nonce || ciphertext || tag>
+```
+
+The file is plaintext because gitd authorizes a device before any of them
+has unwrapped the KEK. `displayName` is the exception: it is AES-256-GCM
+sealed with the KEK for `kekEpoch`, and the additional data is
+`replycant-keyset-display-name-v1` followed by `metadata.name`. That
+binding means a rewritten file cannot move a name onto another key set.
+When the field is missing, or this device cannot open it, readers show
+`metadata.name`. Key sets stay outside `manifests/` so that directory can
+stay uniformly encrypted. See [Manifests](./manifests.md).
 
 [age](https://github.com/FiloSottile/age) is used instead of GPG or ECIES
 with P-256 because it has no configuration, key servers, or web of trust,
@@ -59,7 +80,7 @@ for every authorized device. Each KEK is an epoch:
 
 ```text
 gitdb/
-  version              # database format version, for example "1"
+  version              # database format version, for example "2"
 encryption/
   current              # active epoch number, for example "2"
   epochs/
@@ -211,19 +232,18 @@ one 64 KiB chunk.
 ## Recovery keys
 
 Recovery keys are an emergency path for when every normal device key is
-lost. They are marked and managed separately from device keys, but their
-public halves sit in the same `pubkeys/` directory:
+lost. They are the same key set as a device, with `spec.type: recovery`,
+and they live in the same `pubkeys/` directory:
 
 ```text
 pubkeys/
-  my-phone-<uuid>.pub
-  my-phone-<uuid>.age
-  home-safe-<uuid>.recovery.pub
-  home-safe-<uuid>.recovery.age
+  my-phone-<uuid>.yaml
+  home-safe-<uuid>.yaml
 ```
 
-`*.recovery.pub` is a P-256 SSH-form public key, so gitd authorizes it with
-the same matching logic as a device key.
+The recovery file's `mtlsPublicKey` is a P-256 SSH-form public key, so
+gitd authorizes it with the same matching logic as a device. Settings
+lists it with the recovery keys, not with the devices.
 
 ### Bundle format
 

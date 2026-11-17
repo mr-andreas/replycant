@@ -18,6 +18,7 @@ import (
 	"github.com/mr-andreas/replycant/server/gitd/auth"
 	"github.com/mr-andreas/replycant/server/gitd/caserver"
 	"github.com/mr-andreas/replycant/server/gitd/lfs"
+	"github.com/mr-andreas/replycant/server/gitd/migrate"
 	"github.com/mr-andreas/replycant/server/pairing"
 	"github.com/mr-andreas/replycant/server/tailnet"
 	"github.com/mr-andreas/replycant/server/tsnetserve"
@@ -146,6 +147,14 @@ func main() {
 
 	// Print the loaded CLI configuration
 	log.Printf("Loaded CLI configuration: %+v", cli)
+
+	// Migrate before any listener. A client that connects during the
+	// rewrite would fetch a tree this binary no longer authorizes.
+	migrated, err := migrate.Run(cli.Repo)
+	ctx.FatalIfErrorf(err)
+	if migrated.Migrated {
+		log.Printf("Migrated gitdb from version %d to %d", migrated.From, migrated.To)
+	}
 
 	// Read CA certificate for QR code distribution
 	caData, err := os.ReadFile(cli.CA)

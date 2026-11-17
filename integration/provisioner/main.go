@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/keyset"
 )
 
 type provisionerConfig struct {
@@ -49,7 +50,7 @@ func readIdentity(path string) (gitcrypt.Identity, error) {
 }
 
 func collectRecipients(workDir string, newIdentity gitcrypt.Identity) ([][]byte, error) {
-	paths, err := filepath.Glob(filepath.Join(workDir, "pubkeys", "*.age"))
+	paths, err := filepath.Glob(filepath.Join(workDir, "pubkeys", "*.yaml"))
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +61,11 @@ func collectRecipients(workDir string, newIdentity gitcrypt.Identity) ([][]byte,
 		if err != nil {
 			return nil, err
 		}
-		key := strings.TrimSpace(string(raw))
+		parsed, err := keyset.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		key := strings.TrimSpace(parsed.Spec.AgePublicKey)
 		if key == "" {
 			continue
 		}
@@ -169,13 +174,28 @@ func provision(cfg provisionerConfig) error {
 		return fmt.Errorf("new identity missing device name or uuid")
 	}
 	base := name + "-" + uuid
-	pubPath := filepath.Join(workDir, "pubkeys", base+".pub")
-	agePath := filepath.Join(workDir, "pubkeys", base+".age")
-
-	if err := os.WriteFile(pubPath, []byte(strings.TrimSpace(newIdentity.PublicKeySSH)+"\n"), 0o644); err != nil {
+	display, err := keyset.EncryptDisplayName(kek, epoch, base, name)
+	if err != nil {
+		return fmt.Errorf("encrypt display name: %w", err)
+	}
+	body, err := keyset.Marshal(keyset.KeySet{
+		APIVersion: keyset.APIVersion,
+		Kind:       keyset.Kind,
+		Metadata:   keyset.Metadata{Name: base},
+		Spec: keyset.Spec{
+			Type:          keyset.TypeDevice,
+			MTLSPublicKey: strings.TrimSpace(newIdentity.PublicKeySSH),
+			AgePublicKey:  strings.TrimSpace(newIdentity.AgePublicKey),
+			DisplayName:   &display,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal key set: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workDir, "pubkeys"), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(agePath, []byte(strings.TrimSpace(newIdentity.AgePublicKey)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, keyset.Path(base)), body, 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(epochPath, rewrapped, 0o644); err != nil {

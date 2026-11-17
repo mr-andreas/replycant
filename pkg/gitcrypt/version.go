@@ -10,8 +10,9 @@ import (
 const (
 	// DatabaseFormatVersion is the only gitdb/version this binary will
 	// operate on. A mismatch is a hard refusal, never a branch into
-	// older decryption or path-layout code.
-	DatabaseFormatVersion = 1
+	// older decryption or path-layout code. gitd migrates older
+	// libraries up to this number before it serves traffic.
+	DatabaseFormatVersion = 2
 	// DatabaseVersionPath is the plaintext marker at the repo root that
 	// pins the on-disk database format independently of manifest
 	// apiVersion.
@@ -45,11 +46,11 @@ func ParseDatabaseVersion(raw []byte) (int, error) {
 	return version, nil
 }
 
-// IsAcceptedDatabaseVersion reports whether version is the compiled pin
-// or the pre-marker integer 0. The check is an explicit set, not
-// `<= current`, so a future bump to 2 does not silently keep accepting 1.
+// IsAcceptedDatabaseVersion reports whether version is the compiled pin.
+// The check is exact, not `<= current`, so a library still on an older
+// format is refused until gitd migrates it.
 func IsAcceptedDatabaseVersion(version int) bool {
-	return version == 0 || version == DatabaseFormatVersion
+	return version == DatabaseFormatVersion
 }
 
 // RequireAcceptedDatabaseVersion refuses any integer that is not in the
@@ -78,13 +79,12 @@ func RequireSupportedDatabaseVersion(raw []byte) error {
 
 // RequireSupportedDatabaseVersionInWorktree reads gitdb/version from a
 // checkout so Go tools can refuse before they rewrite encryption state
-// or import media. A missing file is version 0, the in-code stand-in
-// for old alpha repositories.
+// or import media. A missing file is an error: every library has a marker.
 func RequireSupportedDatabaseVersionInWorktree(repoPath string) error {
 	raw, err := os.ReadFile(filepath.Join(repoPath, DatabaseVersionPath))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return RequireAcceptedDatabaseVersion(0)
+			return fmt.Errorf("%s is missing", DatabaseVersionPath)
 		}
 		return fmt.Errorf("read %s: %w", DatabaseVersionPath, err)
 	}

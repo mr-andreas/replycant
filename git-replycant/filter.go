@@ -203,12 +203,11 @@ func NewFilterRuntime() (*FilterRuntime, error) {
 }
 
 // requireFilterDatabaseVersion refuses to encrypt or decrypt in a
-// repository whose marker is not in the accepted set. A missing file
-// is version 0, so old alpha worktrees keep smudging.
+// repository whose marker is missing or not the compiled pin.
 func requireFilterDatabaseVersion(r *FilterRuntime) error {
 	raw, err := r.ReadRepoFile(gitcrypt.DatabaseVersionPath)
 	if err != nil {
-		return gitcrypt.RequireAcceptedDatabaseVersion(0)
+		return fmt.Errorf("%s is missing: %w", gitcrypt.DatabaseVersionPath, err)
 	}
 	return gitcrypt.RequireSupportedDatabaseVersion(raw)
 }

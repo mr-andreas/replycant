@@ -19,9 +19,12 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/keyset"
 	"github.com/mr-andreas/replycant/server/gitd/gittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/curve25519"
 )
 
 // Tests parsing valid SSH P-256 ECDSA public keys in standard format.
@@ -166,8 +169,8 @@ func TestAuthenticator_Authenticate_Success(t *testing.T) {
 	pubKey2 := &privKey2.PublicKey
 
 	// Add keys to repository
-	addKeyToRepo(t, testRepo, "alice.pub", pubKey1)
-	addKeyToRepo(t, testRepo, "bob.pub", pubKey2)
+	addKeyToRepo(t, testRepo, "alice.yaml", pubKey1)
+	addKeyToRepo(t, testRepo, "bob.yaml", pubKey2)
 
 	// Create authenticator using the bare repo
 	auth := NewAuthenticator(testRepo.BareRepo, 1*time.Minute)
@@ -195,7 +198,7 @@ func TestAuthenticator_Authenticate_Unauthorized(t *testing.T) {
 	privKey1, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	pubKey1 := &privKey1.PublicKey
-	addKeyToRepo(t, testRepo, "alice.pub", pubKey1)
+	addKeyToRepo(t, testRepo, "alice.yaml", pubKey1)
 
 	// Create authenticator using the bare repo
 	auth := NewAuthenticator(testRepo.BareRepo, 1*time.Minute)
@@ -219,7 +222,7 @@ func TestAuthenticator_Caching(t *testing.T) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	pubKey := &privKey.PublicKey
-	addKeyToRepo(t, testRepo, "alice.pub", pubKey)
+	addKeyToRepo(t, testRepo, "alice.yaml", pubKey)
 
 	// Create authenticator with short cache TTL using the bare repo
 	auth := NewAuthenticator(testRepo.BareRepo, 100*time.Millisecond)
@@ -254,7 +257,7 @@ func TestAuthenticator_RevokedKeyRejectedAfterPush(t *testing.T) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	pubKey := &privKey.PublicKey
-	addKeyToRepo(t, testRepo, "alice.pub", pubKey)
+	addKeyToRepo(t, testRepo, "alice.yaml", pubKey)
 
 	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
 	cert := createTestCertificate(t, pubKey, privKey)
@@ -262,14 +265,14 @@ func TestAuthenticator_RevokedKeyRejectedAfterPush(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "alice", username)
 
-	removeKeyFromRepo(t, testRepo, "alice.pub")
+	removeKeyFromRepo(t, testRepo, "alice.yaml")
 
 	_, err = auth.Authenticate(cert)
 	assert.ErrorIs(t, err, ErrUnauthorized)
 }
 
 // Locks recovery keys onto the same revocation path as device keys so a
-// deleted .recovery.pub cannot keep authorizing the recovery identity.
+// deleted recovery key set cannot keep authorizing the recovery identity.
 func TestAuthenticator_RevokedRecoveryKeyRejectedAfterPush(t *testing.T) {
 	testCtx := gittest.NewContext(t)
 	defer testCtx.Close(t)
@@ -277,18 +280,18 @@ func TestAuthenticator_RevokedRecoveryKeyRejectedAfterPush(t *testing.T) {
 
 	deviceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	addKeyToRepo(t, testRepo, "iphone.pub", &deviceKey.PublicKey)
+	addKeyToRepo(t, testRepo, "iphone.yaml", &deviceKey.PublicKey)
 
 	recoveryKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	recoveryFile := "iphone-2428c55c-2fa0-4a99-8b76-a85160ea6714.recovery.pub"
-	addKeyToRepo(t, testRepo, recoveryFile, &recoveryKey.PublicKey)
+	recoveryFile := "iphone-2428c55c-2fa0-4a99-8b76-a85160ea6714.yaml"
+	addKeySetToRepo(t, testRepo, recoveryFile, keyset.TypeRecovery, &recoveryKey.PublicKey)
 
 	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
 	recoveryCert := createTestCertificate(t, &recoveryKey.PublicKey, recoveryKey)
 	username, err := auth.Authenticate(recoveryCert)
 	require.NoError(t, err)
-	assert.Equal(t, "iphone-2428c55c-2fa0-4a99-8b76-a85160ea6714.recovery", username)
+	assert.Equal(t, "iphone-2428c55c-2fa0-4a99-8b76-a85160ea6714", username)
 
 	removeKeyFromRepo(t, testRepo, recoveryFile)
 
@@ -310,7 +313,7 @@ func TestAuthenticator_NewKeyAuthorizedAfterPush(t *testing.T) {
 
 	aliceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	addKeyToRepo(t, testRepo, "alice.pub", &aliceKey.PublicKey)
+	addKeyToRepo(t, testRepo, "alice.yaml", &aliceKey.PublicKey)
 
 	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
 	aliceCert := createTestCertificate(t, &aliceKey.PublicKey, aliceKey)
@@ -320,7 +323,7 @@ func TestAuthenticator_NewKeyAuthorizedAfterPush(t *testing.T) {
 
 	bobKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	addKeyToRepo(t, testRepo, "bob.pub", &bobKey.PublicKey)
+	addKeyToRepo(t, testRepo, "bob.yaml", &bobKey.PublicKey)
 
 	bobCert := createTestCertificate(t, &bobKey.PublicKey, bobKey)
 	bobName, err := auth.Authenticate(bobCert)
@@ -351,7 +354,7 @@ func TestServer_HandleGitRequest_Unauthorized(t *testing.T) {
 	authorizedPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	authorizedPubKey := &authorizedPrivKey.PublicKey
-	addKeyToRepo(t, testRepo, "authorized.pub", authorizedPubKey)
+	addKeyToRepo(t, testRepo, "authorized.yaml", authorizedPubKey)
 
 	certFile := filepath.Join(t.TempDir(), "server.crt")
 	keyFile := filepath.Join(t.TempDir(), "server.key")
@@ -443,8 +446,8 @@ func TestReadAuthorizedKeysReflectsMainAfterEachPush(t *testing.T) {
 	require.NoError(t, err)
 	bob, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
-	addKeyToRepo(t, testRepo, "bob.pub", &bob.PublicKey)
+	addKeyToRepo(t, testRepo, "alice.yaml", &alice.PublicKey)
+	addKeyToRepo(t, testRepo, "bob.yaml", &bob.PublicKey)
 
 	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
 	require.NoError(t, err)
@@ -452,7 +455,7 @@ func TestReadAuthorizedKeysReflectsMainAfterEachPush(t *testing.T) {
 	assert.True(t, keys["alice"].Equal(&alice.PublicKey))
 	assert.True(t, keys["bob"].Equal(&bob.PublicKey))
 
-	removeKeyFromRepo(t, testRepo, "bob.pub")
+	removeKeyFromRepo(t, testRepo, "bob.yaml")
 
 	keys, err = ReadAuthorizedKeys(testRepo.BareRepo)
 	require.NoError(t, err)
@@ -471,7 +474,7 @@ func TestAuthenticator_UnreadablePubkeyDoesNotLockOutValidKeys(t *testing.T) {
 
 	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
+	addKeyToRepo(t, testRepo, "alice.yaml", &alice.PublicKey)
 
 	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
 	aliceCert := createTestCertificate(t, &alice.PublicKey, alice)
@@ -479,7 +482,7 @@ func TestAuthenticator_UnreadablePubkeyDoesNotLockOutValidKeys(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "alice", username)
 
-	commitPubkeyContents(t, testRepo, "not-a-key.pub", "not a key\n")
+	commitPubkeyContents(t, testRepo, "not-a-key.yaml", "not a key\n")
 
 	username, err = auth.Authenticate(aliceCert)
 	require.NoError(t, err)
@@ -490,7 +493,7 @@ func TestAuthenticator_UnreadablePubkeyDoesNotLockOutValidKeys(t *testing.T) {
 	require.Len(t, keys, 1)
 	assert.True(t, keys["alice"].Equal(&alice.PublicKey))
 
-	commitPubkeyContents(t, testRepo, "also-not-a-key.pub", "still not a key\n")
+	commitPubkeyContents(t, testRepo, "also-not-a-key.yaml", "still not a key\n")
 
 	username, err = auth.Authenticate(aliceCert)
 	require.NoError(t, err)
@@ -501,8 +504,8 @@ func TestAuthenticator_UnreadablePubkeyDoesNotLockOutValidKeys(t *testing.T) {
 	require.Len(t, keys, 1)
 	assert.Contains(t, keys, "alice")
 
-	removeKeyFromRepo(t, testRepo, "not-a-key.pub")
-	removeKeyFromRepo(t, testRepo, "also-not-a-key.pub")
+	removeKeyFromRepo(t, testRepo, "not-a-key.yaml")
+	removeKeyFromRepo(t, testRepo, "also-not-a-key.yaml")
 
 	username, err = auth.Authenticate(aliceCert)
 	require.NoError(t, err)
@@ -522,8 +525,8 @@ func TestAuthenticator_ReplacingKeyWithGarbageDropsOnlyThatKey(t *testing.T) {
 	require.NoError(t, err)
 	bob, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	addKeyToRepo(t, testRepo, "alice.pub", &alice.PublicKey)
-	addKeyToRepo(t, testRepo, "bob.pub", &bob.PublicKey)
+	addKeyToRepo(t, testRepo, "alice.yaml", &alice.PublicKey)
+	addKeyToRepo(t, testRepo, "bob.yaml", &bob.PublicKey)
 
 	auth := NewAuthenticator(testRepo.BareRepo, time.Hour)
 	aliceCert := createTestCertificate(t, &alice.PublicKey, alice)
@@ -535,7 +538,7 @@ func TestAuthenticator_ReplacingKeyWithGarbageDropsOnlyThatKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "bob", username)
 
-	commitPubkeyContents(t, testRepo, "bob.pub", "not a key\n")
+	commitPubkeyContents(t, testRepo, "bob.yaml", "not a key\n")
 
 	_, err = auth.Authenticate(bobCert)
 	assert.ErrorIs(t, err, ErrUnauthorized)
@@ -833,18 +836,12 @@ func simulateBootstrapPush(t *testing.T, bareRepo string, username string, pubKe
 	err = os.Mkdir(pubkeysDir, 0755)
 	require.NoError(t, err)
 
-	// Write the key file
-	keyType := "ecdsa-sha2-nistp256"
-	wireFormat := encodeSSHPublicKey(keyType, pubKey)
-	encoded := base64.StdEncoding.EncodeToString(wireFormat)
-	sshKey := keyType + " " + encoded + " " + username + "@test\n"
-
-	keyFile := filepath.Join(workDir, "pubkeys", username+".pub")
-	err = os.WriteFile(keyFile, []byte(sshKey), 0644)
+	keyFile := filepath.Join(workDir, "pubkeys", username+".yaml")
+	err = os.WriteFile(keyFile, keySetYAML(t, username, keyset.TypeDevice, pubKey), 0644)
 	require.NoError(t, err)
 
 	// Add and commit
-	_, err = worktree.Add("pubkeys/" + username + ".pub")
+	_, err = worktree.Add("pubkeys/" + username + ".yaml")
 	require.NoError(t, err)
 
 	_, err = worktree.Commit("Bootstrap: add key for "+username, &git.CommitOptions{
@@ -919,23 +916,24 @@ func commitPubkeyContents(t *testing.T, testRepo gittest.TestRepo, fileName stri
 	require.NoError(t, err)
 }
 
-// Commits an explicit pubkey filename so tests can cover both device
-// keys and marked recovery keys through the same helper.
+// Commits a device key set so tests can authorize a certificate.
 func addKeyToRepo(t *testing.T, testRepo gittest.TestRepo, fileName string, pubKey *ecdsa.PublicKey) {
+	addKeySetToRepo(t, testRepo, fileName, keyset.TypeDevice, pubKey)
+}
+
+// Commits one KeySet YAML file. fileName is the path stem plus .yaml,
+// and metadata.name is that stem, which is what authentication returns.
+func addKeySetToRepo(t *testing.T, testRepo gittest.TestRepo, fileName string, keyType string, pubKey *ecdsa.PublicKey) {
 	repo, err := git.PlainOpen(testRepo.WorkDir)
 	require.NoError(t, err)
 
 	worktree, err := repo.Worktree()
 	require.NoError(t, err)
 
-	keyType := "ecdsa-sha2-nistp256"
-	wireFormat := encodeSSHPublicKey(keyType, pubKey)
-	encoded := base64.StdEncoding.EncodeToString(wireFormat)
-	username := strings.TrimSuffix(fileName, ".pub")
-	sshKey := keyType + " " + encoded + " " + username + "@test\n"
-
+	require.True(t, strings.HasSuffix(fileName, ".yaml"))
+	name := strings.TrimSuffix(fileName, ".yaml")
 	keyFile := filepath.Join(testRepo.WorkDir, "pubkeys", fileName)
-	err = os.WriteFile(keyFile, []byte(sshKey), 0644)
+	err = os.WriteFile(keyFile, keySetYAML(t, name, keyType, pubKey), 0644)
 	require.NoError(t, err)
 
 	_, err = worktree.Add("pubkeys/" + fileName)
@@ -977,4 +975,73 @@ func removeKeyFromRepo(t *testing.T, testRepo gittest.TestRepo, fileName string)
 
 	err = repo.Push(&git.PushOptions{})
 	require.NoError(t, err)
+}
+
+// keySetYAML builds a device or recovery key set around a real P-256 key.
+func keySetYAML(t *testing.T, name string, keyType string, pubKey *ecdsa.PublicKey) []byte {
+	t.Helper()
+	ssh, err := gitcrypt.FormatSSHPublicKey(pubKey, name)
+	require.NoError(t, err)
+	seed := make([]byte, 32)
+	_, err = rand.Read(seed)
+	require.NoError(t, err)
+	ageRaw, err := curve25519.X25519(seed, curve25519.Basepoint)
+	require.NoError(t, err)
+	age, err := gitcrypt.EncodeAgePublicKey(ageRaw)
+	require.NoError(t, err)
+	raw, err := keyset.Marshal(keyset.KeySet{
+		APIVersion: keyset.APIVersion,
+		Kind:       keyset.Kind,
+		Metadata:   keyset.Metadata{Name: name},
+		Spec: keyset.Spec{
+			Type:          keyType,
+			MTLSPublicKey: ssh,
+			AgePublicKey:  age,
+		},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+// A key set whose metadata.name does not match its file is not a member.
+// Trusting the name inside the file would let a renamed copy authorize
+// under an identity the operator did not publish.
+func TestAuthenticator_SkipsKeySetWhoseNameDoesNotMatchFile(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	body := keySetYAML(t, "alice", keyset.TypeDevice, &alice.PublicKey)
+	commitPubkeyContents(t, testRepo, "bob.yaml", string(body))
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
+	cert := createTestCertificate(t, &alice.PublicKey, alice)
+	_, err = NewAuthenticator(testRepo.BareRepo, time.Minute).Authenticate(cert)
+	assert.ErrorIs(t, err, ErrUnauthorized)
+}
+
+// Old .pub files are not authorized. Membership is the key set only, so a
+// leftover file from before the migration cannot keep a device in.
+func TestAuthenticator_IgnoresStrayPubFile(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	addKeyToRepo(t, testRepo, "alice.yaml", &alice.PublicKey)
+
+	ssh, err := gitcrypt.FormatSSHPublicKey(&alice.PublicKey, "stray")
+	require.NoError(t, err)
+	commitPubkeyContents(t, testRepo, "stray.pub", ssh+"\n")
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.Contains(t, keys, "alice")
 }

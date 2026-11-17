@@ -25,8 +25,17 @@ struct GitdIntegrationTests {
             recipientAgePubkeys: [identity.agePublicKey]
         )
         let base = "\(identity.deviceName)-\(identity.deviceUUID)"
-        files.append((path: "pubkeys/\(base).pub", content: identity.publicKeySSH + "\n"))
-        files.append((path: "pubkeys/\(base).age", content: identity.agePublicKey + "\n"))
+        let keySet = KeySet(
+            apiVersion: KeySet.apiVersionValue,
+            kind: KeySet.kindValue,
+            metadata: .init(name: base),
+            spec: .init(
+                type: KeySet.typeDevice,
+                mtlsPublicKey: identity.publicKeySSH.trimmingCharacters(in: .whitespacesAndNewlines),
+                agePublicKey: identity.agePublicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        )
+        files.append((path: KeySet.path(name: base), content: try keySet.yaml()))
         try repository.createCommit(message: "bootstrap iOS integration identity", files: files)
         try repository.addRemote(name: "origin", url: remoteURL)
         try repository.push(remoteName: "origin", branchName: "main")
@@ -46,7 +55,9 @@ struct GitdIntegrationTests {
         #expect(recloned.fileExists(at: "encryption/current"))
         #expect(
             recloned.fileExists(
-                at: "pubkeys/\(context.provisionIdentity.deviceName)-\(context.provisionIdentity.deviceUUID).pub"
+                at: KeySet.path(
+                    name: "\(context.provisionIdentity.deviceName)-\(context.provisionIdentity.deviceUUID)"
+                )
             )
         )
     }
@@ -141,8 +152,7 @@ struct GitdIntegrationTests {
         )
 
         let recloned = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
-        #expect(recloned.fileExists(at: created.recoveryPubPath))
-        #expect(recloned.fileExists(at: created.recoveryAgePath))
+        #expect(recloned.fileExists(at: created.path))
     }
 
     // Confirms wrong recovery passwords fail closed before any network mutation.
@@ -207,9 +217,8 @@ struct GitdIntegrationTests {
             serverConfiguration: config
         )
 
-        let beforePubCount = try repository
-            .listFiles(in: "pubkeys")
-            .filter { $0.hasSuffix(".pub") && !$0.contains(".recovery.") }
+        let beforeDeviceCount = try KeySet.readAll(in: repository)
+            .filter { $0.keySet.spec.type == KeySet.typeDevice }
             .count
 
         try await IntegrationHarness.resetLocalInstallState()
@@ -222,10 +231,9 @@ struct GitdIntegrationTests {
         #expect(try await database.readSyncedCommitHash() == recoveredLocal.headOID())
 
         let recoveredRepository = try IntegrationHarness.cloneIntoManagedRepository(from: context.mtlsRemoteURL)
-        let afterPubCount = try recoveredRepository
-            .listFiles(in: "pubkeys")
-            .filter { $0.hasSuffix(".pub") && !$0.contains(".recovery.") }
+        let afterDeviceCount = try KeySet.readAll(in: recoveredRepository)
+            .filter { $0.keySet.spec.type == KeySet.typeDevice }
             .count
-        #expect(afterPubCount > beforePubCount)
+        #expect(afterDeviceCount > beforeDeviceCount)
     }
 }

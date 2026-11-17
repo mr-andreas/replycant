@@ -51,7 +51,7 @@ struct DeviceLinkingGrantTests {
         addDeviceKey: (@Sendable () async throws -> Void)? = nil
     ) -> DeviceLinking.Operations {
         DeviceLinking.Operations(
-            addDeviceKey: { _, _, _, _, _ in
+            addDeviceKey: { _, _, _, _, _, _ in
                 recorder.recordAddDeviceKeyIsolation()
                 recorder.record("add")
                 if let addDeviceKey {

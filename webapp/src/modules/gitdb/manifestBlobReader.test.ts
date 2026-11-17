@@ -67,7 +67,7 @@ describe("ManifestBlobReader", () => {
         throw opts.blobError ?? Object.assign(new Error("Could not find gitdb/version"), { code: "NotFoundError", name: "NotFoundError" });
       }
       return {
-        blob: new TextEncoder().encode(opts.versionText ?? "1\n"),
+        blob: new TextEncoder().encode(opts.versionText ?? "2\n"),
         oid: "version-oid",
       };
     });
@@ -84,21 +84,17 @@ describe("ManifestBlobReader", () => {
     mockVersionRead({
       rootEntries: [{ path: "gitdb", oid: "gitdb-oid" }],
     });
-    await expect(reader.readDatabaseVersion("commit")).resolves.toBe(1);
+    await expect(reader.readDatabaseVersion("commit")).resolves.toBe(2);
   });
 
-  it("treats a missing gitdb/version marker as version 0 when the tree is readable", async () => {
+  it("rejects a missing gitdb/version marker when the tree is readable", async () => {
     const reader = createReader();
     mockVersionRead({
       rootEntries: [{ path: "manifests", oid: "manifests-oid", type: "tree", mode: "040000" }],
       failAt: "blob",
     });
-    await expect(reader.readDatabaseVersion("commit")).resolves.toBe(0);
-    await expect(reader.inspectDatabaseVersion("commit")).resolves.toEqual({
-      version: 0,
-      rootPaths: ["manifests"],
-    });
-    await expect(reader.assertSupportedDatabaseVersion("commit")).resolves.toBeUndefined();
+    await expect(reader.readDatabaseVersion("commit")).rejects.toThrow(/gitdb\/version is missing/);
+    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/gitdb\/version is missing/);
   });
 
   it("throws DatabaseVersionUnreadableError when the commit cannot be read", async () => {
@@ -124,8 +120,8 @@ describe("ManifestBlobReader", () => {
 
   it("rejects an unsupported gitdb/version marker", async () => {
     const reader = createReader();
-    mockVersionRead({ versionText: "2\n" });
-    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/unsupported gitdb database version 2/);
+    mockVersionRead({ versionText: "3\n" });
+    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/unsupported gitdb database version 3/);
   });
 
   it("infers expected kind from canonical manifest path", () => {

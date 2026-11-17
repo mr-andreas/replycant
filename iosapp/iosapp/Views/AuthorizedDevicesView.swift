@@ -23,8 +23,8 @@ struct AuthorizedDevicesView: View {
     }
 
     // Drives the per-row spinner so only the device being removed looks busy.
-    static func isRevoking(pubPath: String, in revokingPaths: Set<String>) -> Bool {
-        revokingPaths.contains(pubPath)
+    static func isRevoking(path: String, in revokingPaths: Set<String>) -> Bool {
+        revokingPaths.contains(path)
     }
 
     // Parks a device list so gallery tiles can show a removal in flight
@@ -42,7 +42,7 @@ struct AuthorizedDevicesView: View {
         // visible without starting a removal.
         static let revoking = PreviewState(
             records: sampleRecords,
-            revokingPaths: [sampleRecords[1].pubPath]
+            revokingPaths: [sampleRecords[1].path]
         )
 
         // Keeps the list on screen with a removal error so the red
@@ -56,15 +56,13 @@ struct AuthorizedDevicesView: View {
             AuthorizedDeviceManager.DeviceRecord(
                 name: "iphone-15-pro",
                 uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                pubPath: "pubkeys/iphone-15-pro-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.pub",
-                agePath: "pubkeys/iphone-15-pro-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.age",
+                path: "pubkeys/iphone-15-pro-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.yaml",
                 isCurrentDevice: true
             ),
             AuthorizedDeviceManager.DeviceRecord(
                 name: "kitchen-ipad",
                 uuid: "11111111-2222-3333-4444-555555555555",
-                pubPath: "pubkeys/kitchen-ipad-11111111-2222-3333-4444-555555555555.pub",
-                agePath: "pubkeys/kitchen-ipad-11111111-2222-3333-4444-555555555555.age",
+                path: "pubkeys/kitchen-ipad-11111111-2222-3333-4444-555555555555.yaml",
                 isCurrentDevice: false
             )
         ]
@@ -91,7 +89,7 @@ struct AuthorizedDevicesView: View {
     var body: some View {
         List {
             Section {
-                ForEach(records, id: \.pubPath) { record in
+                ForEach(records, id: \.path) { record in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(record.name)
@@ -106,7 +104,7 @@ struct AuthorizedDevicesView: View {
                             Text(Self.thisDeviceLabel)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                        } else if Self.isRevoking(pubPath: record.pubPath, in: revokingPaths) {
+                        } else if Self.isRevoking(path: record.path, in: revokingPaths) {
                             ProgressView()
                         } else {
                             Button(role: .destructive) {
@@ -192,11 +190,11 @@ struct AuthorizedDevicesView: View {
     // push cannot delete a different row than the one that was confirmed.
     private func revoke(_ record: AuthorizedDeviceManager.DeviceRecord) async {
         errorMessage = nil
-        revokingPaths.insert(record.pubPath)
-        defer { revokingPaths.remove(record.pubPath) }
+        revokingPaths.insert(record.path)
+        defer { revokingPaths.remove(record.path) }
         do {
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-            try await manager.revokeDevice(pubPath: record.pubPath, gitDB: gitDB)
+            try await manager.revokeDevice(path: record.path, gitDB: gitDB)
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

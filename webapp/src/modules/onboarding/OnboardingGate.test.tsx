@@ -76,6 +76,7 @@ describe("OnboardingGate", () => {
       pubkey: "ssh-ed25519 AAAA test",
       age_pubkey: "age1test",
       name: "desk",
+      display_name: "desk",
       uuid: "uuid-1",
       pairing_secret: "secret-1",
     });

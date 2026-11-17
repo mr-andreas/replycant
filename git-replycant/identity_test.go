@@ -151,6 +151,7 @@ func TestBuildPublicKeyQrPayload(t *testing.T) {
 		"pubkey":         "ssh",
 		"age_pubkey":     "age",
 		"name":           "name",
+		"display_name":   "name",
 		"uuid":           "uuid",
 		"pairing_secret": "cGFpcmluZy1zZWNyZXQ",
 	}, payload)

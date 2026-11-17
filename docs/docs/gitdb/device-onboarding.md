@@ -64,7 +64,7 @@ When a repository already has authorized devices, new devices must be explicitly
 1. **Device B generates identity**: At first launch, Device B creates ECDSA P-256 key pair
 2. **Device B displays QR**: Shows its public keys, device name, UUID, and a fresh pairing secret as QR code
 3. **Device A scans QR**: Reads Device B's public key information
-4. **Device A publishes the key**: Adds `pubkeys/{name}-{uuid}.pub` and pushes it, so the server recognizes Device B's certificate
+4. **Device A publishes the key**: Adds `pubkeys/{name}-{uuid}.yaml` and pushes it, so the server recognizes Device B's certificate
 
 ### Durable writes
 
@@ -114,6 +114,7 @@ Displayed by new device during linking:
   "pubkey": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAI...",
   "age_pubkey": "age1q...",
   "name": "iphone-15-pro",
+  "display_name": "Kitchen iPhone",
   "uuid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
   "pairing_secret": "q3Jx..."
 }
@@ -123,7 +124,8 @@ Displayed by new device during linking:
 |-------|-------------|
 | `pubkey` | SSH-format ECDSA P-256 public key |
 | `age_pubkey` | Bech32-encoded age X25519 public key for encryption |
-| `name` | Human-readable device name |
+| `name` | Filename-safe slug for the key set |
+| `display_name` | The name the user entered, before it was turned into a slug. Optional: a code without it uses `name` |
 | `uuid` | Unique device identifier (prevents name collisions) |
 | `pairing_secret` | Base64url secret authenticating the pairing record. Required: the new device cannot reach the server, so the record is its only way in. |
 

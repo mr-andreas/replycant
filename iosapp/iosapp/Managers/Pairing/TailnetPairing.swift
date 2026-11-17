@@ -25,16 +25,21 @@ enum TailnetPairing {
         publicKeySSH: String,
         agePublicKey: String,
         deviceName: String,
+        displayName: String? = nil,
         deviceUUID: String,
         pairingSecret: String
     ) throws -> String {
-        let fields = [
+        var fields = [
             "pubkey": publicKeySSH,
             "age_pubkey": agePublicKey,
             "name": deviceName,
             "uuid": deviceUUID,
             "pairing_secret": pairingSecret
         ]
+        let shown = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let shown, !shown.isEmpty {
+            fields["display_name"] = shown
+        }
 
         let data = try JSONSerialization.data(withJSONObject: fields)
         return String(decoding: data, as: UTF8.self)
