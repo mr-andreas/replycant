@@ -239,7 +239,16 @@ struct TimelineGridScreen: View {
             return
         }
 
-        await tracker.waitUntilViewportHydrated(orAfter: UploadLaunchGate.fallbackDelay)
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                await TimelineRenderMilestoneTracker.shared.waitUntilViewportHydrated()
+            }
+            group.addTask {
+                try? await Task.sleep(for: UploadLaunchGate.fallbackDelay)
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
         guard !Task.isCancelled else { return }
         onInitialLoad?()
     }
@@ -406,23 +415,6 @@ final class TimelineRenderMilestoneTracker {
         hasEmittedViewportHydrated = true
         AppSignposts.event("TimelineVisibleViewportHydrated")
         resumeHydrationWaiters()
-    }
-
-    // Upload and the recovery-key badge both have to stay off the first
-    // paint. A cell that never resolves still has to let them run, so
-    // the wait ends at the timeout when the grid stays empty.
-    func waitUntilViewportHydrated(orAfter timeout: Duration) async {
-        if hasEmittedViewportHydrated || Task.isCancelled { return }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { @MainActor in
-                await self.waitUntilViewportHydrated()
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-            }
-            _ = await group.next()
-            group.cancelAll()
-        }
     }
 
     // Suspends until the visible cells have resolved. Launch uses this so
@@ -1662,14 +1654,11 @@ enum ThumbnailImageDecode {
         return nil
     }
 
-    // UIImage(data:) only records the bytes. The bitmap is decoded on
-    // first draw, which put the first screen's JPEGs on the main thread
-    // inside the frame commit. preparingForDisplay does that work here,
-    // so the commit copies an already-decoded image.
+    // Keeps the decode off the main actor so a timeline scroll is not
+    // stuck turning bytes into a bitmap.
     private static func decode(_ data: Data) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
-            guard let image = UIImage(data: data) else { return nil }
-            return image.preparingForDisplay() ?? image
+            UIImage(data: data)
         }.value
     }
 }
