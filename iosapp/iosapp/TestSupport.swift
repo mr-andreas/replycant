@@ -133,14 +133,22 @@ class TestSupport {
 
         print("TestSupport: Running in UI test mode")
 
-        // Fixture media is served by the in-process LFS server, which is
-        // not on a tailnet. Without a node the shared router refuses every
-        // download, so fullscreen images never leave the spinner.
-        TailnetSessionRouter.shared.use(PassthroughTailnetNode())
+        isolateUITestNetwork()
 
         scheduleRepositoryPreparation {
             Self.runDeferredFixtureSetup()
         }
+    }
+
+    // Fixture media is served by the in-process LFS server, which is not on
+    // a tailnet. A config left by an earlier real pairing would start a join
+    // that drops this route, so the fixture library must not have one.
+    static func isolateUITestNetwork(
+        configurations: TailnetConfigurationManager = .shared,
+        router: TailnetSessionRouter = .shared
+    ) {
+        configurations.clear()
+        router.use(PassthroughTailnetNode())
     }
 
     // Starts fixture work without waiting for it. Tests use this with a
