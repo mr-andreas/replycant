@@ -257,10 +257,10 @@ read any existing one:
 Creating a space needs only the recipient lists and the public keys in
 `pubkeys/`, which are plaintext.
 
-Planned use: gitd will use this during bootstrap. Once the first commit
-arrives, gitd creates its own space with `policy: library` and itself as a
-member, where it stores information about the server. Every current and
-future library member can read it, and gitd never holds the global KEK.
+Planned use: during bootstrap, once the first commit arrives, gitd creates
+its own space with `policy: library` and itself as a member, where it
+stores information about the server. Every current and future library
+member can read it, and gitd never holds the global KEK.
 
 ### Revoking in spaces you cannot read
 
@@ -310,6 +310,75 @@ KEK and accept objects sealed with it. A writer can also add itself to a
 recipient list, and the next legitimate re-wrap includes it. Git commits
 are not signed, so clients cannot tell who made such a change.
 :::
+
+### Examples
+
+A space with no `encryption/` folder uses the global key set. A device's
+media is the usual case. The device's KeySet is `pubkeys/phone-<uuid>.yaml`,
+and that name is a member of `encryption/recipients.yaml`, so every library
+member can read the space.
+
+```text
+encryptionspaces/phone-<uuid>/
+  manifests/media.replycant.com/v1alpha1/Original/e8/8f/3b2a-1234-5678-9abc-def012345678-l0-001.yaml
+  binary/media.replycant.com/v1alpha1/Original/e8/8f/3b2a-1234-5678-9abc-def012345678-l0-001
+```
+
+The two prefix directories are the first four characters of
+`metadata.name`. See [Manifests](./manifests.md#storage-path-convention).
+The manifest file in Git is the encrypted envelope, and `kek-epoch` names
+an epoch of the global key set. Decrypted, it is an
+[Original](../protocol/original.md):
+
+```yaml title="decrypted plaintext of the manifest above"
+apiVersion: media.replycant.com/v1alpha1
+kind: Original
+metadata:
+  name: e88f3b2a-1234-5678-9abc-def012345678-l0-001
+spec:
+  id: E88F3B2A-1234-5678-9ABC-DEF012345678/L0/001
+  sha256: a3f8c92b1e4d5f67890ab12cd34ef5678901abc23def45678901234567890abc
+  mediaType: photo
+  mimeType: image/jpeg
+```
+
+The file under `binary/` is an LFS pointer, not the media. See
+[Media storage](./media-storage.md#binary-lfs-storage).
+
+A client that is not a library member keeps its own key set. With
+`policy: library`, every global member can read the space, and the client
+holds only that space's KEK.
+
+```text
+pubkeys/service.yaml
+encryptionspaces/service/
+  encryption/
+    current                  # 1
+    epochs/1.age             # this space's KEK, wrapped for the recipients below
+    recipients.yaml
+  manifests/<apiVersion>/<kind>/<shard>.yaml
+```
+
+```yaml title="pubkeys/service.yaml"
+apiVersion: gitdb.replycant.com/v1alpha1
+kind: KeySet
+metadata:
+  name: service
+spec:
+  type: app                  # descriptive only; not a global member
+  mtlsPublicKey: ecdsa-sha2-nistp256 AAAA...
+  agePublicKey: age1...
+```
+
+```yaml title="encryptionspaces/service/encryption/recipients.yaml"
+policy: library
+members:
+  - service
+```
+
+`service` is absent from `encryption/recipients.yaml`, so it cannot open
+`phone-<uuid>/`. A manifest under `encryptionspaces/service/manifests/` is
+the same encrypted envelope, and `kek-epoch` names an epoch of this space.
 
 ## Manifests
 
