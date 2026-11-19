@@ -9,7 +9,7 @@ The webapp sync loop runs the following phases:
 1. `beginSync`: mark UI as syncing and clear stale errors.
 2. `readDbSyncedHash`: read `syncedCommitHash` from IndexedDB metadata and treat it as the diff base.
 3. `pullWithRebase`: fetch remote branch and fast-forward local checkout (rebase-style behavior).
-4. `computeDiffstatPaths`: compute changed `manifests/*.yaml` paths between old DB hash and new head.
+4. `computeDiffstatPaths`: compute changed `encryptionspaces/*/manifests/**/*.yaml` paths between old DB hash and new head.
 5. `buildMutationPlan`: parse old/new blobs per changed path and build deterministic delete/upsert sets.
 6. `applyCasTransaction`: in one short IndexedDB readwrite transaction, compare expected old hash and only then apply rows + new hash.
 7. `publishSnapshot`: update UI with new objects, commit hash, and change counts.

@@ -13,7 +13,6 @@ apiVersion: [api-version-identifier]
 kind: [resource-type]
 metadata:
   name: [object-name]
-  deviceSpace: [device-namespace]
 spec:
   # Desired state fields
 status:
@@ -26,27 +25,29 @@ status:
 |-------|-------------|
 | `apiVersion` | Identifies the schema version (e.g., `media.replycant.com/v1alpha1`) |
 | `kind` | The resource type (e.g., `Original`, `ThumbnailSet`) |
-| `metadata.name` | Unique identifier for the object within its namespace |
-| `metadata.deviceSpace` | Device namespace for isolation |
+| `metadata.name` | Unique identifier for the object within its encryption space and kind |
 | `spec` | Desired state of the resource |
 | `status` | Observed/operational state (reserved for future use) |
 
+A manifest does not name its encryption space. The space is the folder the
+file is stored in, so readers take it from the path.
+
 ## Storage Path Convention
 
-Manifests are stored at predictable paths based on their metadata:
+Manifests are stored at predictable paths based on their space and metadata:
 
 ```
-manifests/{device-space}/{api-version}/{kind}/{name[0:2]}/{name[2:4]}/{name[4:]}.yaml
+encryptionspaces/{space}/manifests/{api-version}/{kind}/{name[0:2]}/{name[2:4]}/{name[4:]}.yaml
 ```
 
 ### Example Paths
 
 ```
-manifests/iphone-14-abc123/media.replycant.com/v1alpha1/Original/im/g-/1234.yaml
-manifests/iphone-14-abc123/media.replycant.com/v1alpha1/ThumbnailSet/im/g-/1234-thumbs.yaml
+encryptionspaces/iphone-14-abc123/manifests/media.replycant.com/v1alpha1/Original/im/g-/1234.yaml
+encryptionspaces/iphone-14-abc123/manifests/media.replycant.com/v1alpha1/ThumbnailSet/im/g-/1234-thumbs.yaml
 ```
 
-`ThumbnailSet` is a 1:N mapping: one manifest file lists multiple thumbnail entries, and each entry has its own binary pointer path in `binary/.../ThumbnailSet/{entry-name}`.
+`ThumbnailSet` is a 1:N mapping: one manifest file lists multiple thumbnail entries, and each entry has its own binary pointer path in `encryptionspaces/{space}/binary/.../ThumbnailSet/{entry-name}`.
 
 ## Why Name Sharding Exists
 
@@ -72,7 +73,7 @@ Object names must follow this pattern to ensure filesystem and URL safety:
 - Must start with a lowercase letter
 - Can contain only lowercase letters, digits, and hyphens
 - Must be between 1 and 253 characters
-- Must be unique within the device space and resource type
+- Must be unique within the encryption space and resource type
 
 ### Normalization Process
 
@@ -89,27 +90,27 @@ When creating names from external identifiers (like photo library asset IDs):
 - Original ID: `E88F3B2A-1234-5678-9ABC-DEF012345678/L0/001`
 - Normalized: `e88f3b2a-1234-5678-9abc-def012345678-l0-001`
 
-## Device Spaces
+## Encryption Spaces
 
-Every object must specify a `deviceSpace` in its metadata. Device spaces provide:
+Every object lives in exactly one encryption space. Spaces provide:
 
-- **Namespace isolation**: Objects from different devices don't conflict
-- **Multi-device support**: Each device writes to its own namespace
-- **Query scoping**: Can filter queries by device
-- **Conflict prevention**: Same asset ID from different devices won't collide
+- **Conflict prevention**: the same asset ID written by two devices lands in two spaces and does not collide
+- **Multi-device support**: each device writes its own media into a space named after the device
+- **Query scoping**: readers can filter by space
+- **Access control**: a space can have its own key set, so a client can read or write it without access to the rest of the library
 
-Device space identifiers are generated per-device and remain stable for the device's lifetime.
+A device's default space name is generated once and stays stable for the device's lifetime. How spaces are encrypted is described in [Encryption spaces](./encryption.md#encryption-spaces).
 
-## Key sets live outside manifests/
+## Key sets live outside encryptionspaces/
 
 A device's public keys are a `KeySet` at `pubkeys/{name}.yaml`, not a
 manifest. gitd and hsproxy have to read the mTLS key before any device has
-unwrapped the KEK, so the file cannot be encrypted. Everything under
-`manifests/` is fail-closed encrypted: the iOS sync engine, the desktop
-blob reader, the `git-replycant` `manifests/**` attribute, and the gitcrypt
-smudge filter all refuse a plaintext file there. Keeping key sets outside
-that tree leaves the rule with no path exceptions, and it does not need a
-reserved device space for server-owned files.
+unwrapped a KEK, so the file cannot be encrypted. Everything under
+`encryptionspaces/*/manifests/` and `encryptionspaces/*/binary/` is
+fail-closed encrypted: the iOS sync engine, the desktop blob reader, the
+`git-replycant` attributes, and the gitcrypt smudge filter all refuse a
+plaintext file there. Keeping key sets outside that tree leaves the rule
+with no path exceptions.
 
 ## Schema Evolution
 

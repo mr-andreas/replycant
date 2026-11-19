@@ -31,7 +31,7 @@ All thumbnails use JPEG format with 0.8 compression quality.
 One manifest per original:
 
 ```
-manifests/{device-space}/media.replycant.com/v1alpha1/ThumbnailSet/{set-name}.yaml
+encryptionspaces/{space}/manifests/media.replycant.com/v1alpha1/ThumbnailSet/{set-name}.yaml
 ```
 
 ### Binary Location
@@ -39,7 +39,7 @@ manifests/{device-space}/media.replycant.com/v1alpha1/ThumbnailSet/{set-name}.ya
 One pointer file per thumbnail entry:
 
 ```
-binary/{device-space}/media.replycant.com/v1alpha1/ThumbnailSet/{entry-name}
+encryptionspaces/{space}/binary/media.replycant.com/v1alpha1/ThumbnailSet/{entry-name}
 ```
 
 ### Naming Convention
@@ -61,7 +61,6 @@ apiVersion: media.replycant.com/v1alpha1
 kind: ThumbnailSet
 metadata:
   name: e88f3b2a-1234-photo-thumbs
-  deviceSpace: iphone-14-abc123
 spec:
   originalRef: iphone-14-abc123/media.replycant.com/v1alpha1/Original/e88f3b2a-1234-photo
   thumbnails:
@@ -91,13 +90,15 @@ Given a `ThumbnailSet` manifest:
 2. Build the binary pointer path:
 
 ```
-binary/{metadata.deviceSpace}/{apiVersion}/ThumbnailSet/{entry.name}
+encryptionspaces/{space}/binary/{apiVersion}/ThumbnailSet/{entry.name}
 ```
 
-Example for the `225x225` entry above:
+`{space}` is the encryption space of the manifest's row, which sync fills
+in from the manifest's path. Example for the `225x225` entry above, stored
+in space `iphone-14-abc123`:
 
 ```
-binary/iphone-14-abc123/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-225x225
+encryptionspaces/iphone-14-abc123/binary/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-225x225
 ```
 
 ## Generation Process

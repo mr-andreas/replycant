@@ -38,7 +38,7 @@ git config --get lfs.url
 git push backup main
 ```
 
-During push, the Replycant pre-push hook runs `git-replycant pre-push` and uploads required `binary/**` objects to the configured `lfs.url` endpoint before refs are updated.
+During push, the Replycant pre-push hook runs `git-replycant pre-push` and uploads required `encryptionspaces/*/binary/**` objects to the configured `lfs.url` endpoint before refs are updated.
 
 ## 4) Restore the Primary LFS Endpoint
 

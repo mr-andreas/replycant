@@ -9,9 +9,11 @@ transit; the encryption described here protects it at rest.
 
 Three layers of keys protect the data:
 
-1. Each device has an **age key** (X25519). It unwraps the library's KEK.
+1. Each device has an **age key** (X25519). It unwraps KEKs.
 2. The **KEK** (key encryption key) is a random AES-256 key. It encrypts
-   manifests directly and wraps the per-binary DEKs.
+   manifests directly and wraps the per-binary DEKs. The library has a
+   global KEK, and an [encryption space](#encryption-spaces) can have its
+   own.
 3. Each binary has its own **DEK** (data encryption key), also AES-256. It
    encrypts that one binary.
 
@@ -23,9 +25,11 @@ flowchart LR
     DEK -->|encrypts| Binary["Binary chunks"]
 ```
 
-Any device whose age public key is in a key set under `pubkeys/` can decrypt everything.
-Adding a device only re-wraps the small KEK file, and revoking one only
-creates a new KEK. Neither touches the encrypted objects.
+Any device or recovery key whose age public key is in a key set under
+`pubkeys/` can decrypt everything. Adding a device only re-wraps the small
+KEK files, and revoking one only creates new KEKs. Neither touches the
+encrypted objects. A [scoped](#scoped-clients) key holder can decrypt only
+the [encryption spaces](#encryption-spaces) it is listed for.
 
 Each device holds two key pairs, both stored in the iOS Keychain or, on
 desktop, in encrypted localStorage (protected by the OS keyring or a
@@ -50,7 +54,7 @@ kind: KeySet
 metadata:
   name: iphone-16e          # must equal the file name
 spec:
-  type: device              # device or recovery
+  type: device              # device, recovery, or scoped
   mtlsPublicKey: ecdsa-sha2-nistp256 AAAA...
   agePublicKey: age1...
   displayName:              # optional; only a device with the KEK can read it
@@ -64,8 +68,14 @@ sealed with the KEK for `kekEpoch`, and the additional data is
 `replycant-keyset-display-name-v1` followed by `metadata.name`. That
 binding means a rewritten file cannot move a name onto another key set.
 When the field is missing, or this device cannot open it, readers show
-`metadata.name`. Key sets stay outside `manifests/` so that directory can
-stay uniformly encrypted. See [Manifests](./manifests.md).
+`metadata.name`. Key sets stay outside `encryptionspaces/` so that tree
+can stay uniformly encrypted. See [Manifests](./manifests.md).
+
+| `spec.type` | Holder | Can decrypt |
+|-------------|--------|-------------|
+| `device` | A phone or computer | Every encryption space |
+| `recovery` | A backup credential | Every encryption space |
+| `scoped` | A client limited to some spaces | Only the spaces in `spec.encryptionSpaces` |
 
 [age](https://github.com/FiloSottile/age) is used instead of GPG or ECIES
 with P-256 because it has no configuration, key servers, or web of trust,
@@ -80,7 +90,7 @@ for every authorized device. Each KEK is an epoch:
 
 ```text
 gitdb/
-  version              # database format version, for example "2"
+  version              # database format version, for example "3"
 encryption/
   current              # active epoch number, for example "2"
   epochs/
@@ -92,13 +102,19 @@ encryption/
 refuse any other value. See [Database format version](./database-version.md).
 Manifest schemas are versioned separately, by each resource's `apiVersion`.
 
+This is the global key set. A space with
+[its own key set](#encryption-spaces) has the same `current` and `epochs/`
+layout under its own folder.
+
 The first device creates epoch 1 for its own age key. After that, epochs
-change only when devices come and go:
+change only when key holders come and go. Each event applies to the global
+key set and to every space with its own key set, each wrapped for
+[its own recipients](#who-can-read-a-space):
 
 | Event | Action |
 |-------|--------|
 | Device added | Re-wrap every epoch file for the new age key |
-| Device removed | New KEK for the remaining devices; bump `current` |
+| Device removed | New KEK for the remaining recipients; bump `current` |
 | Key rotation | Same as device removal |
 
 New objects always use the current epoch. A removed device keeps the old
@@ -107,9 +123,156 @@ anything added afterwards. Adding a device re-wraps every epoch, so the new
 device can read the whole history. The app flows for these events are in
 [Device onboarding](./device-onboarding.md).
 
+## Encryption spaces
+
+An encryption space is a self-contained encrypted part of the library.
+Every manifest and binary belongs to exactly one space, and only holders of
+that space's key set can read it. This lets a client write into one space
+without being able to read any other: an upload app, for example, can add
+media to its own space without seeing the rest of the library.
+
+```text
+encryptionspaces/
+  iphone-16e-<uuid>/                  # uses the global key set
+    manifests/{apiVersion}/{kind}/{shard}.yaml
+    binary/{apiVersion}/{kind}/{shard}
+  upload-app-<uuid>/                  # has its own key set
+    manifests/...
+    binary/...
+    encryption/
+      current
+      epochs/
+        1.age
+```
+
+A file's space is the folder it lives in. Manifests do not record it, so a
+manifest cannot claim a space other than the one it is stored in. Each
+device writes its own media into a space named after the device, but a
+space is not tied to a device.
+
+### Choosing the key set
+
+A space that contains `encryption/current` has its own key set. Any other
+space uses the global key set in the top-level `encryption/` folder:
+
+```mermaid
+flowchart LR
+    P["File in encryptionspaces/S/"] --> Q{"S/encryption/current exists?"}
+    Q -->|yes| Own["Key set of S"]
+    Q -->|no| Global["Global key set"]
+    Own --> K["KEK for the epoch in the header or pointer"]
+    Global --> K
+```
+
+The manifest envelope and LFS pointer still carry only an epoch number. The
+key set comes from the file's path, so the same epoch number in two key
+sets names two unrelated KEKs.
+
+### Only the space's own KEK
+
+A client decrypts every object in a space with a KEK from that space's key
+set, and nothing else:
+
+- a space with its own key set never falls back to the global KEK
+- a space never uses another space's KEK
+- a client never tries several KEKs until one works
+
+An object that does not open with its space's key set is an error. Without
+this rule, anyone holding some KEK could plant objects in a space they
+cannot read. For example, an upload app could write a manifest sealed with
+its own KEK into a device's space, and a client that tried every KEK it
+knows would accept it as that device's photo.
+
+### Who can read a space
+
+| Key set | Wrapped for |
+|---------|-------------|
+| Global | Every `device` and `recovery` key set |
+| Own key set of space S | Every `device` and `recovery` key set, plus every `scoped` key set that lists S |
+
+Devices and recovery keys can read every space. A scoped client can read
+only its spaces, and it can write only into spaces with their own key set,
+because it never holds the global KEK. Adding, removing, or recovering a
+device re-wraps or rotates every key set it is a recipient of.
+
+### Scoped clients
+
+A scoped client is a key set with `spec.type: scoped`:
+
+```yaml title="pubkeys/upload-app-<uuid>.yaml"
+apiVersion: gitdb.replycant.com/v1alpha1
+kind: KeySet
+metadata:
+  name: upload-app-<uuid>
+spec:
+  type: scoped
+  encryptionSpaces:
+    - upload-app-<uuid>
+  mtlsPublicKey: ecdsa-sha2-nistp256 AAAA...
+  agePublicKey: age1...
+```
+
+gitd authorizes it with `mtlsPublicKey` like any other key set, so it can
+fetch and push. `encryptionSpaces` is required for `scoped` and not allowed
+for the other types. A scoped key set has no `displayName`, because that
+field is sealed with the global KEK, which a scoped client must never hold.
+Readers show `metadata.name` instead.
+
+### Creating a space
+
+Any client with Git access can create a new space without being able to
+read any existing one:
+
+1. Generate a random 32-byte KEK.
+2. Wrap it with age for every `device` and `recovery` key set, and for the
+   creator's own `scoped` key set.
+3. Commit `encryptionspaces/{space}/encryption/current` as `1` and
+   `encryptionspaces/{space}/encryption/epochs/1.age`, together with the
+   creator's key set and its first objects.
+
+Creating a space needs only the public keys in `pubkeys/`, which are
+plaintext.
+
+Planned use: gitd will use this during bootstrap. Once the first commit
+arrives, gitd creates its own space with its own key set, where it stores
+information about the server. It wraps that key set for every existing
+device and recovery key, so all existing clients can read it.
+
+### Integrity checks
+
+Each client records, per space, whether the space uses the global key set
+or its own. A space gaining or losing `encryption/` after the client has
+seen it is refused as tampering. Otherwise a writer could give an
+inherited space a key set it controls. A space the client has never seen is
+trusted on first use, as the global key set is.
+
+Improper encryption never happens in normal operation. It signals a
+serious bug or an adversary, so it stops the client. These all count:
+
+- an object that does not open with its space's key set
+- an epoch missing from that key set
+- a plaintext object, or a pointer without `x-replycant-*` metadata
+- a space switching between the global key set and its own
+- a space key set that a `device` or `recovery` key cannot unwrap
+
+On any of these, the client stops syncing and writes nothing. It shows a
+persistent error naming the space and path. The apps keep running so the
+error stays visible, and command-line tools exit with an error. A scoped
+client never opens spaces it is not listed for, so those spaces are not
+checked by it.
+
+:::warning Forged epochs
+Epoch files and key sets are unauthenticated plaintext. Anyone who can push
+can add a new epoch with a KEK of their choosing to any key set and bump
+`current`. Clients then encrypt new objects with that KEK and accept objects
+sealed with it. Git commits are not signed, so clients cannot tell who
+made such a change.
+:::
+
 ## Manifests
 
-Manifests are encrypted directly with the current KEK using AES-256-GCM.
+Manifests are encrypted directly with the current KEK of their space's key
+set, using AES-256-GCM.
 They are small and numerous and never shared one at a time, so a
 per-manifest DEK would add cost without benefit.
 
@@ -124,7 +287,7 @@ kek-epoch: 2
 ```
 
 The plaintext is the original YAML, the nonce is random per file, and
-`kek-epoch` names the KEK to decrypt with.
+`kek-epoch` names the epoch, within the space's key set, to decrypt with.
 
 Clients fail closed. They reject any manifest without the `REPLYCANT-ENC-V1`
 envelope and any LFS pointer without `x-replycant-*` metadata. There is no
@@ -214,7 +377,8 @@ already owns retrieval, so it owns decryption too. The
 
 1. Read `x-replycant-kek-epoch` and `x-replycant-wrapped-dek` from the LFS
    pointer.
-2. Unwrap the KEK for that epoch with the device's age private key.
+2. Unwrap the KEK for that epoch, from the key set of the pointer's space,
+   with the device's age private key.
 3. Unwrap the DEK with the KEK and the epoch-bound AAD.
 4. Download the chunks you need from LFS.
 5. Decrypt each chunk with the DEK, deriving its nonce and AAD from the
@@ -259,8 +423,8 @@ deep link `replycant://recover?v=1&d=<base64url envelope>`. Neither needs a
 hosted web domain.
 
 Recovery runs only on a fresh install. The app decrypts the bundle, joins
-the library with the recovery identity, re-wraps the KEK epochs for a new
-device age key, and then switches to that new device identity. See
+the library with the recovery identity, re-wraps the epochs of the global
+key set and of every space with its own key set for a new device age key, and then switches to that new device identity. See
 [Recovery onboarding path](./device-onboarding.md#recovery-onboarding-path)
 for the full flow and the optional deep link parameters.
 
@@ -276,7 +440,8 @@ If the app cannot run recovery, you can process the bundle by hand:
 4. Connect to `headscale_url`, take the CA from the certificate chain hsproxy
    presents, and check that its hash matches `ca_sha256`.
 5. Use `p256_private_key` for temporary mTLS Git access.
-6. Use `age_private_key` to re-wrap the KEK epoch files and add a new device
-   key pair in `pubkeys/`.
+6. Use `age_private_key` to re-wrap the epoch files in `encryption/epochs/`
+   and in every `encryptionspaces/*/encryption/epochs/`, and add a new
+   device key set in `pubkeys/`.
 
 This is why the bundle is plain JSON and carries both private keys.

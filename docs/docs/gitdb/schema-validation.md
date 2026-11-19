@@ -56,16 +56,12 @@ Each schema must include:
     },
     "metadata": {
       "type": "object",
-      "required": ["name", "deviceSpace"],
+      "required": ["name"],
       "properties": {
         "name": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]{0,252}$",
-          "description": "Unique identifier for the resource"
-        },
-        "deviceSpace": {
-          "type": "string",
-          "description": "Device namespace for isolation"
+          "description": "Unique identifier for the resource within its encryption space"
         }
       }
     },

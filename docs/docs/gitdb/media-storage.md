@@ -16,7 +16,7 @@ This separation keeps the Git repository small while preserving complete metadat
 ### Storage Location
 
 ```
-manifests/{device-space}/media.replycant.com/v1alpha1/Original/{name[0:2]}/{name[2:4]}/{name[4:]}.yaml
+encryptionspaces/{space}/manifests/media.replycant.com/v1alpha1/Original/{name[0:2]}/{name[2:4]}/{name[4:]}.yaml
 ```
 
 ### Manifest Structure
@@ -26,7 +26,6 @@ apiVersion: media.replycant.com/v1alpha1
 kind: Original
 metadata:
   name: e88f3b2a-1234-5678-9abc-def012345678-l0-001
-  deviceSpace: iphone-14-abc123
 spec:
   id: E88F3B2A-1234-5678-9ABC-DEF012345678/L0/001
   sha256: a3f8c92b1e4d5f67890ab12cd34ef5678901abc23def45678901234567890abc
@@ -73,7 +72,7 @@ status: {}
 ### Storage Location
 
 ```
-binary/{device-space}/media.replycant.com/v1alpha1/Original/{name[0:2]}/{name[2:4]}/{name[4:]}
+encryptionspaces/{space}/binary/media.replycant.com/v1alpha1/Original/{name[0:2]}/{name[2:4]}/{name[4:]}
 ```
 
 ### LFS Pointer Format
@@ -94,7 +93,7 @@ Clients can reach the same on-disk layout through two different paths.
 
 ### Interactive clients (iOS, `git-replycant clone --lfs`)
 
-1. Write plaintext media under `binary/**`
+1. Write plaintext media under `encryptionspaces/*/binary/**`
 2. On `git add`, the `replycant-crypt` clean filter encrypts the payload and
    emits an LFS pointer with Replycant encryption headers
 3. On `git push`, the `git-replycant` pre-push hook uploads missing ciphertext
@@ -103,7 +102,7 @@ Clients can reach the same on-disk layout through two different paths.
 ### Bulk importer (`replycant-importer`)
 
 Bulk import uses a clone without `--lfs` and never stages plaintext under
-`binary/**`:
+`encryptionspaces/*/binary/**`:
 
 1. Encrypt each original/thumbnail with a fresh DEK
 2. Upload ciphertext through the LFS batch API
@@ -140,11 +139,13 @@ For a typical 4.5 MB photo:
 
 This represents a ~5000x reduction in Git repository size compared to storing binaries directly.
 
-## Device Space Isolation
+## Encryption Space Isolation
 
-Both manifests and binaries are organized by device space:
+A manifest and its binary always live in the same encryption space, under
+`encryptionspaces/{space}/manifests/` and `encryptionspaces/{space}/binary/`.
+Both are encrypted with that space's key set:
 
-- Each device writes to its own namespace
-- Prevents naming conflicts across devices
-- Enables device-specific queries
-- Supports selective sync by device
+- Each device writes its own media into its own space
+- The same asset ID from two devices does not collide
+- Readers can query one space
+- A space with its own key set can be read only by its recipients. See [Encryption spaces](./encryption.md#encryption-spaces).

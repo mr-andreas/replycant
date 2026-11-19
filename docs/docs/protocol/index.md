@@ -24,18 +24,22 @@ apiVersion: media.replycant.com/v1alpha1
 kind: [Original|ThumbnailSet]
 metadata:
   name: [normalized-manifest-name]
-  deviceSpace: [device-namespace]
 spec:
   # Kind-specific fields
 status: {}
 ```
+
+A manifest's [encryption space](../gitdb/encryption.md#encryption-spaces) is
+not a field. It is the `{space}` segment of the manifest's path,
+`encryptionspaces/{space}/manifests/...`. Writers do not emit
+`metadata.deviceSpace`, and readers ignore it when an existing manifest
+still contains it.
 
 ## Common TypeScript Types
 
 ```ts
 export interface ManifestMetadata {
   name: string;
-  deviceSpace: string;
 }
 
 export interface ManifestEnvelope<TKind extends string, TSpec> {

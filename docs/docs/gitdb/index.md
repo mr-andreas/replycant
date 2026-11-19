@@ -17,16 +17,15 @@ apiVersion: [api-version-identifier]
 kind: [resource-type]
 metadata:
   name: [object-name]
-  deviceSpace: [device-namespace]
 spec:
   # Resource-specific fields
 status:
   # Operational state (optional)
 ```
 
-### Device Spaces
+### Encryption Spaces
 
-Every object in GitDB belongs to a device space, which provides namespace isolation for multi-device scenarios. This prevents naming conflicts when multiple devices sync to the same repository.
+Every object in GitDB belongs to an encryption space, stored under `encryptionspaces/{space}/`. Each device writes into its own space, which prevents naming conflicts when multiple devices sync to the same repository. A space can also have its own encryption keys, so a client can be limited to just that space. See [Encryption spaces](./encryption.md#encryption-spaces).
 
 ### Git LFS Integration
 

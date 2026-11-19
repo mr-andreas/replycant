@@ -60,7 +60,7 @@ let repo = try Repository.open(at: path)
 try repo.commit(message: "Add photo", author: signature)
 
 // Index operations
-try repo.add(path: "manifests/device/Original/photo.yaml")
+try repo.add(path: "encryptionspaces/device/manifests/Original/photo.yaml")
 
 // Remote operations
 try repo.push(remote: "origin", branch: "main")

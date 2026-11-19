@@ -30,7 +30,6 @@ apiVersion: media.replycant.com/v1alpha1
 kind: ThumbnailSet
 metadata:
   name: e88f3b2a-1234-photo-thumbs
-  deviceSpace: iphone-14-abc123
 spec:
   originalRef: iphone-14-abc123/media.replycant.com/v1alpha1/Original/e88f3b2a-1234-photo
   thumbnails:
@@ -59,8 +58,7 @@ status: {}
 | `apiVersion` | yes | string | Current value: `media.replycant.com/v1alpha1` |
 | `kind` | yes | string | Must be `ThumbnailSet` |
 | `metadata.name` | yes | string | Normalized thumbnail-set manifest name |
-| `metadata.deviceSpace` | yes | string | Device namespace for isolation |
-| `spec.originalRef` | yes | string | Fully qualified reference to source `Original` |
+| `spec.originalRef` | yes | string | Fully qualified reference to source `Original`: `{space}/{apiVersion}/Original/{name}` |
 | `spec.thumbnails` | yes | array | Available thumbnail variants for this original |
 | `spec.thumbnails[].name` | yes | string | Entry name used to locate the thumbnail binary |
 | `spec.thumbnails[].sha256` | yes | string | SHA-256 of the thumbnail binary |
@@ -78,29 +76,32 @@ To find a binary for a specific resolution:
 3. Build the pointer path using:
 
 ```
-binary/{metadata.deviceSpace}/{apiVersion}/ThumbnailSet/{entry.name}
+encryptionspaces/{space}/binary/{apiVersion}/ThumbnailSet/{entry.name}
 ```
+
+`{space}` is the encryption space of the `ThumbnailSet` manifest, taken
+from its path. The thumbnails live in the same space as the manifest.
 
 ### Worked Example
 
 Given:
 
+- the manifest is stored under `encryptionspaces/iphone-14-abc123/manifests/`
 - `apiVersion = media.replycant.com/v1alpha1`
-- `metadata.deviceSpace = iphone-14-abc123`
 - `entry.name = e88f3b2a-1234-photo-thumb-225x225`
 
 The binary pointer path is:
 
 ```
-binary/iphone-14-abc123/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-225x225
+encryptionspaces/iphone-14-abc123/binary/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-225x225
 ```
 
 For the sample manifest above, the three entry paths are:
 
 ```
-binary/iphone-14-abc123/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-150x150
-binary/iphone-14-abc123/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-225x225
-binary/iphone-14-abc123/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-1024
+encryptionspaces/iphone-14-abc123/binary/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-150x150
+encryptionspaces/iphone-14-abc123/binary/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-225x225
+encryptionspaces/iphone-14-abc123/binary/media.replycant.com/v1alpha1/ThumbnailSet/e88f3b2a-1234-photo-thumb-1024
 ```
 
 Each path stores one LFS pointer, and each pointer references one derived thumbnail binary.

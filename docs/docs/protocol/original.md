@@ -43,7 +43,6 @@ apiVersion: media.replycant.com/v1alpha1
 kind: Original
 metadata:
   name: e88f3b2a-1234-5678-9abc-def012345678-l0-001
-  deviceSpace: iphone-14-abc123
 spec:
   id: E88F3B2A-1234-5678-9ABC-DEF012345678/L0/001
   localID: E88F3B2A-1234-5678-9ABC-DEF012345678/L0/001
@@ -77,7 +76,6 @@ status: {}
 | `apiVersion` | yes | string | Current value: `media.replycant.com/v1alpha1` |
 | `kind` | yes | string | Must be `Original` |
 | `metadata.name` | yes | string | Normalized resource name used in manifest path |
-| `metadata.deviceSpace` | yes | string | Device namespace for isolation |
 | `spec.id` | yes | string | Source media identifier |
 | `spec.localID` | no | string | Platform-local media identifier |
 | `spec.sha256` | yes | string | SHA-256 of original binary |

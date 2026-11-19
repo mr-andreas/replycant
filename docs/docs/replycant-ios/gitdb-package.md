@@ -29,22 +29,29 @@ This keeps app-specific schema details (for example `originalRef`, `guessedTaken
 `ManifestDatabase` creates one table per registered kind:
 
 - Table name: `manifests_{kind}`
-- Base columns: `id`, `deviceSpace`, `data`
+- Base columns: `id`, `encryptionSpace`, `data`
 - Registered extracted columns and indexes
 
-`sync_metadata` is still used for synced commit hash tracking.
+`encryptionSpace` comes from the manifest's path, not from its YAML.
+
+`sync_metadata` tracks the synced commit hash, the cache format version, and,
+per encryption space, whether the space uses the global key set or its own.
+A space whose recorded mode changes is refused as tampering. See
+[Encryption spaces](../gitdb/encryption.md#integrity-checks).
 
 ## Sync Flow
 
 `ManifestSyncEngine` drives database convergence:
 
-1. Read changed manifest YAML blobs between commits
-2. Decrypt envelope payloads when needed
+1. Read changed manifest YAML blobs under `encryptionspaces/*/manifests/` between commits
+2. Resolve each blob's key set from its encryption space and decrypt it with that key set's KEK for the envelope's epoch
 3. Extract `kind` and decode through `ManifestRegistry`
 4. Extract registered SQL columns
 5. Apply upserts/deletes across affected kind tables in one transaction
 
-This preserves atomic multi-kind updates during pull.
+This preserves atomic multi-kind updates during pull. A blob that does not
+open with its space's key set stops sync with an integrity error instead of
+being skipped.
 
 ## Query API
 
@@ -80,8 +87,8 @@ same `gitdb/version` guard as every other write.
 
 `GitCommitService` remains responsible for:
 
-- Building manifest and binary file paths
-- Encrypting manifest payloads at commit time
+- Building manifest and binary file paths under `encryptionspaces/{space}/`
+- Encrypting manifest payloads at commit time with the space's key set
 - Writing commits and encrypted LFS pointers
 
 Encrypted LFS objects use `EncryptedLFSPointer` so kek-epoch and wrapped-DEK

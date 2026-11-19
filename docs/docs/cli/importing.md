@@ -10,14 +10,19 @@ server, and commits only LFS pointer files plus manifests.
 - `ffmpeg` and `ffprobe` on your `PATH`
 - An authorized device identity in the clone (created during onboarding)
 
-Full-LFS clones (with `binary/** filter=replycant-crypt` or `lfs.url`)
-are rejected. Clone again without `--lfs` before importing.
+Full-LFS clones (with `encryptionspaces/*/binary/** filter=replycant-crypt`
+or `lfs.url`) are rejected. Clone again without `--lfs` before importing.
 
 ## Usage
 
 ```bash
-replycant-importer /path/to/repo /path/to/media device-space-name
+replycant-importer /path/to/repo /path/to/media <encryption-space>
 ```
+
+Replace `<encryption-space>` with the
+[encryption space](../gitdb/encryption.md#encryption-spaces) to import into.
+The importer encrypts with that space's key set: its own key set if it has
+one, otherwise the global one.
 
 Optional flags:
 
@@ -32,7 +37,7 @@ pre-push hook: plaintext binaries land in the worktree, git encrypts
 them on `git add`, and the pre-push hook uploads on `git push`.
 
 The importer skips that path for throughput. It never stages plaintext
-under `binary/**`. Instead it:
+under `encryptionspaces/*/binary/**`. Instead it:
 
 1. Encrypts each original/thumbnail with a fresh DEK
 2. Uploads the ciphertext through the LFS batch API

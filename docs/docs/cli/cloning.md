@@ -19,8 +19,8 @@ clone stops before pairing.
 
 By default, `git-replycant clone` leaves photos and videos on the server.
 Binary paths stay as LFS pointer files. The clone still gets manifest
-encryption filters and mTLS config, but it does not install `binary/**`
-filters, `lfs.url`, or the pre-push hook. This is the setup
+encryption filters and mTLS config, but it does not install
+`encryptionspaces/*/binary/**` filters, `lfs.url`, or the pre-push hook. This is the setup
 `replycant-importer` expects: the importer uploads LFS objects itself
 and writes pointer files directly.
 
@@ -46,7 +46,7 @@ after this machine has joined the tailnet.
 ## Check out photos and videos (`--lfs`)
 
 Pass `--lfs` to download photos and videos into the worktree. The clone
-configures `binary/**` through the `replycant-crypt` filter and installs
+configures `encryptionspaces/*/binary/**` through the `replycant-crypt` filter and installs
 the pre-push hook that uploads encrypted LFS objects. Use this when you
 edit files with normal git commands. It requires `git-lfs`.
 

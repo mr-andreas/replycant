@@ -14,7 +14,7 @@ Examples of a database-format bump:
 ## Format
 
 ```
-gitdb/version    # plain text: "2\n"
+gitdb/version    # plain text: "3\n"
 ```
 
 Rules:
@@ -56,8 +56,18 @@ an intermediate layout. A step may change only plaintext data: gitd does
 not hold the KEK. The step from 1 to 2 rewrites each `pubkeys/*.pub` and
 `*.age` pair into one key set. It copies the keys as they are, and it
 stops without moving `main` if a key file is unpaired or unreadable,
-because dropping it would revoke a device. The commit advances `main`
-only if it still points at the commit gitd read.
+because dropping it would revoke a device.
+
+The step from 2 to 3 moves every `manifests/{space}/...` file to
+`encryptionspaces/{space}/manifests/...` and every `binary/{space}/...`
+file to `encryptionspaces/{space}/binary/...`. File contents do not change,
+so ciphertext, LFS pointers, and LFS objects stay valid, and no key is
+needed. Every moved space uses the global key set. The step stops without
+moving `main` if a file sits directly under `manifests/` or `binary/`, or
+if `encryptionspaces/` already exists. A library at version 1 goes through
+both steps in the same commit.
+
+The commit advances `main` only if it still points at the commit gitd read.
 
 Clients record the format they observed at the synced commit, not the
 compiled pin. Observed greater than stored discards the cache and fully

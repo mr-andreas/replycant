@@ -73,10 +73,14 @@ This keeps the Git repository small enough to sync and query efficiently while
 still allowing photos and videos to be part of the same logical database. The
 metadata can change frequently without rewriting large binary objects.
 
-## Device Isolation
+## Encryption Spaces
 
-Each device writes into its own device space.
+Every object belongs to an encryption space. Each device writes into its own
+space, which avoids conflicts between independently syncing clients: several
+phones, browsers, or desktop clients can contribute to the same archive
+without coordinating names globally.
 
-Device spaces reduce conflicts between independently syncing clients. They let
-multiple phones, browsers, or desktop clients contribute data to the same
-archive without relying on every device to coordinate names globally.
+A space can also have its own encryption keys. A client can then be given
+access to just that space, for example an upload app that adds media without
+being able to read the rest of the library. See
+[Encryption spaces](./encryption.md#encryption-spaces).
