@@ -25,7 +25,7 @@ flowchart LR
     DEK -->|encrypts| Binary["Binary chunks"]
 ```
 
-Each KEK is wrapped for an explicit list of
+Each KEK is wrapped for a list of
 [recipients](#recipient-lists), and only those key holders can decrypt
 what it protects. Adding a device only re-wraps the small KEK files, and
 revoking one only creates new KEKs. Neither touches the encrypted objects.
@@ -117,12 +117,13 @@ change only when key holders come and go:
 
 | Event | Action |
 |-------|--------|
-| Device added | Add it to the global members; re-wrap every epoch of the global key set and of every `library` space for the new age key |
-| Device removed | Remove it from every recipient list; new KEK for the remaining recipients in each key set it was in; bump `current` |
+| Device added | Add it to the global members; re-wrap every epoch of the global key set and of every space with its own key set for the new age key |
+| Device removed | Remove it from the global members; new KEK in the global key set and in every space with its own key set; bump each `current` |
+| Space-only key holder removed | Remove it from that space's `members`; new KEK in each space that listed it |
 | Key rotation | Same as device removal, for one key set |
 
-Revoking a key in a space the revoking device cannot read follows an
-[interim strategy](#revoking-in-spaces-you-cannot-read).
+Every library member can read every key set, so the device that makes the
+change can always re-wrap or rotate all of them in one commit.
 
 New objects always use the current epoch. A removed device keeps the old
 KEKs from Git history and can still read old objects, but it cannot read
@@ -133,10 +134,11 @@ device can read the whole history. The app flows for these events are in
 ## Encryption spaces
 
 An encryption space is a self-contained encrypted part of the library.
-Every manifest and binary belongs to exactly one space, and only holders of
-that space's key set can read it. This lets a client write into one space
-without being able to read any other: an upload app, for example, can add
-media to its own space without seeing the rest of the library.
+Every manifest and binary belongs to exactly one space. Every library
+member can read every space. A space with its own key set can also be
+given to extra key holders who see only that space: an upload app, for
+example, can add media to its own space without seeing the rest of the
+library.
 
 ```text
 encryptionspaces/
@@ -193,12 +195,11 @@ knows would accept it as that device's photo.
 
 ### Recipient lists
 
-Every key set has a `recipients.yaml` that says who its epochs are wrapped
-for. Members are KeySet names from `pubkeys/`, and each KeySet supplies its
-age public key. A key holder maps to any number of spaces, zero included,
-through the lists that name it.
+Every key set has a `recipients.yaml`. Members are KeySet names from
+`pubkeys/`, and each KeySet supplies its age public key.
 
-The global list names the library's members:
+The global list names the library members. Devices and recovery keys are
+library members:
 
 ```yaml title="encryption/recipients.yaml"
 members:
@@ -206,10 +207,10 @@ members:
   - home-safe-<uuid>
 ```
 
-A space's own list also has a policy:
+A space's own list names extra key holders limited to that space. The
+`members` field is optional:
 
 ```yaml title="encryptionspaces/upload-app-<uuid>/encryption/recipients.yaml"
-policy: library
 members:
   - upload-app-<uuid>
 ```
@@ -217,27 +218,23 @@ members:
 | Key set | Wrapped for |
 |---------|-------------|
 | Global | Its `members` |
-| Space with `policy: library` | Every global member, plus its own `members` |
-| Space with `policy: explicit` | Only its own `members` |
-| Space without its own key set | The global recipients, because it uses the global key set |
+| Space with its own key set | Every global member, plus the space's `members` |
+| Space without its own key set | The global members, because it uses the global key set |
 
-A `library` space follows the library: linking a new device into the
-library also gives it every `library` space. An `explicit` space is
-private to its members, and other devices in the library cannot read it.
-A key holder that is not a global member never holds the global KEK, so it
-can write only into spaces with their own key set.
+Linking a new device into the library therefore gives it every space. A
+key holder listed only in a space never holds the global KEK. It reads and
+writes only the spaces that list it.
 
 ### Who can read a space
 
-| Use | Policy | Members |
-|-----|--------|---------|
-| Upload app that may write but not read the library | `library` | The app |
-| Private album on one phone | `explicit` | That phone |
-| gitd's server information (planned) | `library` | gitd |
+| Use | Space-only members |
+|-----|--------------------|
+| A device's own media | None; the space uses the global key set |
+| Upload app that may write but not read the library | The app |
+| gitd's server information (planned) | gitd |
 
-A recovery key reads an `explicit` space only if it is listed there.
-
-The KeySet of a key holder that is not a global member has no
+Library members read every space, and there are no spaces private to some
+of them. The KeySet of a key holder that is not a library member has no
 `displayName`, because that field is sealed with the global KEK. Readers
 show `metadata.name` instead.
 
@@ -246,10 +243,10 @@ show `metadata.name` instead.
 Any client with Git access can create a new space without being able to
 read any existing one:
 
-1. Choose a policy and members. The creator must be one of the resolved
-   recipients.
+1. Choose the space's `members`. A creator that is not a library member
+   must list itself.
 2. Generate a random 32-byte KEK.
-3. Wrap it with age for every resolved recipient.
+3. Wrap it with age for every global member and every space member.
 4. Commit `encryptionspaces/{space}/encryption/current` as `1`, together
    with `encryption/epochs/1.age`, `encryption/recipients.yaml`, the
    creator's key set if it is new, and the space's first objects.
@@ -258,23 +255,9 @@ Creating a space needs only the recipient lists and the public keys in
 `pubkeys/`, which are plaintext.
 
 Planned use: during bootstrap, once the first commit arrives, gitd creates
-its own space with `policy: library` and itself as a member, where it
-stores information about the server. Every current and future library
-member can read it, and gitd never holds the global KEK.
-
-### Revoking in spaces you cannot read
-
-A revoking device removes the key from every recipient list it can read,
-and starts a new epoch in each of those key sets. It cannot do this for an
-`explicit` space it is not a member of. Instead, the next member of that
-space to sync notices a listed member whose KeySet is gone, removes it, and
-starts a new epoch. Until then, the revoked key can still read new content
-in that space.
-
-:::note Interim strategy
-This strategy leaves a window in which a revoked key can read new content.
-It will be replaced.
-:::
+its own space with itself as a member, where it stores information about
+the server. Every current and future library member can read it, and gitd
+never holds the global KEK.
 
 ### Integrity checks
 
@@ -284,10 +267,11 @@ seen it is refused as tampering. Otherwise a writer could give an
 inherited space a key set it controls. A space the client has never seen is
 trusted on first use, as the global key set is.
 
-A client opens only the key sets whose resolved recipients include its own
-KeySet. It never opens any other space, and does not check it.
+A library member opens every key set. A key holder that is not a library
+member opens only the spaces whose `members` list it, and never opens or
+checks any other.
 
-In a key set the client is a recipient of, improper encryption never
+In a key set the client opens, improper encryption never
 happens in normal operation. It signals a serious bug or an adversary, so
 it stops the client. These all count:
 
@@ -345,9 +329,9 @@ spec:
 The file under `binary/` is an LFS pointer, not the media. See
 [Media storage](./media-storage.md#binary-lfs-storage).
 
-A client that is not a library member keeps its own key set. With
-`policy: library`, every global member can read the space, and the client
-holds only that space's KEK.
+A client that is not a library member writes into a space with its own
+key set. Every library member can read the space, and the client holds
+only that space's KEK.
 
 ```text
 pubkeys/service.yaml
@@ -371,7 +355,6 @@ spec:
 ```
 
 ```yaml title="encryptionspaces/service/encryption/recipients.yaml"
-policy: library
 members:
   - service
 ```
@@ -520,8 +503,7 @@ The recovery file's `mtlsPublicKey` is a P-256 SSH-form public key, so
 gitd authorizes it with the same matching logic as a device. Settings
 lists it with the recovery keys, not with the devices. Creating a recovery
 key adds it to the global members and re-wraps like a
-[device link](#key-epochs). It reads an `explicit` space only if it is
-listed there.
+[device link](#key-epochs), so a recovery key reads every space.
 
 ### Bundle format
 
@@ -538,9 +520,8 @@ hosted web domain.
 
 Recovery runs only on a fresh install. The app decrypts the bundle, joins
 the library with the recovery identity, and adds a new device key set to
-every recipient list that names the recovery key. It re-wraps the epochs of
-each of those key sets for the new device age key, and then switches to
-that new device identity. See
+the global members. It re-wraps every key set for the new device age key,
+and then switches to that new device identity. See
 [Recovery onboarding path](./device-onboarding.md#recovery-onboarding-path)
 for the full flow and the optional deep link parameters.
 
@@ -556,11 +537,10 @@ If the app cannot run recovery, you can process the bundle by hand:
 4. Connect to `headscale_url`, take the CA from the certificate chain hsproxy
    presents, and check that its hash matches `ca_sha256`.
 5. Use `p256_private_key` for temporary mTLS Git access.
-6. Add a new device key set in `pubkeys/`. Add its name to the global
-   `encryption/recipients.yaml` and to every space's `recipients.yaml` that
-   lists the recovery key.
-7. Use `age_private_key` to re-wrap, for the new device's age key, the
-   epoch files of the global key set, of every `library` space, and of
-   every space whose list you changed.
+6. Add a new device key set in `pubkeys/`, and add its name to
+   `encryption/recipients.yaml`.
+7. Use `age_private_key` to re-wrap the epoch files in `encryption/epochs/`
+   and in every `encryptionspaces/*/encryption/epochs/` for the new
+   device's age key.
 
 This is why the bundle is plain JSON and carries both private keys.

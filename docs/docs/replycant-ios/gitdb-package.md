@@ -43,16 +43,15 @@ A space whose recorded mode changes is refused as tampering. See
 
 `ManifestSyncEngine` drives database convergence:
 
-1. Read changed manifest YAML blobs under `encryptionspaces/*/manifests/` between commits, in the spaces whose recipient list includes this device
+1. Read changed manifest YAML blobs under `encryptionspaces/*/manifests/` between commits
 2. Resolve each blob's key set from its encryption space and decrypt it with that key set's KEK for the envelope's epoch
 3. Extract `kind` and decode through `ManifestRegistry`
 4. Extract registered SQL columns
 5. Apply upserts/deletes across affected kind tables in one transaction
 
-This preserves atomic multi-kind updates during pull. Spaces this device is
-not a recipient of are never opened and do not appear in the database. In a
-space it is a recipient of, a blob that does not open with its space's key
-set stops sync with an integrity error instead of being skipped.
+This preserves atomic multi-kind updates during pull. The iOS app is a
+library member, so it reads every space. A blob that does not open with its
+space's key set stops sync with an integrity error instead of being skipped.
 
 ## Query API
 

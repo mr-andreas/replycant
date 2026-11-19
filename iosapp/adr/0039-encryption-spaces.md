@@ -39,20 +39,20 @@ not hold the KEK.
    KEK, never uses another space's KEK, and never tries several KEKs in
    turn. Otherwise a holder of any KEK could plant objects in a space it
    cannot read.
-4. **Recipient lists, not key types.** Each key set's `recipients.yaml`
-   names its members by KeySet name. The global list has only
-   `members`. A space's list also has a policy: `library` means every
-   global member plus its own `members`, and `explicit` means only its
-   own `members`. A key holder maps to any number of spaces through the
-   lists that name it. `spec.type` (`device`, `recovery`, `app`) is
+4. **Every library member reads every space.** Each key set's
+   `recipients.yaml` names members by KeySet name. The global list
+   names the library members. A space's own key set is wrapped for
+   every library member plus the space's optional `members`, who are
+   key holders limited to that space. There are no spaces private to
+   some library members. `spec.type` (`device`, `recovery`, `app`) is
    descriptive only. It chooses the Settings section and has no
-   technical effect. A key holder that is not a global member has no
+   technical effect. A key holder that is not a library member has no
    `displayName`, because that field is sealed with the global KEK.
-5. **Fail closed.** A client opens only the key sets whose resolved
-   recipients include its own KeySet. Each client pins, per space,
-   whether the space uses the global key set or its own. It refuses a
-   change on a space it has already seen, and trusts a new space on
-   first use. In a key set it is a recipient of, it treats any of these
+5. **Fail closed.** A library member opens every key set. Any other
+   key holder opens only the spaces that list it. Each client pins,
+   per space, whether the space uses the global key set or its own. It
+   refuses a change on a space it has already seen, and trusts a new
+   space on first use. In a key set it opens, it treats any of these
    as an integrity violation:
    - an object that does not open with its space's key set
    - a missing epoch
@@ -70,16 +70,16 @@ not hold the KEK.
    It writes `encryption/recipients.yaml` with every existing KeySet as
    a member, which matches who the global epochs are wrapped for.
 7. **Creating a space.** Any client with Git access can create a space
-   by writing its `recipients.yaml` and first epoch, wrapped for the
-   resolved recipients, which must include itself. It does not need
-   any existing KEK.
+   by writing its `recipients.yaml` and first epoch, wrapped for every
+   library member and every space member. A creator that is not a
+   library member must list itself. It does not need any existing KEK.
 8. **Changing recipients.** Linking a device or creating a recovery
-   key adds it to the global members and re-wraps the global key set
-   and every `library` space. Revocation removes the key from every
-   list the revoking device can read and starts a new epoch in each of
-   those key sets. For a space the revoking device cannot read, the
-   next member to sync notices a listed member whose KeySet is gone and
-   does the same. This last part is an interim strategy.
+   key adds it to the global members and re-wraps every key set.
+   Revoking a library member removes it from the global members and
+   starts a new epoch in every key set. Revoking a space-only member
+   removes it from that space's list and rotates the spaces that
+   listed it. The device that makes the change can read every key set,
+   so one commit always covers all of them.
 
 ## Consequences
 
@@ -87,11 +87,10 @@ not hold the KEK.
 
 - A client can be given access to one space without access to the
   rest of the library.
-- Any client can create a space that no other library member can
-  read, using `policy: explicit`.
 - gitd can later create its own space for server information without
-  holding the library KEK, using `policy: library` with itself as a
-  member.
+  holding the library KEK, with itself as a member.
+- Recovery keys are library members, so recovery restores access to
+  every space.
 - Access no longer depends on `spec.type`, so new kinds of key holders
   need no new access rules.
 - The migration needs no keys and leaves every encrypted object and LFS
@@ -100,13 +99,10 @@ not hold the KEK.
 ### Negative
 
 - Device link, recovery, and revocation have to re-wrap or rotate every
-  space with its own key set they can read, not just the global one.
-- A revoked key can read new content in a space the revoking device
-  cannot read, until one of that space's members syncs. This interim
-  strategy is to be replaced.
-- Whether recovery keys are added to `explicit` spaces by default is
-  undecided. Without one, losing every member of an `explicit` space
-  loses the space.
+  space with its own key set, not just the global one.
+- Spaces private to some library members are not supported. Key
+  rotation and recovery for such spaces are unsolved, so they are left
+  out.
 - Epoch files, key sets, and recipient lists are still unauthenticated
   plaintext. Any Git writer can add a forged epoch to a key set or add
   itself to a recipient list, and key holders outside the library

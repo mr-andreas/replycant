@@ -68,7 +68,7 @@ When a repository already has authorized devices, new devices must be explicitly
 
 ### Durable writes
 
-Device A publishes that key as one step. The same step creates or removes a recovery key, or removes another device. Adding a device also adds it to the global [recipient list](./encryption.md#recipient-lists), and re-wraps the global key set and every `library` [encryption space](./encryption.md#encryption-spaces) for it. An `explicit` space gets the new device only if one of its members adds it. Removing a device removes it from every recipient list Device A can read, and starts a new encryption epoch in each of those key sets in that commit, so the removed device cannot read anything added afterwards. Spaces that Device A cannot read are rotated by one of their own members on its next sync; see [Revoking in spaces you cannot read](./encryption.md#revoking-in-spaces-you-cannot-read). The phone waits until it is on the library network, checks that its copy of the library matches the server, then commits and pushes. If the push does not succeed, the commit is removed. A failure does not always mean the server missed the change: the connection can drop after the server has accepted it. The next sync brings that commit back, and the phone asks you to sync before trying again.
+Device A publishes that key as one step. The same step creates or removes a recovery key, or removes another device. Adding a device also adds it to the global [recipient list](./encryption.md#recipient-lists), and re-wraps the global key set and every [encryption space](./encryption.md#encryption-spaces) with its own key set for it. Removing a device removes it from the global recipient list, and starts a new encryption epoch in the global key set and in every space with its own key set in that commit, so the removed device cannot read anything added afterwards. Device A can read every key set, so one commit covers all of them. The phone waits until it is on the library network, checks that its copy of the library matches the server, then commits and pushes. If the push does not succeed, the commit is removed. A failure does not always mean the server missed the change: the connection can drop after the server has accepted it. The next sync brings that commit back, and the phone asks you to sync before trying again.
 
 ### Phase 2: Reaching the server
 
@@ -216,8 +216,8 @@ starts from a recovery bundle instead of a pairing QR from another device.
    after its leaf, and the app takes the CA from that chain.
 3. App authenticates once with temporary recovery identity.
 4. App clones repository and registers a new normal device key. It adds the
-   device to every recipient list that names the recovery key, and re-wraps
-   every key set the recovery key can read for the new device age key.
+   device to the global recipient list, and re-wraps the global key set and
+   every space with its own key set for the new device age key.
 5. App switches back to normal device identity and deletes temporary recovery
    identity artifacts. It rejoins the tailnet as the device, because hsproxy
    checks the identity on every control connection and the recovery key is
