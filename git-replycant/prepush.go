@@ -232,7 +232,7 @@ func listChangedBinaryPathsForCommit(repoDir string, commitOID string) ([]string
 		"-r",
 		commitOID,
 		"--",
-		"binary/",
+		"encryptionspaces/",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed listing binary paths for commit %s: %w", commitOID, err)
@@ -240,7 +240,7 @@ func listChangedBinaryPathsForCommit(repoDir string, commitOID string) ([]string
 	paths := []string{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
+		if gitcrypt.IsBinaryPath(trimmed) {
 			paths = append(paths, trimmed)
 		}
 	}

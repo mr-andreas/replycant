@@ -69,7 +69,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             database: database,
             registry: registry,
-            loadKEKForEpoch: { _ in testManifestKEK }
+            loadKEKForEpoch: { _, _ in testManifestKEK }
         )
     }
 
@@ -83,7 +83,7 @@ struct ManifestSyncEngineTests {
         try (0..<count).map { index in
             let id = "\(prefix)-\(index)"
             let day = String(format: "%02d", (index % 28) + 1)
-            let path = "manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName(id)).yaml"
+            let path = "encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName(id)).yaml"
             let encrypted = try encryptedOriginal(id: id, guessedTakenAt: "2024-01-\(day)T10:00:00Z")
             return (path, encrypted)
         }
@@ -109,8 +109,8 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "seed",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("b")).yaml", try encryptedOriginal(id: "b", guessedTakenAt: nil)),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("b")).yaml", try encryptedOriginal(id: "b", guessedTakenAt: nil)),
             ]
         )
 
@@ -144,7 +144,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c1",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
             ]
         )
 
@@ -155,8 +155,8 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c2",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-02T10:00:00Z")),
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-02T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
             ]
         )
 
@@ -174,7 +174,7 @@ struct ManifestSyncEngineTests {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
 
-        let manifestPath = "manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml"
+        let manifestPath = "encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml"
         let manifestYAML = try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")
 
         try commitEncrypted(
@@ -216,7 +216,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c1",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z"))
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z"))
             ]
         )
 
@@ -268,7 +268,7 @@ struct ManifestSyncEngineTests {
             try? FileManager.default.removeItem(atPath: repoPath)
         }
 
-        let path = "manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml"
+        let path = "encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml"
         let seedYAML = try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")
         try commitEncrypted(repository: repository, message: "c1", manifestFiles: [(path, seedYAML)])
 
@@ -323,7 +323,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c1",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
             ]
         )
 
@@ -335,8 +335,8 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c2",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-02T10:00:00Z")),
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-02T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
             ]
         )
 
@@ -366,7 +366,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c1",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
             ]
         )
 
@@ -378,7 +378,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c2",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
             ]
         )
 
@@ -404,7 +404,7 @@ struct ManifestSyncEngineTests {
             repository: repository,
             message: "c1",
             manifestFiles: [
-                ("manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
             ]
         )
 
@@ -444,14 +444,14 @@ struct ManifestSyncEngineTests {
         }
         try repository.createCommit(
             message: "unsupported-version",
-            files: [("gitdb/version", "3\n")]
+            files: [("gitdb/version", "4\n")]
         )
         let engine = makeEngine(repository: repository, database: database, registry: registry)
         do {
             try await engine.syncToHead(progressHandler: nil)
             Issue.record("expected unsupported database version rejection")
         } catch let error as DatabaseVersionError {
-            #expect(error == .unsupported(found: 3, required: DatabaseVersion.current))
+            #expect(error == .unsupported(found: 4, required: DatabaseVersion.current))
         }
     }
 
@@ -487,7 +487,7 @@ struct ManifestSyncEngineTests {
             message: "plaintext-attack",
             manifestFiles: [
                 (
-                    "manifests/test-device/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml",
+                    "encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml",
                     testOriginalManifestYAML(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")
                 ),
             ]
@@ -497,8 +497,76 @@ struct ManifestSyncEngineTests {
         do {
             try await engine.syncToHead(progressHandler: nil)
             Issue.record("expected plaintext manifest rejection")
-        } catch let error as ManifestDecryptionError {
-            #expect(error == .plaintextManifestRejected)
+        } catch let error as EncryptionIntegrityError {
+            #expect(error.reason == "the manifest is plaintext")
         }
+    }
+
+    // The first sync records whether a space has its own key set.
+    // A later commit that adds one is a substitution, not a migration.
+    @Test func syncToHeadRefusesSpaceModeFlip() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+        let manifest = (
+            "encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml",
+            try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")
+        )
+        try commitEncrypted(repository: repository, message: "global", manifestFiles: [manifest])
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        let synced = try await database.readSyncedCommitHash()
+
+        try repository.createCommit(
+            message: "add-space-key",
+            files: [("encryptionspaces/test-device/encryption/current", "1\n")]
+        )
+        do {
+            try await engine.syncToHead(progressHandler: nil)
+            Issue.record("expected a key set change to stop sync")
+        } catch let error as EncryptionIntegrityError {
+            #expect(error.reason == "the space changed key set")
+        }
+        #expect(try await database.readSyncedCommitHash() == synced)
+    }
+
+    // Ciphertext in a space with its own key set is not tried against
+    // the library key, even when that key would have opened it.
+    @Test func syncToHeadDoesNotFallBackToTheLibraryKey() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+        let manifest = (
+            "encryptionspaces/album/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml",
+            try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")
+        )
+        try repository.createCommit(
+            message: "own-key",
+            files: testEpochPlaceholderFiles + [
+                manifest,
+                ("encryptionspaces/album/encryption/current", "1\n"),
+                ("encryptionspaces/album/encryption/epochs/1.age", "placeholder\n"),
+            ]
+        )
+        let engine = ManifestSyncEngine(
+            repository: repository,
+            database: database,
+            registry: registry,
+            loadKEKForEpoch: { root, _ in
+                if root == EncryptionLayout.globalRoot {
+                    return testManifestKEK
+                }
+                return Data(repeating: 0x22, count: 32)
+            }
+        )
+        do {
+            try await engine.syncToHead(progressHandler: nil)
+            Issue.record("expected the space key to be required")
+        } catch let error as EncryptionIntegrityError {
+            #expect(error.reason == "the manifest did not open")
+        }
+        #expect(try await database.readSyncedCommitHash() == nil)
     }
 }

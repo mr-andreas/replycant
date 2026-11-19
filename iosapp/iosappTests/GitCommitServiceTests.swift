@@ -95,7 +95,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let manifestPath = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("test-image-1")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("test-image-1")).yaml"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: manifestPath))
@@ -150,12 +150,12 @@ struct GitCommitServiceTests {
         let workdir = try #require(repo.workdir)
         
         let origPath = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("orig-1")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("orig-1")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: origPath))
         
         let thumbPath = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("thumb-1")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("thumb-1")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: thumbPath))
         
@@ -204,7 +204,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let pointerPath = (workdir as NSString).appendingPathComponent(
-            "binary/test-device/media.replycant.com/v1alpha1/Original/\(shardName("lfs-test-1"))"
+            "encryptionspaces/test-device/binary/media.replycant.com/v1alpha1/Original/\(shardName("lfs-test-1"))"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: pointerPath))
@@ -278,12 +278,12 @@ struct GitCommitServiceTests {
         let workdir = try #require(repo.workdir)
         
         let path1 = (workdir as NSString).appendingPathComponent(
-            "binary/test-device/media.replycant.com/v1alpha1/Original/\(shardName("lfs-1"))"
+            "encryptionspaces/test-device/binary/media.replycant.com/v1alpha1/Original/\(shardName("lfs-1"))"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path1))
         
         let path2 = (workdir as NSString).appendingPathComponent(
-            "binary/test-device/media.replycant.com/v1alpha1/Original/\(shardName("lfs-2"))"
+            "encryptionspaces/test-device/binary/media.replycant.com/v1alpha1/Original/\(shardName("lfs-2"))"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path2))
         
@@ -336,12 +336,12 @@ struct GitCommitServiceTests {
         let workdir = try #require(repo.workdir)
         
         let manifestPath = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("mixed-1")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("mixed-1")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: manifestPath))
         
         let pointerPath = (workdir as NSString).appendingPathComponent(
-            "binary/test-device/media.replycant.com/v1alpha1/Original/\(shardName("mixed-1"))"
+            "encryptionspaces/test-device/binary/media.replycant.com/v1alpha1/Original/\(shardName("mixed-1"))"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: pointerPath))
     }
@@ -381,7 +381,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let expectedPath = (workdir as NSString).appendingPathComponent(
-            "manifests/my-device-space/media.replycant.com/v1alpha1/Original/\(shardName("path-test-orig")).yaml"
+            "encryptionspaces/my-device-space/manifests/media.replycant.com/v1alpha1/Original/\(shardName("path-test-orig")).yaml"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: expectedPath))
@@ -409,7 +409,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let expectedPath = (workdir as NSString).appendingPathComponent(
-            "manifests/my-device-space/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("path-test-thumb")).yaml"
+            "encryptionspaces/my-device-space/manifests/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("path-test-thumb")).yaml"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: expectedPath))
@@ -453,7 +453,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let expectedPath = (workdir as NSString).appendingPathComponent(
-            "binary/my-device-space/media.replycant.com/v1alpha1/Original/\(shardName("lfs-path-orig"))"
+            "encryptionspaces/my-device-space/binary/media.replycant.com/v1alpha1/Original/\(shardName("lfs-path-orig"))"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: expectedPath))
@@ -484,7 +484,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let expectedPath = (workdir as NSString).appendingPathComponent(
-            "binary/my-device-space/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("lfs-path-thumb"))"
+            "encryptionspaces/my-device-space/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("lfs-path-thumb"))"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: expectedPath))
@@ -546,12 +546,12 @@ struct GitCommitServiceTests {
         let workdir = try #require(repo.workdir)
         
         let path1 = (workdir as NSString).appendingPathComponent(
-            "manifests/device-1/media.replycant.com/v1alpha1/Original/\(shardName("iso-test")).yaml"
+            "encryptionspaces/device-1/manifests/media.replycant.com/v1alpha1/Original/\(shardName("iso-test")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path1))
         
         let path2 = (workdir as NSString).appendingPathComponent(
-            "manifests/device-2/media.replycant.com/v1alpha1/Original/\(shardName("iso-test")).yaml"
+            "encryptionspaces/device-2/manifests/media.replycant.com/v1alpha1/Original/\(shardName("iso-test")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path2))
         
@@ -597,7 +597,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let manifestPath = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("yaml-test")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("yaml-test")).yaml"
         )
         
         let content = try readRepoFile(repo, workdir: workdir, absolutePath: manifestPath)
@@ -648,7 +648,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let pointerPath = (workdir as NSString).appendingPathComponent(
-            "binary/test-device/media.replycant.com/v1alpha1/Original/\(shardName("lfs-format-test"))"
+            "encryptionspaces/test-device/binary/media.replycant.com/v1alpha1/Original/\(shardName("lfs-format-test"))"
         )
         
         let content = try readRepoFile(repo, workdir: workdir, absolutePath: pointerPath)
@@ -778,17 +778,17 @@ struct GitCommitServiceTests {
         let workdir = try #require(repo.workdir)
         
         let path1 = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("seq-1")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("seq-1")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path1))
         
         let path2 = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("seq-2")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("seq-2")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path2))
         
         let path3 = (workdir as NSString).appendingPathComponent(
-            "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("seq-3")).yaml"
+            "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("seq-3")).yaml"
         )
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: path3))
     }
@@ -828,7 +828,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let manifestDir = (workdir as NSString).appendingPathComponent(
-            "manifests/accumulation-test/media.replycant.com/v1alpha1/Original"
+            "encryptionspaces/accumulation-test/manifests/media.replycant.com/v1alpha1/Original"
         )
         let manifestShardDir = (manifestDir as NSString).appendingPathComponent(
             "ac/cu"
@@ -894,7 +894,7 @@ struct GitCommitServiceTests {
         
         let workdir = try #require(repo.workdir)
         let manifestPath = (workdir as NSString).appendingPathComponent(
-            "manifests/\(longDeviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName("long-space-test")).yaml"
+            "encryptionspaces/\(longDeviceSpace)/manifests/media.replycant.com/v1alpha1/Original/\(shardName("long-space-test")).yaml"
         )
         
         #expect(repoFileExists(repo, workdir: workdir, absolutePath: manifestPath))
@@ -942,7 +942,7 @@ struct GitCommitServiceTests {
             
             let workdir = try #require(repo.workdir)
             let manifestPath = (workdir as NSString).appendingPathComponent(
-                "manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName(specialID)).yaml"
+                "encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName(specialID)).yaml"
             )
             
             #expect(repoFileExists(repo, workdir: workdir, absolutePath: manifestPath))

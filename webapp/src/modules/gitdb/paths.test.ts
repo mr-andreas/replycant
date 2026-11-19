@@ -18,12 +18,12 @@ describe("deriveBinaryPointerPath", () => {
   it("constructs binary pointer path with sharded name", () => {
     expect(
       deriveBinaryPointerPath("myDevice", "media.replycant.com/v1alpha1", "Original", "ABCDEFGH"),
-    ).toBe("binary/myDevice/media.replycant.com/v1alpha1/Original/AB/CD/EFGH");
+    ).toBe("encryptionspaces/myDevice/binary/media.replycant.com/v1alpha1/Original/AB/CD/EFGH");
   });
 
   it("constructs binary pointer path with short name", () => {
     expect(
       deriveBinaryPointerPath("dev", "media.replycant.com/v1alpha1", "ThumbnailSet", "AB"),
-    ).toBe("binary/dev/media.replycant.com/v1alpha1/ThumbnailSet/AB");
+    ).toBe("encryptionspaces/dev/binary/media.replycant.com/v1alpha1/ThumbnailSet/AB");
   });
 });

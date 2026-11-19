@@ -81,6 +81,9 @@ public struct KeySet: Codable, Equatable {
     public static let kindValue = "KeySet"
     public static let typeDevice = "device"
     public static let typeRecovery = "recovery"
+    // A display label for a program that holds a key. It does not
+    // change who the epoch is wrapped for.
+    public static let typeApp = "app"
     // Binds a sealed name to metadata.name. A server that copies the
     // ciphertext onto another key set fails authentication.
     static let displayNameAADPrefix = "replycant-keyset-display-name-v1"
@@ -259,7 +262,10 @@ public struct KeySet: Codable, Equatable {
         guard Self.isValidName(metadata.name) else {
             throw KeySetError.malformed("invalid key set name \(metadata.name)")
         }
-        guard spec.type == Self.typeDevice || spec.type == Self.typeRecovery else {
+        switch spec.type {
+        case Self.typeDevice, Self.typeRecovery, Self.typeApp:
+            break
+        default:
             throw KeySetError.malformed("unsupported key set type \(spec.type)")
         }
         guard Self.hasSSHPublicKey(spec.mtlsPublicKey) else {

@@ -55,7 +55,7 @@ struct GitRepositoryTests {
         
         let repo = try Repository(path: repoPath)
         // Check that manifest files were committed
-        let manifestPath = "manifests/test-device-space/media.replycant.com/v1alpha1/Original/\(shardName("i-1")).yaml"
+        let manifestPath = "encryptionspaces/test-device-space/manifests/media.replycant.com/v1alpha1/Original/\(shardName("i-1")).yaml"
         #expect(repo.fileExists(at: manifestPath))
         
         // Verify manifest is stored encrypted at rest.
@@ -71,7 +71,7 @@ struct GitRepositoryTests {
         
         let repo = try Repository(path: repoPath)
         // Check that LFS pointer files were committed
-        let pointerPath = "binary/test-device-space/media.replycant.com/v1alpha1/Original/\(shardName("i-1"))"
+        let pointerPath = "encryptionspaces/test-device-space/binary/media.replycant.com/v1alpha1/Original/\(shardName("i-1"))"
         #expect(repo.fileExists(at: pointerPath))
         
         // Verify pointer content
@@ -87,7 +87,7 @@ struct GitRepositoryTests {
         defer { fixtures.cleanupTestRepository(at: repoPath) }
         
         let repo = try Repository(path: repoPath)
-        let manifestPath = "manifests/test-device-space/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("i-1-thumbs")).yaml"
+        let manifestPath = "encryptionspaces/test-device-space/manifests/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("i-1-thumbs")).yaml"
         #expect(repo.fileExists(at: manifestPath))
         let content = try repo.readFile(at: manifestPath)
         #expect(content.contains("REPLYCANT-ENC-V1"))
@@ -181,7 +181,7 @@ struct GitRepositoryTests {
         // Check all three test photos exist
         let photoNames = ["i-1", "i-2", "i-3"]
         for photoName in photoNames {
-            let manifestPath = "manifests/test-device-space/media.replycant.com/v1alpha1/Original/\(shardName(photoName)).yaml"
+            let manifestPath = "encryptionspaces/test-device-space/manifests/media.replycant.com/v1alpha1/Original/\(shardName(photoName)).yaml"
             #expect(repo.fileExists(at: manifestPath))
         }
     }

@@ -83,9 +83,10 @@ final class AuthorizedDeviceManager: Sendable {
             repository: repository,
             excluding: device.path
         )
-        let epochFiles = try KEKEpochManager(repository: repository)
-            .nextEpochFiles(recipientAgePubkeys: recipients)
-        return GitFileChange(files: epochFiles, deletions: [device.path])
+        let epochs = KEKEpochManager(repository: repository)
+        let epochFiles = try epochs.nextEpochFiles(recipientAgePubkeys: recipients)
+        let recipientsFile = try epochs.globalRecipientsFile(removing: stem(of: path))
+        return GitFileChange(files: [recipientsFile] + epochFiles, deletions: [device.path])
     }
 
     // Publishes a revocation only when this phone's copy matches the

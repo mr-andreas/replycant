@@ -21,14 +21,14 @@ struct RepositoryObjectStoreTests {
 
         try Git.initialize()
         let repository = try Repository.create(at: repoPath, bare: false)
-        let originalA = "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("a")).yaml"
-        let originalB = "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("b")).yaml"
+        let originalA = "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("a")).yaml"
+        let originalB = "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("b")).yaml"
         try repository.createCommit(message: "seed", files: [
             (path: originalA, content: "kind: Original\n"),
             (path: originalB, content: "kind: Original\n")
         ])
 
-        let files = try repository.listFiles(in: "manifests/device/media.replycant.com/v1alpha1/Original").sorted()
+        let files = try repository.listFiles(in: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original").sorted()
         #expect(files == [
             originalA,
             originalB
@@ -44,7 +44,7 @@ struct RepositoryObjectStoreTests {
 
         try Git.initialize()
         let repository = try Repository.create(at: repoPath, bare: false)
-        let pointerPath = "binary/device/media.replycant.com/v1alpha1/Original/\(shardName("item"))"
+        let pointerPath = "encryptionspaces/device/binary/media.replycant.com/v1alpha1/Original/\(shardName("item"))"
         try repository.createCommit(message: "seed", files: [
             (path: pointerPath, content: "pointer-content")
         ])
@@ -87,15 +87,15 @@ struct RepositoryObjectStoreTests {
         let repository = try Repository.create(at: repoPath, bare: false)
 
         try repository.createCommit(message: "first", files: [
-            (path: "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("first")).yaml", content: "v: 1\n")
+            (path: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("first")).yaml", content: "v: 1\n")
         ])
         try repository.createCommit(message: "second", files: [
-            (path: "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("second")).yaml", content: "v: 2\n")
+            (path: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("second")).yaml", content: "v: 2\n")
         ])
 
-        #expect(repository.fileExists(at: "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("first")).yaml"))
-        #expect(repository.fileExists(at: "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("second")).yaml"))
-        #expect(try repository.readFile(at: "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName("first")).yaml") == "v: 1\n")
+        #expect(repository.fileExists(at: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("first")).yaml"))
+        #expect(repository.fileExists(at: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("second")).yaml"))
+        #expect(try repository.readFile(at: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("first")).yaml") == "v: 1\n")
     }
 
     @Test func testListFilesReturnsAllEntriesFromDirectoryTree() throws {
@@ -109,13 +109,13 @@ struct RepositoryObjectStoreTests {
         files.reserveCapacity(250)
         for index in 0..<250 {
             files.append((
-                path: "manifests/device/media.replycant.com/v1alpha1/Original/\(shardName(String(index))).yaml",
+                path: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original/\(shardName(String(index))).yaml",
                 content: "n: \(index)\n"
             ))
         }
         try repository.createCommit(message: "seed-many", files: files)
 
-        let listed = try repository.listFiles(in: "manifests/device/media.replycant.com/v1alpha1/Original")
+        let listed = try repository.listFiles(in: "encryptionspaces/device/manifests/media.replycant.com/v1alpha1/Original")
         #expect(listed.count == 250)
     }
 

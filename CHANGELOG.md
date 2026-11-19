@@ -4,7 +4,7 @@
 
 ### Breaking changes
 
-- the server converts existing libraries to format 2 when it starts. Every app must be updated, because older apps refuse the converted library
+- the server converts existing libraries to format 3 when it starts. Every app must be updated, because older apps refuse the converted library, and an existing `git-replycant` clone must be cloned again
 
 ### Features
 

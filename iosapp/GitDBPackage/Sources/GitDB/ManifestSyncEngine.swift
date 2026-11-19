@@ -19,7 +19,7 @@ public actor ManifestSyncEngine {
     private let database: ManifestDatabase
     private let registry: ManifestRegistry
     // Lets package tests inject a fixed KEK without Keychain-backed age identity.
-    private let loadKEKForEpoch: (Int) throws -> Data
+    private let loadKEKForEpoch: (String, Int) throws -> Data
 
     // Binds one repository to one manifest cache database for deterministic sync operations.
     public init(repository: Repository, database: ManifestDatabase, registry: ManifestRegistry) {
@@ -28,7 +28,9 @@ public actor ManifestSyncEngine {
             repository: repository,
             database: database,
             registry: registry,
-            loadKEKForEpoch: { epoch in try kekEpochManager.loadKEK(epoch: epoch) }
+            loadKEKForEpoch: { root, epoch in
+                try kekEpochManager.loadKEK(epoch: epoch, root: root)
+            }
         )
     }
 
@@ -37,7 +39,7 @@ public actor ManifestSyncEngine {
         repository: Repository,
         database: ManifestDatabase,
         registry: ManifestRegistry,
-        loadKEKForEpoch: @escaping (Int) throws -> Data
+        loadKEKForEpoch: @escaping (String, Int) throws -> Data
     ) {
         self.repository = repository
         self.database = database
@@ -79,6 +81,7 @@ public actor ManifestSyncEngine {
         }
 
         let changedPaths = try listChangedManifestPathsBetweenCommits(oldCommit: previousSynced, newCommit: head)
+        try await pinSpaceModes(paths: changedPaths, commitOid: head)
         if changedPaths.isEmpty {
             // Advances checkpoint only when manifest trees are identical (e.g. rebase rewrote commit IDs).
             try await database.writeSyncedCommitHashOnly(head)
@@ -89,7 +92,7 @@ public actor ManifestSyncEngine {
         var updated: [any Manifest] = []
         var removed: [any Manifest] = []
 
-        let keksByEpoch = try preloadAllKEKs()
+        let keksByRoot = try preloadAllKEKs(commitOid: head)
         var remainingPaths = changedPaths[...]
         try await withThrowingTaskGroup(of: IncrementalManifestPair.self) { group in
             let initialTaskCount = min(Self.maxConcurrentParseTasks, remainingPaths.count)
@@ -97,15 +100,16 @@ public actor ManifestSyncEngine {
                 let path = remainingPaths.removeFirst()
                 group.addTask { [self] in
                     let oldManifest: (any Manifest)?
+                    let root = try self.keySetRoot(for: path, commitOid: head)
                     if let oldBlob = try self.repository.readBlobDataAtCommit(commitOid: previousSynced, filepath: path) {
-                        oldManifest = try Self.parseManifestBlob(oldBlob, path: path, keksByEpoch: keksByEpoch, registry: self.registry)
+                        oldManifest = try Self.parseManifestBlob(oldBlob, path: path, root: root, keksByRoot: keksByRoot, registry: self.registry)
                     } else {
                         oldManifest = nil
                     }
 
                     let newManifest: (any Manifest)?
                     if let newBlob = try self.repository.readBlobDataAtCommit(commitOid: head, filepath: path) {
-                        newManifest = try Self.parseManifestBlob(newBlob, path: path, keksByEpoch: keksByEpoch, registry: self.registry)
+                        newManifest = try Self.parseManifestBlob(newBlob, path: path, root: root, keksByRoot: keksByRoot, registry: self.registry)
                     } else {
                         newManifest = nil
                     }
@@ -117,16 +121,17 @@ public actor ManifestSyncEngine {
                 if !remainingPaths.isEmpty {
                     let path = remainingPaths.removeFirst()
                     group.addTask { [self] in
+                        let root = try self.keySetRoot(for: path, commitOid: head)
                         let oldManifest: (any Manifest)?
                         if let oldBlob = try self.repository.readBlobDataAtCommit(commitOid: previousSynced, filepath: path) {
-                            oldManifest = try Self.parseManifestBlob(oldBlob, path: path, keksByEpoch: keksByEpoch, registry: self.registry)
+                            oldManifest = try Self.parseManifestBlob(oldBlob, path: path, root: root, keksByRoot: keksByRoot, registry: self.registry)
                         } else {
                             oldManifest = nil
                         }
 
                         let newManifest: (any Manifest)?
                         if let newBlob = try self.repository.readBlobDataAtCommit(commitOid: head, filepath: path) {
-                            newManifest = try Self.parseManifestBlob(newBlob, path: path, keksByEpoch: keksByEpoch, registry: self.registry)
+                            newManifest = try Self.parseManifestBlob(newBlob, path: path, root: root, keksByRoot: keksByRoot, registry: self.registry)
                         } else {
                             newManifest = nil
                         }
@@ -204,8 +209,9 @@ public actor ManifestSyncEngine {
         cacheFormatVersion: Int
     ) async throws {
         let manifestEntries = try collectAllManifestYamlEntries(atCommit: commitOid)
+        try await pinSpaceModes(paths: manifestEntries.map(\.path), commitOid: commitOid)
         var manifests: [any Manifest] = []
-        let keksByEpoch = try preloadAllKEKs()
+        let keksByRoot = try preloadAllKEKs(commitOid: commitOid)
 
         let total = manifestEntries.count
         progressHandler?("Reading manifests", 0, total)
@@ -217,7 +223,8 @@ public actor ManifestSyncEngine {
                 let entry = remainingEntries.removeFirst()
                 group.addTask { [self] in
                     let blob = try self.repository.readBlobDataByOid(entry.blobOid)
-                    return try Self.parseManifestBlob(blob, path: entry.path, keksByEpoch: keksByEpoch, registry: self.registry)
+                    let root = try self.keySetRoot(for: entry.path, commitOid: commitOid)
+                    return try Self.parseManifestBlob(blob, path: entry.path, root: root, keksByRoot: keksByRoot, registry: self.registry)
                 }
             }
 
@@ -227,7 +234,8 @@ public actor ManifestSyncEngine {
                     let entry = remainingEntries.removeFirst()
                     group.addTask { [self] in
                         let blob = try self.repository.readBlobDataByOid(entry.blobOid)
-                        return try Self.parseManifestBlob(blob, path: entry.path, keksByEpoch: keksByEpoch, registry: self.registry)
+                        let root = try self.keySetRoot(for: entry.path, commitOid: commitOid)
+                    return try Self.parseManifestBlob(blob, path: entry.path, root: root, keksByRoot: keksByRoot, registry: self.registry)
                     }
                 }
 
@@ -251,14 +259,21 @@ public actor ManifestSyncEngine {
         progressHandler?("Updating database", 1, 1)
     }
 
-    // Lists all media manifest YAML paths at a commit for full hydration scans.
+    // Lists manifest YAML under every space. Key files that sit beside
+    // the manifests are not manifests, so only the manifests tree is walked.
     private func collectAllManifestYamlEntries(atCommit commitOid: String) throws -> [(path: String, blobOid: String)] {
-        guard let root = try repository.readTreeAtCommit(commitOid: commitOid, filepath: "manifests") else {
+        guard let spaces = try repository.readTreeAtCommit(commitOid: commitOid, filepath: EncryptionLayout.spacesPrefix) else {
             return []
         }
         var output: [(path: String, blobOid: String)] = []
-        for entry in root.entries {
-            try collectYamlEntriesFromTree(entry: entry, entryPath: "manifests/\(entry.name)", into: &output)
+        for space in spaces.entries where space.type == .tree {
+            let manifestsPath = "\(EncryptionLayout.spacesPrefix)/\(space.name)/manifests"
+            guard let manifests = try repository.readTreeAtCommit(commitOid: commitOid, filepath: manifestsPath) else {
+                continue
+            }
+            for entry in manifests.entries {
+                try collectYamlEntriesFromTree(entry: entry, entryPath: "\(manifestsPath)/\(entry.name)", into: &output)
+            }
         }
         return output.sorted { lhs, rhs in
             lhs.path < rhs.path
@@ -288,20 +303,24 @@ public actor ManifestSyncEngine {
 
     // Computes changed manifest YAML paths between two commits by recursively diffing subtree OIDs.
     private func listChangedManifestPathsBetweenCommits(oldCommit: String, newCommit: String) throws -> [String] {
-        let oldTree = try repository.readTreeAtCommit(commitOid: oldCommit, filepath: "manifests")
-        let newTree = try repository.readTreeAtCommit(commitOid: newCommit, filepath: "manifests")
-
-        if oldTree?.oid == newTree?.oid {
-            return []
-        }
-
+        let oldSpaces = try repository.readTreeAtCommit(commitOid: oldCommit, filepath: EncryptionLayout.spacesPrefix)
+        let newSpaces = try repository.readTreeAtCommit(commitOid: newCommit, filepath: EncryptionLayout.spacesPrefix)
+        let names = Set((oldSpaces?.entries ?? []).map(\.name)).union((newSpaces?.entries ?? []).map(\.name))
         var changed: Set<String> = []
-        try collectChangedManifestYamlPathsBetweenTrees(
-            beforeEntries: oldTree?.entries ?? [],
-            afterEntries: newTree?.entries ?? [],
-            basePath: "manifests",
-            changedPaths: &changed
-        )
+        for name in names {
+            let manifestsPath = "\(EncryptionLayout.spacesPrefix)/\(name)/manifests"
+            let oldTree = try repository.readTreeAtCommit(commitOid: oldCommit, filepath: manifestsPath)
+            let newTree = try repository.readTreeAtCommit(commitOid: newCommit, filepath: manifestsPath)
+            if oldTree?.oid == newTree?.oid {
+                continue
+            }
+            try collectChangedManifestYamlPathsBetweenTrees(
+                beforeEntries: oldTree?.entries ?? [],
+                afterEntries: newTree?.entries ?? [],
+                basePath: manifestsPath,
+                changedPaths: &changed
+            )
+        }
         return Array(changed).sorted()
     }
 
@@ -379,35 +398,86 @@ public actor ManifestSyncEngine {
         }
     }
 
-    // Preloads all known KEKs so parallel parsing avoids touching mutable KEK cache state.
-    private func preloadAllKEKs() throws -> [Int: Data] {
-        guard repository.fileExists(at: "encryption/epochs") else {
-            return [:]
+    // Preloads every key set the commit uses so parallel parsing does
+    // not touch the KEK cache. A space without its own key set shares
+    // the global epochs.
+    private func preloadAllKEKs(commitOid: String) throws -> [String: [Int: Data]] {
+        var roots = [EncryptionLayout.globalRoot]
+        if let spaces = try repository.readTreeAtCommit(commitOid: commitOid, filepath: EncryptionLayout.spacesPrefix) {
+            for space in spaces.entries where space.type == .tree {
+                let current = EncryptionLayout.spaceKeySetRoot(space.name) + "/current"
+                if try repository.readBlobDataAtCommit(commitOid: commitOid, filepath: current) != nil {
+                    roots.append(EncryptionLayout.spaceKeySetRoot(space.name))
+                }
+            }
         }
-        let epochPaths = try repository.listFiles(in: "encryption/epochs").filter { $0.hasSuffix(".age") }
-        var output: [Int: Data] = [:]
-        for epochPath in epochPaths {
-            let epochName = (epochPath as NSString).lastPathComponent.replacingOccurrences(of: ".age", with: "")
-            guard let epoch = Int(epochName) else {
+        var output: [String: [Int: Data]] = [:]
+        for root in roots {
+            guard let epochs = try repository.readTreeAtCommit(commitOid: commitOid, filepath: "\(root)/epochs") else {
                 continue
             }
-            output[epoch] = try loadKEKForEpoch(epoch)
+            var byEpoch: [Int: Data] = [:]
+            for entry in epochs.entries where entry.name.hasSuffix(".age") {
+                let epochName = (entry.name as NSString).deletingPathExtension
+                guard let epoch = Int(epochName) else {
+                    continue
+                }
+                byEpoch[epoch] = try loadKEKForEpoch(root, epoch)
+            }
+            output[root] = byEpoch
         }
         return output
+    }
+
+    // The path picks the key set. A space that gained or lost its own
+    // key set after this cache first saw it is refused before any row
+    // is written.
+    private func pinSpaceModes(paths: [String], commitOid: String) async throws {
+        var seen: Set<String> = []
+        for path in paths {
+            guard let space = EncryptionLayout.space(from: path), seen.insert(space).inserted else {
+                continue
+            }
+            let own = try keySetRoot(for: path, commitOid: commitOid) != EncryptionLayout.globalRoot
+            let mode = own ? "own" : "global"
+            if let stored = try await database.spaceMode(space), stored != mode {
+                throw EncryptionIntegrityError(
+                    space: space,
+                    path: path,
+                    reason: "the space changed key set"
+                )
+            }
+            if try await database.spaceMode(space) == nil {
+                try await database.setSpaceMode(space, mode)
+            }
+        }
+    }
+
+    private nonisolated func keySetRoot(for path: String, commitOid: String) throws -> String {
+        guard let space = EncryptionLayout.space(from: path) else {
+            return EncryptionLayout.globalRoot
+        }
+        let current = EncryptionLayout.spaceKeySetRoot(space) + "/current"
+        if try repository.readBlobDataAtCommit(commitOid: commitOid, filepath: current) != nil {
+            return EncryptionLayout.spaceKeySetRoot(space)
+        }
+        return EncryptionLayout.globalRoot
     }
 
     // Parses one manifest blob without actor state so hydration and incremental sync can parallelize decoding.
     private nonisolated static func parseManifestBlob(
         _ blob: Data,
         path: String,
-        keksByEpoch: [Int: Data],
+        root: String,
+        keksByRoot: [String: [Int: Data]],
         registry: ManifestRegistry
     ) throws -> (any Manifest)? {
-        let yaml = try Self.decryptManifest(blob, keksByEpoch: keksByEpoch)
+        let yaml = try Self.decryptManifest(blob, path: path, root: root, keksByRoot: keksByRoot)
         guard let kind = Self.manifestKind(from: yaml) else {
-            throw GitError.repositoryError("Missing manifest kind in YAML: \(path)")
+            throw EncryptionIntegrityError(space: EncryptionLayout.space(from: path) ?? path, path: path, reason: "the manifest has no kind")
         }
-        return try registry.decode(kind: kind, yaml: yaml)
+        let spaced = EncryptionLayout.yamlAssigningSpace(EncryptionLayout.space(from: path) ?? "", to: yaml)
+        return try registry.decode(kind: kind, yaml: spaced)
     }
 
     // Extracts the top-level kind field without fully decoding the YAML payload twice.
@@ -437,9 +507,15 @@ public actor ManifestSyncEngine {
 
     // Decrypts encrypted manifest envelopes and rejects plaintext so a hostile
     // server cannot strip encryption and have clients accept attacker YAML.
-    private nonisolated static func decryptManifest(_ content: Data, keksByEpoch: [Int: Data]) throws -> String {
+    private nonisolated static func decryptManifest(
+        _ content: Data,
+        path: String,
+        root: String,
+        keksByRoot: [String: [Int: Data]]
+    ) throws -> String {
+        let space = EncryptionLayout.space(from: path) ?? path
         guard content.starts(with: Data("REPLYCANT-ENC-V1\n".utf8)) else {
-            throw ManifestDecryptionError.plaintextManifestRejected
+            throw EncryptionIntegrityError(space: space, path: path, reason: "the manifest is plaintext")
         }
 
         guard let delimiterRange = content.range(of: Data("\n---\n".utf8)) else {
@@ -463,27 +539,38 @@ public actor ManifestSyncEngine {
         }
 
         let payloadData = content.subdata(in: delimiterRange.upperBound..<content.endIndex)
-        guard let kek = keksByEpoch[epoch] else {
-            throw ManifestDecryptionError.invalidEncryptedManifest
+        guard let kek = keksByRoot[root]?[epoch] else {
+            throw EncryptionIntegrityError(space: space, path: path, reason: "epoch \(epoch) is missing")
         }
         let plaintext: Data
         do {
-            plaintext = try EncryptionUtils.decryptAESGCM(ciphertext: payloadData, key: kek)
+            plaintext = try Self.decryptManifestPayload(payloadData, key: kek)
         } catch {
-            guard let payloadString = String(data: payloadData, encoding: .utf8) else {
-                throw error
-            }
-            let trimmedPayload = payloadString.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let base64Payload = Data(base64Encoded: trimmedPayload) else {
-                throw error
-            }
-            plaintext = try EncryptionUtils.decryptAESGCM(ciphertext: base64Payload, key: kek)
+            throw EncryptionIntegrityError(space: space, path: path, reason: "the manifest did not open")
         }
 
         guard let yaml = String(data: plaintext, encoding: .utf8) else {
             throw ManifestDecryptionError.decryptedManifestInvalidUTF8
         }
         return yaml
+    }
+
+    // Some writers store the AES payload as base64 text inside the
+    // envelope. Both forms are the same ciphertext; a failure of both
+    // means this key set cannot open the object.
+    private nonisolated static func decryptManifestPayload(_ payload: Data, key: Data) throws -> Data {
+        do {
+            return try EncryptionUtils.decryptAESGCM(ciphertext: payload, key: key)
+        } catch {
+            guard let payloadString = String(data: payload, encoding: .utf8) else {
+                throw error
+            }
+            let trimmedPayload = payloadString.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let base64Payload = Data(base64Encoded: trimmedPayload) else {
+                throw error
+            }
+            return try EncryptionUtils.decryptAESGCM(ciphertext: base64Payload, key: key)
+        }
     }
 }
 

@@ -66,7 +66,7 @@ final class ManifestCryptoPerformanceTests: XCTestCase {
         print(
             "[manifest-crypto-bench][ios][encrypt] iterations=\(config.iterations) " +
             "manifestsPerIteration=\(config.manifestCount) " +
-            String(format: "meanThroughput=%.2f manifests/s medianThroughput=%.2f manifests/s meanDuration=%.4fs", summary.meanThroughput, summary.medianThroughput, summary.meanDuration)
+            String(format: "meanThroughput=%.2f encryptionspaces/s medianThroughput=%.2f encryptionspaces/manifests/manifests/s meanDuration=%.4fs", summary.meanThroughput, summary.medianThroughput, summary.meanDuration)
         )
         XCTAssertGreaterThan(summary.meanThroughput, 0)
     }
@@ -95,7 +95,7 @@ final class ManifestCryptoPerformanceTests: XCTestCase {
         print(
             "[manifest-crypto-bench][ios][decrypt] iterations=\(config.iterations) " +
             "manifestsPerIteration=\(config.manifestCount) " +
-            String(format: "meanThroughput=%.2f manifests/s medianThroughput=%.2f manifests/s meanDuration=%.4fs", summary.meanThroughput, summary.medianThroughput, summary.meanDuration)
+            String(format: "meanThroughput=%.2f encryptionspaces/s medianThroughput=%.2f encryptionspaces/manifests/manifests/s meanDuration=%.4fs", summary.meanThroughput, summary.medianThroughput, summary.meanDuration)
         )
         XCTAssertGreaterThan(summary.meanThroughput, 0)
     }

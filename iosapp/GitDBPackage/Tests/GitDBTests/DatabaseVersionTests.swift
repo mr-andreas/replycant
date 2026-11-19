@@ -36,16 +36,17 @@ struct DatabaseVersionTests {
     }
 
     @Test func requireSupportedAcceptsPinnedVersionAndRejectsOthers() throws {
-        try DatabaseVersion.requireSupported("2\n")
-        try DatabaseVersion.requireAccepted(2)
-        #expect(throws: DatabaseVersionError.unsupported(found: 1, required: 2)) {
-            try DatabaseVersion.requireSupported("1\n")
+        let pin = DatabaseVersion.current
+        try DatabaseVersion.requireSupported("\(pin)\n")
+        try DatabaseVersion.requireAccepted(pin)
+        #expect(throws: DatabaseVersionError.unsupported(found: pin - 1, required: pin)) {
+            try DatabaseVersion.requireSupported("\(pin - 1)\n")
         }
-        #expect(throws: DatabaseVersionError.unsupported(found: 0, required: 2)) {
+        #expect(throws: DatabaseVersionError.unsupported(found: 0, required: pin)) {
             try DatabaseVersion.requireAccepted(0)
         }
-        #expect(throws: DatabaseVersionError.unsupported(found: 3, required: 2)) {
-            try DatabaseVersion.requireAccepted(3)
+        #expect(throws: DatabaseVersionError.unsupported(found: pin + 1, required: pin)) {
+            try DatabaseVersion.requireAccepted(pin + 1)
         }
     }
 
@@ -58,7 +59,7 @@ struct DatabaseVersionTests {
         let repository = try Repository.create(at: repoPath, bare: false)
         try repository.createCommit(
             message: "seed",
-            files: [("gitdb/version", "2\n")]
+            files: [("gitdb/version", "\(DatabaseVersion.current)\n")]
         )
         let head = try #require(repository.headOID())
         try DatabaseVersion.requireSupported(in: repository, commitOid: head)
@@ -66,15 +67,15 @@ struct DatabaseVersionTests {
 
     @Test func userGuidanceAsksToUpdateWhenMarkerIsNewer() {
         #expect(
-            DatabaseVersionError.unsupported(found: 3, required: 2).userGuidance
-                == "This library uses database format 3. This app supports format 2. Update the app to continue."
+            DatabaseVersionError.unsupported(found: DatabaseVersion.current + 1, required: DatabaseVersion.current).userGuidance
+                == "This library uses database format \(DatabaseVersion.current + 1). This app supports format \(DatabaseVersion.current). Update the app to continue."
         )
     }
 
     @Test func userGuidanceAsksToMigrateWhenMarkerIsOlder() {
         #expect(
-            DatabaseVersionError.unsupported(found: 1, required: 2).userGuidance
-                == "This library uses database format 1. This app supports format 2. Restart the library server so it can upgrade the database, then try again."
+            DatabaseVersionError.unsupported(found: 1, required: DatabaseVersion.current).userGuidance
+                == "This library uses database format 1. This app supports format \(DatabaseVersion.current). Restart the library server so it can upgrade the database, then try again."
         )
     }
 
@@ -98,11 +99,11 @@ struct DatabaseVersionTests {
     // marker stays refused no matter how many times the client fetches.
     @Test func olderFormatIsFixedByServerUpgrade() {
         #expect(
-            DatabaseVersionError.unsupported(found: 1, required: 2)
+            DatabaseVersionError.unsupported(found: 1, required: DatabaseVersion.current)
                 .isFixedByServerUpgrade
         )
         #expect(
-            DatabaseVersionError.unsupported(found: 3, required: 2)
+            DatabaseVersionError.unsupported(found: DatabaseVersion.current + 1, required: DatabaseVersion.current)
                 .isFixedByServerUpgrade == false
         )
         #expect(DatabaseVersionError.malformed.isFixedByServerUpgrade == false)

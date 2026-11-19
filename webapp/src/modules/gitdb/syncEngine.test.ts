@@ -35,7 +35,7 @@ const dbMock = {
   close: vi.fn().mockResolvedValue(undefined),
   recoverInterruptedCacheUpdate: vi.fn().mockResolvedValue(false),
   readSyncedCommitHash: vi.fn().mockResolvedValue(null),
-  readCacheFormatVersion: vi.fn().mockResolvedValue(2),
+  readCacheFormatVersion: vi.fn().mockResolvedValue(3),
   replaceCache: vi.fn().mockResolvedValue(undefined),
   replaceCacheStreamed: vi.fn().mockImplementation(async (records: AsyncIterable<unknown>) => {
     let totalRecords = 0;
@@ -120,8 +120,8 @@ const withVersionTrees = (
         { path: "gitdb", oid: "gitdb-tree-oid", type: "tree", mode: "040000" },
       ];
       try {
-        const manifests = await impl({ ...args, filepath: "manifests" });
-        tree.push({ path: "manifests", oid: manifests.oid, type: "tree", mode: "040000" });
+        const spaces = await impl({ ...args, filepath: "encryptionspaces" });
+        tree.push({ path: "encryptionspaces", oid: spaces.oid, type: "tree", mode: "040000" });
       } catch {
         // A readable root without manifests is a genuine empty library.
       }
@@ -135,7 +135,7 @@ const withVersionTrees = (
     }
     if (!args.filepath) {
       try {
-        return await impl({ ...args, filepath: "manifests" });
+        return await impl({ ...args, filepath: "encryptionspaces" });
       } catch {
         return impl(args);
       }
@@ -169,6 +169,7 @@ describe("SyncEngine", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    localStorage.clear();
     // Injects a fixed KEK so encrypted test fixtures decrypt without age envelopes.
     vi.spyOn(ManifestBlobReader.prototype, "loadKekEpoch").mockResolvedValue(await importTestKek());
     dbMock.recoverInterruptedCacheUpdate.mockResolvedValue(false);
@@ -176,7 +177,7 @@ describe("SyncEngine", () => {
     dbMock.loadCache.mockResolvedValue({ recordsByKind: new Map(), syncedCommitHash: null });
     dbMock.hasAnyRecords.mockResolvedValue(false);
     dbMock.readSyncedCommitHash.mockResolvedValue(null);
-    dbMock.readCacheFormatVersion.mockResolvedValue(2);
+    dbMock.readCacheFormatVersion.mockResolvedValue(3);
     dbMock.query.mockResolvedValue(0);
     gitMock.fetch = vi.fn().mockResolvedValue(undefined);
     gitMock.resolveRef = vi.fn().mockImplementation(async ({ ref }: { ref: string }) => {
@@ -215,7 +216,7 @@ describe("SyncEngine", () => {
     });
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid?: string; filepath?: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("2\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
       }
       return { blob: new TextEncoder().encode(""), oid: "blob-oid" };
     });
@@ -249,12 +250,12 @@ describe("SyncEngine", () => {
     const engine = createEngine(snapshots);
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid?: string; filepath?: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("4\n"), oid: "version-oid" };
       }
       return { blob: new TextEncoder().encode(""), oid: "blob-oid" };
     });
     await engine.syncNow("manual");
-    expect(snapshots.at(-1)?.error).toMatch(/This library uses database format 3/);
+    expect(snapshots.at(-1)?.error).toMatch(/This library uses database format 4/);
     expect(snapshots.at(-1)?.error).toMatch(/Update the app to continue/);
     expect(snapshots.at(-1)?.unrecoverableError).toMatch(/Update the app to continue/);
     expect(snapshots.at(-1)?.syncedCommitHash).toBeNull();
@@ -265,7 +266,7 @@ describe("SyncEngine", () => {
     const engine = createEngine(snapshots);
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid?: string; filepath?: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("4\n"), oid: "version-oid" };
       }
       return { blob: new TextEncoder().encode(""), oid: "blob-oid" };
     });
@@ -367,7 +368,7 @@ describe("SyncEngine", () => {
     const manifestChanges: ManifestDatabaseChange[] = [];
     const engine = createEngine(snapshots, manifestChanges);
     dbMock.readSyncedCommitHash.mockResolvedValue("old123");
-    dbMock.readCacheFormatVersion.mockResolvedValue(2);
+    dbMock.readCacheFormatVersion.mockResolvedValue(3);
     dbMock.hasAnyRecords.mockResolvedValue(true);
     await engine.syncNow("manual");
     expect(dbMock.applyIncrementalWithCas).toHaveBeenCalledWith(
@@ -380,15 +381,15 @@ describe("SyncEngine", () => {
     const snapshots: SyncSnapshot[] = [];
     const engine = createEngine(snapshots);
     dbMock.readSyncedCommitHash.mockResolvedValue("old123");
-    dbMock.readCacheFormatVersion.mockResolvedValue(3);
+    dbMock.readCacheFormatVersion.mockResolvedValue(4);
     dbMock.hasAnyRecords.mockResolvedValue(true);
     vi.spyOn(ManifestBlobReader.prototype, "inspectDatabaseVersion").mockImplementation(async () => ({
-      version: 2,
+      version: 3,
       rootPaths: ["gitdb"],
     }));
     await engine.syncNow("manual");
     expect(dbMock.applyIncrementalWithCas).not.toHaveBeenCalled();
-    expect(snapshots.at(-1)?.unrecoverableError).toMatch(/marker was removed after this app last synced format 3/);
+    expect(snapshots.at(-1)?.unrecoverableError).toMatch(/marker was removed after this app last synced format 4/);
   });
 
   it("fully rehydrates when a stored cache format is older than the observed marker", async () => {
@@ -410,7 +411,7 @@ describe("SyncEngine", () => {
     const snapshots: SyncSnapshot[] = [];
     const engine = createEngine(snapshots);
     dbMock.readSyncedCommitHash.mockResolvedValue("abc123");
-    dbMock.readCacheFormatVersion.mockResolvedValue(2);
+    dbMock.readCacheFormatVersion.mockResolvedValue(3);
     dbMock.hasAnyRecords.mockResolvedValue(true);
     gitMock.listServerRefs = vi.fn().mockResolvedValue([{ ref: "refs/heads/main", oid: "abc123" }]);
     gitMock.readCommit = vi.fn()
@@ -480,7 +481,7 @@ describe("SyncEngine", () => {
     const commit1 = "commit1";
     const commit2 = "commit2";
     const commit3 = "commit3";
-    const manifestPath = "manifests/dev/media.replycant.com/v1alpha1/Original/photo-1.yaml";
+    const manifestPath = "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml";
 
     dbMock.readSyncedCommitHash.mockResolvedValue(commit1);
     dbMock.hasAnyRecords.mockResolvedValue(true);
@@ -492,25 +493,25 @@ describe("SyncEngine", () => {
     });
     gitMock.isDescendent = vi.fn().mockResolvedValue(true);
     gitMock.readTree = vi.fn().mockImplementation(withVersionTrees(async ({ oid, filepath }: { oid: string; filepath?: string }) => {
-      if (filepath === "manifests" && oid === commit1) {
+      if (filepath === "encryptionspaces" && oid === commit1) {
         return {
           oid: "manifest-tree-1",
           tree: [{ path: "dev", oid: "tree-dev-1", type: "tree", mode: "040000" }],
         };
       }
-      if (filepath === "manifests" && oid === commit3) {
+      if (filepath === "encryptionspaces" && oid === commit3) {
         return {
           oid: "manifest-tree-3",
           tree: [{ path: "dev", oid: "tree-dev-3", type: "tree", mode: "040000" }],
         };
       }
-      if (filepath === "manifests/dev/media.replycant.com/v1alpha1/Original" && oid === commit1) {
+      if (filepath === "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original" && oid === commit1) {
         return {
           oid: "kind-tree-1",
           tree: [{ path: "photo-1.yaml", oid: "blob-1", type: "blob", mode: "100644" }],
         };
       }
-      if (filepath === "manifests/dev/media.replycant.com/v1alpha1/Original" && oid === commit3) {
+      if (filepath === "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original" && oid === commit3) {
         return {
           oid: "kind-tree-3",
           tree: [{ path: "photo-1.yaml", oid: "blob-3", type: "blob", mode: "100644" }],
@@ -526,7 +527,7 @@ describe("SyncEngine", () => {
     );
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid: string; filepath: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("2\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
       }
       if (filepath === manifestPath && oid === commit1) {
         return { blob: blob1, oid: "blob-1" };
@@ -724,7 +725,7 @@ describe("SyncEngine", () => {
     const snapshots: SyncSnapshot[] = [];
     const engine = createEngine(snapshots);
     gitMock.readTree = vi.fn().mockImplementation(withVersionTrees(async ({ filepath }: { filepath?: string }) => {
-      if (filepath === "manifests") {
+      if (filepath === "encryptionspaces") {
         return {
           oid: "tree-manifests-oid",
           tree: [
@@ -732,7 +733,7 @@ describe("SyncEngine", () => {
           ],
         };
       }
-      if (filepath === "manifests/devA/media.replycant.com/v1alpha1/Original") {
+      if (filepath === "encryptionspaces/devA/manifests/media.replycant.com/v1alpha1/Original") {
         return {
           oid: "tree-kind-oid",
           tree: [
@@ -744,7 +745,7 @@ describe("SyncEngine", () => {
     }));
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid?: string; filepath?: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("2\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
       }
       throw new Error("decode failure");
     });
@@ -787,28 +788,28 @@ describe("SyncEngine", () => {
       "x-replycant-wrapped-dek d3JhcHBlZA==",
     ].join("\n");
     gitMock.readTree = vi.fn().mockImplementation(withVersionTrees(async ({ filepath }: { filepath?: string }) => {
-      if (filepath === "manifests") {
+      if (filepath === "encryptionspaces") {
         return {
           oid: "tree-manifests-oid",
           tree: [{ path: "devA", oid: "tree-devA-oid", type: "tree", mode: "040000" }],
         };
       }
-      if (filepath === "manifests/devA/media.replycant.com/v1alpha1/Original") {
+      if (filepath === "encryptionspaces/devA/manifests/media.replycant.com/v1alpha1/Original") {
         return {
           oid: "tree-original-oid",
           tree: [{ path: "photo-1.yaml", oid: "blob-manifest-oid", type: "blob", mode: "100644" }],
         };
       }
-      if (filepath === "manifests/devA/media.replycant.com/v1alpha1/ThumbnailSet") {
+      if (filepath === "encryptionspaces/devA/manifests/media.replycant.com/v1alpha1/ThumbnailSet") {
         return { oid: "tree-thumbnailset-oid", tree: [] };
       }
-      if (filepath === "binary/devA/media.replycant.com/v1alpha1/Original") {
+      if (filepath === "encryptionspaces/devA/binary/media.replycant.com/v1alpha1/Original") {
         return {
           oid: "tree-pointer-oid",
           tree: [{ path: "photo-1.jpg", oid: "blob-pointer-oid", type: "blob", mode: "100644" }],
         };
       }
-      if (filepath === "binary/devA/media.replycant.com/v1alpha1/ThumbnailSet") {
+      if (filepath === "encryptionspaces/devA/binary/media.replycant.com/v1alpha1/ThumbnailSet") {
         return { oid: "tree-pointer-thumbs-oid", tree: [] };
       }
       throw new Error("missing tree");
@@ -817,7 +818,7 @@ describe("SyncEngine", () => {
     vi.spyOn(ManifestBlobReader.prototype, "unwrapDeksForPointers").mockResolvedValue(undefined);
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid: string; filepath?: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("2\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
       }
       if (oid === "blob-manifest-oid") {
         return { blob: encryptedManifest, oid };
@@ -872,7 +873,7 @@ describe("SyncEngine", () => {
     dbMock.readSyncedCommitHash.mockResolvedValue("abc123");
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid?: string; filepath?: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("4\n"), oid: "version-oid" };
       }
       return { blob: new TextEncoder().encode(""), oid: "blob-oid" };
     });
@@ -1102,13 +1103,13 @@ describe("SyncEngine", () => {
     );
   });
 
-  it("incremental sync falls back to full hydration when a manifest blob fails to decrypt", async () => {
+  it("stops sync when an incremental manifest does not open", async () => {
     const snapshots: SyncSnapshot[] = [];
     const manifestChanges: ManifestDatabaseChange[] = [];
     const engine = createEngine(snapshots, manifestChanges);
     const previousCommit = "prev-commit";
     const nextCommit = "next-commit";
-    const manifestPath = "manifests/dev/media.replycant.com/v1alpha1/Original/photo-1.yaml";
+    const manifestPath = "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml";
 
     dbMock.readSyncedCommitHash.mockResolvedValue(previousCommit);
     dbMock.hasAnyRecords.mockResolvedValue(true);
@@ -1120,16 +1121,16 @@ describe("SyncEngine", () => {
     });
     gitMock.isDescendent = vi.fn().mockResolvedValue(true);
     gitMock.readTree = vi.fn().mockImplementation(withVersionTrees(async ({ oid, filepath }: { oid: string; filepath?: string }) => {
-      if (filepath === "manifests" && oid === previousCommit) {
+      if (filepath === "encryptionspaces" && oid === previousCommit) {
         return { oid: "tree-old", tree: [{ path: "dev", oid: "tree-dev-old", type: "tree", mode: "040000" }] };
       }
-      if (filepath === "manifests" && oid === nextCommit) {
+      if (filepath === "encryptionspaces" && oid === nextCommit) {
         return { oid: "tree-new", tree: [{ path: "dev", oid: "tree-dev-new", type: "tree", mode: "040000" }] };
       }
-      if (filepath === "manifests/dev/media.replycant.com/v1alpha1/Original" && oid === previousCommit) {
+      if (filepath === "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original" && oid === previousCommit) {
         return { oid: "kind-tree-old", tree: [{ path: "photo-1.yaml", oid: "blob-old", type: "blob", mode: "100644" }] };
       }
-      if (filepath === "manifests/dev/media.replycant.com/v1alpha1/Original" && oid === nextCommit) {
+      if (filepath === "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original" && oid === nextCommit) {
         return { oid: "kind-tree-new", tree: [{ path: "photo-1.yaml", oid: "blob-new", type: "blob", mode: "100644" }] };
       }
       throw new Error("missing tree");
@@ -1141,7 +1142,7 @@ describe("SyncEngine", () => {
     const corruptEncryptedBlob = new TextEncoder().encode("REPLYCANT-ENC-V1\nkek-epoch:999\n---\ncorrupt-ciphertext");
     gitMock.readBlob = vi.fn().mockImplementation(async ({ oid, filepath }: { oid: string; filepath: string }) => {
       if (filepath === "gitdb/version" || oid === "version-oid") {
-        return { blob: new TextEncoder().encode("2\n"), oid: "version-oid" };
+        return { blob: new TextEncoder().encode("3\n"), oid: "version-oid" };
       }
       if (filepath === manifestPath && oid === previousCommit) {
         return { blob: oldBlob, oid: "blob-old" };
@@ -1154,9 +1155,11 @@ describe("SyncEngine", () => {
 
     await engine.syncNow("manual");
 
-    // Decrypt failure in incremental path should prevent CAS apply and trigger full hydration fallback.
-    // applyIncrementalWithCas should NOT be called because the mutation plan build failed.
+    // A manifest that does not open stops sync. Falling through to a
+    // full replace would clear the cache the user can still read.
     expect(dbMock.applyIncrementalWithCas).not.toHaveBeenCalled();
+    expect(dbMock.replaceCacheStreamed).not.toHaveBeenCalled();
+    expect(snapshots.at(-1)?.unrecoverableError).toMatch(/did not open/);
   });
 
   it("rewind stale CAS refreshes snapshot from database without crashing", async () => {

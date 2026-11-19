@@ -185,7 +185,7 @@ struct ManifestManagerIntegrationTests {
         try repository.createCommit(
             message: "seed",
             files: [
-                ("manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("img-1")).yaml", encryptedSeed)
+                ("encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("img-1")).yaml", encryptedSeed)
             ]
         )
 
@@ -397,7 +397,7 @@ struct ManifestManagerIntegrationTests {
         let repository = try Repository.create(at: repoPath, bare: false)
         try repository.createCommit(
             message: "unsupported database version",
-            files: [("gitdb/version", "3\n")]
+            files: [("gitdb/version", "4\n")]
         )
         defer { try? FileManager.default.removeItem(atPath: repoPath) }
 
@@ -434,7 +434,7 @@ struct ManifestManagerIntegrationTests {
             burstIdentifier: nil
         )
 
-        await #expect(throws: DatabaseVersionError.unsupported(found: 3, required: DatabaseVersion.current)) {
+        await #expect(throws: DatabaseVersionError.unsupported(found: 4, required: DatabaseVersion.current)) {
             try await manager.createCommit(message: "should fail", items: [.manifest(manifest)])
         }
     }

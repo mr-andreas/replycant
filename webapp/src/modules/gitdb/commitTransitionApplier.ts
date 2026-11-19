@@ -10,7 +10,7 @@ import {
   promoteCommitTransitionCacheEntry,
 } from "./treeDiffer";
 import { errorMessage, nowMs } from "./syncDiagnostics";
-import { ManifestBlobReader } from "./manifestBlobReader";
+import { EncryptionIntegrityError, ManifestBlobReader } from "./manifestBlobReader";
 import type { RegisteredManifestRecord } from "./manifestRegistry";
 
 const textDecoder = new TextDecoder();
@@ -202,6 +202,7 @@ export class CommitTransitionApplier {
         },
       };
     } catch (error) {
+      if (error instanceof EncryptionIntegrityError) throw error;
       this.log("sync-incremental-fallback-to-full-replace", {
         fromCommitHash: previousSyncedHash,
         toCommitHash: nextSyncedCommitHash,

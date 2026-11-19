@@ -146,7 +146,7 @@ enum DiskCacheWarming {
             return nil
         }
         let deviceSpace = thumbnailSet.metadata.deviceSpace
-        let path = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(entry.name))"
+        let path = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(entry.name))"
         return DiskCacheWarmRequest(itemId: original.spec.id, lfsPath: path)
     }
 }

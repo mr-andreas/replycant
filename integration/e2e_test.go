@@ -304,13 +304,13 @@ func TestE2EManifestWorkflow(t *testing.T) {
 	t.Run("clone", func(t *testing.T) {
 		cloneAndProvision(t, containerID, "/tmp/clone")
 
-		out := readFile(t, containerID, "/tmp/clone/manifests/test/test.yaml")
+		out := readFile(t, containerID, "/tmp/clone/encryptionspaces/test/manifests/test.yaml")
 		assert.Contains(t, out, "apiVersion:")
 		assert.NotContains(t, out, "REPLYCANT-ENC-V1")
 	})
 
 	t.Run("modify_and_push", func(t *testing.T) {
-		dockerExec(t, containerID, "sh", "-c", "printf 'apiVersion: v1\\nkind: Modified\\n' > /tmp/clone/manifests/test/test.yaml")
+		dockerExec(t, containerID, "sh", "-c", "printf 'apiVersion: v1\\nkind: Modified\\n' > /tmp/clone/encryptionspaces/test/manifests/test.yaml")
 		dockerExec(t, containerID, "git", "-C", "/tmp/clone", "add", ".")
 		dockerExec(
 			t,
@@ -326,19 +326,19 @@ func TestE2EManifestWorkflow(t *testing.T) {
 		)
 		dockerExec(t, containerID, "git", "-C", "/tmp/clone", "push", "origin", "main")
 
-		blob := dockerExec(t, containerID, "git", "-C", "/tmp/clone", "show", "HEAD:manifests/test/test.yaml")
+		blob := dockerExec(t, containerID, "git", "-C", "/tmp/clone", "show", "HEAD:encryptionspaces/test/manifests/test.yaml")
 		assert.Contains(t, blob, "REPLYCANT-ENC-V1")
 	})
 
 	t.Run("second_clone_sees_changes", func(t *testing.T) {
 		cloneAndProvision(t, containerID, "/tmp/clone-2")
-		out := readFile(t, containerID, "/tmp/clone-2/manifests/test/test.yaml")
+		out := readFile(t, containerID, "/tmp/clone-2/encryptionspaces/test/manifests/test.yaml")
 		assert.Contains(t, out, "kind: Modified")
 	})
 
 	t.Run("pull_gets_latest", func(t *testing.T) {
 		dockerExec(t, containerID, "git", "-C", "/tmp/clone", "pull", "origin", "main")
-		dockerExec(t, containerID, "sh", "-c", "printf 'apiVersion: v1\\nkind: Final\\n' > /tmp/clone/manifests/test/test.yaml")
+		dockerExec(t, containerID, "sh", "-c", "printf 'apiVersion: v1\\nkind: Final\\n' > /tmp/clone/encryptionspaces/test/manifests/test.yaml")
 		dockerExec(t, containerID, "git", "-C", "/tmp/clone", "add", ".")
 		dockerExec(
 			t,
@@ -354,7 +354,7 @@ func TestE2EManifestWorkflow(t *testing.T) {
 		)
 		dockerExec(t, containerID, "git", "-C", "/tmp/clone", "push", "origin", "main")
 		dockerExec(t, containerID, "git", "-C", "/tmp/clone-2", "pull", "origin", "main")
-		out := readFile(t, containerID, "/tmp/clone-2/manifests/test/test.yaml")
+		out := readFile(t, containerID, "/tmp/clone-2/encryptionspaces/test/manifests/test.yaml")
 		assert.Contains(t, out, "kind: Final")
 	})
 }
@@ -370,11 +370,11 @@ func TestE2EBinaryWorkflow(t *testing.T) {
 	t.Run("clone_and_add_binary", func(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/binary-clone")
 
-		dockerExec(t, containerID, "mkdir", "-p", "/tmp/binary-clone/binary")
-		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/binary-clone/binary/test.bin")
-		firstChecksum = sha256File(t, containerID, "/tmp/binary-clone/binary/test.bin")
+		dockerExec(t, containerID, "mkdir", "-p", "/tmp/binary-clone/encryptionspaces/test/binary")
+		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/binary-clone/encryptionspaces/test/binary/test.bin")
+		firstChecksum = sha256File(t, containerID, "/tmp/binary-clone/encryptionspaces/test/binary/test.bin")
 
-		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "add", "binary/test.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "add", "encryptionspaces/test/binary/test.bin")
 		dockerExec(
 			t,
 			containerID,
@@ -387,7 +387,7 @@ func TestE2EBinaryWorkflow(t *testing.T) {
 			"-m",
 			"add binary",
 		)
-		blob := dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "show", "HEAD:binary/test.bin")
+		blob := dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "show", "HEAD:encryptionspaces/test/binary/test.bin")
 		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "push", "origin", "main")
 		assert.Contains(t, blob, "version https://git-lfs.github.com/spec/v1")
 		assert.Contains(t, blob, "x-replycant-kek-epoch")
@@ -396,15 +396,15 @@ func TestE2EBinaryWorkflow(t *testing.T) {
 
 	t.Run("second_clone_restores_plaintext", func(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/binary-clone-2")
-		secondChecksum = sha256File(t, containerID, "/tmp/binary-clone-2/binary/test.bin")
+		secondChecksum = sha256File(t, containerID, "/tmp/binary-clone-2/encryptionspaces/test/binary/test.bin")
 		assert.Equal(t, firstChecksum, secondChecksum)
 	})
 
 	t.Run("fetch_and_checkout_updates_binary", func(t *testing.T) {
 		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "pull", "origin", "main")
-		dockerExec(t, containerID, "sh", "-c", "head -c 32768 /dev/urandom > /tmp/binary-clone/binary/test.bin")
-		updatedChecksum := sha256File(t, containerID, "/tmp/binary-clone/binary/test.bin")
-		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "add", "binary/test.bin")
+		dockerExec(t, containerID, "sh", "-c", "head -c 32768 /dev/urandom > /tmp/binary-clone/encryptionspaces/test/binary/test.bin")
+		updatedChecksum := sha256File(t, containerID, "/tmp/binary-clone/encryptionspaces/test/binary/test.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "add", "encryptionspaces/test/binary/test.bin")
 		dockerExec(
 			t,
 			containerID,
@@ -420,8 +420,8 @@ func TestE2EBinaryWorkflow(t *testing.T) {
 		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone", "push", "origin", "main")
 
 		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone-2", "fetch", "origin", "main")
-		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone-2", "checkout", "origin/main", "--", "binary/test.bin")
-		pulledChecksum := sha256File(t, containerID, "/tmp/binary-clone-2/binary/test.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/binary-clone-2", "checkout", "origin/main", "--", "encryptionspaces/test/binary/test.bin")
+		pulledChecksum := sha256File(t, containerID, "/tmp/binary-clone-2/encryptionspaces/test/binary/test.bin")
 		assert.Equal(t, updatedChecksum, pulledChecksum)
 	})
 }
@@ -437,11 +437,11 @@ func TestE2ELFSModifyAndPull(t *testing.T) {
 	t.Run("initial_binary_push", func(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-mod")
 
-		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-mod/binary")
-		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/lfs-mod/binary/data.bin")
-		originalChecksum = sha256File(t, containerID, "/tmp/lfs-mod/binary/data.bin")
+		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-mod/encryptionspaces/test/binary")
+		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/lfs-mod/encryptionspaces/test/binary/data.bin")
+		originalChecksum = sha256File(t, containerID, "/tmp/lfs-mod/encryptionspaces/test/binary/data.bin")
 
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod", "add", "binary/data.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod", "add", "encryptionspaces/test/binary/data.bin")
 		dockerExec(
 			t,
 			containerID,
@@ -459,17 +459,17 @@ func TestE2ELFSModifyAndPull(t *testing.T) {
 
 	t.Run("second_clone_sees_initial_binary", func(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-mod-2")
-		clonedChecksum := sha256File(t, containerID, "/tmp/lfs-mod-2/binary/data.bin")
+		clonedChecksum := sha256File(t, containerID, "/tmp/lfs-mod-2/encryptionspaces/test/binary/data.bin")
 		assert.Equal(t, originalChecksum, clonedChecksum)
 	})
 
 	t.Run("modify_push_and_pull", func(t *testing.T) {
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod", "pull", "origin", "main")
-		dockerExec(t, containerID, "sh", "-c", "head -c 32768 /dev/urandom > /tmp/lfs-mod/binary/data.bin")
-		updatedChecksum = sha256File(t, containerID, "/tmp/lfs-mod/binary/data.bin")
+		dockerExec(t, containerID, "sh", "-c", "head -c 32768 /dev/urandom > /tmp/lfs-mod/encryptionspaces/test/binary/data.bin")
+		updatedChecksum = sha256File(t, containerID, "/tmp/lfs-mod/encryptionspaces/test/binary/data.bin")
 		assert.NotEqual(t, originalChecksum, updatedChecksum)
 
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod", "add", "binary/data.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod", "add", "encryptionspaces/test/binary/data.bin")
 		dockerExec(
 			t,
 			containerID,
@@ -485,7 +485,7 @@ func TestE2ELFSModifyAndPull(t *testing.T) {
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod", "push", "origin", "main")
 
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-mod-2", "pull", "origin", "main")
-		pulledChecksum := sha256File(t, containerID, "/tmp/lfs-mod-2/binary/data.bin")
+		pulledChecksum := sha256File(t, containerID, "/tmp/lfs-mod-2/encryptionspaces/test/binary/data.bin")
 		assert.Equal(t, updatedChecksum, pulledChecksum)
 	})
 }
@@ -501,11 +501,11 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 	t.Run("clone_a_create_binary_and_push", func(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-cross-a")
 
-		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-cross-a/binary")
-		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/lfs-cross-a/binary/test.bin")
-		initialChecksum = sha256File(t, containerID, "/tmp/lfs-cross-a/binary/test.bin")
+		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-cross-a/encryptionspaces/test/binary")
+		dockerExec(t, containerID, "sh", "-c", "head -c 65536 /dev/urandom > /tmp/lfs-cross-a/encryptionspaces/test/binary/test.bin")
+		initialChecksum = sha256File(t, containerID, "/tmp/lfs-cross-a/encryptionspaces/test/binary/test.bin")
 
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "add", "binary/test.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "add", "encryptionspaces/test/binary/test.bin")
 		dockerExec(
 			t,
 			containerID,
@@ -518,7 +518,7 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 			"-m",
 			"add cross-clone binary",
 		)
-		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "show", "HEAD:binary/test.bin")
+		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "show", "HEAD:encryptionspaces/test/binary/test.bin")
 		parsePointerOID(t, blob)
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "push", "origin", "main")
 	})
@@ -527,14 +527,14 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-cross-b")
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "pull", "origin", "main")
 
-		clonedChecksum := sha256File(t, containerID, "/tmp/lfs-cross-b/binary/test.bin")
+		clonedChecksum := sha256File(t, containerID, "/tmp/lfs-cross-b/encryptionspaces/test/binary/test.bin")
 		assert.Equal(t, initialChecksum, clonedChecksum)
 
-		dockerExec(t, containerID, "sh", "-c", "head -c 32768 /dev/urandom > /tmp/lfs-cross-b/binary/test.bin")
-		modifiedChecksum = sha256File(t, containerID, "/tmp/lfs-cross-b/binary/test.bin")
+		dockerExec(t, containerID, "sh", "-c", "head -c 32768 /dev/urandom > /tmp/lfs-cross-b/encryptionspaces/test/binary/test.bin")
+		modifiedChecksum = sha256File(t, containerID, "/tmp/lfs-cross-b/encryptionspaces/test/binary/test.bin")
 		assert.NotEqual(t, initialChecksum, modifiedChecksum)
 
-		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "add", "binary/test.bin")
+		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "add", "encryptionspaces/test/binary/test.bin")
 		dockerExec(
 			t,
 			containerID,
@@ -547,14 +547,14 @@ func TestE2ELFSCrossCloneUpdate(t *testing.T) {
 			"-m",
 			"update cross-clone binary",
 		)
-		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "show", "HEAD:binary/test.bin")
+		blob := dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "show", "HEAD:encryptionspaces/test/binary/test.bin")
 		parsePointerOID(t, blob)
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-b", "push", "origin", "main")
 	})
 
 	t.Run("clone_a_pull_and_verify_modified_binary", func(t *testing.T) {
 		dockerExec(t, containerID, "git", "-C", "/tmp/lfs-cross-a", "pull", "--rebase", "origin", "main")
-		pulledChecksum := sha256File(t, containerID, "/tmp/lfs-cross-a/binary/test.bin")
+		pulledChecksum := sha256File(t, containerID, "/tmp/lfs-cross-a/encryptionspaces/test/binary/test.bin")
 		assert.Equal(t, modifiedChecksum, pulledChecksum)
 	})
 }
@@ -569,15 +569,15 @@ func TestE2ELFSCloneExistingRepo(t *testing.T) {
 		size int
 	}
 	files := []binaryFixture{
-		{path: "binary/small.bin", size: 16384},
-		{path: "binary/medium.bin", size: 65536},
-		{path: "binary/large.bin", size: 262144},
+		{path: "encryptionspaces/test/binary/small.bin", size: 16384},
+		{path: "encryptionspaces/test/binary/medium.bin", size: 65536},
+		{path: "encryptionspaces/test/binary/large.bin", size: 262144},
 	}
 	checksums := map[string]string{}
 
 	t.Run("seed_existing_lfs_repo", func(t *testing.T) {
 		cloneAndProvisionLFS(t, containerID, "/tmp/lfs-existing-src")
-		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-existing-src/binary")
+		dockerExec(t, containerID, "mkdir", "-p", "/tmp/lfs-existing-src/encryptionspaces/test/binary")
 
 		for _, f := range files {
 			dockerExec(

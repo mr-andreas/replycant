@@ -284,6 +284,11 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
             setSyncState(.failed(UploadRefusedError(message: incompatibility.userMessage)))
             return
         }
+        if let message = EncryptionIntegrityManager.shared.message {
+            logError("Refusing upload because a key set could not be opened", context: "PhotoSync")
+            setSyncState(.failed(UploadRefusedError(message: message)))
+            return
+        }
 
         log("Starting sync process...", context: "PhotoSync")
         syncGeneration += 1

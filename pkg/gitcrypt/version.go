@@ -12,7 +12,7 @@ const (
 	// operate on. A mismatch is a hard refusal, never a branch into
 	// older decryption or path-layout code. gitd migrates older
 	// libraries up to this number before it serves traffic.
-	DatabaseFormatVersion = 2
+	DatabaseFormatVersion = 3
 	// DatabaseVersionPath is the plaintext marker at the repo root that
 	// pins the on-disk database format independently of manifest
 	// apiVersion.

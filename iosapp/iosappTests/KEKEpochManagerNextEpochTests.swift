@@ -68,6 +68,40 @@ struct KEKEpochManagerNextEpochTests {
         #expect(third.first { $0.path == "encryption/current" }?.content == "3\n")
     }
 
+    // Revoking a library member rotates every key set, including a
+    // space that keeps its own. A space still on the library key is
+    // left alone because it has no epoch of its own to replace.
+    @Test func nextEpochRotatesASpaceThatHasItsOwnKeySet() throws {
+        let root = try makeTempRoot("kek-next-space")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try Git.initialize()
+        let repo = try Repository.create(at: root, bare: false)
+        let recipient = Curve25519.KeyAgreement.PrivateKey()
+        let kek = Data(repeating: 0x11, count: 32)
+        let epoch = try AgeCrypto.encrypt(plaintext: kek, recipients: [recipient.publicKey])
+        let epochText = try #require(String(data: epoch, encoding: .utf8))
+        try repo.createCommit(
+            message: "seed",
+            files: [
+                (path: "encryption/current", content: "1\n"),
+                (path: "encryption/epochs/1.age", content: epochText),
+                (path: "encryptionspaces/album/encryption/current", content: "1\n"),
+                (path: "encryptionspaces/album/encryption/epochs/1.age", content: epochText),
+                (path: "encryptionspaces/shared/manifests/note.yaml", content: "kind: Note\n"),
+            ]
+        )
+
+        let files = try KEKEpochManager(repository: repo).nextEpochFiles(
+            recipientAgePubkeys: [try agePublic(recipient)]
+        )
+        #expect(files.map(\.path).sorted() == [
+            "encryption/current",
+            "encryption/epochs/2.age",
+            "encryptionspaces/album/encryption/current",
+            "encryptionspaces/album/encryption/epochs/2.age",
+        ])
+    }
+
     // Encryption is mandatory, so a repository with no epoch cannot
     // pretend a removal still produced a new key.
     @Test func nextEpochThrowsWhenRepositoryHasNoEpoch() throws {

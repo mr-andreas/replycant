@@ -136,7 +136,8 @@ enum DeviceLinking {
             )
             let epochFiles = try epochs
                 .rewrappedEpochFilesIncludingRecipients(allRecipientAgePubkeys)
-            return GitFileChange(files: [keyFile] + epochFiles)
+            let recipients = try epochs.globalRecipientsFile(adding: metadataName)
+            return GitFileChange(files: [keyFile, recipients] + epochFiles)
         }
 
         log("Successfully added and pushed device key", context: "DeviceLinking")

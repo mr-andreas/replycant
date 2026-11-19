@@ -3,6 +3,7 @@ import {
   DatabaseVersionUnreadableError,
   describeDatabaseVersionFailure,
 } from "./databaseVersion";
+import { EncryptionIntegrityError } from "./manifestBlobReader";
 
 const SYNC_PERF_PREFIX = "sync:";
 let syncPerfMeasureCounter = 0;
@@ -94,6 +95,9 @@ export const describeSyncFailure = (prefix: string, error: unknown): string => {
     name: error.name,
     stack: error.stack,
   });
+  if (error instanceof EncryptionIntegrityError) {
+    return error.message;
+  }
   if (error instanceof DatabaseVersionUnreadableError) {
     return `Sync failed: ${error.message}. Check proxy/server settings and retry.`;
   }

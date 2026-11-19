@@ -28,11 +28,12 @@ describe("parseDatabaseVersion", () => {
 
 describe("requireSupportedDatabaseVersion", () => {
   it("accepts only the pinned version", () => {
-    expect(() => requireSupportedDatabaseVersion("2\n")).not.toThrow();
-    expect(() => requireAcceptedDatabaseVersion(2)).not.toThrow();
+    expect(() => requireSupportedDatabaseVersion("3\n")).not.toThrow();
+    expect(() => requireAcceptedDatabaseVersion(3)).not.toThrow();
     expect(() => requireSupportedDatabaseVersion("1\n")).toThrow(/unsupported gitdb database version 1/);
+    expect(() => requireSupportedDatabaseVersion("2\n")).toThrow(/unsupported gitdb database version 2/);
     expect(() => requireAcceptedDatabaseVersion(0)).toThrow(/unsupported gitdb database version 0/);
-    expect(() => requireAcceptedDatabaseVersion(3)).toThrow(/unsupported gitdb database version 3/);
+    expect(() => requireAcceptedDatabaseVersion(4)).toThrow(/unsupported gitdb database version 4/);
   });
 });
 

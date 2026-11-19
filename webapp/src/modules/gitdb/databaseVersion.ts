@@ -1,6 +1,6 @@
 // Pins the only gitdb/version this client will open so a plaintext
 // marker cannot steer decryption onto a weaker path.
-export const DATABASE_FORMAT_VERSION = 2;
+export const DATABASE_FORMAT_VERSION = 3;
 export const DATABASE_VERSION_PATH = "gitdb/version";
 
 // Names gitdb/version failures so sync and rewind can refuse without

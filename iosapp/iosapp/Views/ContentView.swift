@@ -43,6 +43,7 @@ struct ContentView: View {
     @State private var showRecoveryFlow = false
     @StateObject private var recoveryRouter = RecoveryDeepLinkRouter.shared
     @ObservedObject private var databaseCompatibility = DatabaseCompatibilityManager.shared
+    @ObservedObject private var encryptionIntegrity = EncryptionIntegrityManager.shared
     @ObservedObject private var notificationDelegate = AppNotificationDelegate.shared
     @ObservedObject private var uploadController = UploadController.shared
     @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
@@ -96,7 +97,16 @@ struct ContentView: View {
                 resyncView
             } else if shouldShowMainTabs {
                 VStack(spacing: 0) {
-                    if let incompatibility = databaseCompatibility.incompatibility {
+                    if let message = encryptionIntegrity.message {
+                        Text(message)
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .padding(12)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.red)
+                            .accessibilityIdentifier("encryptionIntegrityBanner")
+                    } else if let incompatibility = databaseCompatibility.incompatibility {
                         Text(incompatibility.userMessage)
                             .font(.subheadline)
                             .foregroundStyle(.white)

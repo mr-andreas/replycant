@@ -78,7 +78,7 @@ func TestReadFilterInput(t *testing.T) {
 func testFilterRuntime(repoDir string, kek []byte, epoch int) *FilterRuntime {
 	return &FilterRuntime{
 		repoRoot:            repoDir,
-		kekCache:            map[int][]byte{epoch: kek},
+		kekCache:            map[kekCacheKey][]byte{{root: gitcrypt.GlobalKeySetRoot, epoch: epoch}: kek},
 		indexHashCache:      make(map[string][32]byte),
 		indexEncryptedCache: make(map[string][]byte),
 	}
@@ -181,7 +181,7 @@ func TestRequireFilterDatabaseVersion(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing")
 
-	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("3\n"), 0o644)
 	require.NoError(t, requireFilterDatabaseVersion(rt))
 
 	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("1\n"), 0o644)
@@ -195,7 +195,7 @@ func TestRequireFilterDatabaseVersion(t *testing.T) {
 func TestSmudgeRejectsPlaintextManifest(t *testing.T) {
 	t.Parallel()
 	rt := testFilterRuntime(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), 1)
-	_, err := rt.Smudge([]byte("apiVersion: media.replycant.com/v1alpha1\nkind: Original\n"))
+	_, err := rt.Smudge("", []byte("apiVersion: media.replycant.com/v1alpha1\nkind: Original\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plaintext manifest rejected")
 }
@@ -211,7 +211,7 @@ func TestSmudgeDecryptsEncryptedEnvelope(t *testing.T) {
 	require.NoError(t, err)
 
 	rt := testFilterRuntime(t.TempDir(), kek, epoch)
-	got, err := rt.Smudge(encrypted)
+	got, err := rt.Smudge("", encrypted)
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, got)
 }
@@ -236,4 +236,93 @@ func TestRunSmudgeOnceTextconvPassesPlaintext(t *testing.T) {
 	require.NoError(t, stdoutReader.Close())
 	require.NoError(t, runErr)
 	assert.Equal(t, plaintext, stdout)
+}
+
+// TestKeySetRootUsesGlobalBeforeHeadExists covers the first checkout.
+// Smudge runs before HEAD is born, so a missing space key set has to be
+// recognized from the remote tip rather than the invalid HEAD name.
+func TestKeySetRootUsesGlobalBeforeHeadExists(t *testing.T) {
+	src := testInitRepo(t)
+	testWriteFile(t, filepath.Join(src, "gitdb", "version"), []byte("3\n"), 0o644)
+	testWriteFile(t, filepath.Join(src, "encryption", "current"), []byte("1\n"), 0o644)
+	testRunGit(t, src, "add", ".")
+	testRunGit(t, src, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+	testRunGit(t, src, "branch", "-M", "main")
+
+	repo := testInitRepo(t)
+	testRunGit(t, repo, "remote", "add", "origin", src)
+	testRunGit(t, repo, "fetch", "origin")
+
+	rt := &FilterRuntime{repoRoot: repo}
+	root, err := rt.keySetRoot("encryptionspaces/test-device/manifests/test.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, gitcrypt.GlobalKeySetRoot, root)
+}
+
+// TestKeySetRootUsesGlobalWhenSpaceHasNoKeySet keeps a migrated space,
+// which has no encryption/current, on the library key set. git reports
+// the missing file only on stderr.
+func TestKeySetRootUsesGlobalWhenSpaceHasNoKeySet(t *testing.T) {
+	repo := testInitRepo(t)
+	testWriteFile(t, filepath.Join(repo, "gitdb", "version"), []byte("3\n"), 0o644)
+	testWriteFile(t, filepath.Join(repo, "encryption", "current"), []byte("1\n"), 0o644)
+	testRunGit(t, repo, "add", ".")
+	testRunGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	rt := &FilterRuntime{repoRoot: repo}
+	root, err := rt.keySetRoot("encryptionspaces/test-device/manifests/test.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, gitcrypt.GlobalKeySetRoot, root)
+}
+
+// TestSpaceModeFlipIsRefused stops a space that gains its own key set
+// after the client has already accepted the global one.
+func TestSpaceModeFlipIsRefused(t *testing.T) {
+	repo := testInitRepo(t)
+	testWriteFile(t, filepath.Join(repo, "encryption", "current"), []byte("1\n"), 0o644)
+	testRunGit(t, repo, "add", ".")
+	testRunGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	rt := &FilterRuntime{repoRoot: repo}
+	path := "encryptionspaces/phone/manifests/a.yaml"
+	root, err := rt.keySetRoot(path)
+	require.NoError(t, err)
+	assert.Equal(t, gitcrypt.GlobalKeySetRoot, root)
+
+	testWriteFile(t, filepath.Join(repo, "encryptionspaces", "phone", "encryption", "current"), []byte("1\n"), 0o644)
+	_, err = rt.keySetRoot(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "changed key set")
+}
+
+// TestSmudgeDoesNotFallBackToAnotherKeySet keeps a holder of one KEK
+// from opening an object sealed for a different key set. Trying every
+// known KEK would accept an object planted in the wrong space.
+func TestSmudgeDoesNotFallBackToAnotherKeySet(t *testing.T) {
+	t.Parallel()
+	global := []byte("0123456789abcdef0123456789abcdef")
+	spaceKEK := []byte("abcdef0123456789abcdef0123456789")
+	plain := []byte("apiVersion: media.replycant.com/v1alpha1\nkind: Original\n")
+	repo := t.TempDir()
+	testWriteFile(t, filepath.Join(repo, "encryptionspaces", "upload", "encryption", "current"), []byte("1\n"), 0o644)
+	rt := &FilterRuntime{
+		repoRoot: repo,
+		kekCache: map[kekCacheKey][]byte{
+			{root: gitcrypt.GlobalKeySetRoot, epoch: 1}:          global,
+			{root: gitcrypt.SpaceKeySetRoot("upload"), epoch: 1}: spaceKEK,
+		},
+		indexHashCache:      make(map[string][32]byte),
+		indexEncryptedCache: make(map[string][]byte),
+	}
+	path := "encryptionspaces/upload/manifests/a.yaml"
+	planted, err := gitcrypt.EncryptManifestEnvelope(plain, global, 1)
+	require.NoError(t, err)
+	_, err = rt.Smudge(path, planted)
+	require.Error(t, err)
+
+	own, err := gitcrypt.EncryptManifestEnvelope(plain, spaceKEK, 1)
+	require.NoError(t, err)
+	got, err := rt.Smudge(path, own)
+	require.NoError(t, err)
+	assert.Equal(t, plain, got)
 }

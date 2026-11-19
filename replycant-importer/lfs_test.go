@@ -32,7 +32,7 @@ func TestRejectsFullLFSClone(t *testing.T) {
 	require.NoError(t, os.MkdirAll(infoDir, 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(infoDir, "attributes"),
-		[]byte("binary/** filter=replycant-crypt\n"),
+		[]byte("encryptionspaces/*/binary/** filter=replycant-crypt\n"),
 		0o644,
 	))
 
@@ -40,9 +40,9 @@ func TestRejectsFullLFSClone(t *testing.T) {
 	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
 	imp, _, _, _ := newTestImporter(t, nil)
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "without --lfs")
@@ -57,9 +57,9 @@ func TestRejectsLFSURLConfig(t *testing.T) {
 	writeTinyJPEG(t, filepath.Join(srcDir, "a.jpg"))
 	imp, _, _, _ := newTestImporter(t, nil)
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "without --lfs")
@@ -78,10 +78,10 @@ func TestUploadFailureSkipsFileWithoutCommit(t *testing.T) {
 		return fmt.Errorf("injected upload failure")
 	}
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "1 file(s) failed to import")
@@ -115,10 +115,10 @@ func TestDirectLFSUploadWritesPointersAndCiphertext(t *testing.T) {
 	}
 
 	require.NoError(t, imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	}))
 
 	originals, thumbs := listManifestPaths(t, repo, "device-a")
@@ -127,7 +127,7 @@ func TestDirectLFSUploadWritesPointersAndCiphertext(t *testing.T) {
 
 	var om OriginalManifest
 	readYAML(t, originals[0], &om)
-	binaryPath := filepath.Join(repo, "binary", "device-a", apiVersion, "Original", shardName(om.Metadata.Name))
+	binaryPath := filepath.Join(repo, "encryptionspaces", "device-a", "binary", apiVersion, "Original", shardName(om.Metadata.Name))
 	pointerRaw, err := os.ReadFile(binaryPath)
 	require.NoError(t, err)
 	assert.True(t, gitcrypt.IsLFSPointer(pointerRaw))
@@ -157,7 +157,7 @@ func TestDirectLFSUploadWritesPointersAndCiphertext(t *testing.T) {
 	readYAML(t, thumbs[0], &tm)
 	require.Len(t, tm.Spec.Thumbnails, 3)
 	for _, entry := range tm.Spec.Thumbnails {
-		thumbPath := filepath.Join(repo, "binary", "device-a", apiVersion, "ThumbnailSet", shardName(entry.Name))
+		thumbPath := filepath.Join(repo, "encryptionspaces", "device-a", "binary", apiVersion, "ThumbnailSet", shardName(entry.Name))
 		thumbPointerRaw, err := os.ReadFile(thumbPath)
 		require.NoError(t, err)
 		assert.True(t, gitcrypt.IsLFSPointer(thumbPointerRaw), entry.Name)
@@ -174,9 +174,12 @@ func TestDirectLFSUploadWritesPointersAndCiphertext(t *testing.T) {
 		assert.False(t, gitcrypt.IsLFSPointer(thumbPlain))
 	}
 
-	err = filepath.WalkDir(filepath.Join(repo, "binary"), func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(filepath.Join(repo, "encryptionspaces"), func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
+		}
+		if !strings.Contains(filepath.ToSlash(path), "/binary/") {
+			return nil
 		}
 		raw, readErr := os.ReadFile(path)
 		require.NoError(t, readErr)

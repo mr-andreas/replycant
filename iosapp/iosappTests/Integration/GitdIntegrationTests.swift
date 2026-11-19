@@ -75,7 +75,7 @@ struct GitdIntegrationTests {
         let headOID = try #require(repository.headOID())
         let seedBlob = try repository.readBlobDataAtCommit(
             commitOid: headOID,
-            filepath: "manifests/test/test.yaml"
+            filepath: "encryptionspaces/test/manifests/test.yaml"
         )
         let seedManifest = try #require(seedBlob)
         #expect(seedManifest.starts(with: Data("REPLYCANT-ENC-V1\n".utf8)))
@@ -95,7 +95,7 @@ struct GitdIntegrationTests {
 
         let tableName = try await gitDB.tableName(for: OriginalManifest.self)
         let count = try await gitDB.queryCount(
-            sql: "SELECT COUNT(*) FROM \(tableName) WHERE deviceSpace = ? AND takenAt IS NOT NULL",
+            sql: "SELECT COUNT(*) FROM \(tableName) WHERE encryptionSpace = ? AND takenAt IS NOT NULL",
             arguments: [deviceSpace]
         )
         #expect(count > 0)

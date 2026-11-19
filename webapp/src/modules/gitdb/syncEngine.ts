@@ -24,7 +24,7 @@ import {
   syncMeasure,
   syncTimer,
 } from "./syncDiagnostics";
-import { ManifestBlobReader } from "./manifestBlobReader";
+import { EncryptionIntegrityError, ManifestBlobReader } from "./manifestBlobReader";
 import { ManifestHydrator } from "./manifestHydrator";
 import { CommitTransitionApplier } from "./commitTransitionApplier";
 import {
@@ -701,11 +701,12 @@ export class SyncEngine {
     this.failureCount += 1;
     const isRebaseConflict = error instanceof PullRebaseConflictError;
     const isDatabaseVersionError = error instanceof DatabaseVersionError;
+    const isIntegrityError = error instanceof EncryptionIntegrityError;
     const isMarkerUnreadable = error instanceof DatabaseVersionUnreadableError;
     this.log("sync-failed", {
       reason,
       rebaseConflict: isRebaseConflict,
-      unrecoverable: isDatabaseVersionError,
+      unrecoverable: isDatabaseVersionError || isIntegrityError,
       markerUnreadable: isMarkerUnreadable,
       error: errorMessage(error),
       durationMs: nowMs() - syncStartedAtMs,
@@ -715,7 +716,9 @@ export class SyncEngine {
       : describeSyncFailure(this.logPrefix, error);
     this.setErrorSnapshot(message, {
       requiresHardResetPermission: isRebaseConflict,
-      unrecoverableError: isDatabaseVersionError ? message : this.snapshot.unrecoverableError,
+      unrecoverableError: isDatabaseVersionError || isIntegrityError
+        ? message
+        : this.snapshot.unrecoverableError,
     });
   }
 

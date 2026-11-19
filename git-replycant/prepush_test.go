@@ -42,8 +42,8 @@ func TestCollectUpdatedLFSObjects(t *testing.T) {
 		"x-replycant-wrapped-dek test",
 		"",
 	}, "\n")
-	testWriteFile(t, filepath.Join(repo, "binary", "test.bin"), []byte(pointer), 0o644)
-	testRunGit(t, repo, "add", "binary/test.bin")
+	testWriteFile(t, filepath.Join(repo, "encryptionspaces", "test", "binary", "test.bin"), []byte(pointer), 0o644)
+	testRunGit(t, repo, "add", "encryptionspaces/test/binary/test.bin")
 	testRunGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "add pointer")
 	localSHA := strings.TrimSpace(testRunGit(t, repo, "rev-parse", "HEAD"))
 
@@ -74,8 +74,8 @@ func TestCollectUpdatedLFSObjectsUnknownRemoteTip(t *testing.T) {
 		"x-replycant-wrapped-dek test",
 		"",
 	}, "\n")
-	testWriteFile(t, filepath.Join(repo, "binary", "a.bin"), []byte(pointer), 0o644)
-	testRunGit(t, repo, "add", "binary/a.bin")
+	testWriteFile(t, filepath.Join(repo, "encryptionspaces", "test", "binary", "a.bin"), []byte(pointer), 0o644)
+	testRunGit(t, repo, "add", "encryptionspaces/test/binary/a.bin")
 	testRunGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "add a")
 	localSHA := strings.TrimSpace(testRunGit(t, repo, "rev-parse", "HEAD"))
 	unknownRemote := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -109,8 +109,8 @@ func TestCollectUpdatedLFSObjectsUnknownRemoteTipUsesTrackingRefs(t *testing.T) 
 		"x-replycant-wrapped-dek first",
 		"",
 	}, "\n")
-	testWriteFile(t, filepath.Join(repo, "binary", "first.bin"), []byte(firstPointer), 0o644)
-	testRunGit(t, repo, "add", "binary/first.bin")
+	testWriteFile(t, filepath.Join(repo, "encryptionspaces", "test", "binary", "first.bin"), []byte(firstPointer), 0o644)
+	testRunGit(t, repo, "add", "encryptionspaces/test/binary/first.bin")
 	testRunGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "first")
 	firstSHA := strings.TrimSpace(testRunGit(t, repo, "rev-parse", "HEAD"))
 	testRunGit(t, repo, "update-ref", "refs/remotes/origin/main", firstSHA)
@@ -123,8 +123,8 @@ func TestCollectUpdatedLFSObjectsUnknownRemoteTipUsesTrackingRefs(t *testing.T) 
 		"x-replycant-wrapped-dek second",
 		"",
 	}, "\n")
-	testWriteFile(t, filepath.Join(repo, "binary", "second.bin"), []byte(secondPointer), 0o644)
-	testRunGit(t, repo, "add", "binary/second.bin")
+	testWriteFile(t, filepath.Join(repo, "encryptionspaces", "test", "binary", "second.bin"), []byte(secondPointer), 0o644)
+	testRunGit(t, repo, "add", "encryptionspaces/test/binary/second.bin")
 	testRunGit(t, repo, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "second")
 	localSHA := strings.TrimSpace(testRunGit(t, repo, "rev-parse", "HEAD"))
 	unknownRemote := "cccccccccccccccccccccccccccccccccccccccc"

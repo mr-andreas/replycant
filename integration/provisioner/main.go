@@ -49,6 +49,59 @@ func readIdentity(path string) (gitcrypt.Identity, error) {
 	return identity, nil
 }
 
+func addGlobalMember(workDir, name string) error {
+	path := filepath.Join(workDir, gitcrypt.GlobalKeySetRoot, gitcrypt.RecipientsFileName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read recipients: %w", err)
+	}
+	list, err := gitcrypt.ParseRecipientList(raw)
+	if err != nil {
+		return err
+	}
+	for _, member := range list.Members {
+		if member == name {
+			return nil
+		}
+	}
+	list.Members = append(list.Members, name)
+	body, err := gitcrypt.MarshalRecipientList(list)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, body, 0o644)
+}
+
+func rewrapEveryEpoch(workDir, agePrivate string, recipients [][]byte) error {
+	roots := []string{filepath.Join(workDir, "encryption", "epochs")}
+	spaces, _ := filepath.Glob(filepath.Join(workDir, "encryptionspaces", "*", "encryption", "epochs"))
+	roots = append(roots, spaces...)
+	for _, root := range roots {
+		matches, err := filepath.Glob(filepath.Join(root, "*.age"))
+		if err != nil {
+			return err
+		}
+		for _, path := range matches {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			kek, err := gitcrypt.UnwrapKEKFromAgeEnvelope(raw, agePrivate)
+			if err != nil {
+				return fmt.Errorf("unwrap %s: %w", path, err)
+			}
+			wrapped, err := gitcrypt.WrapKEKForAgeRecipients(kek, recipients)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, wrapped, 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func collectRecipients(workDir string, newIdentity gitcrypt.Identity) ([][]byte, error) {
 	paths, err := filepath.Glob(filepath.Join(workDir, "pubkeys", "*.yaml"))
 	if err != nil {
@@ -163,10 +216,6 @@ func provision(cfg provisionerConfig) error {
 	if err != nil {
 		return err
 	}
-	rewrapped, err := gitcrypt.WrapKEKForAgeRecipients(kek, recipients)
-	if err != nil {
-		return fmt.Errorf("rewrap kek: %w", err)
-	}
 
 	name := strings.TrimSpace(newIdentity.DeviceName)
 	uuid := strings.TrimSpace(newIdentity.DeviceUUID)
@@ -198,11 +247,18 @@ func provision(cfg provisionerConfig) error {
 	if err := os.WriteFile(filepath.Join(workDir, keyset.Path(base)), body, 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(epochPath, rewrapped, 0o644); err != nil {
+	if err := addGlobalMember(workDir, base); err != nil {
+		return err
+	}
+	if err := rewrapEveryEpoch(workDir, seederIdentity.AgePrivateKeyBase64, recipients); err != nil {
 		return err
 	}
 
-	if err := runGit(workDir, "add", "pubkeys", filepath.Join("encryption", "epochs", fmt.Sprintf("%d.age", epoch))); err != nil {
+	addArgs := []string{"add", "pubkeys", "encryption"}
+	if _, statErr := os.Stat(filepath.Join(workDir, "encryptionspaces")); statErr == nil {
+		addArgs = append(addArgs, "encryptionspaces")
+	}
+	if err := runGit(workDir, addArgs...); err != nil {
 		return err
 	}
 	if err := runGit(workDir, "-c", "user.name=integration", "-c", "user.email=integration@replycant.local", "commit", "-m", "authorize new device"); err != nil {

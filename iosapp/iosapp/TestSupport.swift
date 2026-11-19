@@ -232,10 +232,10 @@ class TestSupport {
         let deviceSpace = "test-device-uitest"
         
         // Create directory structure
-        let manifestDir = (repoDir as NSString).appendingPathComponent("manifests/\(deviceSpace)/media.replycant.com/v1alpha1")
+        let manifestDir = (repoDir as NSString).appendingPathComponent("encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1")
         let originalManifestDir = (manifestDir as NSString).appendingPathComponent("Original")
         let thumbnailManifestDir = (manifestDir as NSString).appendingPathComponent("ThumbnailSet")
-        let binaryDir = (repoDir as NSString).appendingPathComponent("binary/\(deviceSpace)/media.replycant.com/v1alpha1")
+        let binaryDir = (repoDir as NSString).appendingPathComponent("encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1")
         let originalBinaryDir = (binaryDir as NSString).appendingPathComponent("Original")
         let thumbnailBinaryDir = (binaryDir as NSString).appendingPathComponent("ThumbnailSet")
         
@@ -349,7 +349,7 @@ class TestSupport {
             )
             
             filesToCommit.append((
-                path: "manifests/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(name)).yaml",
+                path: "encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1/Original/\(shardName(name)).yaml",
                 content: originalManifest
             ))
             
@@ -377,7 +377,7 @@ class TestSupport {
             }
             
             filesToCommit.append((
-                path: "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(name))",
+                path: "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/Original/\(shardName(name))",
                 content: originalPointer
             ))
             
@@ -440,7 +440,7 @@ class TestSupport {
                 ).content
                 
                 filesToCommit.append((
-                    path: "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnailName))",
+                    path: "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnailName))",
                     content: thumbnailPointer
                 ))
             }
@@ -462,7 +462,7 @@ class TestSupport {
             )
 
             filesToCommit.append((
-                path: "manifests/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("\(name)-thumbs")).yaml",
+                path: "encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("\(name)-thumbs")).yaml",
                 content: thumbnailSetManifest
             ))
         }

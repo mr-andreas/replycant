@@ -142,7 +142,7 @@ struct GitDBIntegrationTests {
 
         try repository.createCommit(
             message: "unsupported",
-            files: [("gitdb/version", "3\n")]
+            files: [("gitdb/version", "4\n")]
         )
         let headBefore = try #require(repository.headOID())
 
@@ -154,7 +154,7 @@ struct GitDBIntegrationTests {
             )
             Issue.record("commitFiles unexpectedly succeeded on an unsupported database version")
         } catch let error as DatabaseVersionError {
-            #expect(error == .unsupported(found: 3, required: DatabaseVersion.current))
+            #expect(error == .unsupported(found: 4, required: DatabaseVersion.current))
         }
         #expect(repository.headOID() == headBefore)
     }
@@ -189,7 +189,7 @@ struct GitDBIntegrationTests {
 
         try repository.createCommit(
             message: "unsupported",
-            files: [("gitdb/version", "3\n")]
+            files: [("gitdb/version", "4\n")]
         )
         let headBefore = try #require(repository.headOID())
 
@@ -201,7 +201,7 @@ struct GitDBIntegrationTests {
             )
             Issue.record("commitFilesWithoutSync unexpectedly succeeded on an unsupported database version")
         } catch let error as DatabaseVersionError {
-            #expect(error == .unsupported(found: 3, required: DatabaseVersion.current))
+            #expect(error == .unsupported(found: 4, required: DatabaseVersion.current))
         }
         #expect(repository.headOID() == headBefore)
         #expect(try await database.readSyncedCommitHash() == nil)

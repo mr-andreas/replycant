@@ -86,14 +86,14 @@ describe("CommitTransitionApplier", () => {
     const newCommitHash = "new456";
 
     listChangedManifestPaths.mockResolvedValue([
-      changedPath("manifests/dev/media.replycant.com/v1alpha1/Original/added.yaml", null, "manifest-added"),
-      changedPath("manifests/dev/media.replycant.com/v1alpha1/Original/removed.yaml", "manifest-removed", null),
-      changedPath("manifests/dev/media.replycant.com/v1alpha1/Original/updated.yaml", "manifest-prev", "manifest-next"),
-      changedPath("manifests/dev/media.replycant.com/v1alpha1/Original/key-changed.yaml", "manifest-old-key", "manifest-new-key"),
+      changedPath("encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/added.yaml", null, "manifest-added"),
+      changedPath("encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/removed.yaml", "manifest-removed", null),
+      changedPath("encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/updated.yaml", "manifest-prev", "manifest-next"),
+      changedPath("encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/key-changed.yaml", "manifest-old-key", "manifest-new-key"),
     ]);
     listChangedBinaryPaths.mockResolvedValue([
-      changedPath("binary/dev/file-added.bin", null, "pointer-added"),
-      changedPath("binary/dev/file-removed.bin", "pointer-removed", null),
+      changedPath("encryptionspaces/dev/binary/file-added.bin", null, "pointer-added"),
+      changedPath("encryptionspaces/dev/binary/file-removed.bin", "pointer-removed", null),
     ]);
 
     readManifestRecordAtBlobOid.mockImplementation(async (commitHash: string, blobOid: string) => {
@@ -142,6 +142,6 @@ describe("CommitTransitionApplier", () => {
     expect(applyCall.mutation.removed).toHaveLength(2);
     expect(applyCall.mutation.updated).toHaveLength(1);
     expect(applyCall.pointerMutation.added.size).toBe(1);
-    expect(applyCall.pointerMutation.removed).toEqual(["binary/dev/file-removed.bin"]);
+    expect(applyCall.pointerMutation.removed).toEqual(["encryptionspaces/dev/binary/file-removed.bin"]);
   });
 });

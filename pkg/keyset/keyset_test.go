@@ -27,6 +27,18 @@ func TestParseRoundTrip(t *testing.T) {
 	assert.NotContains(t, string(encoded), "displayName")
 }
 
+// TestParseAcceptsAppType keeps a non-device client authorizable.
+// The type is a label for Settings and does not change access.
+func TestParseAcceptsAppType(t *testing.T) {
+	t.Parallel()
+	original := sampleKeySet(t, "uploader", TypeApp)
+	encoded, err := Marshal(original)
+	require.NoError(t, err)
+	parsed, err := Parse(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, TypeApp, parsed.Spec.Type)
+}
+
 // TestParseRejectsAKeySetThatCannotAuthorize keeps a bad file from
 // looking like a member of the library.
 func TestParseRejectsAKeySetThatCannotAuthorize(t *testing.T) {

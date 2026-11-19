@@ -162,6 +162,7 @@ public actor ManifestDatabase {
         try dbQueue.write { db in
             for registration in registrations {
                 try createTableIfNeeded(db: db, registration: registration)
+                try renameDeviceSpaceColumnIfNeeded(db: db, table: registration.tableName)
                 try createIndexesIfNeeded(db: db, registration: registration)
             }
         }
@@ -171,7 +172,7 @@ public actor ManifestDatabase {
     private func createTableIfNeeded(db: Database, registration: ManifestRegistry.Registration) throws {
         var columnSQL = [
             "id TEXT PRIMARY KEY NOT NULL",
-            "deviceSpace TEXT NOT NULL",
+            "encryptionSpace TEXT NOT NULL",
             "data BLOB NOT NULL",
         ]
         columnSQL.append(contentsOf: registration.columns.map { column in
@@ -182,6 +183,18 @@ public actor ManifestDatabase {
                 \(columnSQL.joined(separator: ",\n"))
             );
         """)
+    }
+
+    // Libraries created before encryption spaces stored the path space
+    // in a column named deviceSpace. The cache is rebuilt from git, but
+    // the table itself has to accept the new column name first.
+    private func renameDeviceSpaceColumnIfNeeded(db: Database, table: String) throws {
+        let columns = try db.columns(in: table)
+        let names = Set(columns.map(\.name))
+        guard names.contains("deviceSpace"), !names.contains("encryptionSpace") else {
+            return
+        }
+        try db.execute(sql: "ALTER TABLE \(table) RENAME COLUMN deviceSpace TO encryptionSpace")
     }
 
     // Creates all declared indexes for one registered kind table.
@@ -430,7 +443,7 @@ public actor ManifestDatabase {
     ) throws {
         guard !manifests.isEmpty else { return }
         let dynamicColumns = registration.columns.map(\.name)
-        let allColumns = ["id", "deviceSpace", "data"] + dynamicColumns
+        let allColumns = ["id", "encryptionSpace", "data"] + dynamicColumns
         let placeholders = Array(repeating: "?", count: allColumns.count).joined(separator: ", ")
         let updateClause = allColumns
             .filter { $0 != "id" }
@@ -466,6 +479,24 @@ public actor ManifestDatabase {
     // Persists the synced commit hash checkpoint in the current transaction.
     private func writeSyncedCommitHash(_ hash: String, db: Database) throws {
         try writeMetadata(key: Constants.syncedCommitHashKey, value: hash, db: db)
+    }
+
+    // The first time a space is read, this records whether it had its
+    // own key set. A later change is treated as tampering.
+    func spaceMode(_ space: String) throws -> String? {
+        try dbQueue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT value FROM sync_metadata WHERE key = ?",
+                arguments: ["space-mode/\(space)"]
+            )
+        }
+    }
+
+    func setSpaceMode(_ space: String, _ mode: String) throws {
+        try dbQueue.write { db in
+            try writeMetadata(key: "space-mode/\(space)", value: mode, db: db)
+        }
     }
 
     // Persists the format the current cache snapshot was built from.

@@ -30,7 +30,7 @@ struct KeySetTests {
         #expect(KeySet.path(name: parsed.metadata.name) == "pubkeys/iphone-16e.yaml")
     }
 
-    @Test func rejectsWrongKindMissingKeyAndUnknownType() {
+    @Test func rejectsWrongKindMissingKeyAndUnknownType() throws {
         #expect(throws: KeySetError.self) {
             try KeySet.parse(Self.goFixture.replacingOccurrences(of: "kind: KeySet", with: "kind: Other"))
         }
@@ -40,6 +40,8 @@ struct KeySetTests {
         #expect(throws: KeySetError.self) {
             try KeySet.parse(Self.goFixture.replacingOccurrences(of: "type: device", with: "type: laptop"))
         }
+        let app = try KeySet.parse(Self.goFixture.replacingOccurrences(of: "type: device", with: "type: app"))
+        #expect(app.spec.type == KeySet.typeApp)
     }
 
     @Test func displayNameRoundTripRejectsSwappedName() throws {

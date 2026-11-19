@@ -103,8 +103,8 @@ struct ManifestSyncEngineTests {
         try repository.createCommit(
             message: "seed",
             files: bootstrap.files + [
-                ("manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("a")).yaml", try encryptManifest(originalManifestYAML(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z"), kek: bootstrap.kek, epoch: bootstrap.epoch)),
-                ("manifests/test-device/media.replycant.com/v1alpha1/Original/\(shardName("b")).yaml", try encryptManifest(originalManifestYAML(id: "b", guessedTakenAt: nil), kek: bootstrap.kek, epoch: bootstrap.epoch)),
+                ("encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("a")).yaml", try encryptManifest(originalManifestYAML(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z"), kek: bootstrap.kek, epoch: bootstrap.epoch)),
+                ("encryptionspaces/test-device/manifests/media.replycant.com/v1alpha1/Original/\(shardName("b")).yaml", try encryptManifest(originalManifestYAML(id: "b", guessedTakenAt: nil), kek: bootstrap.kek, epoch: bootstrap.epoch)),
             ]
         )
 

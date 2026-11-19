@@ -166,7 +166,7 @@ struct RepositoryEncryptedLFSLoadTests {
             wrappedDEK: wrappedDEK
         ).content
 
-        let pointerPath = "binary/test-device/media.replycant.com/v1alpha1/ThumbnailSet/thumb-1"
+        let pointerPath = "encryptionspaces/test-device/binary/media.replycant.com/v1alpha1/ThumbnailSet/thumb-1"
         var files = bootstrapFiles
         files.append((path: pointerPath, content: pointer))
         try repository.createCommit(message: "Add encrypted thumbnail pointer", files: files)

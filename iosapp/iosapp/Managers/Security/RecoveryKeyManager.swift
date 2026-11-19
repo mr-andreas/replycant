@@ -167,7 +167,8 @@ final class RecoveryKeyManager: Sendable {
             let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
             let allAgeRecipients = Array(Set(existingAgeRecipients + [recoveryAgePublic]))
             let epochFiles = try epochs.rewrappedEpochFilesIncludingRecipients(allAgeRecipients)
-            return GitFileChange(files: [keyFile] + epochFiles)
+            let recipients = try epochs.globalRecipientsFile(adding: baseName)
+            return GitFileChange(files: [keyFile, recipients] + epochFiles)
         }
         Self.postRecoveryKeysDidChange()
 
@@ -388,7 +389,8 @@ final class RecoveryKeyManager: Sendable {
         let existingAgeRecipients = try loadAgeRecipientKeys(repository: repository)
         let allRecipients = Array(Set(existingAgeRecipients + [ownAgePublic]))
         let epochFiles = try epochs.rewrappedEpochFilesIncludingRecipients(allRecipients)
-        let files = [ownKey] + epochFiles
+        let recipients = try epochs.globalRecipientsFile(adding: ownMetadataName)
+        let files = [ownKey, recipients] + epochFiles
         try await gitDB.commitFilesWithoutSync(
             message: "Recover device key for \(ownDeviceName) (\(ownDeviceUUID))",
             files: files

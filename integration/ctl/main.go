@@ -54,9 +54,9 @@ type provisionRequest struct {
 
 // seedRequest configures deterministic media-history fixtures for sync and rewind integration tests.
 type seedRequest struct {
-	MediaCount  int    `json:"mediaCount"`
-	CommitCount int    `json:"commitCount"`
-	DeviceSpace string `json:"deviceSpace"`
+	MediaCount      int    `json:"mediaCount"`
+	CommitCount     int    `json:"commitCount"`
+	EncryptionSpace string `json:"encryptionSpace"`
 }
 
 // controlResponse keeps API failures explicit so tests can fail with actionable diagnostics.
@@ -233,7 +233,7 @@ func (s *controlServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 	if req.CommitCount < 1 {
 		req.CommitCount = 1
 	}
-	deviceSpace := strings.TrimSpace(req.DeviceSpace)
+	deviceSpace := strings.TrimSpace(req.EncryptionSpace)
 	if deviceSpace == "" {
 		deviceSpace = "e2e-device"
 	}

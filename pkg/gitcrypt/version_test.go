@@ -69,20 +69,20 @@ func TestParseDatabaseVersionRejectsMalformedContent(t *testing.T) {
 // stand-in of 0 and the previous format.
 func TestRequireSupportedDatabaseVersionAcceptsOnlyThePin(t *testing.T) {
 	t.Parallel()
-	require.NoError(t, RequireSupportedDatabaseVersion([]byte("2\n")))
-	require.NoError(t, RequireSupportedDatabaseVersion([]byte("2")))
-	require.NoError(t, RequireAcceptedDatabaseVersion(2))
+	require.NoError(t, RequireSupportedDatabaseVersion([]byte("3\n")))
+	require.NoError(t, RequireSupportedDatabaseVersion([]byte("3")))
+	require.NoError(t, RequireAcceptedDatabaseVersion(3))
 
-	err := RequireSupportedDatabaseVersion([]byte("1\n"))
+	err := RequireSupportedDatabaseVersion([]byte("2\n"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "1")
 	assert.Contains(t, err.Error(), "2")
+	assert.Contains(t, err.Error(), "3")
 
 	err = RequireAcceptedDatabaseVersion(0)
 	require.Error(t, err)
-	err = RequireAcceptedDatabaseVersion(1)
+	err = RequireAcceptedDatabaseVersion(2)
 	require.Error(t, err)
-	err = RequireAcceptedDatabaseVersion(3)
+	err = RequireAcceptedDatabaseVersion(4)
 	require.Error(t, err)
 
 	err = RequireSupportedDatabaseVersion([]byte("01"))
@@ -95,10 +95,10 @@ func TestRequireSupportedDatabaseVersionInWorktreeReadsMarker(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "gitdb"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "gitdb", "version"), []byte("2\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gitdb", "version"), []byte("3\n"), 0o644))
 	require.NoError(t, RequireSupportedDatabaseVersionInWorktree(dir))
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "gitdb", "version"), []byte("1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gitdb", "version"), []byte("2\n"), 0o644))
 	require.Error(t, RequireSupportedDatabaseVersionInWorktree(dir))
 
 	missing := t.TempDir()

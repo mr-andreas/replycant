@@ -113,9 +113,13 @@ public final class DefaultGitCommitService: GitCommitService {
             switch item {
             case .manifest(let manifest):
                 try validateManifestName(manifest.id)
-                let path = "manifests/\(deviceSpace)/\(manifest.apiVersionValue)/\(manifest.kindValue)/\(shardName(manifest.id)).yaml"
-                let encoder = YAMLEncoder()
-                let yaml = try encoder.encode(manifest)
+                let path = EncryptionLayout.manifestPath(
+                    space: deviceSpace,
+                    apiVersion: manifest.apiVersionValue,
+                    kind: manifest.kindValue,
+                    name: manifest.id
+                )
+                let yaml = try yamlOmittingDeviceSpace(manifest)
                 let encrypted = try EncryptionUtils.encryptAESGCM(plaintext: Data(yaml.utf8), key: activeKEK.kek)
                 let encodedPayload = encrypted.base64EncodedString()
                 let encryptedManifest = """
@@ -128,11 +132,21 @@ public final class DefaultGitCommitService: GitCommitService {
                 
             case .lfs(let manifest, let pointer):
                 try validateManifestName(manifest.id)
-                let path = "binary/\(deviceSpace)/\(manifest.apiVersionValue)/\(manifest.kindValue)/\(shardName(manifest.id))"
+                let path = EncryptionLayout.binaryPath(
+                    space: deviceSpace,
+                    apiVersion: manifest.apiVersionValue,
+                    kind: manifest.kindValue,
+                    name: manifest.id
+                )
                 files.append((path, pointer.content))
             case .lfsEntry(let apiVersion, let kind, let name, let pointer):
                 try validateManifestName(name)
-                let path = "binary/\(deviceSpace)/\(apiVersion)/\(kind)/\(shardName(name))"
+                let path = EncryptionLayout.binaryPath(
+                    space: deviceSpace,
+                    apiVersion: apiVersion,
+                    kind: kind,
+                    name: name
+                )
                 files.append((path, pointer.content))
             }
         }
@@ -148,7 +162,12 @@ public final class DefaultGitCommitService: GitCommitService {
     
     @available(iOS 13.0, macOS 10.15, *)
     public func addLFSData(_ data: Data, for manifest: any Manifest, progressHandler: ((Int64, Int64) -> Void)?) async throws -> LFSPointer {
-        let path = "binary/\(deviceSpace)/\(manifest.apiVersionValue)/\(manifest.kindValue)/\(shardName(manifest.id))"
+        let path = EncryptionLayout.binaryPath(
+            space: deviceSpace,
+            apiVersion: manifest.apiVersionValue,
+            kind: manifest.kindValue,
+            name: manifest.id
+        )
         return try await repository.addLFSData(data, toPath: path, lfsClient: lfsClient, progressHandler: progressHandler)
     }
 
@@ -181,13 +200,28 @@ public final class DefaultGitCommitService: GitCommitService {
         progressHandler: ((Int64, Int64) -> Void)?
     ) async throws -> LFSPointer {
         try validateManifestName(name)
-        let path = "binary/\(deviceSpace)/\(apiVersion)/\(kind)/\(shardName(name))"
+        let path = EncryptionLayout.binaryPath(
+            space: deviceSpace,
+            apiVersion: apiVersion,
+            kind: kind,
+            name: name
+        )
         return try await repository.addLFSData(data, toPath: path, lfsClient: lfsClient, progressHandler: progressHandler)
     }
 
     // Routes cancellation to the shared LFS client so in-flight PUT requests are terminated.
     public func cancelActiveLFSUpload() {
         lfsClient.cancelActiveUpload()
+    }
+
+    // The space lives in the path. Writing it into the manifest would
+    // let a file disagree with the directory it was committed under.
+    private func yamlOmittingDeviceSpace(_ manifest: any Manifest) throws -> String {
+        let yaml = try YAMLEncoder().encode(manifest)
+        return yaml
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("deviceSpace:") }
+            .joined(separator: "\n")
     }
 }
 

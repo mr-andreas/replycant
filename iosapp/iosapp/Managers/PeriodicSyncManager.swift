@@ -267,6 +267,16 @@ final class PeriodicSyncManager {
                 DatabaseCompatibilityManager.shared.report(error)
             }
             return .refused
+        } catch let error as EncryptionIntegrityError {
+            let duration = CFAbsoluteTimeGetCurrent() - startTime
+            logError(
+                "\(label) stopped after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)",
+                context: "Sync"
+            )
+            await MainActor.run {
+                EncryptionIntegrityManager.shared.report(error)
+            }
+            return .refused
         } catch let error as FormatTransitionPullError {
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logError(
@@ -318,6 +328,7 @@ final class PeriodicSyncManager {
         let resumeUploads = takeAwaitingServerUpgrade()
         await MainActor.run {
             DatabaseCompatibilityManager.shared.clear()
+            EncryptionIntegrityManager.shared.clear()
         }
         guard resumeUploads else { return }
         Task { @MainActor in

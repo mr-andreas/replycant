@@ -88,7 +88,7 @@ func TestFullCloneFlow(t *testing.T) {
 	fixture := prepareClonedRepo(t, true)
 
 	repoDir := fixture.repoDir
-	manifestGitPath := "manifests/test-device/test.yaml"
+	manifestGitPath := "encryptionspaces/test-device/manifests/test.yaml"
 	manifestPath := filepath.Join(repoDir, filepath.FromSlash(manifestGitPath))
 
 	assert.FileExists(t, filepath.Join(repoDir, ".git", "replycant", "identity.json"))
@@ -102,8 +102,8 @@ func TestFullCloneFlow(t *testing.T) {
 
 	attrs, err := os.ReadFile(filepath.Join(repoDir, ".git", "info", "attributes"))
 	require.NoError(t, err)
-	assert.Contains(t, string(attrs), "manifests/** filter=replycant-crypt")
-	assert.Contains(t, string(attrs), "manifests/** diff=replycant-crypt")
+	assert.Contains(t, string(attrs), "encryptionspaces/*/manifests/** filter=replycant-crypt")
+	assert.Contains(t, string(attrs), "encryptionspaces/*/manifests/** diff=replycant-crypt")
 	assert.FileExists(t, filepath.Join(repoDir, "encryption", "current"))
 	assert.FileExists(t, manifestPath)
 
@@ -155,7 +155,7 @@ func TestSmudgeDecryptsAfterClone(t *testing.T) {
 	fixture := prepareClonedRepo(t, true)
 
 	repoDir := fixture.repoDir
-	raw, err := os.ReadFile(filepath.Join(repoDir, "manifests", "test-device", "test.yaml"))
+	raw, err := os.ReadFile(filepath.Join(repoDir, "encryptionspaces", "test-device", "manifests", "test.yaml"))
 	require.NoError(t, err)
 	assert.Equal(t, fixture.plainManifest, raw)
 	assert.False(t, gitcrypt.IsEncryptedManifest(raw))
@@ -167,7 +167,7 @@ func TestCleanFilterIdempotent(t *testing.T) {
 	fixture := prepareClonedRepo(t, true)
 
 	repoDir := fixture.repoDir
-	manifestGitPath := "manifests/test-device/test.yaml"
+	manifestGitPath := "encryptionspaces/test-device/manifests/test.yaml"
 	manifestPath := filepath.Join(repoDir, filepath.FromSlash(manifestGitPath))
 
 	status := strings.TrimSpace(testRunGit(t, repoDir, "status", "--porcelain"))
@@ -193,7 +193,7 @@ func TestManifestRoundtripThroughGit(t *testing.T) {
 	fixture := prepareClonedRepo(t, true)
 
 	repoDir := fixture.repoDir
-	manifestGitPath := "manifests/test-device/test.yaml"
+	manifestGitPath := "encryptionspaces/test-device/manifests/test.yaml"
 	manifestPath := filepath.Join(repoDir, filepath.FromSlash(manifestGitPath))
 
 	originalRaw, err := os.ReadFile(manifestPath)
@@ -223,7 +223,7 @@ func TestTextconvShowsPlaintext(t *testing.T) {
 	fixture := prepareClonedRepo(t, true)
 
 	repoDir := fixture.repoDir
-	manifestGitPath := "manifests/test-device/test.yaml"
+	manifestGitPath := "encryptionspaces/test-device/manifests/test.yaml"
 	manifestPath := filepath.Join(repoDir, filepath.FromSlash(manifestGitPath))
 
 	modified := append([]byte{}, fixture.plainManifest...)
@@ -241,32 +241,32 @@ func TestTextconvShowsPlaintext(t *testing.T) {
 func TestLFSSmudgeDecryptsAfterClone(t *testing.T) {
 	fixture := prepareLFSClonedRepo(t)
 
-	raw, err := os.ReadFile(filepath.Join(fixture.repoDir, "binary", "test.bin"))
+	raw, err := os.ReadFile(filepath.Join(fixture.repoDir, "encryptionspaces", "test", "binary", "test.bin"))
 	require.NoError(t, err)
 	assert.Equal(t, fixture.plainBinary, raw)
 	assert.False(t, gitcrypt.IsLFSPointer(raw))
 
-	indexPointer := testRunGit(t, fixture.repoDir, "show", ":binary/test.bin")
+	indexPointer := testRunGit(t, fixture.repoDir, "show", ":encryptionspaces/test/binary/test.bin")
 	assert.True(t, gitcrypt.IsLFSPointer([]byte(indexPointer)))
 	assert.Contains(t, indexPointer, "x-replycant-kek-epoch")
 
-	status := strings.TrimSpace(testRunGit(t, fixture.repoDir, "status", "--porcelain", "--", "binary/"))
-	assert.NotContains(t, status, "binary/test.bin", "expected no binary files to appear modified immediately after checkout")
+	status := strings.TrimSpace(testRunGit(t, fixture.repoDir, "status", "--porcelain", "--", "encryptionspaces/test/binary/"))
+	assert.NotContains(t, status, "encryptionspaces/test/binary/test.bin", "expected no binary files to appear modified immediately after checkout")
 }
 
 // TestLFSCleanRoundtrip verifies add/checkout paths preserve decrypted working bytes while uploading encrypted objects.
 func TestLFSCleanRoundtrip(t *testing.T) {
 	fixture := prepareLFSClonedRepo(t)
-	initialPointer := testRunGit(t, fixture.repoDir, "show", ":binary/test.bin")
+	initialPointer := testRunGit(t, fixture.repoDir, "show", ":encryptionspaces/test/binary/test.bin")
 	initialParsed, err := gitcrypt.ParseLFSPointer([]byte(initialPointer))
 	require.NoError(t, err)
 
 	modified := append([]byte{}, fixture.plainBinary...)
 	modified = append(modified, []byte("-changed")...)
-	testWriteFile(t, filepath.Join(fixture.repoDir, "binary", "test.bin"), modified, 0o644)
-	testRunGit(t, fixture.repoDir, "add", "binary/test.bin")
+	testWriteFile(t, filepath.Join(fixture.repoDir, "encryptionspaces", "test", "binary", "test.bin"), modified, 0o644)
+	testRunGit(t, fixture.repoDir, "add", "encryptionspaces/test/binary/test.bin")
 
-	indexPointer := testRunGit(t, fixture.repoDir, "show", ":binary/test.bin")
+	indexPointer := testRunGit(t, fixture.repoDir, "show", ":encryptionspaces/test/binary/test.bin")
 	parsed, err := gitcrypt.ParseLFSPointer([]byte(indexPointer))
 	require.NoError(t, err)
 	assert.Equal(t, 1, parsed.KekEpoch)
@@ -287,8 +287,8 @@ func TestLFSCleanRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, modified, decrypted)
 
-	testRunGit(t, fixture.repoDir, "checkout", "HEAD", "--", "binary/test.bin")
-	restored, err := os.ReadFile(filepath.Join(fixture.repoDir, "binary", "test.bin"))
+	testRunGit(t, fixture.repoDir, "checkout", "HEAD", "--", "encryptionspaces/test/binary/test.bin")
+	restored, err := os.ReadFile(filepath.Join(fixture.repoDir, "encryptionspaces", "test", "binary", "test.bin"))
 	require.NoError(t, err)
 	assert.Equal(t, fixture.plainBinary, restored)
 }
@@ -337,11 +337,11 @@ func TestLFSPushUploadsObjectsWithPrePushHook(t *testing.T) {
 
 	modified := append([]byte{}, fixture.plainBinary...)
 	modified = append(modified, []byte("-push-upload")...)
-	testWriteFile(t, filepath.Join(repoDir, "binary", "test.bin"), modified, 0o644)
-	testRunGit(t, repoDir, "add", "binary/test.bin")
+	testWriteFile(t, filepath.Join(repoDir, "encryptionspaces", "test", "binary", "test.bin"), modified, 0o644)
+	testRunGit(t, repoDir, "add", "encryptionspaces/test/binary/test.bin")
 	testRunGit(t, repoDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "update binary")
 
-	indexPointer := testRunGit(t, repoDir, "show", ":binary/test.bin")
+	indexPointer := testRunGit(t, repoDir, "show", ":encryptionspaces/test/binary/test.bin")
 	parsed, err := gitcrypt.ParseLFSPointer([]byte(indexPointer))
 	require.NoError(t, err)
 	_, existsBefore := readFakeLFSObject(remoteStoreDir, parsed.OID)
@@ -372,7 +372,7 @@ func TestLFSPushUploadsObjectsWithPrePushHook(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, PreExtractEncryptionFiles(context.Background(), secondRepoDir, secondBranch))
 	require.NoError(t, CheckoutTrackingBranch(context.Background(), secondRepoDir, secondBranch))
-	reclonedBinary, err := os.ReadFile(filepath.Join(secondRepoDir, "binary", "test.bin"))
+	reclonedBinary, err := os.ReadFile(filepath.Join(secondRepoDir, "encryptionspaces", "test", "binary", "test.bin"))
 	require.NoError(t, err)
 	assert.Equal(t, modified, reclonedBinary)
 }
@@ -742,7 +742,7 @@ func createTestBareRepo(t *testing.T, recipientAgePub []byte, plaintext []byte) 
 	testWriteFile(t, filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", gitcrypt.DatabaseFormatVersion)), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "epochs", "1.age"), envelope, 0o644)
-	testWriteFile(t, filepath.Join(workDir, "manifests", "test-device", "test.yaml"), encryptedManifest, 0o644)
+	testWriteFile(t, filepath.Join(workDir, "encryptionspaces", "test-device", "manifests", "test.yaml"), encryptedManifest, 0o644)
 
 	testRunGit(t, workDir, "add", ".")
 	testRunGit(t, workDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "fixtures")
@@ -784,8 +784,8 @@ func createTestBareRepoWithLFS(t *testing.T, recipientAgePub []byte, manifestPla
 	testWriteFile(t, filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", gitcrypt.DatabaseFormatVersion)), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "epochs", "1.age"), envelope, 0o644)
-	testWriteFile(t, filepath.Join(workDir, "manifests", "test-device", "test.yaml"), encryptedManifest, 0o644)
-	testWriteFile(t, filepath.Join(workDir, "binary", "test.bin"), fullPointer, 0o644)
+	testWriteFile(t, filepath.Join(workDir, "encryptionspaces", "test-device", "manifests", "test.yaml"), encryptedManifest, 0o644)
+	testWriteFile(t, filepath.Join(workDir, "encryptionspaces", "test", "binary", "test.bin"), fullPointer, 0o644)
 
 	testRunGit(t, workDir, "add", ".")
 	testRunGit(t, workDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "fixtures")
@@ -825,8 +825,8 @@ func createTestBareRepoWithLFSMissingEpoch(t *testing.T, manifestPlaintext []byt
 
 	testWriteFile(t, filepath.Join(workDir, "gitdb", "version"), []byte(fmt.Sprintf("%d\n", gitcrypt.DatabaseFormatVersion)), 0o644)
 	testWriteFile(t, filepath.Join(workDir, "encryption", "current"), []byte("1\n"), 0o644)
-	testWriteFile(t, filepath.Join(workDir, "manifests", "test-device", "test.yaml"), encryptedManifest, 0o644)
-	testWriteFile(t, filepath.Join(workDir, "binary", "test.bin"), fullPointer, 0o644)
+	testWriteFile(t, filepath.Join(workDir, "encryptionspaces", "test-device", "manifests", "test.yaml"), encryptedManifest, 0o644)
+	testWriteFile(t, filepath.Join(workDir, "encryptionspaces", "test", "binary", "test.bin"), fullPointer, 0o644)
 
 	testRunGit(t, workDir, "add", ".")
 	testRunGit(t, workDir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "fixtures")

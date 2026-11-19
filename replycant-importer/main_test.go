@@ -111,9 +111,9 @@ func TestImportPhotoManifestAndThumbnails(t *testing.T) {
 
 	imp, stderr, pushCalls, _ := newTestImporter(t, nil)
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	})
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
@@ -138,8 +138,8 @@ func TestImportPhotoManifestAndThumbnails(t *testing.T) {
 	if om.APIVersion != apiVersion || om.Kind != "Original" {
 		t.Fatalf("unexpected original manifest header: %+v", om)
 	}
-	if om.Metadata.DeviceSpace != "device-a" {
-		t.Fatalf("unexpected device space: %s", om.Metadata.DeviceSpace)
+	if om.Metadata.Name == "" {
+		t.Fatalf("missing original name")
 	}
 	if om.Spec.MediaType != "photo" {
 		t.Fatalf("expected photo mediaType, got %s", om.Spec.MediaType)
@@ -152,9 +152,6 @@ func TestImportPhotoManifestAndThumbnails(t *testing.T) {
 	readYAML(t, thumbs[0], &tm)
 	if tm.APIVersion != apiVersion || tm.Kind != "ThumbnailSet" {
 		t.Fatalf("unexpected thumb set header for %s", thumbs[0])
-	}
-	if tm.Metadata.DeviceSpace != "device-a" {
-		t.Fatalf("unexpected thumb set device space: %s", tm.Metadata.DeviceSpace)
 	}
 	if tm.Spec.OriginalRef != "device-a/"+apiVersion+"/Original/"+om.Metadata.Name {
 		t.Fatalf("unexpected originalRef: %s", tm.Spec.OriginalRef)
@@ -169,7 +166,7 @@ func TestImportPhotoManifestAndThumbnails(t *testing.T) {
 		if entry.Width <= 0 || entry.Height <= 0 {
 			t.Fatalf("invalid thumb entry size: %+v", entry)
 		}
-		binPath := filepath.Join(repo, "binary", "device-a", apiVersion, "ThumbnailSet", shardName(entry.Name))
+		binPath := filepath.Join(repo, "encryptionspaces", "device-a", "binary", apiVersion, "ThumbnailSet", shardName(entry.Name))
 		if _, err := os.Stat(binPath); err != nil {
 			t.Fatalf("missing thumbnail binary %s: %v", binPath, err)
 		}
@@ -185,9 +182,9 @@ func TestDedupAcrossDeviceSpaces(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("initial run failed: %v", err)
 	}
@@ -201,9 +198,9 @@ func TestDedupAcrossDeviceSpaces(t *testing.T) {
 	firstCount = commitCount(t, repo)
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-c",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-c",
 	}); err != nil {
 		t.Fatalf("second run failed: %v", err)
 	}
@@ -222,9 +219,9 @@ func TestPathSizeFastDedupSkipsHash(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("initial run failed: %v", err)
 	}
@@ -241,9 +238,9 @@ func TestPathSizeFastDedupSkipsHash(t *testing.T) {
 
 	imp2, stderr, _, _ := newTestImporter(t, nil)
 	if err := imp2.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("second run failed: %v", err)
 	}
@@ -266,9 +263,9 @@ func TestImportCommitsAllFiles(t *testing.T) {
 	before := commitCount(t, repo)
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -295,9 +292,9 @@ func TestCommitIsolationSkipsUntracked(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -319,9 +316,9 @@ func TestUnsupportedFilesSkipped(t *testing.T) {
 	before := commitCount(t, repo)
 	imp, stderr, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -343,9 +340,9 @@ func TestVideoThumbnailImport(t *testing.T) {
 
 	imp, stderr, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -373,9 +370,9 @@ func TestVideoMetadataExtraction(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -404,9 +401,9 @@ func TestVideoLocationExtraction(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -453,10 +450,10 @@ func TestImageMetadataPropagation(t *testing.T) {
 	}
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -508,10 +505,10 @@ func TestImportPhotoOrientedDimensions(t *testing.T) {
 		return "", nil, 6
 	}
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -1365,10 +1362,10 @@ func TestImportProgressUsesConcreteTotal(t *testing.T) {
 	}
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -1396,9 +1393,9 @@ func TestErrorContinue(t *testing.T) {
 
 	imp, stderr, _, _ := newTestImporter(t, nil)
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	})
 	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
 		t.Fatalf("expected the broken file to fail the run, got %v", err)
@@ -1447,10 +1444,10 @@ func TestFailedCommitFailsTheRun(t *testing.T) {
 	}
 
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     2,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         2,
 	})
 	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
 		t.Fatalf("expected a one-file failure, got %v", err)
@@ -1479,10 +1476,10 @@ func TestWrappedCancelWhileRunningIsReported(t *testing.T) {
 	}
 
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	})
 	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
 		t.Fatalf("expected the cancelled upload to fail the run, got %v", err)
@@ -1518,10 +1515,10 @@ func TestGracefulCtrlC(t *testing.T) {
 	})
 
 	if err := imp.run(ctx, CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		Workers:         1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -1569,10 +1566,10 @@ func TestCancelAbortsInFlightLFSUpload(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- imp.runStaged(workCtx, context.Background(), CLI{
-			Repo:        repo,
-			Source:      srcDir,
-			DeviceSpace: "device-a",
-			Workers:     1,
+			Repo:            repo,
+			Source:          srcDir,
+			EncryptionSpace: "device-a",
+			Workers:         1,
 		})
 	}()
 
@@ -1625,10 +1622,10 @@ func TestCancelDoesNotReportContextCanceledAsImportError(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- imp.runStaged(workCtx, context.Background(), CLI{
-			Repo:        repo,
-			Source:      srcDir,
-			DeviceSpace: "device-a",
-			Workers:     1,
+			Repo:            repo,
+			Source:          srcDir,
+			EncryptionSpace: "device-a",
+			Workers:         1,
 		})
 	}()
 	select {
@@ -1677,11 +1674,11 @@ func TestCancelStillFlushesPendingCommits(t *testing.T) {
 	})
 
 	if err := imp.runStaged(workCtx, context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
+		Workers:         1,
 	}); err != nil {
 		t.Fatalf("runStaged failed: %v", err)
 	}
@@ -1727,11 +1724,11 @@ func TestSecondInterruptAbortsFlushPush(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- imp.runStaged(workCtx, flushCtx, CLI{
-			Repo:        repo,
-			Source:      srcDir,
-			DeviceSpace: "device-a",
-			PushEvery:   5,
-			Workers:     1,
+			Repo:            repo,
+			Source:          srcDir,
+			EncryptionSpace: "device-a",
+			PushEvery:       5,
+			Workers:         1,
 		})
 	}()
 
@@ -1790,10 +1787,13 @@ func TestCancelWakesWorkersBlockedOnEmptyQueue(t *testing.T) {
 // countBinaryPointers counts pointer files left under binary/ after a cancelled import.
 func countBinaryPointers(t *testing.T, repo string) int {
 	t.Helper()
-	root := filepath.Join(repo, "binary")
+	root := filepath.Join(repo, "encryptionspaces")
 	count := 0
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.Contains(filepath.ToSlash(path), "/binary/") {
 			return nil
 		}
 		count++
@@ -1812,10 +1812,10 @@ func TestPushEvery(t *testing.T) {
 
 	imp, _, pushCalls, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   2,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       2,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -1835,10 +1835,10 @@ func TestPushRebasesWhenRemoteMovedAhead(t *testing.T) {
 
 	imp, _, _, cmds := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -1882,10 +1882,10 @@ func TestPushRetriesWhenRemoteKeepsMoving(t *testing.T) {
 	}
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -1976,10 +1976,10 @@ func TestPushLogsLifecycle(t *testing.T) {
 	imp.log = sink.printf
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -2004,10 +2004,10 @@ func TestPushLogsRejectionAndRebase(t *testing.T) {
 	imp.log = sink.printf
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -2038,11 +2038,11 @@ func TestVerboseStreamsGitPushOutput(t *testing.T) {
 
 		imp, stderr, _, _ := newTestImporter(t, nil)
 		if err := imp.run(context.Background(), CLI{
-			Repo:        repo,
-			Source:      srcDir,
-			DeviceSpace: "device-a",
-			PushEvery:   1,
-			Verbose:     verbose,
+			Repo:            repo,
+			Source:          srcDir,
+			EncryptionSpace: "device-a",
+			PushEvery:       1,
+			Verbose:         verbose,
 		}); err != nil {
 			t.Fatalf("run failed: %v", err)
 		}
@@ -2065,11 +2065,11 @@ func TestVerboseDoesNotStreamMediaToolOutput(t *testing.T) {
 
 	imp, stderr, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
-		Verbose:     true,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
+		Verbose:         true,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -2087,10 +2087,10 @@ func TestPushSkipsRebaseWhenPushSucceeds(t *testing.T) {
 
 	imp, _, _, cmds := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -2122,10 +2122,10 @@ func TestPushRebaseAbortsAndLeavesRepoUsable(t *testing.T) {
 	}
 
 	_ = imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	})
 	if !cmds.containsSubcmd("rebase") {
 		t.Fatalf("expected rebase attempt, cmds=%v", cmds.snapshot())
@@ -2161,10 +2161,10 @@ func TestFinalPushFlushesRemainingCommits(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   5,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       5,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -2186,10 +2186,10 @@ func TestRebaseUsesMergeBackendAndNoAutostash(t *testing.T) {
 
 	imp, _, _, cmds := newTestImporter(t, nil)
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
 	}); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -2226,9 +2226,9 @@ func TestCommitFailureUnstagesBatch(t *testing.T) {
 	}
 
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	})
 	if err == nil || !strings.Contains(err.Error(), "1 file(s) failed to import") {
 		t.Fatalf("expected the rejected commit to fail the run, got %v", err)
@@ -2269,11 +2269,11 @@ func TestCommitFailureDoesNotBlockLaterRebase(t *testing.T) {
 	}
 
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
+		Workers:         1,
 	}); err == nil || !strings.Contains(err.Error(), "failed to import") {
 		t.Fatalf("expected the rejected commit to fail the first run, got %v", err)
 	}
@@ -2281,11 +2281,11 @@ func TestCommitFailureDoesNotBlockLaterRebase(t *testing.T) {
 	_ = advanceRemoteWithForeignCommit(t, remoteURL(t, repo))
 	writeTinyJPEGColor(t, filepath.Join(srcDir, "c.jpg"), "green")
 	if err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
-		PushEvery:   1,
-		Workers:     1,
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
+		PushEvery:       1,
+		Workers:         1,
 	}); err != nil {
 		t.Fatalf("second run failed: %v", err)
 	}
@@ -2318,9 +2318,9 @@ func TestBootRefusesDirtyWorktree(t *testing.T) {
 	writeTinyJPEGColor(t, filepath.Join(srcDir, "a.jpg"), "red")
 	imp, _, _, _ := newTestImporter(t, nil)
 	err := imp.run(context.Background(), CLI{
-		Repo:        repo,
-		Source:      srcDir,
-		DeviceSpace: "device-a",
+		Repo:            repo,
+		Source:          srcDir,
+		EncryptionSpace: "device-a",
 	})
 	if err == nil {
 		t.Fatal("expected boot to refuse a dirty worktree")
@@ -2559,7 +2559,7 @@ func commitCount(t *testing.T, repo string) int {
 // listManifestPaths returns original and thumbnail manifest paths for a device.
 func listManifestPaths(t *testing.T, repo, deviceSpace string) ([]string, []string) {
 	t.Helper()
-	root := filepath.Join(repo, "manifests", deviceSpace, apiVersion)
+	root := filepath.Join(repo, "encryptionspaces", deviceSpace, "manifests", apiVersion)
 	var originals []string
 	var thumbs []string
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -2586,7 +2586,7 @@ func seedOriginalManifest(t *testing.T, repo, deviceSpace, name, sha string) {
 	m := OriginalManifest{
 		APIVersion: apiVersion,
 		Kind:       "Original",
-		Metadata:   ManifestMetadata{Name: name, DeviceSpace: deviceSpace},
+		Metadata:   ManifestMetadata{Name: name},
 		Spec: OriginalSpec{
 			ID:         name,
 			SHA256:     sha,
@@ -2601,7 +2601,7 @@ func seedOriginalManifest(t *testing.T, repo, deviceSpace, name, sha string) {
 		},
 		Status: map[string]any{},
 	}
-	path := filepath.Join(repo, "manifests", deviceSpace, apiVersion, "Original", shardName(name)+".yaml")
+	path := filepath.Join(repo, "encryptionspaces", deviceSpace, "manifests", apiVersion, "Original", shardName(name)+".yaml")
 	if err := writeYAMLFile(path, m); err != nil {
 		t.Fatal(err)
 	}

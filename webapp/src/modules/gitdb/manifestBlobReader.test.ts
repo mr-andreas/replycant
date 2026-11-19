@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import git from "isomorphic-git";
 import { ManifestRegistry } from "./manifestRegistry";
-import { ManifestBlobReader } from "./manifestBlobReader";
+import { EncryptionIntegrityError, ManifestBlobReader } from "./manifestBlobReader";
 import { DatabaseVersionUnreadableError } from "./databaseVersion";
 import { encryptManifestYaml, importTestKek } from "./testEncryption";
 
@@ -39,6 +39,7 @@ const createReader = (): ManifestBlobReader =>
 describe("ManifestBlobReader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    localStorage.clear();
   });
 
   // Serves commit/tree/blob the way production reads gitdb/version:
@@ -67,7 +68,7 @@ describe("ManifestBlobReader", () => {
         throw opts.blobError ?? Object.assign(new Error("Could not find gitdb/version"), { code: "NotFoundError", name: "NotFoundError" });
       }
       return {
-        blob: new TextEncoder().encode(opts.versionText ?? "2\n"),
+        blob: new TextEncoder().encode(opts.versionText ?? "3\n"),
         oid: "version-oid",
       };
     });
@@ -84,7 +85,7 @@ describe("ManifestBlobReader", () => {
     mockVersionRead({
       rootEntries: [{ path: "gitdb", oid: "gitdb-oid" }],
     });
-    await expect(reader.readDatabaseVersion("commit")).resolves.toBe(2);
+    await expect(reader.readDatabaseVersion("commit")).resolves.toBe(3);
   });
 
   it("rejects a missing gitdb/version marker when the tree is readable", async () => {
@@ -120,14 +121,16 @@ describe("ManifestBlobReader", () => {
 
   it("rejects an unsupported gitdb/version marker", async () => {
     const reader = createReader();
-    mockVersionRead({ versionText: "3\n" });
-    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/unsupported gitdb database version 3/);
+    mockVersionRead({ versionText: "4\n" });
+    await expect(reader.assertSupportedDatabaseVersion("commit")).rejects.toThrow(/unsupported gitdb database version 4/);
   });
 
   it("infers expected kind from canonical manifest path", () => {
     const reader = createReader();
     expect(
-      reader.inferExpectedKindFromPath("manifests/dev/media.replycant.com/v1alpha1/Original/photo-1.yaml"),
+      reader.inferExpectedKindFromPath(
+        "encryptionspaces/dev/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml",
+      ),
     ).toEqual({ apiVersion: "media.replycant.com/v1alpha1", kind: "Original" });
   });
 
@@ -154,7 +157,7 @@ describe("ManifestBlobReader", () => {
         "commit",
         new TextEncoder().encode("apiVersion: media.replycant.com/v1alpha1\nkind: Original\n"),
       ),
-    ).rejects.toThrow(/plaintext manifest rejected/);
+    ).rejects.toThrow(/the manifest is plaintext/);
   });
 
   // Verifies encrypted envelopes still decrypt after plaintext passthrough was removed.
@@ -164,5 +167,76 @@ describe("ManifestBlobReader", () => {
     const blob = await encryptManifestYaml(yaml);
     vi.spyOn(reader, "loadKekEpoch").mockResolvedValue(await importTestKek());
     await expect(reader.decodeManifestBlobToYaml("commit", blob)).resolves.toBe(yaml);
+  });
+
+  // The path is the only place a space name is trusted. A stale
+  // deviceSpace field in the YAML must not change the record key.
+  it("takes the space from the path", () => {
+    const reader = createReader();
+    const record = reader.decodeYamlToRecord(
+      [
+        "apiVersion: media.replycant.com/v1alpha1",
+        "kind: Original",
+        "name: photo-1",
+        "deviceSpace: hostile",
+      ].join("\n"),
+      { apiVersion: "media.replycant.com/v1alpha1", kind: "Original" },
+      "encryptionspaces/album/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml",
+    );
+    expect(record?.key).toBe("album/photo-1");
+  });
+
+  // A space with its own current file never falls back to the library key.
+  it("does not open a space object with the library key", async () => {
+    const reader = createReader();
+    vi.spyOn(git, "readBlob").mockImplementation(async ({ filepath }: { filepath?: string }) => {
+      if (filepath === "encryptionspaces/album/encryption/current") {
+        return { blob: new TextEncoder().encode("1\n"), oid: "space-current" } as never;
+      }
+      throw new Error(`missing ${filepath}`);
+    });
+    const loadKek = vi.spyOn(reader, "loadKekEpoch").mockRejectedValue(new Error("wrong key"));
+    const blob = await encryptManifestYaml("kind: Original\n");
+    await expect(
+      reader.decodeManifestBlobToYaml(
+        "commit",
+        blob,
+        "encryptionspaces/album/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml",
+      ),
+    ).rejects.toBeInstanceOf(EncryptionIntegrityError);
+    expect(loadKek).toHaveBeenCalledWith("commit", 1, "encryptionspaces/album/encryption");
+    expect(loadKek).not.toHaveBeenCalledWith("commit", 1, "encryption");
+  });
+
+  // The first observation of a space is trusted. Adding or removing
+  // its own key set later is a substitution, not a migration.
+  it("refuses a space that changes key set", async () => {
+    const reader = createReader();
+    let own = false;
+    vi.spyOn(git, "readBlob").mockImplementation(async ({ filepath }: { filepath?: string }) => {
+      if (own && filepath === "encryptionspaces/album/encryption/current") {
+        return { blob: new TextEncoder().encode("1\n"), oid: "space-current" } as never;
+      }
+      throw new Error(`missing ${filepath}`);
+    });
+    const path = "encryptionspaces/album/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml";
+    await expect(reader.keySetRoot("commit", path)).resolves.toBe("encryption");
+    own = true;
+    await expect(reader.keySetRoot("later", path)).rejects.toThrow(/changed key set/);
+  });
+
+  // A missing epoch is the library refusing to open, not a prompt to try another key.
+  it("stops when the listed epoch cannot be read", async () => {
+    const reader = new ManifestBlobReader({
+      fs: { promises: {} } as never,
+      gitdir: "/repo-missing-epoch",
+      registry: createRegistry(),
+      agePrivateKeyProvider: () => "not-a-real-key",
+      cache: {},
+    });
+    vi.spyOn(git, "readBlob").mockRejectedValue(new Error("missing epoch"));
+    await expect(reader.loadKekEpoch("commit", 1, "encryption")).rejects.toBeInstanceOf(
+      EncryptionIntegrityError,
+    );
   });
 });

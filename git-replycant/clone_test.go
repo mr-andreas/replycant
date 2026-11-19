@@ -227,7 +227,7 @@ func TestRequireSupportedDatabaseVersionAtRef(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing")
 
-	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("2\n"), 0o644)
+	testWriteFile(t, filepath.Join(repoDir, "gitdb", "version"), []byte("3\n"), 0o644)
 	testRunGit(t, repoDir, "add", ".")
 	testRunGit(t, repoDir, "commit", "-m", "marker")
 	require.NoError(t, RequireSupportedDatabaseVersionAtRef(context.Background(), repoDir, "HEAD"))
@@ -296,16 +296,16 @@ func TestSetOriginRemote(t *testing.T) {
 // TestAppendRepoAttributes verifies filter attributes remain idempotent across repeated configuration.
 func TestAppendRepoAttributes(t *testing.T) {
 	repo := testInitRepo(t)
-	require.NoError(t, appendRepoAttributes(repo, "manifests/** filter=replycant-crypt"))
-	require.NoError(t, appendRepoAttributes(repo, "manifests/** filter=replycant-crypt"))
-	require.NoError(t, appendRepoAttributes(repo, "manifests/** diff=replycant-crypt"))
+	require.NoError(t, appendRepoAttributes(repo, "encryptionspaces/*/manifests/** filter=replycant-crypt"))
+	require.NoError(t, appendRepoAttributes(repo, "encryptionspaces/*/manifests/** filter=replycant-crypt"))
+	require.NoError(t, appendRepoAttributes(repo, "encryptionspaces/*/manifests/** diff=replycant-crypt"))
 
 	attrsPath := filepath.Join(repo, ".git", "info", "attributes")
 	raw, err := os.ReadFile(attrsPath)
 	require.NoError(t, err)
 	content := string(raw)
-	assert.Equal(t, 1, strings.Count(content, "manifests/** filter=replycant-crypt"))
-	assert.Equal(t, 1, strings.Count(content, "manifests/** diff=replycant-crypt"))
+	assert.Equal(t, 1, strings.Count(content, "encryptionspaces/*/manifests/** filter=replycant-crypt"))
+	assert.Equal(t, 1, strings.Count(content, "encryptionspaces/*/manifests/** diff=replycant-crypt"))
 }
 
 // TestConfigureRepository validates local filter, diff, and TLS git config are wired in one call.
@@ -331,8 +331,8 @@ func TestConfigureRepository(t *testing.T) {
 
 	raw, err := os.ReadFile(filepath.Join(repo, ".git", "info", "attributes"))
 	require.NoError(t, err)
-	assert.Contains(t, string(raw), "manifests/** filter=replycant-crypt")
-	assert.Contains(t, string(raw), "manifests/** diff=replycant-crypt")
+	assert.Contains(t, string(raw), "encryptionspaces/*/manifests/** filter=replycant-crypt")
+	assert.Contains(t, string(raw), "encryptionspaces/*/manifests/** diff=replycant-crypt")
 }
 
 // TestConfigureRepositoryInstallsPrePushHook verifies LFS-enabled clone setup installs Replycant pre-push uploads.

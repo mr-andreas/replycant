@@ -54,7 +54,7 @@ public enum FormatTransitionPullError: Error, Equatable, LocalizedError {
 // Pins the only database format this client will open so a plaintext
 // marker cannot steer decryption onto a weaker path.
 public enum DatabaseVersion {
-    public static let current = 2
+    public static let current = 3
     public static let path = "gitdb/version"
 
     // Parses gitdb/version so three language clients reject the same

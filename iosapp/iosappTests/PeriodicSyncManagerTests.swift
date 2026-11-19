@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import iosapp
+import GitDB
 import LibGit2
 
 // Lets a charging-wake slot wait observe expiration from another task.
@@ -369,7 +370,7 @@ struct PeriodicSyncManagerTests {
         #expect(manager.hasPullTaskForTesting)
 
         manager.handleDatabaseVersionErrorForTesting(
-            .unsupported(found: 3, required: 2)
+            .unsupported(found: DatabaseVersion.current + 1, required: DatabaseVersion.current)
         )
         #expect(manager.isAwaitingServerUpgradeForTesting == false)
         #expect(manager.isRunningForTesting == false)

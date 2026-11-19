@@ -19,7 +19,9 @@ import (
 type FilterRuntime struct {
 	repoRoot            string
 	identity            gitcrypt.Identity
-	kekCache            map[int][]byte
+	kekCache            map[kekCacheKey][]byte
+	spaceModes          map[string]bool
+	spaceModesLoaded    bool
 	indexHashCache      map[string][32]byte
 	indexEncryptedCache map[string][]byte
 	lfsProcess          *gitcrypt.LFSFilterProcess
@@ -52,7 +54,7 @@ func RunSmudgeOnce(args []string) error {
 	if gitcrypt.IsLFSPointer(input) {
 		output, err = runtime.SmudgeLFS(pathname, input, true)
 	} else {
-		output, err = runtime.Smudge(input)
+		output, err = runtime.Smudge(pathname, input)
 	}
 	if err != nil {
 		return err
@@ -152,7 +154,7 @@ func RunFilterProcess() error {
 			if gitcrypt.IsLFSPointer(content) {
 				output, err = runtime.SmudgeLFS(pathname, content, false)
 			} else {
-				output, err = runtime.Smudge(content)
+				output, err = runtime.Smudge(pathname, content)
 			}
 		case "clean":
 			if gitcrypt.IsLFSPointer(content) {
@@ -192,7 +194,7 @@ func NewFilterRuntime() (*FilterRuntime, error) {
 	runtime := &FilterRuntime{
 		repoRoot:            repoRoot,
 		identity:            local.Identity,
-		kekCache:            make(map[int][]byte),
+		kekCache:            make(map[kekCacheKey][]byte),
 		indexHashCache:      make(map[string][32]byte),
 		indexEncryptedCache: make(map[string][]byte),
 	}
@@ -214,7 +216,7 @@ func requireFilterDatabaseVersion(r *FilterRuntime) error {
 
 // Smudge decrypts encrypted manifest envelopes and rejects plaintext so a
 // hostile server cannot strip encryption and have clients accept attacker YAML.
-func (r *FilterRuntime) Smudge(input []byte) ([]byte, error) {
+func (r *FilterRuntime) Smudge(pathname string, input []byte) ([]byte, error) {
 	if !gitcrypt.IsEncryptedManifest(input) {
 		return nil, fmt.Errorf("plaintext manifest rejected: missing %s envelope", gitcrypt.ManifestHeader)
 	}
@@ -222,7 +224,11 @@ func (r *FilterRuntime) Smudge(input []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	kek, err := r.LoadKEK(parsed.KekEpoch)
+	root, err := r.keySetRoot(pathname)
+	if err != nil {
+		return nil, err
+	}
+	kek, err := r.LoadKEK(root, parsed.KekEpoch)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +273,11 @@ func (r *FilterRuntime) SmudgeLFS(pathname string, input []byte, oneShot bool) (
 	if err != nil {
 		return nil, err
 	}
-	kek, err := r.LoadKEK(pointer.KekEpoch)
+	root, err := r.keySetRoot(pathname)
+	if err != nil {
+		return nil, err
+	}
+	kek, err := r.LoadKEK(root, pointer.KekEpoch)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +299,11 @@ func (r *FilterRuntime) CleanLFS(pathname string, input []byte, oneShot bool) ([
 			return indexPointer, nil
 		}
 	}
-	epochRaw, err := r.ReadRepoFile("encryption/current")
+	root, err := r.keySetRoot(pathname)
+	if err != nil {
+		return nil, err
+	}
+	epochRaw, err := r.ReadRepoFile(root + "/current")
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +311,7 @@ func (r *FilterRuntime) CleanLFS(pathname string, input []byte, oneShot bool) ([
 	if err != nil {
 		return nil, err
 	}
-	kek, err := r.LoadKEK(epoch)
+	kek, err := r.LoadKEK(root, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +360,11 @@ func (r *FilterRuntime) CleanWithPath(pathname string, input []byte) ([]byte, er
 			return indexEncrypted, nil
 		}
 	}
-	epochRaw, err := r.ReadRepoFile("encryption/current")
+	root, err := r.keySetRoot(pathname)
+	if err != nil {
+		return nil, err
+	}
+	epochRaw, err := r.ReadRepoFile(root + "/current")
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +372,7 @@ func (r *FilterRuntime) CleanWithPath(pathname string, input []byte) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	kek, err := r.LoadKEK(epoch)
+	kek, err := r.LoadKEK(root, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +397,11 @@ func (r *FilterRuntime) matchesIndexManifest(pathname string, input []byte) ([]b
 	if err != nil {
 		return nil, false, err
 	}
-	kek, err := r.LoadKEK(parsed.KekEpoch)
+	root, err := r.keySetRoot(pathname)
+	if err != nil {
+		return nil, false, err
+	}
+	kek, err := r.LoadKEK(root, parsed.KekEpoch)
 	if err != nil {
 		return nil, false, err
 	}
@@ -431,12 +453,22 @@ func (r *FilterRuntime) matchesIndexLFS(pathname string, input []byte, oneShot b
 	return indexPointer, plaintextHash == inputHash, nil
 }
 
-// LoadKEK memoizes KEKs by epoch to avoid repeated age envelope unwrap work.
-func (r *FilterRuntime) LoadKEK(epoch int) ([]byte, error) {
-	if cached, ok := r.kekCache[epoch]; ok {
+// kekCacheKey separates epochs that share a number but belong to
+// different key sets. Reusing one cache entry would decrypt a space
+// with another space's KEK.
+type kekCacheKey struct {
+	root  string
+	epoch int
+}
+
+// LoadKEK memoizes KEKs by key set and epoch. root is the directory
+// that holds that key set's epochs, never a fallback.
+func (r *FilterRuntime) LoadKEK(root string, epoch int) ([]byte, error) {
+	key := kekCacheKey{root: root, epoch: epoch}
+	if cached, ok := r.kekCache[key]; ok {
 		return cached, nil
 	}
-	envelopePath := fmt.Sprintf("encryption/epochs/%d.age", epoch)
+	envelopePath := fmt.Sprintf("%s/epochs/%d.age", root, epoch)
 	envelopeRaw, err := r.ReadRepoFile(envelopePath)
 	if err != nil {
 		return nil, fmt.Errorf("missing required KEK epoch file %s for LFS decryption epoch %d: %w", envelopePath, epoch, err)
@@ -445,8 +477,142 @@ func (r *FilterRuntime) LoadKEK(epoch int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to unwrap KEK for epoch %d: %w", epoch, err)
 	}
-	r.kekCache[epoch] = kek
+	r.kekCache[key] = kek
 	return kek, nil
+}
+
+// keySetRoot is the key set for this path. A space with encryption/current
+// uses its own key set. A missing file means the space uses the global
+// key set. Any other read error is returned so a glitch is not treated
+// as permission to use the library KEK.
+func (r *FilterRuntime) keySetRoot(pathname string) (string, error) {
+	normalized := strings.TrimPrefix(strings.TrimSpace(filepath.ToSlash(pathname)), "./")
+	space, ok := gitcrypt.SpaceFromPath(normalized)
+	if !ok {
+		return gitcrypt.GlobalKeySetRoot, nil
+	}
+	current := gitcrypt.SpaceKeySetRoot(space) + "/current"
+	_, err := r.ReadRepoFile(current)
+	own := err == nil
+	if err != nil && !isMissingRepoFile(err) {
+		return "", err
+	}
+	// A space that later gains or loses its own key set would let a
+	// writer substitute a KEK the client has not accepted.
+	if err := r.noteSpaceMode(space, own); err != nil {
+		return "", err
+	}
+	if own {
+		return gitcrypt.SpaceKeySetRoot(space), nil
+	}
+	return gitcrypt.GlobalKeySetRoot, nil
+}
+
+// noteSpaceMode records the first key set a space was seen with.
+// Later reads must match it. The record lives beside the identity so
+// a later pull still refuses a mode change.
+func (r *FilterRuntime) noteSpaceMode(space string, own bool) error {
+	if !r.spaceModesLoaded {
+		modes, err := r.loadSpaceModes()
+		if err != nil {
+			return err
+		}
+		if r.spaceModes == nil {
+			r.spaceModes = map[string]bool{}
+		}
+		for name, mode := range modes {
+			r.spaceModes[name] = mode
+		}
+		r.spaceModesLoaded = true
+	}
+	if prev, ok := r.spaceModes[space]; ok && prev != own {
+		return fmt.Errorf("encryption space %s changed key set", space)
+	}
+	if _, ok := r.spaceModes[space]; ok {
+		return nil
+	}
+	r.spaceModes[space] = own
+	return r.storeSpaceMode(space, own)
+}
+
+func (r *FilterRuntime) spaceModePath() (string, bool) {
+	gitDir := filepath.Join(r.repoRoot, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return filepath.Join(gitDir, "replycant", "space-modes"), true
+}
+
+func (r *FilterRuntime) loadSpaceModes() (map[string]bool, error) {
+	path, ok := r.spaceModePath()
+	if !ok {
+		return map[string]bool{}, nil
+	}
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	modes := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		mode, name, found := strings.Cut(line, " ")
+		if !found || (mode != "own" && mode != "global") || name == "" {
+			return nil, fmt.Errorf("invalid space mode record %q", line)
+		}
+		modes[name] = mode == "own"
+	}
+	return modes, nil
+}
+
+func (r *FilterRuntime) storeSpaceMode(space string, own bool) error {
+	path, ok := r.spaceModePath()
+	if !ok {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	mode := "global"
+	if own {
+		mode = "own"
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s %s\n", mode, space)
+	return err
+}
+
+func isMissingRepoFile(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsNotExist(err) {
+		return true
+	}
+	// git cat-file reports a missing path on stderr and only puts
+	// "exit status 128" in Error().
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && missingGitPathMessage(string(exitErr.Stderr)) {
+		return true
+	}
+	return missingGitPathMessage(err.Error())
+}
+
+func missingGitPathMessage(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "exists on disk, but not in") ||
+		strings.Contains(msg, "not a valid object name")
 }
 
 // ReadRepoFile checks working tree, then index, then HEAD so filters can resolve files during initial checkout.
@@ -473,6 +639,14 @@ func (r *FilterRuntime) ReadRepoFile(relativePath string) ([]byte, error) {
 	remoteRaw, remoteErr := readOriginFileFromGit(r.repoRoot, relativePath)
 	if remoteErr == nil {
 		return remoteRaw, nil
+	}
+	// The first checkout smudges before HEAD exists. A missing path is
+	// then reported by the remote tip, not by the invalid HEAD name.
+	if isMissingRepoFile(remoteErr) {
+		return nil, remoteErr
+	}
+	if isMissingRepoFile(headErr) {
+		return nil, headErr
 	}
 	return nil, headErr
 }
@@ -657,10 +831,17 @@ func sanitizeFilterError(value string) string {
 
 // parseEpochFromPath supports optional future path-based optimizations and test helpers.
 func parseEpochFromPath(path string) (int, bool) {
-	if !strings.HasPrefix(path, "encryption/epochs/") || !strings.HasSuffix(path, ".age") {
+	normalized := strings.TrimPrefix(filepath.ToSlash(path), "./")
+	const marker = "/epochs/"
+	idx := strings.LastIndex(normalized, marker)
+	if idx < 0 || !strings.HasSuffix(normalized, ".age") {
 		return 0, false
 	}
-	name := strings.TrimSuffix(strings.TrimPrefix(path, "encryption/epochs/"), ".age")
+	dir := normalized[:idx]
+	if dir != gitcrypt.GlobalKeySetRoot && !strings.HasSuffix(dir, "/encryption") {
+		return 0, false
+	}
+	name := strings.TrimSuffix(normalized[idx+len(marker):], ".age")
 	epoch, err := strconv.Atoi(name)
 	if err != nil || epoch < 1 {
 		return 0, false
@@ -703,5 +884,5 @@ func (r *FilterRuntime) lfsProxyEnvironment() ([]string, error) {
 // isBinaryPath scopes LFS clean behavior to binary payload paths only.
 func isBinaryPath(pathname string) bool {
 	normalized := strings.TrimPrefix(strings.TrimSpace(filepath.ToSlash(pathname)), "./")
-	return strings.HasPrefix(normalized, "binary/")
+	return gitcrypt.IsBinaryPath(normalized)
 }

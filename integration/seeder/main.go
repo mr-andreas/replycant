@@ -25,6 +25,8 @@ type seederConfig struct {
 	commitCount     int
 	addMediaOnly    bool
 	databaseVersion int
+	ownKeySet       bool
+	members         []string
 }
 
 // runGit executes one git command and returns stderr output on failure so
@@ -96,8 +98,7 @@ func seedFixtureManifest() originalManifest {
 		APIVersion: apiVersion,
 		Kind:       "Original",
 		Metadata: map[string]string{
-			"name":        "seed",
-			"deviceSpace": "test",
+			"name": "seed",
 		},
 		Spec: map[string]interface{}{
 			"id":         "id-seed",
@@ -193,7 +194,19 @@ func initializeRepository(cfg seederConfig) error {
 	if err := writeFile(filepath.Join(workDir, "encryption", "epochs", "1.age"), envelope, 0o644); err != nil {
 		return fmt.Errorf("write wrapped kek: %w", err)
 	}
-	if err := writeFile(filepath.Join(workDir, "manifests", "test", "test.yaml"), manifestEncrypted, 0o644); err != nil {
+	recipients, err := gitcrypt.MarshalRecipientList(gitcrypt.RecipientList{Members: []string{"integration-device"}})
+	if err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(workDir, "encryption", "recipients.yaml"), recipients, 0o644); err != nil {
+		return fmt.Errorf("write recipients: %w", err)
+	}
+	if cfg.ownKeySet {
+		if err := writeOwnKeySet(workDir, cfg.deviceSpace, cfg.members, identity); err != nil {
+			return err
+		}
+	}
+	if err := writeFile(filepath.Join(workDir, "encryptionspaces", "test", "manifests", "test.yaml"), manifestEncrypted, 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	if err := runGit(workDir, "add", "."); err != nil {
@@ -210,6 +223,34 @@ func initializeRepository(cfg seederConfig) error {
 	}
 	if err := runGit(workDir, "push", "-u", "origin", "main"); err != nil {
 		return err
+	}
+	return nil
+}
+
+// writeOwnKeySet publishes a space key set wrapped for the library and
+// the named members. The creator does not reuse the global KEK.
+func writeOwnKeySet(workDir, space string, members []string, identity gitcrypt.Identity) error {
+	pubs := []string{strings.TrimSpace(identity.AgePublicKey)}
+	for _, member := range members {
+		raw, err := os.ReadFile(filepath.Join(workDir, keyset.Path(member)))
+		if err != nil {
+			return fmt.Errorf("member %s: %w", member, err)
+		}
+		parsed, err := keyset.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("member %s: %w", member, err)
+		}
+		pubs = append(pubs, parsed.Spec.AgePublicKey)
+	}
+	_, files, err := gitcrypt.BuildFirstSpaceEpoch(members, pubs)
+	if err != nil {
+		return err
+	}
+	root := filepath.Join(workDir, filepath.FromSlash(gitcrypt.SpaceKeySetRoot(space)))
+	for name, body := range files {
+		if err := writeFile(filepath.Join(root, filepath.FromSlash(name)), body, 0o644); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -310,8 +351,7 @@ func writeMediaManifestPair(workDir string, kek []byte, epoch int, deviceSpace s
 		APIVersion: apiVersion,
 		Kind:       "Original",
 		Metadata: map[string]string{
-			"name":        name,
-			"deviceSpace": deviceSpace,
+			"name": name,
 		},
 		Spec: map[string]interface{}{
 			"id":         fmt.Sprintf("id-%s", name),
@@ -333,8 +373,7 @@ func writeMediaManifestPair(workDir string, kek []byte, epoch int, deviceSpace s
 		APIVersion: apiVersion,
 		Kind:       "ThumbnailSet",
 		Metadata: map[string]string{
-			"name":        "thumbs-" + name,
-			"deviceSpace": deviceSpace,
+			"name": "thumbs-" + name,
 		},
 		Spec: map[string]interface{}{
 			"originalRef": fmt.Sprintf("%s/%s/Original/%s", deviceSpace, apiVersion, name),
@@ -377,7 +416,7 @@ func writeEncryptedManifest(workDir string, kek []byte, epoch int, path string, 
 
 // manifestPath keeps test fixtures aligned with the production manifest tree layout.
 func manifestPath(deviceSpace string, kind string, name string) string {
-	return filepath.Join("manifests", deviceSpace, "media.replycant.com", "v1alpha1", kind, shardName(name)+".yaml")
+	return filepath.Join("encryptionspaces", deviceSpace, "manifests", "media.replycant.com", "v1alpha1", kind, shardName(name)+".yaml")
 }
 
 // shardName mirrors replycant-importer and webapp sharding to avoid path
@@ -466,7 +505,12 @@ func main() {
 	cfg := seederConfig{}
 	flag.StringVar(&cfg.bareRepo, "bare-repo", "", "Path to bare repository to seed")
 	flag.StringVar(&cfg.outputDir, "output-dir", "", "Directory where identity files are written")
-	flag.StringVar(&cfg.deviceSpace, "device-space", "e2e-device", "Device space used for seeded media manifests")
+	flag.StringVar(&cfg.deviceSpace, "device-space", "e2e-device", "Encryption space used for seeded media manifests")
+	flag.BoolVar(&cfg.ownKeySet, "own-keyset", false, "Give the seeded space its own key set")
+	flag.Func("member", "Key set name added to an own-keyset space", func(value string) error {
+		cfg.members = append(cfg.members, value)
+		return nil
+	})
 	flag.IntVar(&cfg.mediaCount, "media-count", 0, "Number of media records to seed")
 	flag.IntVar(&cfg.commitCount, "commit-count", 1, "Number of commits to distribute seeded media across")
 	flag.BoolVar(&cfg.addMediaOnly, "add-media-only", false, "Only append media commits to an existing seeded repository")

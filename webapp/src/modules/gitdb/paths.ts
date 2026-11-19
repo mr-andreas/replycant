@@ -9,4 +9,4 @@ export const deriveBinaryPointerPath = (
   apiVersion: string,
   kind: string,
   name: string,
-): string => `binary/${deviceSpace}/${apiVersion}/${kind}/${shardName(name)}`;
+): string => `encryptionspaces/${deviceSpace}/binary/${apiVersion}/${kind}/${shardName(name)}`;

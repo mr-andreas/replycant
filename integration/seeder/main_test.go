@@ -79,7 +79,7 @@ func TestSeedRepositoryAppendMediaOnly(t *testing.T) {
 	require.Contains(
 		t,
 		tree,
-		"manifests/e2e-device/media.replycant.com/v1alpha1/Original/im/g-/000000.yaml",
+		"encryptionspaces/e2e-device/manifests/media.replycant.com/v1alpha1/Original/im/g-/000000.yaml",
 	)
 }
 
@@ -126,7 +126,7 @@ func TestSeedRepositoryEncryptedManifest(t *testing.T) {
 		"",
 		"--git-dir="+bareRepo,
 		"show",
-		"main:manifests/e2e-device/media.replycant.com/v1alpha1/Original/im/g-/000000.yaml",
+		"main:encryptionspaces/e2e-device/manifests/media.replycant.com/v1alpha1/Original/im/g-/000000.yaml",
 	)
 	keySetRaw := runGitBytesForTest(t, "", "--git-dir="+bareRepo, "show", "main:pubkeys/integration-device.yaml")
 	parsed, err := keyset.Parse(keySetRaw)
@@ -158,17 +158,17 @@ func TestSeedRepositoryUnsupportedDatabaseVersionIsRejected(t *testing.T) {
 		bareRepo:        bareRepo,
 		outputDir:       outputDir,
 		deviceSpace:     "e2e-device",
-		databaseVersion: 3,
+		databaseVersion: 4,
 	})
 	require.NoError(t, err)
 	version := runGitForTest(t, "", "--git-dir="+bareRepo, "show", "main:gitdb/version")
-	require.Equal(t, "3", version)
+	require.Equal(t, "4", version)
 
 	workDir := filepath.Join(tempDir, "work")
 	runGitForTest(t, "", "clone", "file://"+bareRepo, workDir)
 	err = gitcrypt.RequireSupportedDatabaseVersionInWorktree(workDir)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "unsupported gitdb database version 3")
+	require.Contains(t, err.Error(), "unsupported gitdb database version 4")
 
 	err = seedRepository(seederConfig{
 		bareRepo:     bareRepo,
@@ -179,7 +179,7 @@ func TestSeedRepositoryUnsupportedDatabaseVersionIsRejected(t *testing.T) {
 		commitCount:  1,
 	})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "unsupported gitdb database version 3")
+	require.Contains(t, err.Error(), "unsupported gitdb database version 4")
 }
 
 // TestSeedRepositoryRejectsMissingMarker keeps a library without

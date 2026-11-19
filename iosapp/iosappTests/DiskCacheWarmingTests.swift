@@ -194,7 +194,7 @@ struct DiskCacheWarmingTests {
     }
 
     private func thumbnailPath(name: String) -> String {
-        "binary/device-a/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(name))"
+        "encryptionspaces/device-a/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(name))"
     }
 }
 

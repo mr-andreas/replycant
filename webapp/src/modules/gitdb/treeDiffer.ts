@@ -87,7 +87,7 @@ export class TreeDiffer {
     newCommitHash: string,
   ): Promise<ChangedPath[]> {
     return this.listChangedPathsBetweenCommits(
-      oldCommitHash, newCommitHash, "manifests",
+      oldCommitHash, newCommitHash, "encryptionspaces", "manifests",
       this.changedManifestPathsCache, ".yaml",
     );
   }
@@ -97,7 +97,7 @@ export class TreeDiffer {
     newCommitHash: string,
   ): Promise<ChangedPath[]> {
     return this.listChangedPathsBetweenCommits(
-      oldCommitHash, newCommitHash, "binary",
+      oldCommitHash, newCommitHash, "encryptionspaces", "binary",
       this.changedBinaryPathsCache,
     );
   }
@@ -138,8 +138,8 @@ export class TreeDiffer {
     }
   }
 
-  // Distinguishes a repo with no manifests/ from a failed object
-  // read so hydration does not wipe a populated cache on a
+  // Distinguishes a repo with no encryptionspaces/ from a failed
+  // object read so hydration does not wipe a populated cache on a
   // transient tree-walk error.
   async discoverDeviceSpaces(
     commitHash: string,
@@ -159,7 +159,7 @@ export class TreeDiffer {
         oid: commit.commit.tree,
         cache: this.cache,
       });
-      const manifestsEntry = root.tree.find((entry) => entry.path === "manifests" && entry.type === "tree");
+      const manifestsEntry = root.tree.find((entry) => entry.path === "encryptionspaces" && entry.type === "tree");
       if (!manifestsEntry) {
         return { status: "ok", deviceSpaces: [] };
       }
@@ -204,6 +204,7 @@ export class TreeDiffer {
     oldCommitHash: string,
     newCommitHash: string,
     rootDir: string,
+    kindPrefix: string,
     pathCache: Map<string, ChangedPath[]>,
     extensionFilter?: string,
   ): Promise<ChangedPath[]> {
@@ -256,13 +257,13 @@ export class TreeDiffer {
     for (const deviceSpace of allDeviceSpaces) {
       for (const kindDir of kindDirs) {
         const [beforeKindTree, afterKindTree] = await Promise.all([
-          this.readTreeAtCommitPathOrNull(oldCommitHash, `${rootDir}/${deviceSpace}/${kindDir}`),
-          this.readTreeAtCommitPathOrNull(newCommitHash, `${rootDir}/${deviceSpace}/${kindDir}`),
+          this.readTreeAtCommitPathOrNull(oldCommitHash, `${rootDir}/${deviceSpace}/${kindPrefix}/${kindDir}`),
+          this.readTreeAtCommitPathOrNull(newCommitHash, `${rootDir}/${deviceSpace}/${kindPrefix}/${kindDir}`),
         ]);
         if (beforeKindTree?.oid && afterKindTree?.oid && beforeKindTree.oid === afterKindTree.oid) {
           continue;
         }
-        const basePath = `${rootDir}/${deviceSpace}/${kindDir}`;
+        const basePath = `${rootDir}/${deviceSpace}/${kindPrefix}/${kindDir}`;
         await this.collectChangedPathsBetweenTrees(
           beforeKindTree?.tree ?? [],
           afterKindTree?.tree ?? [],

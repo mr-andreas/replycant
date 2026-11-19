@@ -63,7 +63,7 @@ final class DefaultManifestManager: ManifestManager {
             return try await database.query(T.self, sql: """
                 SELECT data
                 FROM \(table)
-                WHERE id = ? AND deviceSpace = ?
+                WHERE id = ? AND encryptionSpace = ?
                 LIMIT 1
             """, arguments: [id, deviceSpace]).first
         }
@@ -82,14 +82,14 @@ final class DefaultManifestManager: ManifestManager {
             return try await database.query(T.self, sql: """
                 SELECT data
                 FROM \(table)
-                WHERE deviceSpace = ? AND takenAt IS NOT NULL
+                WHERE encryptionSpace = ? AND takenAt IS NOT NULL
             """, arguments: [deviceSpace])
         }
         if let deviceSpace {
             return try await database.query(T.self, sql: """
                 SELECT data
                 FROM \(table)
-                WHERE deviceSpace = ?
+                WHERE encryptionSpace = ?
             """, arguments: [deviceSpace])
         }
         if T.kind == OriginalManifest.kind {

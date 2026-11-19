@@ -32,14 +32,46 @@ const isNotFoundError = (error: unknown): boolean => {
 // Serializes decrypted key bytes so pointer rows can persist ready-to-use DEKs.
 const bytesToBase64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
 
+// A key set this client opened is unreadable. Sync must stop and leave
+// the cache untouched: falling back to another key would hide a swap.
+export class EncryptionIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EncryptionIntegrityError";
+  }
+}
+
+const spaceModeStorageKey = (gitdir: string, space: string): string =>
+  `replycant.encryptionSpaceMode.${gitdir}.${space}`;
+
+// The pin survives a reload. Storage can be unavailable in a worker
+// or a private window; the in-memory pin still covers the session.
+const readStoredSpaceMode = (gitdir: string, space: string): "own" | "global" | null => {
+  try {
+    const value = globalThis.localStorage?.getItem(spaceModeStorageKey(gitdir, space));
+    return value === "own" || value === "global" ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredSpaceMode = (gitdir: string, space: string, mode: "own" | "global"): void => {
+  try {
+    globalThis.localStorage?.setItem(spaceModeStorageKey(gitdir, space), mode);
+  } catch {
+    // The in-memory pin is enough when storage is blocked.
+  }
+};
+
 // Owns blob-level manifest/pointer reads so sync flows can share one decryption cache.
 export class ManifestBlobReader {
   private readonly fs: FsClient;
   private readonly gitdir: string;
   private readonly registry: ManifestRegistry;
   private readonly agePrivateKeyProvider: AgePrivateKeyProvider;
-  private readonly kekCache = new Map<number, CryptoKey>();
+  private readonly kekCache = new Map<string, CryptoKey>();
   private encryptionCurrentBlobOid: string | null = null;
+  private readonly spaceModes = new Map<string, "own" | "global">();
   // Shared isomorphic-git pack-index cache so every readBlob this class issues
   // reuses the parsed .idx across calls and across other gitdb collaborators.
   private readonly cache: object;
@@ -188,7 +220,9 @@ export class ManifestBlobReader {
     requireAcceptedDatabaseVersion(await this.readDatabaseVersion(commitHash));
   }
 
-  // Invalidates cached KEKs when encryption/current changes to prevent stale key reuse.
+  // Invalidates cached KEKs when a key set's current epoch changes.
+  // Rewrapping an epoch keeps the same key bytes, so the cache stays valid
+  // until current moves.
   async refreshKekCacheState(commitHash: string): Promise<void> {
     const currentEntry = await this.readBlobAtCommitPathOrNull(commitHash, "encryption/current");
     const nextOid = currentEntry?.oid ?? null;
@@ -197,20 +231,47 @@ export class ManifestBlobReader {
     this.encryptionCurrentBlobOid = nextOid;
   }
 
-  // Loads one KEK epoch from git and caches it for repeated decrypt/unwrap operations.
-  async loadKekEpoch(commitHash: string, epoch: number): Promise<CryptoKey> {
-    const cached = this.kekCache.get(epoch);
+  // The path chooses the key set. A missing space current means the
+  // space uses the library key. Remembering that choice refuses a
+  // later file that adds or removes the space's own key set.
+  async keySetRoot(commitHash: string, path: string): Promise<string> {
+    const space = spaceFromManifestPath(path);
+    if (!space) return "encryption";
+    const currentPath = `encryptionspaces/${space}/encryption/current`;
+    const current = await this.readBlobAtCommitPathOrNull(commitHash, currentPath);
+    const mode = current ? "own" : "global";
+    const previous = this.spaceModes.get(space) ?? readStoredSpaceMode(this.gitdir, space);
+    if (previous && previous !== mode) {
+      throw new EncryptionIntegrityError(
+        `Could not open ${space}: the space changed key set.`,
+      );
+    }
+    if (!previous) {
+      this.spaceModes.set(space, mode);
+      writeStoredSpaceMode(this.gitdir, space, mode);
+    } else if (!this.spaceModes.has(space)) {
+      this.spaceModes.set(space, previous);
+    }
+    return current ? `encryptionspaces/${space}/encryption` : "encryption";
+  }
+
+  // Loads one KEK epoch from one key set. The same epoch number in
+  // another space is a different key.
+  async loadKekEpoch(commitHash: string, epoch: number, root = "encryption"): Promise<CryptoKey> {
+    const cacheKey = `${root}\n${epoch}`;
+    const cached = this.kekCache.get(cacheKey);
     if (cached) return cached;
     const agePrivateKeyBase64 = this.agePrivateKeyProvider();
     if (!agePrivateKeyBase64) {
       throw new Error("Age private key is required for encrypted manifest decryption.");
     }
-    const epochEntry = await this.readBlobAtCommitPathOrNull(commitHash, `encryption/epochs/${epoch}.age`);
+    const epochPath = `${root}/epochs/${epoch}.age`;
+    const epochEntry = await this.readBlobAtCommitPathOrNull(commitHash, epochPath);
     if (!epochEntry) {
-      throw new Error(`Missing KEK epoch file encryption/epochs/${epoch}.age.`);
+      throw new EncryptionIntegrityError(`Could not open ${root}: missing key epoch ${epoch}.`);
     }
     const key = await loadAndUnwrapKEK(epochEntry.blob, agePrivateKeyBase64);
-    this.kekCache.set(epoch, key);
+    this.kekCache.set(cacheKey, key);
     return key;
   }
 
@@ -223,14 +284,24 @@ export class ManifestBlobReader {
     let done = 0;
     const total = pointers.size;
     await Promise.all(
-      [...pointers.values()].map(async (pointer) => {
+      [...pointers.entries()].map(async ([path, pointer]) => {
         if (!pointer.wrappedDek || !pointer.kekEpoch) {
           done += 1;
           onProgress?.(done, total);
           return;
         }
-        const kek = await this.loadKekEpoch(commitHash, pointer.kekEpoch);
-        const dekRaw = await unwrapDEK(pointer.wrappedDek, kek, pointer.kekEpoch);
+        const root = await this.keySetRoot(commitHash, path);
+        const kek = await this.loadKekEpoch(commitHash, pointer.kekEpoch, root);
+        let dekRaw: Uint8Array;
+        try {
+          dekRaw = await unwrapDEK(pointer.wrappedDek, kek, pointer.kekEpoch);
+        } catch (error) {
+          if (error instanceof EncryptionIntegrityError) throw error;
+          const space = spaceFromManifestPath(path) ?? "library";
+          throw new EncryptionIntegrityError(
+            `Could not open ${space} (${path}): the object did not open.`,
+          );
+        }
         pointer.dekBase64 = bytesToBase64(dekRaw);
         done += 1;
         onProgress?.(done, total);
@@ -240,24 +311,44 @@ export class ManifestBlobReader {
 
   // Decrypts one encrypted manifest envelope so sync never accepts plaintext
   // YAML that a hostile server could substitute for ciphertext.
-  async decodeManifestBlobToYaml(commitHash: string, blob: Uint8Array): Promise<string> {
+  async decodeManifestBlobToYaml(commitHash: string, blob: Uint8Array, path = ""): Promise<string> {
+    const space = spaceFromManifestPath(path) ?? "library";
+    const label = path || "manifest";
     if (!isEncryptedManifest(blob)) {
-      throw new Error("plaintext manifest rejected: missing REPLYCANT-ENC-V1 envelope");
+      throw new EncryptionIntegrityError(
+        `Could not open ${space} (${label}): the manifest is plaintext.`,
+      );
     }
     const encrypted = parseEncryptedManifestHeader(blob);
-    const kek = await this.loadKekEpoch(commitHash, encrypted.kekEpoch);
-    return decryptManifestBody(encrypted.ciphertext, kek);
+    const root = path ? await this.keySetRoot(commitHash, path) : "encryption";
+    try {
+      const kek = await this.loadKekEpoch(commitHash, encrypted.kekEpoch, root);
+      return await decryptManifestBody(encrypted.ciphertext, kek);
+    } catch (error) {
+      if (error instanceof EncryptionIntegrityError) throw error;
+      throw new EncryptionIntegrityError(
+        `Could not open ${space} (${label}): the manifest did not open.`,
+      );
+    }
   }
 
   // Decodes YAML via registry and resolves stable record identity for persistence.
+  // The path's space overwrites metadata.deviceSpace so a stale field
+  // cannot point the cache at a different encryption space.
   decodeYamlToRecord(
     rawYaml: string,
     expectedKind?: { apiVersion: string; kind: string } | null,
+    path?: string,
   ): RegisteredManifestRecord | null {
     const decoded = expectedKind
       ? this.registry.decodeYamlForExpectedKind(rawYaml, expectedKind)
       : this.registry.decodeYaml(rawYaml);
     if (!decoded) return null;
+    const space = path ? spaceFromManifestPath(path) : null;
+    if (space && decoded.decoded && typeof decoded.decoded === "object") {
+      const metadata = (decoded.decoded as { metadata?: { deviceSpace?: string } }).metadata;
+      if (metadata) metadata.deviceSpace = space;
+    }
     const key = this.registry.resolveKey(decoded.apiVersion, decoded.kind, decoded.decoded);
     return {
       apiVersion: decoded.apiVersion,
@@ -274,8 +365,8 @@ export class ManifestBlobReader {
   ): Promise<RegisteredManifestRecord | null> {
     const entry = await this.readBlobAtCommitPathOrNull(commitHash, path);
     if (!entry) return null;
-    const rawYaml = await this.decodeManifestBlobToYaml(commitHash, entry.blob);
-    return this.decodeYamlToRecord(rawYaml, this.inferExpectedKindFromPath(path));
+    const rawYaml = await this.decodeManifestBlobToYaml(commitHash, entry.blob, path);
+    return this.decodeYamlToRecord(rawYaml, this.inferExpectedKindFromPath(path), path);
   }
 
   // Decodes one manifest from a known blob OID so transition planners can
@@ -287,18 +378,28 @@ export class ManifestBlobReader {
   ): Promise<RegisteredManifestRecord | null> {
     const blob = await this.readBlobByOidOrNull(blobOid);
     if (!blob) return null;
-    const rawYaml = await this.decodeManifestBlobToYaml(commitHash, blob);
-    return this.decodeYamlToRecord(rawYaml, this.inferExpectedKindFromPath(path));
+    const rawYaml = await this.decodeManifestBlobToYaml(commitHash, blob, path);
+    return this.decodeYamlToRecord(rawYaml, this.inferExpectedKindFromPath(path), path);
   }
 
   // Derives expected apiVersion/kind from canonical manifest path structure.
   inferExpectedKindFromPath(manifestPath: string): { apiVersion: string; kind: string } | null {
     const parts = manifestPath.split("/");
-    if (parts.length < 5) return null;
-    const apiVersionPart1 = parts[2];
-    const apiVersionPart2 = parts[3];
-    const kind = parts[4];
+    if (parts[0] !== "encryptionspaces" || parts[2] !== "manifests" || parts.length < 6) return null;
+    const apiVersionPart1 = parts[3];
+    const apiVersionPart2 = parts[4];
+    const kind = parts[5];
     if (!apiVersionPart1 || !apiVersionPart2 || !kind) return null;
     return { apiVersion: `${apiVersionPart1}/${apiVersionPart2}`, kind };
   }
 }
+
+// The space name is the directory under encryptionspaces. Files that
+// are not manifests or binaries do not name a space.
+export const spaceFromManifestPath = (path: string): string | null => {
+  const parts = path.split("/");
+  if (parts[0] !== "encryptionspaces" || (parts[2] !== "manifests" && parts[2] !== "binary")) {
+    return null;
+  }
+  return parts[1] ? parts[1] : null;
+};

@@ -30,6 +30,9 @@ const (
 	TypeDevice = "device"
 	// TypeRecovery is a backup credential, not a device shown in Settings.
 	TypeRecovery = "recovery"
+	// TypeApp is another client, such as an upload app. The value is a
+	// display label only: it never decides what that client can decrypt.
+	TypeApp = "app"
 	// displayNameAADPrefix binds a sealed name to one key set so a
 	// server that rewrites plaintext YAML cannot move the name.
 	displayNameAADPrefix = "replycant-keyset-display-name-v1"
@@ -231,7 +234,9 @@ func validate(ks KeySet) error {
 	if !namePattern.MatchString(ks.Metadata.Name) {
 		return fmt.Errorf("invalid key set name %q", ks.Metadata.Name)
 	}
-	if ks.Spec.Type != TypeDevice && ks.Spec.Type != TypeRecovery {
+	switch ks.Spec.Type {
+	case TypeDevice, TypeRecovery, TypeApp:
+	default:
 		return fmt.Errorf("unsupported key set type %q", ks.Spec.Type)
 	}
 	if _, err := ParseMTLSPublicKey(ks.Spec.MTLSPublicKey); err != nil {

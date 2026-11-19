@@ -7,7 +7,7 @@ import { ManifestDatabase } from "./manifestDatabase";
 import type { RegisteredManifestRecord } from "./manifestRegistry";
 import { TreeDiffer } from "./treeDiffer";
 import { nowMs, syncMark, syncMeasure } from "./syncDiagnostics";
-import { ManifestBlobReader } from "./manifestBlobReader";
+import { EncryptionIntegrityError, ManifestBlobReader } from "./manifestBlobReader";
 
 const BLOB_READ_BATCH_SIZE = 50;
 const textDecoder = new TextDecoder();
@@ -131,17 +131,17 @@ export class ManifestHydrator {
     this.emitTreeWalkProgress(0, 0);
     for (const deviceSpace of deviceSpaces) {
       for (const kindDir of kindDirs) {
-        const kindTree = await this.treeDiffer.readTreeAtCommitPathOrNull(commitHash, `manifests/${deviceSpace}/${kindDir}`);
+        const kindTree = await this.treeDiffer.readTreeAtCommitPathOrNull(commitHash, `encryptionspaces/${deviceSpace}/manifests/${kindDir}`);
         if (kindTree) {
-          const basePath = `manifests/${deviceSpace}/${kindDir}`;
+          const basePath = `encryptionspaces/${deviceSpace}/manifests/${kindDir}`;
           const prevCount = blobEntries.length;
           await this.treeDiffer.collectBlobEntriesFromTree(kindTree.tree, basePath, blobEntries, ".yaml");
           discoveredFiles += blobEntries.length - prevCount;
           this.emitTreeWalkProgress(discoveredFiles, 0);
         }
-        const pointerTree = await this.treeDiffer.readTreeAtCommitPathOrNull(commitHash, `binary/${deviceSpace}/${kindDir}`);
+        const pointerTree = await this.treeDiffer.readTreeAtCommitPathOrNull(commitHash, `encryptionspaces/${deviceSpace}/binary/${kindDir}`);
         if (pointerTree) {
-          const pointerBasePath = `binary/${deviceSpace}/${kindDir}`;
+          const pointerBasePath = `encryptionspaces/${deviceSpace}/binary/${kindDir}`;
           const pointerEntries: { oid: string; path: string }[] = [];
           await this.treeDiffer.collectBlobEntriesFromTree(pointerTree.tree, pointerBasePath, pointerEntries);
           for (const entry of pointerEntries) {
@@ -172,9 +172,18 @@ export class ManifestHydrator {
     syncMark("streamManifests-kekRefresh-end");
     syncMeasure("streamManifests-kekRefresh", "streamManifests-kekRefresh-start", "streamManifests-kekRefresh-end");
 
+    // A space is pinned before any cache write. A later flip throws
+    // here, while the previous cache is still the one on screen.
+    for (const deviceSpace of deviceSpaces) {
+      await this.manifestBlobReader.keySetRoot(
+        commitHash,
+        `encryptionspaces/${deviceSpace}/manifests/pin`,
+      );
+    }
+
     this.emitManifestReadProgress(0, blobEntries.length);
     const channelA = new BoundedChannel<{ oid: string; path: string; blob: Uint8Array }>(200);
-    const channelB = new BoundedChannel<RegisteredManifestRecord>(200);
+    const decodedRecords: RegisteredManifestRecord[] = [];
     const readFailures = { decodeFailed: 0, parseRejected: 0 };
     let encryptedManifestCount = 0;
     let firstDecodeError: string | null = null;
@@ -228,59 +237,35 @@ export class ManifestHydrator {
       }
     })();
 
-    // Decodes blobs into records and forwards valid records to channelB.
+    // Decodes every manifest before the cache is replaced. An object
+    // that does not open must not clear the library the user can see.
     const stageB = (async () => {
-      try {
-        for await (const { blob, path } of channelA.receive()) {
-          try {
-            encryptedManifestCount += 1;
-            const rawYaml = await this.manifestBlobReader.decodeManifestBlobToYaml(commitHash, blob);
-            const record = this.manifestBlobReader.decodeYamlToRecord(
-              rawYaml,
-              this.manifestBlobReader.inferExpectedKindFromPath(path),
-            );
-            if (!record) {
-              readFailures.parseRejected += 1;
-              continue;
-            }
-            await channelB.send(record);
-          } catch (error) {
-            captureDecodeError(error);
+      let decodedCount = 0;
+      const totalBlobs = blobEntries.length;
+      for await (const { blob, path } of channelA.receive()) {
+        try {
+          encryptedManifestCount += 1;
+          const rawYaml = await this.manifestBlobReader.decodeManifestBlobToYaml(commitHash, blob, path);
+          const record = this.manifestBlobReader.decodeYamlToRecord(
+            rawYaml,
+            this.manifestBlobReader.inferExpectedKindFromPath(path),
+            path,
+          );
+          if (!record) {
+            readFailures.parseRejected += 1;
+            continue;
           }
+          decodedRecords.push(record);
+          decodedCount += 1;
+          this.emitManifestReadProgress(decodedCount, totalBlobs);
+        } catch (error) {
+          if (error instanceof EncryptionIntegrityError) throw error;
+          captureDecodeError(error);
         }
-      } finally {
-        channelB.close();
       }
     })();
 
-    let decodedCount = 0;
-    const totalBlobs = blobEntries.length;
-    const progressIterable: AsyncIterable<RegisteredManifestRecord> = {
-      [Symbol.asyncIterator]: () => {
-        const gen = channelB.receive();
-        return {
-          next: async () => {
-            const result = await gen.next();
-            if (!result.done) {
-              decodedCount += 1;
-              this.emitManifestReadProgress(decodedCount, totalBlobs);
-            }
-            return result;
-          },
-          return: gen.return?.bind(gen),
-          throw: gen.throw?.bind(gen),
-        } as AsyncIterator<RegisteredManifestRecord>;
-      },
-    };
-
-    const replaceCacheStartedAtMs = nowMs();
-    const stageC = this.manifestDb.replaceCacheStreamed(
-      progressIterable,
-      syncedCommitHash,
-      undefined,
-      cacheFormatVersion,
-    );
-    await Promise.all([stageA, stageB, stageC]);
+    await Promise.all([stageA, stageB]);
 
     const blobReadDecodeParseMs = nowMs() - pipelineStartedAtMs;
     syncMark("streamManifests-pipeline-end");
@@ -316,17 +301,31 @@ export class ManifestHydrator {
     await this.manifestBlobReader.unwrapDeksForPointers(commitHash, pointers, (loaded, total) => {
       this.emitPointerProgress(N + Math.round((loaded / total) * N), scale);
     });
-    if (pointers.size > 0) {
-      await this.manifestDb.writePointers(pointers, syncedCommitHash);
-    }
     this.emitPointerProgress(scale, scale);
 
+    if (blobEntries.length > 0 && decodedRecords.length === 0) {
+      throw new Error(
+        `No parseable manifests found in ${blobEntries.length} files. ` +
+          `decodeFailed=${readFailures.decodeFailed}, parseRejected=${readFailures.parseRejected}. ` +
+          `firstDecodeError=${firstDecodeError ?? "unknown"}.`,
+      );
+    }
+
+    const replaceCacheStartedAtMs = nowMs();
+    await this.manifestDb.replaceCacheStreamed(
+      (async function* records() {
+        for (const record of decodedRecords) yield record;
+      })(),
+      syncedCommitHash,
+      pointers,
+      cacheFormatVersion,
+    );
     const replaceCacheMs = nowMs() - replaceCacheStartedAtMs;
     const totalMs = nowMs() - startedAtMs;
 
     this.log("stream-manifests-complete", {
       commitHash,
-      totalRecords: decodedCount,
+      totalRecords: decodedRecords.length,
       encryptedManifests: encryptedManifestCount,
       decodeFailed: readFailures.decodeFailed,
       parseRejected: readFailures.parseRejected,
@@ -339,16 +338,8 @@ export class ManifestHydrator {
       durationMs: totalMs,
     });
 
-    if (blobEntries.length > 0 && decodedCount === 0) {
-      throw new Error(
-        `No parseable manifests found in ${blobEntries.length} files. ` +
-          `decodeFailed=${readFailures.decodeFailed}, parseRejected=${readFailures.parseRejected}. ` +
-          `firstDecodeError=${firstDecodeError ?? "unknown"}.`,
-      );
-    }
-
     return {
-      totalRecords: decodedCount,
+      totalRecords: decodedRecords.length,
       pointers,
       timings: { treeWalkMs, kekRefreshMs, blobReadDecodeParseMs, replaceCacheMs, totalMs },
     };

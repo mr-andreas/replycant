@@ -239,24 +239,27 @@ const buildMediaEntry = (
   const takenDate = new Date(createdDate.getTime() - 90_000);
   const stem = fileName.replace(/\.[^.]+$/, "");
   const originalManifestPath = path.join(
-    "manifests",
+    "encryptionspaces",
     deviceSpace,
+    "manifests",
     "media.replycant.com",
     "v1alpha1",
     "Original",
     shardName(`${fileName}.yaml`),
   );
   const thumbnailManifestPath = path.join(
-    "manifests",
+    "encryptionspaces",
     deviceSpace,
+    "manifests",
     "media.replycant.com",
     "v1alpha1",
     "ThumbnailSet",
     shardName(`${stem}-thumbs.yaml`),
   );
   const originalPointerPath = path.join(
-    "binary",
+    "encryptionspaces",
     deviceSpace,
+    "binary",
     "media.replycant.com",
     "v1alpha1",
     "Original",
@@ -264,8 +267,9 @@ const buildMediaEntry = (
   );
   const thumbnailPointerPaths = [640, 1024].map((width) =>
     path.join(
-      "binary",
+      "encryptionspaces",
       deviceSpace,
+      "binary",
       "media.replycant.com",
       "v1alpha1",
       "ThumbnailSet",

@@ -33,8 +33,8 @@ func TestKeySetStepRewritesDeviceAndRecovery(t *testing.T) {
 
 	result, err := Run(dir)
 	require.NoError(t, err)
-	require.Equal(t, Result{Migrated: true, From: 1, To: 2}, result)
-	require.Equal(t, "2\n", readBlob(t, dir, "gitdb/version"))
+	require.Equal(t, Result{Migrated: true, From: 1, To: 3}, result)
+	require.Equal(t, "3\n", readBlob(t, dir, "gitdb/version"))
 	require.Equal(t, "keep", readBlob(t, dir, "notes/keep.txt"))
 
 	device := mustParseKeySet(t, readBlob(t, dir, "pubkeys/iphone-16e.yaml"))

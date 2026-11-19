@@ -1025,6 +1025,23 @@ func TestAuthenticator_SkipsKeySetWhoseNameDoesNotMatchFile(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnauthorized)
 }
 
+// An app key set is a client that is not a phone. gitd authorizes it
+// the same way as a device; the type does not decide access.
+func TestReadAuthorizedKeysAcceptsAppType(t *testing.T) {
+	testCtx := gittest.NewContext(t)
+	defer testCtx.Close(t)
+	testRepo := testCtx.CreateTestRepo(t)
+
+	alice, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	body := keySetYAML(t, "uploader", keyset.TypeApp, &alice.PublicKey)
+	commitPubkeyContents(t, testRepo, "uploader.yaml", string(body))
+
+	keys, err := ReadAuthorizedKeys(testRepo.BareRepo)
+	require.NoError(t, err)
+	require.Contains(t, keys, "uploader")
+}
+
 // Old .pub files are not authorized. Membership is the key set only, so a
 // leftover file from before the migration cannot keep a device in.
 func TestAuthenticator_IgnoresStrayPubFile(t *testing.T) {

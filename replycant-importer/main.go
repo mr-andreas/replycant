@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,8 +35,10 @@ import (
 	_ "github.com/gen2brain/heic"
 	"github.com/google/uuid"
 	"github.com/mr-andreas/replycant/pkg/gitcrypt"
+	"github.com/mr-andreas/replycant/pkg/keyset"
 	"github.com/mr-andreas/replycant/pkg/lfsclient"
 	"github.com/mr-andreas/replycant/pkg/tailnetagent"
+	"golang.org/x/crypto/curve25519"
 	xdraw "golang.org/x/image/draw"
 	"gopkg.in/yaml.v3"
 )
@@ -55,18 +58,17 @@ var (
 
 // CLI defines importer arguments to keep invocation simple and explicit.
 type CLI struct {
-	Repo        string `arg:"" help:"Path to the cloned replycant repository."`
-	Source      string `arg:"" help:"Path to directory of files to import (recursive)."`
-	DeviceSpace string `arg:"" help:"Target device space name."`
-	PushEvery   int    `name:"push-every" default:"0" help:"Push every N commits in the background. 0 disables periodic push."`
-	Workers     int    `name:"workers" default:"0" help:"Number of parallel import workers. 0 uses all CPUs."`
-	Verbose     bool   `name:"verbose" short:"v" help:"Mirror git push/fetch/rebase output and LFS upload progress."`
+	Repo            string `arg:"" help:"Path to the cloned replycant repository."`
+	Source          string `arg:"" help:"Path to directory of files to import (recursive)."`
+	EncryptionSpace string `arg:"" help:"Target encryption space name."`
+	PushEvery       int    `name:"push-every" default:"0" help:"Push every N commits in the background. 0 disables periodic push."`
+	Workers         int    `name:"workers" default:"0" help:"Number of parallel import workers. 0 uses all CPUs."`
+	Verbose         bool   `name:"verbose" short:"v" help:"Mirror git push/fetch/rebase output and LFS upload progress."`
 }
 
 // ManifestMetadata carries common metadata fields required by the protocol.
 type ManifestMetadata struct {
-	Name        string `yaml:"name"`
-	DeviceSpace string `yaml:"deviceSpace"`
+	Name string `yaml:"name"`
 }
 
 // OriginalLocation stores optional capture location extracted from media metadata.
@@ -148,6 +150,7 @@ type importer struct {
 	uploadObjects objectUploader
 	kek           []byte
 	kekEpoch      int
+	agePrivate    string
 	gitMu         sync.Mutex
 	shaMu         sync.Mutex
 }
@@ -251,8 +254,8 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 	if cli.Workers < 0 {
 		return fmt.Errorf("workers must be >= 0")
 	}
-	if strings.TrimSpace(cli.DeviceSpace) == "" {
-		return fmt.Errorf("device-space must not be empty")
+	if strings.TrimSpace(cli.EncryptionSpace) == "" {
+		return fmt.Errorf("encryption-space must not be empty")
 	}
 
 	repoAbs, err := filepath.Abs(cli.Repo)
@@ -274,7 +277,7 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 	if err := i.ensureCleanWorktree(workCtx, repoAbs); err != nil {
 		return err
 	}
-	if err := i.setupCryptoAndUploader(workCtx, repoAbs); err != nil {
+	if err := i.setupCryptoAndUploader(workCtx, repoAbs, cli.EncryptionSpace); err != nil {
 		return err
 	}
 	_, _ = i.log("boot: repository ok\n")
@@ -439,7 +442,7 @@ func (i *importer) runStaged(workCtx, flushCtx context.Context, cli CLI) error {
 				if workCtx.Err() != nil {
 					return
 				}
-				prepared, skipped, err := i.prepareFile(workCtx, repoAbs, cli.DeviceSpace, job.path, knownSHAs, knownPathSizes)
+				prepared, skipped, err := i.prepareFile(workCtx, repoAbs, cli.EncryptionSpace, job.path, knownSHAs, knownPathSizes)
 				if err != nil {
 					// Same rule as the commit loop: an upload that failed
 					// with a wrapped cancellation is a lost file while this
@@ -582,7 +585,7 @@ func (i *importer) ensureNoFullLFSClone(ctx context.Context, repoPath string) er
 	if raw, readErr := os.ReadFile(attrPath); readErr == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			trimmed := strings.TrimSpace(line)
-			if trimmed == "binary/** filter=replycant-crypt" {
+			if trimmed == "encryptionspaces/*/binary/** filter=replycant-crypt" {
 				return fmt.Errorf("repository has binary/** LFS filters configured; clone again without --lfs")
 			}
 		}
@@ -597,7 +600,7 @@ func (i *importer) ensureNoFullLFSClone(ctx context.Context, repoPath string) er
 
 // setupCryptoAndUploader loads repository encryption material and the LFS uploader
 // so every binary can be encrypted and pushed before its pointer is committed.
-func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) error {
+func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath, space string) error {
 	local, err := gitcrypt.LoadLocalIdentity(repoPath)
 	if err != nil {
 		return fmt.Errorf("load repository identity: %w", err)
@@ -605,15 +608,22 @@ func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) 
 	if err := gitcrypt.RequireSupportedDatabaseVersionInWorktree(repoPath); err != nil {
 		return err
 	}
-	epochRaw, err := os.ReadFile(filepath.Join(repoPath, "encryption", "current"))
+	root := gitcrypt.GlobalKeySetRoot
+	spaceCurrent := filepath.Join(repoPath, filepath.FromSlash(gitcrypt.SpaceKeySetRoot(space)), "current")
+	if _, statErr := os.Stat(spaceCurrent); statErr == nil {
+		root = gitcrypt.SpaceKeySetRoot(space)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", spaceCurrent, statErr)
+	}
+	epochRaw, err := os.ReadFile(filepath.Join(repoPath, filepath.FromSlash(root), "current"))
 	if err != nil {
-		return fmt.Errorf("read encryption/current: %w", err)
+		return fmt.Errorf("read %s/current: %w", root, err)
 	}
 	epoch, err := gitcrypt.ParseCurrentEpoch(epochRaw)
 	if err != nil {
 		return err
 	}
-	envelopePath := filepath.Join(repoPath, "encryption", "epochs", fmt.Sprintf("%d.age", epoch))
+	envelopePath := filepath.Join(repoPath, filepath.FromSlash(root), "epochs", fmt.Sprintf("%d.age", epoch))
 	envelope, err := os.ReadFile(envelopePath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", envelopePath, err)
@@ -624,6 +634,7 @@ func (i *importer) setupCryptoAndUploader(ctx context.Context, repoPath string) 
 	}
 	i.kek = kek
 	i.kekEpoch = epoch
+	i.agePrivate = local.Identity.AgePrivateKeyBase64
 
 	if i.uploadObjects != nil {
 		return nil
@@ -844,17 +855,129 @@ func streamSourceFiles(ctx context.Context, root string, q *sourceQueue, progres
 	return nil
 }
 
+// spacesThisIdentityCanRead reports whether the walk must skip spaces.
+// A library member reads every space. A missing recipient list means
+// this checkout has not recorded membership, so the walk is unrestricted.
+func (i *importer) spacesThisIdentityCanRead(repoPath string) (bool, map[string]struct{}, error) {
+	raw, err := os.ReadFile(filepath.Join(repoPath, gitcrypt.GlobalKeySetRoot, gitcrypt.RecipientsFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	global, err := gitcrypt.ParseRecipientList(raw)
+	if err != nil {
+		return false, nil, err
+	}
+	name, err := i.keySetName(repoPath)
+	if err != nil {
+		return false, nil, err
+	}
+	if name == "" {
+		return false, nil, fmt.Errorf("identity is not a key set in this library")
+	}
+	for _, member := range global.Members {
+		if member == name {
+			return false, nil, nil
+		}
+	}
+	allowed := map[string]struct{}{}
+	entries, err := os.ReadDir(filepath.Join(repoPath, "encryptionspaces"))
+	if err != nil {
+		return false, nil, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		body, readErr := os.ReadFile(filepath.Join(repoPath, "encryptionspaces", entry.Name(), "encryption", gitcrypt.RecipientsFileName))
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			return false, nil, readErr
+		}
+		list, parseErr := gitcrypt.ParseRecipientList(body)
+		if parseErr != nil {
+			return false, nil, parseErr
+		}
+		for _, member := range list.Members {
+			if member == name {
+				allowed[entry.Name()] = struct{}{}
+			}
+		}
+	}
+	return true, allowed, nil
+}
+
+func (i *importer) keySetName(repoPath string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(i.agePrivate)
+	if err != nil || len(raw) != 32 {
+		return "", fmt.Errorf("age private key")
+	}
+	pub, err := curve25519.X25519(raw, curve25519.Basepoint)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := gitcrypt.EncodeAgePublicKey(pub)
+	if err != nil {
+		return "", err
+	}
+	files, err := filepath.Glob(filepath.Join(repoPath, "pubkeys", "*.yaml"))
+	if err != nil {
+		return "", err
+	}
+	for _, file := range files {
+		body, readErr := os.ReadFile(file)
+		if readErr != nil {
+			return "", readErr
+		}
+		parsed, parseErr := keyset.Parse(body)
+		if parseErr != nil {
+			continue
+		}
+		if parsed.Spec.AgePublicKey == encoded {
+			return parsed.Metadata.Name, nil
+		}
+	}
+	return "", nil
+}
+
+func allowedSpace(base, path string, allowed map[string]struct{}) bool {
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return false
+	}
+	space, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+	if space == "" || space == "." {
+		return true
+	}
+	_, ok := allowed[space]
+	return ok
+}
+
 // loadExistingSHAs indexes all existing Original manifests across all device spaces.
 func (i *importer) loadExistingSHAs(repoPath string) (map[string]struct{}, map[string]int64, error) {
 	ret := map[string]struct{}{}
 	pathSizes := map[string]int64{}
-	base := filepath.Join(repoPath, "manifests")
+	base := filepath.Join(repoPath, "encryptionspaces")
 	if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
 		return ret, pathSizes, nil
 	}
-	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+	restrict, allowed, err := i.spacesThisIdentityCanRead(repoPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if restrict && !allowedSpace(base, path, allowed) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() || filepath.Ext(path) != ".yaml" {
 			return nil
@@ -953,8 +1076,8 @@ func (i *importer) prepareFile(ctx context.Context, repoPath, deviceSpace, sourc
 
 	name := strings.ToLower(i.newUUID())
 	originalRef := fmt.Sprintf("%s/%s/Original/%s", deviceSpace, apiVersion, name)
-	manifestPath := filepath.Join(repoPath, "manifests", deviceSpace, apiVersion, "Original", shardName(name)+".yaml")
-	binaryPath := filepath.Join(repoPath, "binary", deviceSpace, apiVersion, "Original", shardName(name))
+	manifestPath := filepath.Join(repoPath, "encryptionspaces", deviceSpace, "manifests", apiVersion, "Original", shardName(name)+".yaml")
+	binaryPath := filepath.Join(repoPath, "encryptionspaces", deviceSpace, "binary", apiVersion, "Original", shardName(name))
 
 	modifiedAt := i.now().UTC().Format(time.RFC3339)
 	if st, err := os.Stat(sourcePath); err == nil {
@@ -997,8 +1120,7 @@ func (i *importer) prepareFile(ctx context.Context, repoPath, deviceSpace, sourc
 		APIVersion: apiVersion,
 		Kind:       "Original",
 		Metadata: ManifestMetadata{
-			Name:        name,
-			DeviceSpace: deviceSpace,
+			Name: name,
 		},
 		Spec: OriginalSpec{
 			ID:             name,
@@ -1031,8 +1153,9 @@ func (i *importer) prepareFile(ctx context.Context, repoPath, deviceSpace, sourc
 	}
 	thumbs.manifestPath = filepath.Join(
 		repoPath,
-		"manifests",
+		"encryptionspaces",
 		deviceSpace,
+		"manifests",
 		apiVersion,
 		"ThumbnailSet",
 		shardName(thumbs.manifest.Metadata.Name)+".yaml",
@@ -1052,7 +1175,7 @@ func (i *importer) prepareFile(ctx context.Context, repoPath, deviceSpace, sourc
 	}
 	uploads = append(uploads, originalUpload)
 	for _, payload := range thumbs.payloads {
-		thumbBinaryPath := filepath.Join(repoPath, "binary", deviceSpace, apiVersion, "ThumbnailSet", shardName(payload.name))
+		thumbBinaryPath := filepath.Join(repoPath, "encryptionspaces", deviceSpace, "binary", apiVersion, "ThumbnailSet", shardName(payload.name))
 		thumbUpload, err := i.prepareBytesUpload(payload.jpeg, thumbBinaryPath)
 		if err != nil {
 			return nil, false, err
@@ -1107,8 +1230,7 @@ func (i *importer) generateThumbnails(ctx context.Context, deviceSpace, original
 			APIVersion: apiVersion,
 			Kind:       "ThumbnailSet",
 			Metadata: ManifestMetadata{
-				Name:        originalName + "-thumbs",
-				DeviceSpace: deviceSpace,
+				Name: originalName + "-thumbs",
 			},
 			Spec: ThumbnailSetSpec{
 				OriginalRef: originalRef,

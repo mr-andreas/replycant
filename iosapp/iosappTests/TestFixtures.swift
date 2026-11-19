@@ -57,10 +57,10 @@ class TestFixtures {
         let deviceSpace = "test-device-space"
         
         // Create directory structure
-        let manifestDir = (repoPath as NSString).appendingPathComponent("manifests/\(deviceSpace)/media.replycant.com/v1alpha1")
+        let manifestDir = (repoPath as NSString).appendingPathComponent("encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1")
         let originalManifestDir = (manifestDir as NSString).appendingPathComponent("Original")
         let thumbnailManifestDir = (manifestDir as NSString).appendingPathComponent("ThumbnailSet")
-        let binaryDir = (repoPath as NSString).appendingPathComponent("binary/\(deviceSpace)/media.replycant.com/v1alpha1")
+        let binaryDir = (repoPath as NSString).appendingPathComponent("encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1")
         let originalBinaryDir = (binaryDir as NSString).appendingPathComponent("Original")
         let thumbnailBinaryDir = (binaryDir as NSString).appendingPathComponent("ThumbnailSet")
         
@@ -116,7 +116,7 @@ class TestFixtures {
                 epoch: bootstrap.epoch
             )
             
-            let originalManifestPath = "manifests/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(name)).yaml"
+            let originalManifestPath = "encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1/Original/\(shardName(name)).yaml"
             filesToCommit.append((path: originalManifestPath, content: originalManifest))
             
             // Create LFS pointer for original
@@ -126,7 +126,7 @@ class TestFixtures {
             size \(imageData.count)
             """
             
-            let originalPointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(name))"
+            let originalPointerPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/Original/\(shardName(name))"
             filesToCommit.append((path: originalPointerPath, content: originalPointer))
             
             // Create thumbnails with different sizes
@@ -155,7 +155,7 @@ class TestFixtures {
                 size \(thumbnailData.count)
                 """
                 
-                let thumbnailPointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnailName))"
+                let thumbnailPointerPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnailName))"
                 filesToCommit.append((path: thumbnailPointerPath, content: thumbnailPointer))
             }
 
@@ -175,7 +175,7 @@ class TestFixtures {
                 kek: bootstrap.kek,
                 epoch: bootstrap.epoch
             )
-            let thumbnailManifestPath = "manifests/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("\(name)-thumbs")).yaml"
+            let thumbnailManifestPath = "encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("\(name)-thumbs")).yaml"
             filesToCommit.append((path: thumbnailManifestPath, content: thumbnailSetManifest))
         }
         
@@ -214,10 +214,10 @@ class TestFixtures {
         
         for (deviceSpace, images) in deviceSpaces {
             // Create directory structure
-            let manifestDir = (repoPath as NSString).appendingPathComponent("manifests/\(deviceSpace)/media.replycant.com/v1alpha1")
+            let manifestDir = (repoPath as NSString).appendingPathComponent("encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1")
             let originalManifestDir = (manifestDir as NSString).appendingPathComponent("Original")
             let thumbnailManifestDir = (manifestDir as NSString).appendingPathComponent("ThumbnailSet")
-            let binaryDir = (repoPath as NSString).appendingPathComponent("binary/\(deviceSpace)/media.replycant.com/v1alpha1")
+            let binaryDir = (repoPath as NSString).appendingPathComponent("encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1")
             let originalBinaryDir = (binaryDir as NSString).appendingPathComponent("Original")
             let thumbnailBinaryDir = (binaryDir as NSString).appendingPathComponent("ThumbnailSet")
             
@@ -263,7 +263,7 @@ class TestFixtures {
                     epoch: bootstrap.epoch
                 )
                 
-                let originalManifestPath = "manifests/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(name)).yaml"
+                let originalManifestPath = "encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1/Original/\(shardName(name)).yaml"
                 filesToCommit.append((path: originalManifestPath, content: originalManifest))
                 
                 // Create LFS pointer for original
@@ -273,7 +273,7 @@ class TestFixtures {
                 size \(imageData.count)
                 """
                 
-                let originalPointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(name))"
+                let originalPointerPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/Original/\(shardName(name))"
                 filesToCommit.append((path: originalPointerPath, content: originalPointer))
                 
                 // Create thumbnails with different sizes
@@ -302,7 +302,7 @@ class TestFixtures {
                     size \(thumbnailData.count)
                     """
                     
-                    let thumbnailPointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnailName))"
+                    let thumbnailPointerPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnailName))"
                     filesToCommit.append((path: thumbnailPointerPath, content: thumbnailPointer))
                 }
 
@@ -322,7 +322,7 @@ class TestFixtures {
                     kek: bootstrap.kek,
                     epoch: bootstrap.epoch
                 )
-                let thumbnailManifestPath = "manifests/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("\(name)-thumbs")).yaml"
+                let thumbnailManifestPath = "encryptionspaces/\(deviceSpace)/manifests/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName("\(name)-thumbs")).yaml"
                 filesToCommit.append((path: thumbnailManifestPath, content: thumbnailSetManifest))
             }
         }

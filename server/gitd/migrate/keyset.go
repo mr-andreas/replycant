@@ -13,6 +13,7 @@ import (
 // applies every step between the stored marker and that pin.
 var productionSteps = []Step{
 	{From: 1, Apply: keySetsFromPubkeyFiles},
+	{From: 2, Apply: encryptionSpacesFromDeviceSpaces},
 }
 
 // keySetsFromPubkeyFiles turns loose pubkeys/*.pub and *.age files

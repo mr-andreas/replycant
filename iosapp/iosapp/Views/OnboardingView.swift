@@ -688,7 +688,10 @@ struct OnboardingView: View {
         let publicKey = try ClientIdentityManager.shared.sshPublicKey(comment: deviceName)
         let agePublicKey = try ClientIdentityManager.shared.agePublicKey()
         let epochs = KEKEpochManager(repository: repository)
-        let kekBootstrapFiles = try epochs.bootstrapFilesForFirstEpoch(recipientAgePubkeys: [agePublicKey])
+        let kekBootstrapFiles = try epochs.bootstrapFilesForFirstEpoch(
+            recipientAgePubkeys: [agePublicKey],
+            memberName: deviceName
+        )
         guard let kek = epochs.cachedKEK(epoch: 1) else {
             throw OnboardingError.repositoryError("Failed to prepare encryption keys")
         }

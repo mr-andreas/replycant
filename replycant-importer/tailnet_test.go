@@ -25,7 +25,7 @@ func TestImporterRefusesRepoWithoutTailnetConfig(t *testing.T) {
 	imp, _, _, _ := newTestImporter(t, nil)
 	imp.uploadObjects = nil
 
-	err := imp.setupCryptoAndUploader(context.Background(), repo)
+	err := imp.setupCryptoAndUploader(context.Background(), repo, "device-a")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, tailnetagent.ErrNotConfigured)
 }
@@ -50,7 +50,7 @@ func TestImporterLFSUsesTailnetProxy(t *testing.T) {
 
 	imp, _, _, _ := newTestImporter(t, nil)
 	imp.uploadObjects = nil
-	require.NoError(t, imp.setupCryptoAndUploader(context.Background(), repo))
+	require.NoError(t, imp.setupCryptoAndUploader(context.Background(), repo, "device-a"))
 
 	client, endpoint, err := tailnetLFSClient(context.Background(), imp, repo, origin)
 	require.NoError(t, err)

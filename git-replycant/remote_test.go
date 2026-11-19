@@ -89,6 +89,9 @@ func TestRemoteHelperUsesAgentProxy(t *testing.T) {
 	gitDir := t.TempDir()
 	writeTailnetFiles(t, gitDir)
 	t.Setenv("GIT_DIR", gitDir)
+	// The helper appends after any git config already in the environment.
+	// Pin the count so the assertion names a known slot.
+	t.Setenv("GIT_CONFIG_COUNT", "0")
 
 	restore := stubRemoteHelper(
 		func(context.Context, string, tailnetagent.StartConfig, tailnetagent.Spawner) (string, error) {

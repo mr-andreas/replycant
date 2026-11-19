@@ -98,6 +98,7 @@ struct AuthorizedDeviceManagerTests {
         #expect(Set(change.files.map(\.path)) == [
             "encryption/current",
             "encryption/epochs/2.age",
+            "encryption/recipients.yaml",
         ])
         #expect(change.files.first { $0.path == "encryption/current" }?.content == "2\n")
         #expect(try repo.readFile(at: "encryption/epochs/1.age") == "epoch-one\n")

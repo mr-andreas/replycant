@@ -346,7 +346,7 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         }
 
         let deviceSpace = thumbnailSet.metadata.deviceSpace
-        let thumbnailPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnail.name))"
+        let thumbnailPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnail.name))"
         posterLoadTask?.cancel()
         let itemID = item.id
         posterLoadTask = Task { [weak self] in

@@ -111,7 +111,15 @@ public enum EncryptedLFS {
         let pointerContent = try repository.readFile(at: filePath)
         let pointer = try EncryptedLFSPointer.parse(pointerContent)
         let downloaded = try await lfsClient.downloadData(oid: pointer.oid, size: pointer.size)
-        let kek = try KEKEpochManager(repository: repository).loadKEK(epoch: pointer.kekEpoch)
+        let manager = KEKEpochManager(repository: repository)
+        let root: String
+        if let space = EncryptionLayout.space(from: filePath),
+           repository.fileExists(at: EncryptionLayout.spaceKeySetRoot(space) + "/current") {
+            root = EncryptionLayout.spaceKeySetRoot(space)
+        } else {
+            root = EncryptionLayout.globalRoot
+        }
+        let kek = try manager.loadKEK(epoch: pointer.kekEpoch, root: root)
         guard let wrappedDEKData = Data(base64Encoded: pointer.wrappedDEK) else {
             throw EncryptedLFSError.invalidEncryptionMetadata
         }

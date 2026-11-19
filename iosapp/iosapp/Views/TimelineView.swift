@@ -1000,7 +1000,7 @@ final class FullResolutionImageLoader: ObservableObject {
         lfsClient: GitLFS
     ) async throws -> Data {
         let deviceSpace = item.original.metadata.deviceSpace
-        let originalPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
+        let originalPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
         let mediaData = try await ImageDiskCacheManager.shared.loadImageData(
             kind: .original,
             priority: priority,
@@ -1484,7 +1484,7 @@ final class FullResolutionImageLoader: ObservableObject {
     // Resolves encrypted object metadata and unwraps the per-object DEK locally to keep KEK off backend networks.
     static func resolveVideoPlaybackContext(item: TimelineItem, repository: Repository) throws -> VideoPlaybackContext {
         let deviceSpace = item.original.metadata.deviceSpace
-        let pointerPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
+        let pointerPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/Original/\(shardName(item.original.metadata.name))"
         let pointerContent = try repository.readFile(at: pointerPath)
         let pointer = try EncryptedLFSPointer.parse(pointerContent)
 
@@ -1744,7 +1744,7 @@ final class ImageLoader: ObservableObject {
                 if let thumbnailSet = thumbnailSet,
                    let thumbnail = pickBestThumbnailEntry(from: thumbnailSet, targetWidth: 225) {
                     let deviceSpace = thumbnailSet.metadata.deviceSpace
-                    let thumbnailPath = "binary/\(deviceSpace)/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnail.name))"
+                    let thumbnailPath = "encryptionspaces/\(deviceSpace)/binary/media.replycant.com/v1alpha1/ThumbnailSet/\(shardName(thumbnail.name))"
                     
                     let fetchSignpost = AppSignposts.begin("TimelineThumbnailFetchLFS")
                     let imageData = try await ImageDiskCacheManager.shared.loadImageData(

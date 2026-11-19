@@ -625,6 +625,25 @@ func PreExtractEncryptionFiles(ctx context.Context, repoDir string, branch strin
 	if err := RunGit(ctx, repoDir, "checkout", remoteRef, "--", "gitdb/", "encryption/"); err != nil {
 		return fmt.Errorf("failed to pre-extract gitdb and encryption metadata from %s: %w", remoteRef, err)
 	}
+	// Space key sets have to be on disk before smudge decrypts that
+	// space. Checking out the whole tree would smudge its binaries first.
+	out, err := RunGitOutput(ctx, repoDir, "ls-tree", "-d", "-r", "--name-only", remoteRef, "encryptionspaces")
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasSuffix(line, "/encryption") {
+			paths = append(paths, line)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"checkout", remoteRef, "--"}, paths...)
+	if err := RunGit(ctx, repoDir, args...); err != nil {
+		return fmt.Errorf("failed to pre-extract space key sets from %s: %w", remoteRef, err)
+	}
 	return nil
 }
 
@@ -663,10 +682,10 @@ func resolveTargetRepoDir(directory string, repoURL string) (string, error) {
 // ConfigureRepository installs filter and TLS settings so normal git commands transparently decrypt/encrypt manifests.
 func ConfigureRepository(repoDir string, lfsURL string, local gitcrypt.LocalIdentity, caFilePath string) error {
 	ctx := context.Background()
-	if err := appendRepoAttributes(repoDir, "manifests/** filter=replycant-crypt"); err != nil {
+	if err := appendRepoAttributes(repoDir, "encryptionspaces/*/manifests/** filter=replycant-crypt"); err != nil {
 		return err
 	}
-	if err := appendRepoAttributes(repoDir, "manifests/** diff=replycant-crypt"); err != nil {
+	if err := appendRepoAttributes(repoDir, "encryptionspaces/*/manifests/** diff=replycant-crypt"); err != nil {
 		return err
 	}
 	if err := RunGit(ctx, repoDir, "config", "--local", "filter.replycant-crypt.process", "git-replycant filter-process"); err != nil {
@@ -697,7 +716,7 @@ func ConfigureRepository(repoDir string, lfsURL string, local gitcrypt.LocalIden
 		if err := RunGit(ctx, repoDir, "config", "--local", "lfs.url", lfsURL); err != nil {
 			return err
 		}
-		if err := appendRepoAttributes(repoDir, "binary/** filter=replycant-crypt"); err != nil {
+		if err := appendRepoAttributes(repoDir, "encryptionspaces/*/binary/** filter=replycant-crypt"); err != nil {
 			return err
 		}
 		if err := installReplycantPrePushHook(repoDir); err != nil {
