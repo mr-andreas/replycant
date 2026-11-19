@@ -62,10 +62,13 @@ The step from 2 to 3 moves every `manifests/{space}/...` file to
 `encryptionspaces/{space}/manifests/...` and every `binary/{space}/...`
 file to `encryptionspaces/{space}/binary/...`. File contents do not change,
 so ciphertext, LFS pointers, and LFS objects stay valid, and no key is
-needed. Every moved space uses the global key set. The step stops without
-moving `main` if a file sits directly under `manifests/` or `binary/`, or
-if `encryptionspaces/` already exists. A library at version 1 goes through
-both steps in the same commit.
+needed. Every moved space uses the global key set. The step also writes
+`encryption/recipients.yaml` with every key set in `pubkeys/` as a member.
+That matches who the global epochs are wrapped for at version 2, so nobody
+gains or loses access. The step stops without moving `main` if a file sits
+directly under `manifests/` or `binary/`, or if `encryptionspaces/` or
+`encryption/recipients.yaml` already exists. A library at version 1 goes
+through both steps in the same commit.
 
 The commit advances `main` only if it still points at the commit gitd read.
 

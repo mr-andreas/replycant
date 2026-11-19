@@ -26,7 +26,7 @@ Bootstrap mode allows the first device to push to an empty repository without pr
 
 1. **Open the CA page** at `http://<server>:8080`, either on the machine running gitd or from another machine on the LAN. Set `REPLYCANT_CA_BIND=127.0.0.1` to keep it on the host. The page hands out join keys only while the repository is empty. After that it answers `410 Gone`.
 2. **Scan the QR** with the iOS app, the only client that can create a library. The payload is a one-time join: CA, headscale URL, and a preauth key. Clients already know gitd as `https://gitd.replycant.internal:8443`.
-3. **Join, then push**: the first device joins the tailnet, creates a local repository, commits its public key to `pubkeys/`, and pushes. The server accepts because the repository is empty.
+3. **Join, then push**: the first device joins the tailnet, creates a local repository, commits its public key to `pubkeys/` and itself as the only member of `encryption/recipients.yaml`, and pushes. The server accepts because the repository is empty.
 4. **Access control active**: subsequent connections require a certificate matching a key in `pubkeys/`
 
 While the repository has no branches, `hsproxy` allows the first device's certificate even though it is not in `pubkeys/` yet. That exemption is what makes the join possible: the key cannot be committed until gitd is reachable over the tailnet, and the bootstrap push is what closes the window. [Joining a new repository](./connectivity.md#joining-a-new-repository) walks the whole path.
@@ -68,7 +68,7 @@ When a repository already has authorized devices, new devices must be explicitly
 
 ### Durable writes
 
-Device A publishes that key as one step. The same step creates or removes a recovery key, or removes another device. Removing a device also starts a new encryption epoch in that commit, in the global key set and in every [encryption space](./encryption.md#encryption-spaces) with its own key set, so the removed device cannot read anything added afterwards. Adding a device re-wraps all of those key sets for it. The phone waits until it is on the library network, checks that its copy of the library matches the server, then commits and pushes. If the push does not succeed, the commit is removed. A failure does not always mean the server missed the change: the connection can drop after the server has accepted it. The next sync brings that commit back, and the phone asks you to sync before trying again.
+Device A publishes that key as one step. The same step creates or removes a recovery key, or removes another device. Adding a device also adds it to the global [recipient list](./encryption.md#recipient-lists), and re-wraps the global key set and every `library` [encryption space](./encryption.md#encryption-spaces) for it. An `explicit` space gets the new device only if one of its members adds it. Removing a device removes it from every recipient list Device A can read, and starts a new encryption epoch in each of those key sets in that commit, so the removed device cannot read anything added afterwards. Spaces that Device A cannot read are rotated by one of their own members on its next sync; see [Revoking in spaces you cannot read](./encryption.md#revoking-in-spaces-you-cannot-read). The phone waits until it is on the library network, checks that its copy of the library matches the server, then commits and pushes. If the push does not succeed, the commit is removed. A failure does not always mean the server missed the change: the connection can drop after the server has accepted it. The next sync brings that commit back, and the phone asks you to sync before trying again.
 
 ### Phase 2: Reaching the server
 
@@ -215,9 +215,9 @@ starts from a recovery bundle instead of a pairing QR from another device.
    identity, which hsproxy authorizes like any device. hsproxy sends the CA
    after its leaf, and the app takes the CA from that chain.
 3. App authenticates once with temporary recovery identity.
-4. App clones repository, registers a new normal device key, and re-wraps the
-   KEK epochs of the global key set and of every encryption space with its
-   own key set for the new device age key.
+4. App clones repository and registers a new normal device key. It adds the
+   device to every recipient list that names the recovery key, and re-wraps
+   every key set the recovery key can read for the new device age key.
 5. App switches back to normal device identity and deletes temporary recovery
    identity artifacts. It rejoins the tailnet as the device, because hsproxy
    checks the identity on every control connection and the recovery key is
