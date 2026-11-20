@@ -92,6 +92,14 @@ public actor ManifestSyncEngine {
         var updated: [any Manifest] = []
         var removed: [any Manifest] = []
 
+        // A large incremental update is what an open library applies.
+        // Without these counts the bar freezes after the pack download
+        // for the whole parse and the database write.
+        let progressTotal = changedPaths.count
+        let progressStride = max(1, progressTotal / 1_000)
+        progressHandler?("Reading manifests", 0, progressTotal)
+        var loadedManifests = 0
+
         let keksByRoot = try preloadAllKEKs(commitOid: head)
         var remainingPaths = changedPaths[...]
         try await withThrowingTaskGroup(of: IncrementalManifestPair.self) { group in
@@ -139,6 +147,11 @@ public actor ManifestSyncEngine {
                     }
                 }
 
+                loadedManifests += 1
+                if loadedManifests == progressTotal || loadedManifests % progressStride == 0 {
+                    progressHandler?("Reading manifests", loadedManifests, progressTotal)
+                }
+
                 switch (pair.oldManifest, pair.newManifest) {
                 case (nil, .some(let newManifest)):
                     added.append(newManifest)
@@ -152,6 +165,7 @@ public actor ManifestSyncEngine {
             }
         }
 
+        progressHandler?("Updating database", 0, 1)
         try await database.applyMutation(
             added: added,
             updated: updated,
@@ -159,6 +173,7 @@ public actor ManifestSyncEngine {
             commitHash: head,
             cacheFormatVersion: observed
         )
+        progressHandler?("Updating database", 1, 1)
     }
 
     // Applies local commit manifests directly so write paths remain git-first and then cache-consistent.

@@ -848,9 +848,45 @@ public final class Repository: @unchecked Sendable {
         logDebug("Successfully set upstream for '\(localBranch)' to '\(upstreamName)'")
     }
     
+    // Builds fetch options whose transfer callback is the throttled
+    // progress reporter. The returned container must be retained until
+    // git_remote_fetch returns: libgit2 holds an unretained pointer to it.
+    // Fetch and pull share this so a long pack download can move a bar
+    // from whichever call actually transfers objects.
+    private func transferFetchOptions(
+        progressCallback: ((GitProgress) -> Void)?
+    ) -> (options: git_fetch_options, container: ProgressCallbackContainer?) {
+        var callbacks = git_remote_callbacks()
+        _ = git_remote_init_callbacks(&callbacks, UInt32(GIT_REMOTE_CALLBACKS_VERSION))
+        let container = progressCallback.map { ProgressCallbackContainer(callback: $0) }
+        callbacks.transfer_progress = { stats, payload -> Int32 in
+            guard let stats, let payload else { return 0 }
+            let container = Unmanaged<ProgressCallbackContainer>.fromOpaque(payload).takeUnretainedValue()
+            let progress = GitProgress.fetchProgress(
+                receivedObjects: stats.pointee.received_objects,
+                totalObjects: stats.pointee.total_objects,
+                indexedObjects: stats.pointee.indexed_objects,
+                receivedBytes: UInt64(stats.pointee.received_bytes)
+            )
+            container.update(progress: progress)
+            return 0
+        }
+        var options = git_fetch_options()
+        _ = git_fetch_options_init(&options, UInt32(GIT_FETCH_OPTIONS_VERSION))
+        options.callbacks = callbacks
+        if let container {
+            options.callbacks.payload = Unmanaged.passUnretained(container).toOpaque()
+        }
+        options.follow_redirects = GIT_REMOTE_REDIRECT_INITIAL
+        return (options, container)
+    }
+
     // Fetches from a remote to update remote-tracking refs without modifying the working directory.
     // This updates the ahead/behind information shown by git status.
-    public func fetch(remoteName: String = "origin") throws {
+    public func fetch(
+        remoteName: String = "origin",
+        progressCallback: ((GitProgress) -> Void)? = nil
+    ) throws {
         let fetchSignpost = GitSignposts.begin("GitFetch")
         var fetchSucceeded = false
         var fetchedTotalObjects: UInt32 = 0
@@ -886,19 +922,13 @@ public final class Repository: @unchecked Sendable {
             log("Fetching from URL: \(urlString)")
         }
         
-        var callbacks = git_remote_callbacks()
-        let callbacksResult = git_remote_init_callbacks(&callbacks, UInt32(GIT_REMOTE_CALLBACKS_VERSION))
-        log("Initialized callbacks, result: \(callbacksResult)")
-        
-        var fetchOptions = git_fetch_options()
-        let fetchOptionsResult = git_fetch_options_init(&fetchOptions, UInt32(GIT_FETCH_OPTIONS_VERSION))
-        log("Initialized fetch options, result: \(fetchOptionsResult)")
-        fetchOptions.callbacks = callbacks
-        fetchOptions.follow_redirects = GIT_REMOTE_REDIRECT_INITIAL
+        let transfer = transferFetchOptions(progressCallback: progressCallback)
+        var fetchOptions = transfer.options
         
         log("Starting fetch operation...")
         let startTime = Date()
         let fetchResult = git_remote_fetch(gitRemote, nil, &fetchOptions, nil)
+        transfer.container?.flush()
         let duration = Date().timeIntervalSince(startTime)
         log("Fetch operation completed with result: \(fetchResult) in \(String(format: "%.2f", duration))s")
         
@@ -1149,40 +1179,13 @@ public final class Repository: @unchecked Sendable {
             logDebug("REBASE - Remote URL: \(urlString)")
         }
         
-        var callbacks = git_remote_callbacks()
-        let callbacksResult = git_remote_init_callbacks(&callbacks, UInt32(GIT_REMOTE_CALLBACKS_VERSION))
-        logDebug("REBASE - Initialized callbacks, result: \(callbacksResult)")
-        
-        // Create a container with throttling for progress updates
-        let container = progressCallback.map { ProgressCallbackContainer(callback: $0) }
-        let payload = container.map { Unmanaged.passUnretained($0).toOpaque() } ?? nil
-        
-        callbacks.transfer_progress = { (stats, payload) -> Int32 in
-            guard let stats = stats, let payload = payload else { return 0 }
-            
-            let container = Unmanaged<ProgressCallbackContainer>.fromOpaque(payload).takeUnretainedValue()
-            
-            let progress = GitProgress.fetchProgress(
-                receivedObjects: stats.pointee.received_objects,
-                totalObjects: stats.pointee.total_objects,
-                indexedObjects: stats.pointee.indexed_objects,
-                receivedBytes: UInt64(stats.pointee.received_bytes)
-            )
-            
-            container.update(progress: progress)
-            return 0
-        }
-        
-        var fetchOptions = git_fetch_options()
-        let fetchOptionsResult = git_fetch_options_init(&fetchOptions, UInt32(GIT_FETCH_OPTIONS_VERSION))
-        logDebug("REBASE - Initialized fetch options, result: \(fetchOptionsResult)")
-        fetchOptions.callbacks = callbacks
-        fetchOptions.callbacks.payload = payload
-        fetchOptions.follow_redirects = GIT_REMOTE_REDIRECT_INITIAL
+        let transfer = transferFetchOptions(progressCallback: progressCallback)
+        var fetchOptions = transfer.options
         
         logDebug("REBASE - Starting fetch operation...")
         let startTime = Date()
         let fetchResult = git_remote_fetch(gitRemote, nil, &fetchOptions, nil)
+        transfer.container?.flush()
         let fetchDuration = Date().timeIntervalSince(startTime)
         logDebug("REBASE - Fetch operation completed with result: \(fetchResult) in \(String(format: "%.2f", fetchDuration))s")
         
@@ -1232,7 +1235,7 @@ public final class Repository: @unchecked Sendable {
                 log("REBASE - Warning - Failed to set upstream tracking after bootstrap fast-forward: \(error.localizedDescription)")
             }
 
-            container?.flush()
+            transfer.container?.flush()
             let totalDuration = Date().timeIntervalSince(startTime)
             log("REBASE - Successfully bootstrapped local branch from upstream in \(String(format: "%.2f", totalDuration))s")
             pullSucceeded = true
@@ -1244,7 +1247,7 @@ public final class Repository: @unchecked Sendable {
             logDebug("REBASE - Already up to date, skipping rebase")
             
             // Flush any pending progress updates
-            container?.flush()
+            transfer.container?.flush()
             
             // Still set upstream tracking branch for git status
             do {
@@ -1271,7 +1274,7 @@ public final class Repository: @unchecked Sendable {
                 log("REBASE - Warning - Failed to set upstream tracking after fast-forward: \(error.localizedDescription)")
             }
 
-            container?.flush()
+            transfer.container?.flush()
             let totalDuration = Date().timeIntervalSince(startTime)
             log("REBASE - Successfully completed pull via fast-forward in \(String(format: "%.2f", totalDuration))s")
             pullSucceeded = true
@@ -1292,7 +1295,7 @@ public final class Repository: @unchecked Sendable {
         if headDescendsFromUpstream == 1 {
             logDebug("REBASE - Local branch is ahead of upstream with no divergence, skipping rebase")
 
-            container?.flush()
+            transfer.container?.flush()
 
             do {
                 try setUpstreamBranch(localBranch: actualBranch, remoteName: remoteName, remoteBranch: actualBranch)
@@ -1488,7 +1491,7 @@ public final class Repository: @unchecked Sendable {
         try fastForward(toOID: targetSha, branchName: actualBranch)
         
         // Flush any pending progress updates
-        container?.flush()
+        transfer.container?.flush()
         
         // Configure upstream tracking branch so git status can show ahead/behind comparisons
         do {

@@ -319,6 +319,7 @@ public final class GitDatabase: Sendable {
     public func pull(
         remoteName: String = "origin",
         branchName: String? = nil,
+        transferProgress: ((GitProgress) -> Void)? = nil,
         progressHandler: SyncProgressHandler? = nil
     ) async throws {
         let resolved = resolvedBranch(branchName)
@@ -336,9 +337,9 @@ public final class GitDatabase: Sendable {
             }
         }
         try await repository.withMutationLock {
-            try repository.fetch(remoteName: remoteName)
+            try repository.fetch(remoteName: remoteName, progressCallback: transferProgress)
             try await refuseRebaseAcrossFormatChangeIfNeeded(remoteName: remoteName, branchName: resolved)
-            try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: nil)
+            try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: transferProgress)
             try await syncEngine.syncToHead(progressHandler: progressHandler)
         }
         succeeded = true
@@ -349,13 +350,14 @@ public final class GitDatabase: Sendable {
     public func tryPull(
         remoteName: String = "origin",
         branchName: String? = nil,
+        transferProgress: ((GitProgress) -> Void)? = nil,
         progressHandler: SyncProgressHandler? = nil
     ) async throws -> Bool {
         let resolved = resolvedBranch(branchName)
         let pulled = try await repository.tryWithMutationLock {
-            try repository.fetch(remoteName: remoteName)
+            try repository.fetch(remoteName: remoteName, progressCallback: transferProgress)
             try await refuseRebaseAcrossFormatChangeIfNeeded(remoteName: remoteName, branchName: resolved)
-            try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: nil)
+            try repository.pullRebase(remoteName: remoteName, branchName: resolved, progressCallback: transferProgress)
             try await syncEngine.syncToHead(progressHandler: progressHandler)
             return true
         }
@@ -368,11 +370,12 @@ public final class GitDatabase: Sendable {
     public func hardResetToRemote(
         remoteName: String = "origin",
         branchName: String? = nil,
+        transferProgress: ((GitProgress) -> Void)? = nil,
         progressHandler: SyncProgressHandler? = nil
     ) async throws {
         let resolved = resolvedBranch(branchName)
         try await repository.withMutationLock {
-            try repository.fetch(remoteName: remoteName)
+            try repository.fetch(remoteName: remoteName, progressCallback: transferProgress)
             guard let remoteOID = repository.oid(forRef: "refs/remotes/\(remoteName)/\(resolved)") else {
                 throw GitError.repositoryError(
                     "Failed to find upstream branch: refs/remotes/\(remoteName)/\(resolved)"

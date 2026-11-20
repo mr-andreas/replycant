@@ -46,6 +46,7 @@ struct ContentView: View {
     @ObservedObject private var encryptionIntegrity = EncryptionIntegrityManager.shared
     @ObservedObject private var notificationDelegate = AppNotificationDelegate.shared
     @ObservedObject private var uploadController = UploadController.shared
+    @ObservedObject private var librarySyncProgress = LibrarySyncProgress.shared
     @StateObject private var tailnetJoinIndicator = ConnectionProblemsIndicator()
 
     // Allows previews to inject mocked state and skip expensive startup dependencies.
@@ -196,23 +197,32 @@ struct ContentView: View {
                     .toolbarBackground(.ultraThinMaterial, for: .tabBar)
                     .toolbarBackground(.visible, for: .tabBar)
                     .overlay(alignment: .top) {
-                        // Floats over the content so a slow join does not
-                        // push the timeline down. Sits below the inline
-                        // title, and ignores taps so photos stay reachable.
-                        if tailnetJoinIndicator.isUnreachable {
-                            Label("Connection problems", systemImage: "wifi.exclamationmark")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .padding(.top, 44)
-                                .allowsHitTesting(false)
-                                .transition(.opacity)
-                                .accessibilityIdentifier("tailnetUnreachableBanner")
+                        // Floats over the content so a slow join or a long
+                        // library update does not push the timeline down.
+                        // Sits below the inline title, and ignores taps so
+                        // photos stay reachable.
+                        ZStack(alignment: .top) {
+                            if librarySyncProgress.isVisible {
+                                LibrarySyncProgressBar(fraction: librarySyncProgress.fraction)
+                                    .padding(.top, 44)
+                                    .transition(.opacity)
+                            }
+                            if tailnetJoinIndicator.isUnreachable {
+                                Label("Connection problems", systemImage: "wifi.exclamationmark")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .padding(.top, librarySyncProgress.isVisible ? 52 : 44)
+                                    .transition(.opacity)
+                                    .accessibilityIdentifier("tailnetUnreachableBanner")
+                            }
                         }
+                        .allowsHitTesting(false)
                     }
                     .animation(.easeInOut, value: tailnetJoinIndicator.isUnreachable)
+                    .animation(.easeInOut, value: librarySyncProgress.isVisible)
                 }
                 .onAppear {
                     emitMainTabsVisibleIfNeeded()
@@ -531,7 +541,12 @@ struct ContentView: View {
         PeriodicSyncManager.shared.stop()
         do {
             let gitDB = try GitDBManager.shared.getGitDB()
-            try await gitDB.hardResetToRemote()
+            try await LibrarySyncProgress.shared.track {
+                try await gitDB.hardResetToRemote(
+                    transferProgress: LibrarySyncProgress.receiveDownload,
+                    progressHandler: LibrarySyncProgress.receiveApply
+                )
+            }
             DatabaseCompatibilityManager.shared.clearFormatReset()
             PeriodicSyncManager.shared.clearFormatTransitionRefusal()
             errorMessage = nil

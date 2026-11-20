@@ -434,12 +434,21 @@ struct RepositorySettingsView: View {
                 }
                 
                 // Pull and SQL sync are enforced together by GitDB.
-                try await gitDB.pull(remoteName: "origin", branchName: branchName) { phase, loaded, total in
-                    Task { @MainActor in
-                        self.pullProgressMessage = phase
-                        if total > 0 {
-                            let hydrationProgress = Double(loaded) / Double(total)
-                            self.pullProgress = max(self.pullProgress, 70.0 + (hydrationProgress * 30.0))
+                // The shell bar tracks the same pull once it runs long
+                // enough; this screen keeps its own phase text.
+                try await LibrarySyncProgress.shared.track {
+                    try await gitDB.pull(
+                        remoteName: "origin",
+                        branchName: branchName,
+                        transferProgress: LibrarySyncProgress.receiveDownload
+                    ) { phase, loaded, total in
+                        LibrarySyncProgress.receiveApply(phase, loaded, total)
+                        Task { @MainActor in
+                            self.pullProgressMessage = phase
+                            if total > 0 {
+                                let hydrationProgress = Double(loaded) / Double(total)
+                                self.pullProgress = max(self.pullProgress, 70.0 + (hydrationProgress * 30.0))
+                            }
                         }
                     }
                 }

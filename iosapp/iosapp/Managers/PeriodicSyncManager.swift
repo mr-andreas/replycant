@@ -229,10 +229,22 @@ final class PeriodicSyncManager {
             try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
             try ensureMTLSTransportConfigured()
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
+            // The bar starts at the git call. A slow tailnet join stays
+            // on the connection chip instead of looking like an update.
             if waitsForMutationLock {
-                try await gitDB.pull()
+                try await LibrarySyncProgress.shared.track {
+                    try await gitDB.pull(
+                        transferProgress: LibrarySyncProgress.receiveDownload,
+                        progressHandler: LibrarySyncProgress.receiveApply
+                    )
+                }
             } else {
-                let pulled = try await gitDB.tryPull()
+                let pulled = try await LibrarySyncProgress.shared.track {
+                    try await gitDB.tryPull(
+                        transferProgress: LibrarySyncProgress.receiveDownload,
+                        progressHandler: LibrarySyncProgress.receiveApply
+                    )
+                }
                 guard pulled else {
                     logDebug(
                         "Skipping periodic pull because another mutating git operation is running",

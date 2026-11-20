@@ -167,6 +167,57 @@ struct ManifestSyncEngineTests {
         #expect(try await database.readSyncedCommitHash() == repository.headOID())
     }
 
+    // A large incremental update is the path an open library takes.
+    // The bar needs loaded/total through the changed manifests and a
+    // final database write, or it freezes after the pack download.
+    @Test func syncToHeadReportsIncrementalProgress() async throws {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer {
+            try? FileManager.default.removeItem(atPath: repoPath)
+        }
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c1",
+            manifestFiles: [
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-01T10:00:00Z")),
+            ]
+        )
+
+        let engine = makeEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+
+        try commitEncrypted(
+            repository: repository,
+            message: "c2",
+            manifestFiles: [
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("a")).yaml", try encryptedOriginal(id: "a", guessedTakenAt: "2024-01-02T10:00:00Z")),
+                ("encryptionspaces/test-device/manifests/\(TestOriginalManifest.apiVersion)/\(TestOriginalManifest.kind)/\(shardName("c")).yaml", try encryptedOriginal(id: "c", guessedTakenAt: "2024-01-03T10:00:00Z")),
+            ]
+        )
+
+        var progressEvents: [(String, Int, Int)] = []
+        try await engine.syncToHead { phase, loaded, total in
+            progressEvents.append((phase, loaded, total))
+        }
+
+        let reading = progressEvents.filter { $0.0 == "Reading manifests" }
+        #expect(reading.first?.2 == 2)
+        #expect(reading.contains { $0.1 == 2 && $0.2 == 2 })
+        var lastLoaded = -1
+        for event in reading {
+            #expect(event.2 == 2)
+            #expect(event.1 >= lastLoaded)
+            lastLoaded = event.1
+        }
+        #expect(progressEvents.contains { $0.0 == "Updating database" && $0.1 == 0 && $0.2 == 1 })
+        #expect(progressEvents.contains { $0.0 == "Updating database" && $0.1 == 1 && $0.2 == 1 })
+
+        let table = try await database.tableName(for: TestOriginalManifest.self)
+        let all = try await database.query(TestOriginalManifest.self, sql: "SELECT data FROM \(table)")
+        #expect(Set(all.map(\.id)) == Set(["a", "c"]))
+    }
+
     // Ensures a new commit with an identical manifest tree only advances the sync checkpoint.
     @Test func syncToHeadSkipsHydrationWhenManifestTreeIsUnchanged() async throws {
         let (repository, database, registry, repoPath, _) = try makeFixture()
