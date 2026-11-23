@@ -30,11 +30,11 @@ import (
 // Mirrors gitd's flag shape so operators configure both services the same way,
 // including sharing the same repository as the source of authorized devices.
 type CLI struct {
-	Repo     string        `required:"" help:"Path to the bare Git repository holding pubkeys/ (source of authorized devices)" type:"path"`
-	Addr     string        `default:":8443" help:"mTLS listen address for headscale control traffic"`
-	Upstream string        `required:"" help:"Headscale plain-HTTP address to relay to (e.g. headscale:8080)"`
-	Cert     string        `required:"" help:"Path to the server TLS certificate issued by the replycant CA" type:"path"`
-	Key      string        `required:"" help:"Path to the server TLS private key" type:"path"`
+	Repo     string `required:"" help:"Path to the bare Git repository holding pubkeys/ (source of authorized devices)" type:"path"`
+	Addr     string `default:":8443" help:"mTLS listen address for headscale control traffic"`
+	Upstream string `required:"" help:"Headscale plain-HTTP address to relay to (e.g. headscale:8080)"`
+	Cert     string `required:"" help:"Path to the server TLS certificate issued by the replycant CA" type:"path"`
+	Key      string `required:"" help:"Path to the server TLS private key" type:"path"`
 	// Sent after the leaf in every handshake. A phone restoring from a
 	// recovery key holds only the CA's hash and can reach nothing but
 	// hsproxy, so this is where it obtains the CA it checks against it.
@@ -118,6 +118,10 @@ func loadServerCertificate(certPath, keyPath, caPath string) (tls.Certificate, e
 }
 
 func main() {
+	// Docker already timestamps each collected line, so the standard
+	// logger's date prefix would only repeat it.
+	log.SetFlags(0)
+
 	var cli CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("hsproxy"),

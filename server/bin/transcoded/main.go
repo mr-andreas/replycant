@@ -23,6 +23,10 @@ type CLI struct {
 
 // Main entry point for HLS transcoding server
 func main() {
+	// Docker already timestamps each collected line, so the standard
+	// logger's date prefix would only repeat it.
+	log.SetFlags(0)
+
 	var cli CLI
 	kong.Parse(&cli)
 

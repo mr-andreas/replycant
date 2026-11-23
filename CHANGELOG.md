@@ -32,6 +32,7 @@
 
 #### Server
 
+- home-server logs no longer include their own timestamp
 - one unreadable key no longer locks every device out of the library
 
 #### replycant-importer

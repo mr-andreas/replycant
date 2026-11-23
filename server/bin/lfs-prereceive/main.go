@@ -37,13 +37,16 @@ var containerLog = newContainerLogger()
 // If the process is running outside a container and /proc/1/fd/2 is unavailable,
 // the logger falls back to io.Discard so hook telemetry does not leak into the
 // client-facing rejection channel.
+//
+// The logger omits its own timestamp. Docker records one on the line, and the
+// lfs-prereceive prefix is enough to tell hook lines apart from gitd's.
 func newContainerLogger() *log.Logger {
 	writer, err := os.OpenFile("/proc/1/fd/2", os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return log.New(io.Discard, "", 0)
 	}
 
-	return log.New(writer, "lfs-prereceive: ", log.LstdFlags)
+	return log.New(writer, "lfs-prereceive: ", 0)
 }
 
 // run executes pre-receive validation and returns an error that should reject the push when non-nil.

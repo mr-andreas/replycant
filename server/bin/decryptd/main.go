@@ -21,6 +21,10 @@ type CLI struct {
 
 // main starts the decrypting proxy and handles graceful shutdown for request safety.
 func main() {
+	// Docker already timestamps each collected line, so the standard
+	// logger's date prefix would only repeat it.
+	log.SetFlags(0)
+
 	var cli CLI
 	kong.Parse(&cli)
 
