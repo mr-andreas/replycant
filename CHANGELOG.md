@@ -18,6 +18,7 @@
 
 #### iOS app
 
+- photos and videos from unpublished commits you discarded are uploaded again
 - the timeline appears immediately at launch instead of a "local data was reset" screen
 - linking a new device no longer fails when started before the app has connected to your library's network, and a device or recovery key change that cannot be published is discarded instead of being left on this phone
 - dragging toward the next photo no longer plays a video that is still off screen

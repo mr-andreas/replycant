@@ -2,13 +2,17 @@ import Foundation
 import LibGit2
 import GitDB
 
+// Saves the uploads a single push was able to send. Taken before the
+// push and run only after the server accepts it.
+typealias PushConfirmation = @MainActor @Sendable () -> Void
+
 // Runs periodic push/pull so devices converge automatically without manual sync actions.
 final class PeriodicSyncManager {
     static let shared = PeriodicSyncManager()
 
     private let stateLock = NSLock()
     private let operationStateLock = NSLock()
-    private var pushSuccessHandler: (@Sendable () -> Void)?
+    private var preparePushConfirmationHandler: (@MainActor @Sendable () -> PushConfirmation)?
     private var isRunning = false
     private var refusedUnsupportedDatabase = false
     private var refusedFormatTransition = false
@@ -26,16 +30,18 @@ final class PeriodicSyncManager {
 
     private init() {}
 
-    // Publishes successful push ticks to subscribers that need post-push side effects.
-    var onPushSuccess: (@Sendable () -> Void)? {
+    // Copies the staged uploads before a push takes the repository lock,
+    // and returns the save to run only if that push is accepted. A photo
+    // committed during the push stays out of the copy.
+    var preparePushConfirmation: (@MainActor @Sendable () -> PushConfirmation)? {
         get {
             stateLock.lock()
             defer { stateLock.unlock() }
-            return pushSuccessHandler
+            return preparePushConfirmationHandler
         }
         set {
             stateLock.lock()
-            pushSuccessHandler = newValue
+            preparePushConfirmationHandler = newValue
             stateLock.unlock()
         }
     }
@@ -190,12 +196,13 @@ final class PeriodicSyncManager {
             try await TailnetBootstrap.shared.ensureJoinedIfConfigured()
             try ensureMTLSTransportConfigured()
             let gitDB = try await MainActor.run { try GitDBManager.shared.getGitDB() }
-            let pushed = try await gitDB.tryPush()
+            let pushed = try await pushAndConfirm {
+                try await gitDB.tryPush()
+            }
             guard pushed else {
                 logDebug("Skipping periodic push because another mutating git operation is running", context: "Sync")
                 return false
             }
-            notifyPushSuccess()
             let duration = CFAbsoluteTimeGetCurrent() - startTime
             logDebug("Periodic push completed in \(String(format: "%.3f", duration)) seconds", context: "Sync")
             return true
@@ -204,6 +211,21 @@ final class PeriodicSyncManager {
             logError("Periodic push failed after \(String(format: "%.3f", duration)) seconds: \(error.localizedDescription)", context: "Sync")
             return false
         }
+    }
+
+    // Takes the upload snapshot before the push, then saves it only when
+    // the push is accepted. Callers share this so a test can see the
+    // order without opening the repository.
+    private func pushAndConfirm(
+        _ push: () async throws -> Bool
+    ) async throws -> Bool {
+        let confirm = await MainActor.run { self.preparePushConfirmation?() }
+        let pushed = try await push()
+        guard pushed else { return false }
+        if let confirm {
+            await MainActor.run { confirm() }
+        }
+        return true
     }
 
     // Pulls remote changes and refreshes SQL manifest cache so pubsub updates timeline readers.
@@ -437,15 +459,6 @@ final class PeriodicSyncManager {
         operationStateLock.unlock()
     }
 
-    // Notifies subscribers only after a push succeeds so downstream state reflects server-confirmed commits.
-    private func notifyPushSuccess() {
-        let handler: (@Sendable () -> Void)?
-        stateLock.lock()
-        handler = pushSuccessHandler
-        stateLock.unlock()
-        handler?()
-    }
-
     // Records pull-loop ticks so tests can confirm pull starts immediately when sync starts.
     private func recordPullTickInvocationForTesting() {
 #if DEBUG
@@ -512,13 +525,12 @@ extension PeriodicSyncManager {
         await waitForPeriodicSlot(isExpired: isExpired)
     }
 
-    // Triggers the same callback path as a successful push so tests can assert subscriber wiring.
-    func notifyPushSuccessForTesting() {
-        notifyPushSuccess()
+    // Runs the same snapshot-then-push bracketing as a periodic tick.
+    func confirmUploadsAroundPushForTesting(
+        _ push: @escaping () async -> Bool
+    ) async -> Bool {
+        (try? await pushAndConfirm(push)) ?? false
     }
-
-    // Leaves callbacks untouched to model failed pushes that should not notify subscribers.
-    func notifyPushFailureForTesting() {}
 
     // Drives the same version-error path as a pull so tests can cover
     // an older library separately from a permanent refusal.

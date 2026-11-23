@@ -9,6 +9,31 @@ private final class ExpiryFlag: @unchecked Sendable {
     var value = false
 }
 
+// Records the snapshot, push, and confirm steps from threads the
+// push helper hops across, so the test can assert their order.
+private final class PushConfirmationEventLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    func append(_ event: String) {
+        lock.lock()
+        recorded.append(event)
+        lock.unlock()
+    }
+
+    var events: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func reset() {
+        lock.lock()
+        recorded.removeAll()
+        lock.unlock()
+    }
+}
+
 // Verifies periodic sync lifecycle and lock behavior for safe background git scheduling.
 @MainActor
 @Suite(.serialized, .sharedAppState)
@@ -191,20 +216,33 @@ struct PeriodicSyncManagerTests {
         manager.endNetworkOperationForTesting()
     }
 
-    // Ensures generic push-success callback wiring can notify external subscribers without sync-manager coupling.
-    @Test func pushSuccessCallbackNotifiesSubscriber() {
+    // The staged set is copied before the push, and that copy is saved
+    // only when the push is accepted. A rejected push must leave it staged.
+    @Test func pushConfirmationSnapshotsBeforeThePushAndConfirmsOnlyOnSuccess() async {
         let manager = PeriodicSyncManager.shared
         manager.stop()
+        let log = PushConfirmationEventLog()
+        defer { manager.preparePushConfirmation = nil }
 
-        var callbackCount = 0
-        manager.onPushSuccess = {
-            callbackCount += 1
+        manager.preparePushConfirmation = {
+            log.append("snapshot")
+            return { log.append("confirm") }
         }
 
-        manager.notifyPushSuccessForTesting()
-        #expect(callbackCount == 1)
+        let pushed = await manager.confirmUploadsAroundPushForTesting {
+            log.append("push")
+            return true
+        }
+        #expect(pushed)
+        #expect(log.events == ["snapshot", "push", "confirm"])
 
-        manager.onPushSuccess = nil
+        log.reset()
+        let rejected = await manager.confirmUploadsAroundPushForTesting {
+            log.append("push")
+            return false
+        }
+        #expect(rejected == false)
+        #expect(log.events == ["snapshot", "push"])
     }
 
     // A charging wake pulls even when the periodic loop is off, but it
@@ -277,21 +315,6 @@ struct PeriodicSyncManagerTests {
         DatabaseCompatibilityManager.shared.clear()
     }
 
-    // Ensures non-success push paths do not invoke the push-success callback.
-    @Test func pushFailurePathDoesNotNotifySubscriber() {
-        let manager = PeriodicSyncManager.shared
-        manager.stop()
-
-        var callbackCount = 0
-        manager.onPushSuccess = {
-            callbackCount += 1
-        }
-
-        manager.notifyPushFailureForTesting()
-        #expect(callbackCount == 0)
-
-        manager.onPushSuccess = nil
-    }
 
     // An older library starts working again after gitd's boot
     // migration, so the pull loop has to stay up until that commit

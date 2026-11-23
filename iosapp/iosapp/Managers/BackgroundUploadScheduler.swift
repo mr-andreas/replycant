@@ -433,8 +433,12 @@ final class BackgroundUploadScheduler: ObservableObject, UploadEnabling {
                         } else {
                             result = .unfinished
                         }
+                        // Copy the photos this wake staged before the push asks
+                        // for the repository lock. A failed push leaves them
+                        // staged; a discard in between drops the copy.
+                        let snapshot = UploadedMediaCache.shared.pendingSnapshot()
                         if await PeriodicSyncManager.shared.pushNow() {
-                            UploadedMediaCache.shared.flushPending()
+                            UploadedMediaCache.shared.confirm(snapshot)
                         }
                     },
                     warmTopCache: {

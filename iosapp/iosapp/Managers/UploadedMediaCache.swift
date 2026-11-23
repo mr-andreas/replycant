@@ -4,10 +4,16 @@ import Foundation
 @MainActor
 protocol UploadedMediaCaching: AnyObject {
     func contains(localID: String, modifiedAt: String?) -> Bool
-    func markConfirmed(localID: String, modifiedAt: String?)
     func addPending(localID: String, modifiedAt: String?)
-    func flushPending()
     func clear()
+}
+
+// The staged photos copied before a push. Confirming it later records
+// only what that push could have sent, and a discard in between makes
+// the copy stale.
+struct PendingUploadSnapshot: Sendable {
+    fileprivate let entries: [String: String]
+    fileprivate let generation: UInt64
 }
 
 // Persists confirmed uploaded media identifiers to avoid repeating full manifest dedup scans every run.
@@ -19,6 +25,9 @@ final class UploadedMediaCache: UploadedMediaCaching {
     private var loaded = false
     private var persistedByLocalID: [String: String] = [:]
     private var pendingByLocalID: [String: String] = [:]
+    // Bumped by clear so a push that copied the staged set beforehand
+    // cannot write those photos back after a discard.
+    private var generation: UInt64 = 0
 
     // Uses a file in Documents so uninstall clears state and reset flows can wipe it deliberately.
     init(fileURL: URL? = nil) {
@@ -36,34 +45,40 @@ final class UploadedMediaCache: UploadedMediaCaching {
         return persistedByLocalID[localID] == normalize(modifiedAt)
     }
 
-    // Persists entries already confirmed on server so reruns can skip immediately without waiting for push callbacks.
-    func markConfirmed(localID: String, modifiedAt: String?) {
-        ensureLoaded()
-        let normalizedModifiedAt = normalize(modifiedAt)
-        persistedByLocalID[localID] = normalizedModifiedAt
-        pendingByLocalID.removeValue(forKey: localID)
-        persist()
-    }
-
-    // Stages uploaded/skipped entries until a later push confirms they are safe to persist.
+    // Stages uploaded or skipped photos until the push that can carry
+    // their commit. Writing the file here would keep a discarded commit
+    // from being uploaded again.
     func addPending(localID: String, modifiedAt: String?) {
         ensureLoaded()
         pendingByLocalID[localID] = normalize(modifiedAt)
     }
 
-    // Commits pending entries after push success so cache never records rolled-back local commits.
-    func flushPending() {
+    // Copies the photos staged before a push starts. Entries added while
+    // that push holds the repository lock stay out of this copy.
+    func pendingSnapshot() -> PendingUploadSnapshot {
         ensureLoaded()
-        guard !pendingByLocalID.isEmpty else { return }
-        for (localID, modifiedAt) in pendingByLocalID {
+        return PendingUploadSnapshot(entries: pendingByLocalID, generation: generation)
+    }
+
+    // Records a push's snapshot once the server accepts it. A discard
+    // since the copy was taken, or a photo staged afterwards, is left
+    // out so the file only names commits that push sent.
+    func confirm(_ snapshot: PendingUploadSnapshot) {
+        ensureLoaded()
+        guard snapshot.generation == generation, !snapshot.entries.isEmpty else { return }
+        for (localID, modifiedAt) in snapshot.entries {
             persistedByLocalID[localID] = modifiedAt
+            if pendingByLocalID[localID] == modifiedAt {
+                pendingByLocalID.removeValue(forKey: localID)
+            }
         }
-        pendingByLocalID.removeAll()
         persist()
     }
 
-    // Clears both persisted and pending entries for reset-and-resync and reinstall-like behavior.
+    // Drops staged and saved photos, and invalidates any snapshot a push
+    // already copied, for discard and reset-and-resync.
     func clear() {
+        generation &+= 1
         persistedByLocalID.removeAll()
         pendingByLocalID.removeAll()
         loaded = true

@@ -536,7 +536,9 @@ struct ContentView: View {
     }
 
     // Discards unpublished local commits after a format-change pull
-    // refused to rebase them, then restarts periodic sync.
+    // refused to rebase them, then restarts periodic sync. The upload
+    // skip file is cleared too: it may name photos whose commits were
+    // just dropped, and a later push must not record them again.
     private func resetToRemoteAfterFormatChange() async {
         PeriodicSyncManager.shared.stop()
         do {
@@ -554,6 +556,7 @@ struct ContentView: View {
             DatabaseCompatibilityManager.shared.reportIfVersionError(error)
             errorMessage = error.localizedDescription
         }
+        UploadedMediaCache.shared.clear()
         updatePeriodicSyncLifecycle()
     }
 
@@ -744,15 +747,18 @@ struct ContentView: View {
     // index that a schema rebuild is about to replace.
     private func updatePeriodicSyncLifecycle() {
         if shouldShowMainTabs && !isResyncing && hasFinishedLaunchCheck {
-            // Flushes upload cache only after a server-confirmed push to avoid caching rolled-back local commits.
-            PeriodicSyncManager.shared.onPushSuccess = {
-                Task { @MainActor in
-                    UploadedMediaCache.shared.flushPending()
+            // The snapshot is taken before the push so only photos whose
+            // commits this push can send are recorded. A failed push leaves
+            // them staged for the next one.
+            PeriodicSyncManager.shared.preparePushConfirmation = {
+                let snapshot = UploadedMediaCache.shared.pendingSnapshot()
+                return {
+                    UploadedMediaCache.shared.confirm(snapshot)
                 }
             }
             PeriodicSyncManager.shared.start()
         } else {
-            PeriodicSyncManager.shared.onPushSuccess = nil
+            PeriodicSyncManager.shared.preparePushConfirmation = nil
             PeriodicSyncManager.shared.stop()
         }
     }

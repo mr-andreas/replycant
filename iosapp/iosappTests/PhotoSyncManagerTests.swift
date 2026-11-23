@@ -478,7 +478,6 @@ final class MockIdleTimerController: IdleTimerControlling {
 @MainActor
 final class MockUploadedMediaCache: UploadedMediaCaching {
     var storedEntries: [String: String] = [:]
-    var confirmedEntries: [(localID: String, modifiedAt: String?)] = []
     var pendingEntries: [(localID: String, modifiedAt: String?)] = []
 
     // Simulates fast localID+modifiedAt cache hits before manifest database queries.
@@ -486,30 +485,14 @@ final class MockUploadedMediaCache: UploadedMediaCaching {
         storedEntries[localID] == (modifiedAt ?? "")
     }
 
-    // Records confirmed writes so tests can assert immediate persistence for server-confirmed skip paths.
-    func markConfirmed(localID: String, modifiedAt: String?) {
-        confirmedEntries.append((localID: localID, modifiedAt: modifiedAt))
-        storedEntries[localID] = modifiedAt ?? ""
-        pendingEntries.removeAll { $0.localID == localID }
-    }
-
-    // Records pending writes so tests can assert push-gated cache population behavior.
+    // Records staged writes so tests can tell a skip from a persisted upload.
     func addPending(localID: String, modifiedAt: String?) {
         pendingEntries.append((localID: localID, modifiedAt: modifiedAt))
-    }
-
-    // Simulates push confirmation that promotes pending entries to persisted cache state.
-    func flushPending() {
-        for pendingEntry in pendingEntries {
-            storedEntries[pendingEntry.localID] = pendingEntry.modifiedAt ?? ""
-        }
-        pendingEntries.removeAll()
     }
 
     // Resets cache state so reset/resync tests can validate full cache wipe behavior.
     func clear() {
         storedEntries.removeAll()
-        confirmedEntries.removeAll()
         pendingEntries.removeAll()
     }
 }
@@ -1035,8 +1018,9 @@ struct PhotoSyncManagerTests {
         #expect(syncManager.runTally.queueCount == 0)
     }
 
-    // Ensures localID skip path persists immediately so reruns can bypass database and hashing.
-    @Test("Slow-path localID skip marks confirmed cache entry")
+    // A local manifest row is not on the server until its commit is
+    // pushed, so the skip must stay staged instead of being recorded.
+    @Test("Slow-path localID skip stages a cache entry")
     func testSlowPathSkipAddsPendingCacheEntry() async throws {
         let repoPath = try setupDocumentsRepo()
         defer { cleanupTestEnvironment(at: repoPath) }
@@ -1069,14 +1053,15 @@ struct PhotoSyncManagerTests {
         #expect(mockManifest.syncToHeadCalls == 1)
         #expect(mockLibrary.getAssetFileURLCalls == 0)
         #expect(mockManifest.createCommitCalls.isEmpty)
-        #expect(mockCache.confirmedEntries.count == 1)
-        #expect(mockCache.confirmedEntries.first?.localID == asset.id)
-        #expect(mockCache.confirmedEntries.first?.modifiedAt == dateFormatter.string(from: modifiedAt))
-        #expect(mockCache.pendingEntries.isEmpty)
+        #expect(mockCache.pendingEntries.count == 1)
+        #expect(mockCache.pendingEntries.first?.localID == asset.id)
+        #expect(mockCache.pendingEntries.first?.modifiedAt == dateFormatter.string(from: modifiedAt))
+        #expect(mockCache.storedEntries.isEmpty)
     }
 
-    // Ensures SHA256 dedup skips also persist immediately so future runs can skip before hashing.
-    @Test("SHA256 skip marks confirmed cache entry")
+    // A matching content hash is the same unpublished-commit case: the
+    // photo stays staged until a push accepts it.
+    @Test("SHA256 skip stages a cache entry")
     func testSHA256SkipAddsPendingCacheEntry() async throws {
         let repoPath = try setupDocumentsRepo()
         defer { cleanupTestEnvironment(at: repoPath) }
@@ -1132,14 +1117,15 @@ struct PhotoSyncManagerTests {
         let dateFormatter = ISO8601DateFormatter()
         #expect(mockManifest.syncToHeadCalls == 1)
         #expect(mockManifest.createCommitCalls.isEmpty)
-        #expect(mockCache.confirmedEntries.count == 1)
-        #expect(mockCache.confirmedEntries.first?.localID == asset.id)
-        #expect(mockCache.confirmedEntries.first?.modifiedAt == dateFormatter.string(from: modifiedAt))
-        #expect(mockCache.pendingEntries.isEmpty)
+        #expect(mockCache.pendingEntries.count == 1)
+        #expect(mockCache.pendingEntries.first?.localID == asset.id)
+        #expect(mockCache.pendingEntries.first?.modifiedAt == dateFormatter.string(from: modifiedAt))
+        #expect(mockCache.storedEntries.isEmpty)
     }
 
-    // Proves end-to-end that one SHA256-skip run persists cache and the next run skips before hashing without flush.
-    @Test("Second sync run skips before hashing after SHA256 skip persists cache")
+    // The next scan can skip before hashing only after the push that
+    // carried the commit confirms the staged entry.
+    @Test("Second sync run skips before hashing after the staged skip is confirmed")
     func testSecondSyncRunSkipsBeforeHashingAfterSHA256SkipPersist() async throws {
         let repoPath = try setupDocumentsRepo()
         defer { cleanupTestEnvironment(at: repoPath) }
@@ -1200,6 +1186,8 @@ struct PhotoSyncManagerTests {
 
         #expect(firstRunManifest.syncToHeadCalls == 1)
         #expect(firstRunLibrary.getAssetFileURLCalls == 1)
+        #expect(firstRunCache.contains(localID: asset.id, modifiedAt: modifiedAtString) == false)
+        firstRunCache.confirm(firstRunCache.pendingSnapshot())
         #expect(firstRunCache.contains(localID: asset.id, modifiedAt: modifiedAtString))
 
         let secondRunCache = UploadedMediaCache(fileURL: cacheFileURL)

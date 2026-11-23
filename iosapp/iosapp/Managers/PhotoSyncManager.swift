@@ -417,7 +417,9 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
                 let uploadedModifiedAt = uploadedByLocalID[localIDEntry].value
                 if uploadedModifiedAt == assetModifiedAt {
                     log("Original already exists by localID, skipping: \(asset.id)", context: "PhotoSync")
-                    uploadedMediaCache.markConfirmed(localID: asset.id, modifiedAt: assetModifiedAt)
+                    // The row may belong to a commit the server has not
+                    // accepted. Stage it so a discarded commit is uploaded again.
+                    uploadedMediaCache.addPending(localID: asset.id, modifiedAt: assetModifiedAt)
                     dbSkippedCount += 1
                     continue
                 }
@@ -438,7 +440,9 @@ final class PhotoSyncManager: ObservableObject, UploadRunning {
             // Deduplicates by content hash so renamed or cross-device duplicates are skipped.
             if try await manager.loadOriginalBySHA256(sha256String) != nil {
                 log("Original already exists by SHA256, skipping: \(asset.id)", context: "PhotoSync")
-                uploadedMediaCache.markConfirmed(localID: asset.id, modifiedAt: assetModifiedAt)
+                // Same as the localID skip: the matching manifest may
+                // still be unpublished, so this stays staged until a push.
+                uploadedMediaCache.addPending(localID: asset.id, modifiedAt: assetModifiedAt)
                 dbSkippedCount += 1
                 continue
             }
