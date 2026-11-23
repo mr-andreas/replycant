@@ -172,38 +172,37 @@ final class LibrarySyncProgress: ObservableObject {
     }
 }
 
-// Thin strip under the library title. It does not take layout space,
-// so a long update can show progress without pushing the timeline.
+// Progress bar under the library title. A long update can show how
+// far it has gotten without pushing the timeline. Drawn to match the
+// guideline figure: a thick capsule, a visible track, and a gap at
+// each side. The system linear style stays a hairline, so it cannot
+// carry that weight.
 struct LibrarySyncProgressBar: View {
     let fraction: Double?
 
-    // Same purple as the desktop header sync bar.
-    private static let fill = Color(red: 124.0 / 255, green: 58.0 / 255, blue: 237.0 / 255)
+    // Side gap from the guideline figure, where the bar sits well
+    // inside its container rather than running to the edges.
+    private static let sideInset: CGFloat = 64
 
     var body: some View {
-        GeometryReader { proxy in
-            bar(width: proxy.size.width)
-        }
-        .frame(height: 3)
-        .frame(maxWidth: .infinity)
-        .clipped()
-        .allowsHitTesting(false)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Syncing")
-        .accessibilityValue(spokenProgress)
-        .accessibilityIdentifier("librarySyncProgressBar")
+        progress
+            .progressViewStyle(LibrarySyncBarStyle())
+            .padding(.horizontal, Self.sideInset)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Syncing")
+            .accessibilityValue(spokenProgress)
+            .accessibilityIdentifier("librarySyncProgressBar")
     }
 
+    // Stays a bar the whole time. A spinner before the first count
+    // would change shape the moment the download size arrives.
     @ViewBuilder
-    private func bar(width: CGFloat) -> some View {
+    private var progress: some View {
         if let fraction {
-            Rectangle()
-                .fill(Self.fill)
-                .frame(width: width * CGFloat(min(max(fraction, 0), 1)))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(.easeOut(duration: 0.3), value: fraction)
+            ProgressView(value: min(max(fraction, 0), 1))
         } else {
-            IndeterminateSyncFill(color: Self.fill)
+            ProgressView()
         }
     }
 
@@ -214,23 +213,51 @@ struct LibrarySyncProgressBar: View {
     }
 }
 
-// Slides while git has not reported a count yet, the same fallback
-// the desktop bar uses before the first progress event.
-private struct IndeterminateSyncFill: View {
-    let color: Color
+// Matches the weight of the guideline figure. Scaled to the phone,
+// that capsule is about this tall; the system bar is only a few
+// points and disappears on a photo.
+private struct LibrarySyncBarStyle: ProgressViewStyle {
+    static let barHeight: CGFloat = 10
+
+    func makeBody(configuration: Configuration) -> some View {
+        LibrarySyncBarFill(fraction: configuration.fractionCompleted)
+            .frame(height: Self.barHeight)
+    }
+}
+
+private struct LibrarySyncBarFill: View {
+    let fraction: Double?
     @State private var sliding = false
 
     var body: some View {
         GeometryReader { proxy in
-            Rectangle()
-                .fill(color)
-                .frame(width: proxy.size.width * 0.35)
-                .offset(x: sliding ? proxy.size.width : -proxy.size.width * 0.35)
+            let width = proxy.size.width
+            Capsule()
+                .fill(Color.primary.opacity(0.28))
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: fillWidth(in: width))
+                        .offset(x: fraction == nil && sliding ? width * 0.62 : 0)
+                }
+                .clipShape(Capsule())
         }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: false)) {
-                sliding = true
-            }
+        .onAppear { startSlidingIfNeeded() }
+    }
+
+    // Until a count exists the filled portion travels, so the bar
+    // does not look stuck. It stays inside the same capsule.
+    private func startSlidingIfNeeded() {
+        guard fraction == nil, !sliding else { return }
+        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+            sliding = true
         }
+    }
+
+    private func fillWidth(in width: CGFloat) -> CGFloat {
+        if let fraction {
+            return width * min(max(fraction, 0), 1)
+        }
+        return width * 0.38
     }
 }

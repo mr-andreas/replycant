@@ -214,7 +214,7 @@ struct ContentView: View {
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 5)
                                     .background(.ultraThinMaterial, in: Capsule())
-                                    .padding(.top, librarySyncProgress.isVisible ? 52 : 44)
+                                    .padding(.top, librarySyncProgress.isVisible ? 60 : 44)
                                     .transition(.opacity)
                                     .accessibilityIdentifier("tailnetUnreachableBanner")
                             }

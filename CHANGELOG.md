@@ -10,7 +10,7 @@
 
 #### iOS app
 
-- a long library update shows a thin progress bar after a couple of seconds
+- a long library update shows the system progress bar after a couple of seconds
 - Settings shows descriptive device and recovery key names
 - remove a linked device from Settings: it loses access immediately, and photos added afterwards are encrypted with a key it never receives
 
