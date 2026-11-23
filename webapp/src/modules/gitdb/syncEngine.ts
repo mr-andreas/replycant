@@ -26,6 +26,7 @@ import {
 } from "./syncDiagnostics";
 import { EncryptionIntegrityError, ManifestBlobReader } from "./manifestBlobReader";
 import { ManifestHydrator } from "./manifestHydrator";
+import { cacheRepeatedGitReads } from "./gitReadCache";
 import { CommitTransitionApplier } from "./commitTransitionApplier";
 import {
   DatabaseVersionError,
@@ -124,6 +125,10 @@ export class SyncEngine {
     this.config = config;
     this.effectiveSyncIntervalMs = config.syncIntervalMs;
     this.fs = new LightningFS(config.fsVolumeName);
+    // Each manifest read otherwise stats the gitdir, lists the pack
+    // directory, and misses a loose object. Those answers do not
+    // change until a later write.
+    cacheRepeatedGitReads(this.fs);
     this.manifestDb = manifestDb;
     this.listener = listener;
     this.visibilityProvider = visibilityProvider;

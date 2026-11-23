@@ -72,6 +72,11 @@ export class ManifestBlobReader {
   private readonly kekCache = new Map<string, CryptoKey>();
   private encryptionCurrentBlobOid: string | null = null;
   private readonly spaceModes = new Map<string, "own" | "global">();
+  // One commit names a handful of spaces, but a full resync asks which
+  // key set a space uses once per manifest. The answer is fixed for
+  // that commit, so the first lookup is remembered.
+  private readonly keySetRoots = new Map<string, string>();
+  private keySetCommit: string | null = null;
   // Shared isomorphic-git pack-index cache so every readBlob this class issues
   // reuses the parsed .idx across calls and across other gitdb collaborators.
   private readonly cache: object;
@@ -222,8 +227,14 @@ export class ManifestBlobReader {
 
   // Invalidates cached KEKs when a key set's current epoch changes.
   // Rewrapping an epoch keeps the same key bytes, so the cache stays valid
-  // until current moves.
+  // until current moves. A new commit can point a space at a different
+  // key set even when the library epoch blob is unchanged, so the
+  // per-commit key-set answers are dropped with the commit.
   async refreshKekCacheState(commitHash: string): Promise<void> {
+    if (commitHash !== this.keySetCommit) {
+      this.keySetRoots.clear();
+      this.keySetCommit = commitHash;
+    }
     const currentEntry = await this.readBlobAtCommitPathOrNull(commitHash, "encryption/current");
     const nextOid = currentEntry?.oid ?? null;
     if (nextOid === this.encryptionCurrentBlobOid) return;
@@ -233,10 +244,14 @@ export class ManifestBlobReader {
 
   // The path chooses the key set. A missing space current means the
   // space uses the library key. Remembering that choice refuses a
-  // later file that adds or removes the space's own key set.
+  // later file that adds or removes the space's own key set. Later
+  // manifests in the same commit reuse that answer.
   async keySetRoot(commitHash: string, path: string): Promise<string> {
     const space = spaceFromManifestPath(path);
     if (!space) return "encryption";
+    const cacheKey = `${commitHash}\n${space}`;
+    const cached = this.keySetRoots.get(cacheKey);
+    if (cached) return cached;
     const currentPath = `encryptionspaces/${space}/encryption/current`;
     const current = await this.readBlobAtCommitPathOrNull(commitHash, currentPath);
     const mode = current ? "own" : "global";
@@ -252,7 +267,9 @@ export class ManifestBlobReader {
     } else if (!this.spaceModes.has(space)) {
       this.spaceModes.set(space, previous);
     }
-    return current ? `encryptionspaces/${space}/encryption` : "encryption";
+    const root = current ? `encryptionspaces/${space}/encryption` : "encryption";
+    this.keySetRoots.set(cacheKey, root);
+    return root;
   }
 
   // Loads one KEK epoch from one key set. The same epoch number in

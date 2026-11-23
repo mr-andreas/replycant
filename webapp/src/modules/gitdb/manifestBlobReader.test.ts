@@ -225,6 +225,30 @@ describe("ManifestBlobReader", () => {
     await expect(reader.keySetRoot("later", path)).rejects.toThrow(/changed key set/);
   });
 
+  // A full resync decodes every manifest in a space. The space's key
+  // set is the same for the whole commit, so the current file is read once.
+  it("reads a space key set once while decoding several manifests", async () => {
+    const reader = createReader();
+    const readBlob = vi.spyOn(git, "readBlob").mockImplementation(async ({ filepath }: { filepath?: string }) => {
+      if (filepath?.endsWith("encryption/current")) {
+        throw Object.assign(new Error(`missing ${filepath}`), { code: "NotFoundError", name: "NotFoundError" });
+      }
+      throw new Error(`missing ${filepath}`);
+    });
+    vi.spyOn(reader, "loadKekEpoch").mockResolvedValue(await importTestKek());
+    const blob = await encryptManifestYaml(
+      "apiVersion: media.replycant.com/v1alpha1\nkind: Original\nname: photo-1\n",
+    );
+    const path = "encryptionspaces/album/manifests/media.replycant.com/v1alpha1/Original/photo-1.yaml";
+    await reader.decodeManifestBlobToYaml("commit", blob, path);
+    await reader.decodeManifestBlobToYaml("commit", blob, path);
+    await reader.decodeManifestBlobToYaml("commit", blob, path);
+    const currentReads = readBlob.mock.calls.filter((call) =>
+      String(call[0]?.filepath ?? "").endsWith("encryption/current"),
+    );
+    expect(currentReads).toHaveLength(1);
+  });
+
   // A missing epoch is the library refusing to open, not a prompt to try another key.
   it("stops when the listed epoch cannot be read", async () => {
     const reader = new ManifestBlobReader({

@@ -28,6 +28,7 @@
 
 #### Desktop app
 
+- full library resync reads manifests much faster
 - the library setup screen calls the abort action cancel
 
 #### Server

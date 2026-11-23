@@ -8,6 +8,7 @@ import type { RegisteredManifestRecord } from "./manifestRegistry";
 import { TreeDiffer } from "./treeDiffer";
 import { nowMs, syncMark, syncMeasure } from "./syncDiagnostics";
 import { EncryptionIntegrityError, ManifestBlobReader } from "./manifestBlobReader";
+import { ManifestDecodeSpill } from "./manifestDecodeSpill";
 
 const BLOB_READ_BATCH_SIZE = 50;
 const textDecoder = new TextDecoder();
@@ -183,7 +184,13 @@ export class ManifestHydrator {
 
     this.emitManifestReadProgress(0, blobEntries.length);
     const channelA = new BoundedChannel<{ oid: string; path: string; blob: Uint8Array }>(200);
-    const decodedRecords: RegisteredManifestRecord[] = [];
+    // The visible cache stays untouched until this pipeline finishes.
+    // Only the decrypted YAML is spilled. The parsed record is much
+    // larger, and keeping one per manifest is what made the decode
+    // loop slow down. The spill database is not the visible cache.
+    const decodedRecords = new ManifestDecodeSpill<{ yaml: string; path: string }>(
+      "gitdb-manifest-decode-spill",
+    );
     const readFailures = { decodeFailed: 0, parseRejected: 0 };
     let encryptedManifestCount = 0;
     let firstDecodeError: string | null = null;
@@ -255,7 +262,7 @@ export class ManifestHydrator {
             readFailures.parseRejected += 1;
             continue;
           }
-          decodedRecords.push(record);
+          await decodedRecords.add({ yaml: rawYaml, path });
           decodedCount += 1;
           this.emitManifestReadProgress(decodedCount, totalBlobs);
         } catch (error) {
@@ -265,67 +272,74 @@ export class ManifestHydrator {
       }
     })();
 
-    await Promise.all([stageA, stageB]);
+    let blobReadDecodeParseMs = 0;
+    let replaceCacheMs = 0;
+    let totalRecords = 0;
+    let pointers = new Map<string, LfsPointerFields>();
+    try {
+      await Promise.all([stageA, stageB]);
 
-    const blobReadDecodeParseMs = nowMs() - pipelineStartedAtMs;
-    syncMark("streamManifests-pipeline-end");
-    syncMeasure("streamManifests-pipeline", "streamManifests-pipeline-start", "streamManifests-pipeline-end");
+      blobReadDecodeParseMs = nowMs() - pipelineStartedAtMs;
+      syncMark("streamManifests-pipeline-end");
+      syncMeasure("streamManifests-pipeline", "streamManifests-pipeline-start", "streamManifests-pipeline-end");
 
-    // Processes binary pointer blobs after manifests to keep pointer writes
-    // isolated and cheap. Progress uses a unified scale of 2*N where N is the
-    // pointer count: reading blobs [0..N], unwrapping DEKs [N..2N].
-    const pointers = new Map<string, LfsPointerFields>();
-    const N = pointerOidsByPath.size > 0 ? pointerOidsByPath.size : 1;
-    const scale = N * 2;
-    this.emitPointerProgress(0, scale);
-    let processedPointers = 0;
-    for (const [path, oid] of pointerOidsByPath) {
-      try {
-        const { blob: pointerBlob } = await git.readBlob({
-          fs: this.fs,
-          dir: this.gitdir,
-          gitdir: this.gitdir,
-          oid,
-          cache: this.cache,
-        });
-        pointers.set(path, parseLfsPointer(textDecoder.decode(pointerBlob as Uint8Array)));
-      } catch {
-        // Skips unreadable pointer blobs so sync can continue with available records.
+      // Processes binary pointer blobs after manifests to keep pointer writes
+      // isolated and cheap. Progress uses a unified scale of 2*N where N is the
+      // pointer count: reading blobs [0..N], unwrapping DEKs [N..2N].
+      pointers = new Map<string, LfsPointerFields>();
+      const N = pointerOidsByPath.size > 0 ? pointerOidsByPath.size : 1;
+      const scale = N * 2;
+      this.emitPointerProgress(0, scale);
+      let processedPointers = 0;
+      for (const [path, oid] of pointerOidsByPath) {
+        try {
+          const { blob: pointerBlob } = await git.readBlob({
+            fs: this.fs,
+            dir: this.gitdir,
+            gitdir: this.gitdir,
+            oid,
+            cache: this.cache,
+          });
+          pointers.set(path, parseLfsPointer(textDecoder.decode(pointerBlob as Uint8Array)));
+        } catch {
+          // Skips unreadable pointer blobs so sync can continue with available records.
+        }
+        processedPointers += 1;
+        this.emitPointerProgress(processedPointers, scale);
       }
-      processedPointers += 1;
-      this.emitPointerProgress(processedPointers, scale);
-    }
-    if (pointerOidsByPath.size === 0) {
-      this.emitPointerProgress(1, 2);
-    }
-    await this.manifestBlobReader.unwrapDeksForPointers(commitHash, pointers, (loaded, total) => {
-      this.emitPointerProgress(N + Math.round((loaded / total) * N), scale);
-    });
-    this.emitPointerProgress(scale, scale);
+      if (pointerOidsByPath.size === 0) {
+        this.emitPointerProgress(1, 2);
+      }
+      await this.manifestBlobReader.unwrapDeksForPointers(commitHash, pointers, (loaded, total) => {
+        this.emitPointerProgress(N + Math.round((loaded / total) * N), scale);
+      });
+      this.emitPointerProgress(scale, scale);
 
-    if (blobEntries.length > 0 && decodedRecords.length === 0) {
-      throw new Error(
-        `No parseable manifests found in ${blobEntries.length} files. ` +
-          `decodeFailed=${readFailures.decodeFailed}, parseRejected=${readFailures.parseRejected}. ` +
-          `firstDecodeError=${firstDecodeError ?? "unknown"}.`,
+      if (blobEntries.length > 0 && decodedRecords.length === 0) {
+        throw new Error(
+          `No parseable manifests found in ${blobEntries.length} files. ` +
+            `decodeFailed=${readFailures.decodeFailed}, parseRejected=${readFailures.parseRejected}. ` +
+            `firstDecodeError=${firstDecodeError ?? "unknown"}.`,
+        );
+      }
+
+      const replaceCacheStartedAtMs = nowMs();
+      await this.manifestDb.replaceCacheStreamed(
+        this.recordsFromSpill(decodedRecords),
+        syncedCommitHash,
+        pointers,
+        cacheFormatVersion,
       );
+      replaceCacheMs = nowMs() - replaceCacheStartedAtMs;
+      totalRecords = decodedRecords.length;
+    } finally {
+      await decodedRecords.discard();
     }
 
-    const replaceCacheStartedAtMs = nowMs();
-    await this.manifestDb.replaceCacheStreamed(
-      (async function* records() {
-        for (const record of decodedRecords) yield record;
-      })(),
-      syncedCommitHash,
-      pointers,
-      cacheFormatVersion,
-    );
-    const replaceCacheMs = nowMs() - replaceCacheStartedAtMs;
     const totalMs = nowMs() - startedAtMs;
-
     this.log("stream-manifests-complete", {
       commitHash,
-      totalRecords: decodedRecords.length,
+      totalRecords,
       encryptedManifests: encryptedManifestCount,
       decodeFailed: readFailures.decodeFailed,
       parseRejected: readFailures.parseRejected,
@@ -339,9 +353,25 @@ export class ManifestHydrator {
     });
 
     return {
-      totalRecords: decodedRecords.length,
+      totalRecords,
       pointers,
       timings: { treeWalkMs, kekRefreshMs, blobReadDecodeParseMs, replaceCacheMs, totalMs },
     };
+  }
+
+  // The read loop only kept the YAML so the parsed objects could be
+  // collected. The cache write parses them again, which is cheap next
+  // to reading the git objects.
+  private async *recordsFromSpill(
+    spill: ManifestDecodeSpill<{ yaml: string; path: string }>,
+  ): AsyncGenerator<RegisteredManifestRecord> {
+    for await (const item of spill.records()) {
+      const record = this.manifestBlobReader.decodeYamlToRecord(
+        item.yaml,
+        this.manifestBlobReader.inferExpectedKindFromPath(item.path),
+        item.path,
+      );
+      if (record) yield record;
+    }
   }
 }
