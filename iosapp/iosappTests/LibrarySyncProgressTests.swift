@@ -242,36 +242,40 @@ private final class ManualClock: @unchecked Sendable {
     }
 }
 
-// Blocks the reveal task until the test has moved the clock, and
-// records the delay so a progress tick cannot silently re-arm it.
+// Holds the reveal task until the test calls release(), and records
+// the delay so a progress tick cannot silently re-arm it. Returning
+// on a wall-clock timeout let a busy runner look like the delay had
+// elapsed while the manual clock was still short, so the bar never
+// appeared.
 private final class ControlledSleep: @unchecked Sendable {
     private let lock = NSLock()
     private var durations: [Duration] = []
     private var released = false
     private var exits = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func sleep(_ duration: Duration) async {
         record(duration)
         defer { markExited() }
-        let start = ContinuousClock.now
-        while true {
-            if Task.isCancelled {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if released {
+                lock.unlock()
+                continuation.resume()
                 return
             }
-            if isReleased() {
-                return
-            }
-            if ContinuousClock.now - start > .seconds(5) {
-                return
-            }
-            await Task.yield()
+            waiters.append(continuation)
+            lock.unlock()
         }
     }
 
     func release() {
         lock.lock()
         released = true
+        let pending = waiters
+        waiters = []
         lock.unlock()
+        pending.forEach { $0.resume() }
     }
 
     var recorded: [Duration] {
@@ -290,12 +294,6 @@ private final class ControlledSleep: @unchecked Sendable {
         lock.lock()
         durations.append(duration)
         lock.unlock()
-    }
-
-    private func isReleased() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return released
     }
 
     private func markExited() {
