@@ -126,25 +126,42 @@ struct ContentViewFlowLogicTests {
         #expect(
             ContentView.shouldShowResyncRetry(
                 canAutoResync: true,
-                hasFinishedLaunchCheck: false
+                hasFinishedLaunchCheck: false,
+                resyncFailed: true
             ) == false
         )
         #expect(
             ContentView.shouldShowResyncRetry(
                 canAutoResync: true,
-                hasFinishedLaunchCheck: true
+                hasFinishedLaunchCheck: true,
+                resyncFailed: true
             ) == true
         )
         #expect(
             ContentView.shouldShowResyncRetry(
                 canAutoResync: false,
-                hasFinishedLaunchCheck: true
+                hasFinishedLaunchCheck: true,
+                resyncFailed: true
             ) == false
         )
         #expect(
             ContentView.shouldShowResyncRetry(
                 canAutoResync: false,
-                hasFinishedLaunchCheck: false
+                hasFinishedLaunchCheck: false,
+                resyncFailed: false
+            ) == false
+        )
+    }
+
+    // Recovery stores the server before the clone exists, which already
+    // satisfies the credential check. Treating that as a failed resync
+    // takes the wizard off screen while recovery is still running.
+    @Test func shouldShowResyncRetryOnlyAfterAResyncHasFailed() {
+        #expect(
+            ContentView.shouldShowResyncRetry(
+                canAutoResync: true,
+                hasFinishedLaunchCheck: true,
+                resyncFailed: false
             ) == false
         )
     }

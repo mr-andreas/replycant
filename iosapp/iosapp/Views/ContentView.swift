@@ -35,6 +35,9 @@ struct ContentView: View {
     // Stays false until launch finishes deciding which flow to show, so the
     // resync retry screen cannot cover the timeline on a cold start.
     @State private var hasFinishedLaunchCheck = false
+    // Set only after a resync attempt has failed. Saved credentials are
+    // not a failure: recovery writes them before the clone exists.
+    @State private var resyncFailed = false
     // Remembers tabs the person has opened so switching away does not
     // throw away the map camera or the settings navigation stack.
     @State private var openedTabs: Set<Int> = []
@@ -229,7 +232,8 @@ struct ContentView: View {
                 }
             } else if Self.shouldShowResyncRetry(
                 canAutoResync: canAutoResync,
-                hasFinishedLaunchCheck: hasFinishedLaunchCheck
+                hasFinishedLaunchCheck: hasFinishedLaunchCheck,
+                resyncFailed: resyncFailed
             ) {
                 VStack(spacing: 12) {
                     Text("Local data was reset")
@@ -413,6 +417,7 @@ struct ContentView: View {
             let gitInitEndTime = CFAbsoluteTimeGetCurrent()
             let gitInitDuration = gitInitEndTime - gitInitStartTime
             logError("Initialization failed after \(String(format: "%.3f", gitInitDuration)) seconds: \(error.localizedDescription)", context: "Git")
+            resyncFailed = true
             errorMessage = error.localizedDescription
             checkRepositoryStatus()
         }
@@ -459,6 +464,7 @@ struct ContentView: View {
         }
         PeriodicSyncManager.shared.stop()
         isResyncing = true
+        resyncFailed = false
         // Keeps long clone/index work alive by preventing iOS idle auto-lock.
         UIApplication.shared.isIdleTimerDisabled = true
         resyncProgress = 0
@@ -531,6 +537,7 @@ struct ContentView: View {
             resyncProgressMessage = "Resync complete"
             errorMessage = nil
         } catch {
+            resyncFailed = true
             errorMessage = error.localizedDescription
         }
     }
@@ -589,12 +596,15 @@ struct ContentView: View {
 
     // The retry screen is for a resync that already failed. Showing it
     // before the launch check finishes hides the timeline while a paired
-    // device is still confirming that its library is on disk.
+    // device is still confirming that its library is on disk. Credentials
+    // saved during recovery are not that failure: the wizard is still
+    // cloning, and replacing it leaves recovery with nowhere to finish.
     static func shouldShowResyncRetry(
         canAutoResync: Bool,
-        hasFinishedLaunchCheck: Bool
+        hasFinishedLaunchCheck: Bool,
+        resyncFailed: Bool
     ) -> Bool {
-        canAutoResync && hasFinishedLaunchCheck
+        canAutoResync && hasFinishedLaunchCheck && resyncFailed
     }
 
     // Isolates onboarding skip decisions so tests can verify simulator installs do not bypass onboarding implicitly.
