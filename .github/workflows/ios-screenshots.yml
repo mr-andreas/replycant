@@ -34,6 +34,9 @@ jobs:
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
           xcrun --sdk iphonesimulator --show-sdk-version
+          # xcodebuild does not wait for CoreSimulatorService. Listing
+          # devices starts it before fastlane asks for a simulator.
+          xcrun simctl list devices
 
       - name: Build TailscaleKit
         uses: ./.github/actions/tailscalekit

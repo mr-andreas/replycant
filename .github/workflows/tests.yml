@@ -137,6 +137,10 @@ jobs:
         run: |
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
+          # xcodebuild does not wait for CoreSimulatorService. Listing
+          # devices starts it, so the later test step sees a real
+          # simulator instead of only placeholder destinations.
+          xcrun simctl list devices
 
       - name: Build TailscaleKit
         uses: ./.github/actions/tailscalekit
@@ -176,6 +180,10 @@ jobs:
         run: |
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
           xcodebuild -version
+          # xcodebuild does not wait for CoreSimulatorService. Listing
+          # devices starts it, so the later test step sees a real
+          # simulator instead of only placeholder destinations.
+          xcrun simctl list devices
 
       - name: Build TailscaleKit
         uses: ./.github/actions/tailscalekit
