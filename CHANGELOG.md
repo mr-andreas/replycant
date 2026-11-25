@@ -18,6 +18,7 @@
 
 #### iOS app
 
+- photos and videos added by the importer show up in the timeline
 - recovering or pairing a library no longer replaces the setup wizard with the "local data was reset" screen while the library is still being cloned
 - photos and videos from unpublished commits you discarded are uploaded again
 - the timeline appears immediately at launch instead of a "local data was reset" screen

@@ -54,7 +54,11 @@ public enum EncryptionLayout {
             return lines.joined(separator: "\n")
         }
         if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("name:") }) {
-            lines.insert("  deviceSpace: \(space)", at: index + 1)
+            // Match the name line's indent. The importer uses four spaces,
+            // and a two-space key there is invalid YAML, so the update
+            // never reaches the timeline.
+            let indent = lines[index].prefix { $0 == " " }
+            lines.insert("\(indent)deviceSpace: \(space)", at: index + 1)
             return lines.joined(separator: "\n")
         }
         return yaml
