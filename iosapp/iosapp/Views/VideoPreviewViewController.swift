@@ -7,7 +7,9 @@ import GitDB
 /// Displays one video in full screen within the UIPageViewController.
 /// Hosts the AVPlayer via SwiftUI VideoPlayer for playback controls while
 /// conforming to MediaPreviewControllable so the container can arbitrate
-/// dismiss gestures against this child.
+/// dismiss gestures against this child. An upward swipe opens the same
+/// metadata sheet as a photo, so paging and dismiss stay locked while
+/// the sheet is visible and playback keeps running above it.
 final class VideoPreviewViewController: UIViewController, MediaPreviewControllable {
 
     let item: TimelineItem
@@ -15,11 +17,33 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     private let onDismiss: () -> Void
     private let networkCost: NetworkCostProviding
 
-    private var _outerScrollView: UIScrollView!
-    var outerScrollView: UIScrollView { _outerScrollView }
+    // The sheet's scroll view is what the pager consults before a
+    // swipe-down dismiss. A fallback covers the moment before the sheet
+    // exists so the property never traps.
+    private let fallbackScrollView = UIScrollView()
+    private var detailsScrollView: UIScrollView!
+    var outerScrollView: UIScrollView { detailsScrollView ?? fallbackScrollView }
     var currentZoomScale: CGFloat { 1.0 }
-    var isShowingDetails: Bool { false }
+    // The pager reads this to disable paging and dismiss while metadata
+    // is up. Playback is left running; only the chrome around it changes.
+    private(set) var isShowingDetails = false {
+        didSet {
+            guard oldValue != isShowingDetails else { return }
+            onDetailsVisibilityChanged?(isShowingDetails)
+        }
+    }
     var onDetailsVisibilityChanged: ((Bool) -> Void)?
+
+    private var mediaContainer: UIView!
+    private var detailsPanelView: UIView!
+    private var metadataHostController: UIHostingController<MediaInfoContent>?
+    private var detailsTogglePanRecognizer: UIPanGestureRecognizer!
+    // Captures whether the sheet was already open when the pan began so
+    // one recognizer can both open and close it.
+    private var panStartShowingDetails = false
+    // True while a pull on the open sheet is moving it, so the scroll
+    // view's end callback doesn't snap it shut and open in the same drag.
+    private var isInteractivelyClosing = false
 
     private var fullResLoader: FullResolutionImageLoader?
     private var cancellables = Set<AnyCancellable>()
@@ -65,13 +89,19 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         super.viewDidLoad()
         view.backgroundColor = .black
 
-        _outerScrollView = UIScrollView(frame: view.bounds)
-        _outerScrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        _outerScrollView.isScrollEnabled = false
-        view.addSubview(_outerScrollView)
-
+        setupMediaContainer()
+        setupDetailsPanel()
+        setupDetailsGestures()
         setupPosterView()
         loadPosterImage()
+    }
+
+    // Reapplies the committed sheet position after rotation. Interactive
+    // drags set frames themselves; this only restores the open or closed
+    // resting place so a bounds change cannot leave the sheet halfway.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutDetailsForCurrentBounds()
     }
 
     // Stops playback when this page leaves, including a drag that never
@@ -221,14 +251,15 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         button.accessibilityLabel = "Play"
         button.translatesAutoresizingMaskIntoConstraints = false
         button.addTarget(self, action: #selector(cellularPlayButtonTapped), for: .touchUpInside)
-        view.addSubview(button)
+        mediaContainer.addSubview(button)
         NSLayoutConstraint.activate([
-            button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            button.centerXAnchor.constraint(equalTo: mediaContainer.centerXAnchor),
+            button.centerYAnchor.constraint(equalTo: mediaContainer.centerYAnchor),
             button.widthAnchor.constraint(equalToConstant: 88),
             button.heightAnchor.constraint(equalToConstant: 88),
         ])
         cellularPlayButton = button
+        bringPlaybackChromeToFront()
     }
 
     // Asks before streaming the original, because there is no transcode
@@ -282,18 +313,12 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         let host = UIHostingController(rootView: AnyView(videoView))
         host.view.backgroundColor = .clear
         addChild(host)
-        host.view.frame = view.bounds
+        host.view.frame = mediaContainer.bounds
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(host.view)
+        mediaContainer.addSubview(host.view)
         host.didMove(toParent: self)
         hostController = host
-
-        if let poster = posterImageView {
-            view.bringSubviewToFront(poster)
-        }
-        if let spinner = posterSpinner {
-            view.bringSubviewToFront(spinner)
-        }
+        bringPlaybackChromeToFront()
 
         observePlayerReadiness(player)
         if playbackAllowed {
@@ -305,23 +330,23 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     // avoids an abrupt black frame during initial buffering. A centered spinner
     // signals that playback is loading.
     private func setupPosterView() {
-        let imageView = UIImageView(frame: view.bounds)
+        let imageView = UIImageView(frame: mediaContainer.bounds)
         imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         imageView.contentMode = .scaleAspectFit
         imageView.backgroundColor = .black
         imageView.isUserInteractionEnabled = false
         imageView.accessibilityIdentifier = "videoPosterImage"
-        view.addSubview(imageView)
+        mediaContainer.addSubview(imageView)
         posterImageView = imageView
 
         let spinner = UIActivityIndicatorView(style: .large)
         spinner.color = .white
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
-        view.addSubview(spinner)
+        mediaContainer.addSubview(spinner)
         NSLayoutConstraint.activate([
-            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.centerXAnchor.constraint(equalTo: mediaContainer.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: mediaContainer.centerYAnchor),
         ])
         spinner.startAnimating()
         posterSpinner = spinner
@@ -406,14 +431,14 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
     // buffering still surfaces familiar loading feedback.
     private func reshowPosterIfNeeded() {
         if posterImageView == nil {
-            let imageView = UIImageView(frame: view.bounds)
+            let imageView = UIImageView(frame: mediaContainer.bounds)
             imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             imageView.contentMode = .scaleAspectFit
             imageView.backgroundColor = .black
             imageView.isUserInteractionEnabled = false
             imageView.accessibilityIdentifier = "videoPosterImage"
             imageView.image = timelineManager.getCachedImage(for: item.id)
-            view.addSubview(imageView)
+            mediaContainer.addSubview(imageView)
             posterImageView = imageView
         }
         if posterSpinner == nil {
@@ -421,20 +446,15 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
             spinner.color = .white
             spinner.translatesAutoresizingMaskIntoConstraints = false
             spinner.hidesWhenStopped = true
-            view.addSubview(spinner)
+            mediaContainer.addSubview(spinner)
             NSLayoutConstraint.activate([
-                spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                spinner.centerXAnchor.constraint(equalTo: mediaContainer.centerXAnchor),
+                spinner.centerYAnchor.constraint(equalTo: mediaContainer.centerYAnchor),
             ])
             spinner.startAnimating()
             posterSpinner = spinner
         }
-        if let poster = posterImageView {
-            view.bringSubviewToFront(poster)
-        }
-        if let spinner = posterSpinner {
-            view.bringSubviewToFront(spinner)
-        }
+        bringPlaybackChromeToFront()
     }
 
     // Removes the poster and spinner once playback is visually ready so
@@ -456,10 +476,208 @@ final class VideoPreviewViewController: UIViewController, MediaPreviewControllab
         let host = UIHostingController(rootView: AnyView(errorView))
         host.view.backgroundColor = .clear
         addChild(host)
-        host.view.frame = view.bounds
+        host.view.frame = mediaContainer.bounds
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(host.view)
+        mediaContainer.addSubview(host.view)
         host.didMove(toParent: self)
+    }
+
+    // Holds the poster, player, spinner, and play button so the sheet can
+    // shrink them together. They used to be pinned to the page, which left
+    // no room for metadata without covering the video.
+    private func setupMediaContainer() {
+        let container = UIView(frame: view.bounds)
+        container.backgroundColor = .black
+        container.clipsToBounds = true
+        view.addSubview(container)
+        mediaContainer = container
+    }
+
+    // The same metadata photo details show, including duration, so a video
+    // does not need a second info layout.
+    private func setupDetailsPanel() {
+        detailsPanelView = UIView()
+        detailsPanelView.backgroundColor = .systemBackground
+        detailsPanelView.layer.cornerRadius = 16
+        detailsPanelView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        detailsPanelView.clipsToBounds = true
+        view.addSubview(detailsPanelView)
+
+        detailsScrollView = UIScrollView()
+        detailsScrollView.alwaysBounceVertical = true
+        detailsScrollView.showsVerticalScrollIndicator = true
+        detailsScrollView.delegate = self
+        detailsPanelView.addSubview(detailsScrollView)
+
+        let metadataHost = UIHostingController(rootView: MediaInfoContent(item: item))
+        metadataHost.view.backgroundColor = .systemBackground
+        addChild(metadataHost)
+        detailsScrollView.addSubview(metadataHost.view)
+        metadataHost.didMove(toParent: self)
+        metadataHostController = metadataHost
+    }
+
+    // Swipe up is how photos reveal details. The recognizer lives on the
+    // page so it can see the video and the sheet, and claim a vertical
+    // pan before VideoPlayer treats it as its own.
+    private func setupDetailsGestures() {
+        detailsTogglePanRecognizer = UIPanGestureRecognizer(
+            target: self,
+            action: #selector(handleDetailsTogglePan(_:))
+        )
+        detailsTogglePanRecognizer.delegate = self
+        view.addGestureRecognizer(detailsTogglePanRecognizer)
+    }
+
+    // Keeps the poster and spinner above the player after a late embed,
+    // without lifting them out of the container over the sheet.
+    private func bringPlaybackChromeToFront() {
+        if let poster = posterImageView {
+            mediaContainer.bringSubviewToFront(poster)
+        }
+        if let spinner = posterSpinner {
+            mediaContainer.bringSubviewToFront(spinner)
+        }
+        if let button = cellularPlayButton {
+            mediaContainer.bringSubviewToFront(button)
+        }
+    }
+
+    // Sizes the sheet content for the current page. The open or closed
+    // position is applied afterwards so rotation does not leave a shown
+    // sheet below the new bounds.
+    private func layoutDetailsForCurrentBounds() {
+        let viewSize = view.bounds.size
+        guard viewSize.width > 0, viewSize.height > 0 else { return }
+
+        let height = panelHeight(for: viewSize)
+        let metadataSize = metadataHostController?.view.systemLayoutSizeFitting(
+            CGSize(width: viewSize.width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .defaultLow
+        ) ?? .zero
+        metadataHostController?.view.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: viewSize.width,
+            height: metadataSize.height
+        )
+        detailsScrollView.contentSize = CGSize(
+            width: viewSize.width,
+            height: max(height, metadataSize.height)
+        )
+        applyDetailsProgress(isShowingDetails ? 1 : 0)
+    }
+
+    // Half the page, matching photo details, so the video stays visible
+    // above the metadata instead of being replaced by it.
+    private func panelHeight(for viewSize: CGSize) -> CGFloat {
+        viewSize.height * 0.5
+    }
+
+    // Moves the video and the sheet together. Playback keeps running in
+    // the space above the sheet instead of being covered by it.
+    private func applyDetailsProgress(_ progress: CGFloat) {
+        let clamped = min(max(progress, 0), 1)
+        let viewSize = view.bounds.size
+        guard viewSize.width > 0, viewSize.height > 0 else { return }
+
+        let height = panelHeight(for: viewSize)
+        let hiddenMedia = CGRect(x: 0, y: 0, width: viewSize.width, height: viewSize.height)
+        let shownMedia = CGRect(x: 0, y: 0, width: viewSize.width, height: viewSize.height - height)
+        mediaContainer.frame = hiddenMedia.interpolated(to: shownMedia, progress: clamped)
+
+        let hiddenPanel = CGRect(x: 0, y: viewSize.height, width: viewSize.width, height: height)
+        let shownPanel = CGRect(x: 0, y: viewSize.height - height, width: viewSize.width, height: height)
+        detailsPanelView.frame = hiddenPanel.interpolated(to: shownPanel, progress: clamped)
+        detailsScrollView.frame = detailsPanelView.bounds
+    }
+
+    // Commits the sheet and notifies the pager. Closing resets the scroll
+    // offset so the next open starts at the top of the metadata.
+    private func setDetailsShown(_ shown: Bool, animated: Bool) {
+        isShowingDetails = shown
+        let animations = {
+            self.applyDetailsProgress(shown ? 1 : 0)
+        }
+        if animated {
+            UIView.animate(
+                withDuration: 0.22,
+                delay: 0,
+                options: [.curveEaseOut, .beginFromCurrentState],
+                animations: animations
+            )
+        } else {
+            animations()
+        }
+        if !shown {
+            detailsScrollView.setContentOffset(.zero, animated: false)
+        }
+    }
+
+    // The recognizer only supplies the finger's movement. The sheet
+    // decision is shared with the test seam so both follow one path.
+    @objc private func handleDetailsTogglePan(_ recognizer: UIPanGestureRecognizer) {
+        let translation = recognizer.translation(in: view)
+        let velocity = recognizer.velocity(in: view)
+        handleDetailsPan(
+            state: recognizer.state,
+            translationY: translation.y,
+            velocityY: velocity.y
+        )
+    }
+
+    // Tracks the finger and commits with the photo thresholds. A fast
+    // flick counts even when the finger has not crossed half the sheet.
+    private func handleDetailsPan(
+        state: UIGestureRecognizer.State,
+        translationY: CGFloat,
+        velocityY: CGFloat
+    ) {
+        let height = panelHeight(for: view.bounds.size)
+        switch state {
+        case .began:
+            panStartShowingDetails = isShowingDetails
+        case .changed:
+            guard height > 0 else { return }
+            let progress: CGFloat
+            if panStartShowingDetails {
+                progress = min(max(1 - (translationY / height), 0), 1)
+            } else {
+                progress = min(max(-translationY / height, 0), 1)
+            }
+            applyDetailsProgress(progress)
+        case .ended, .cancelled, .failed:
+            if panStartShowingDetails {
+                let shouldHide = DetailsPanelTransitionDecision.shouldHide(
+                    translationY: translationY,
+                    velocityY: velocityY
+                )
+                setDetailsShown(!shouldHide, animated: true)
+            } else {
+                let shouldShow = DetailsPanelTransitionDecision.shouldShow(
+                    translationY: translationY,
+                    velocityY: velocityY
+                )
+                setDetailsShown(shouldShow, animated: true)
+            }
+        default:
+            break
+        }
+    }
+
+    // Horizontal movement belongs to paging and the scrubber. An upward
+    // swipe opens the sheet; a downward swipe on the video closes it.
+    // A downward swipe on the sheet itself is left to the sheet's scroll
+    // view so reading the metadata does not dismiss it.
+    private func detailsPanShouldBegin(velocity: CGPoint, touchInsidePanel: Bool) -> Bool {
+        let verticalDominant = abs(velocity.y) > abs(velocity.x) * DetailsPanelTransitionDecision.axisVelocityRatio
+        guard verticalDominant else { return false }
+        if isShowingDetails {
+            guard velocity.y > 0 else { return false }
+            return !touchInsidePanel
+        }
+        return velocity.y < 0
     }
 
     // Tears playback down if the pager never got a chance to stop this
@@ -529,6 +747,25 @@ extension VideoPreviewViewController {
     func testingConfirmCellularPlayback() {
         confirmCellularPlayback()
     }
+
+    // Feeds a details pan so tests can prove the sheet opens and closes
+    // without a window or a real touch.
+    func testingDriveDetailsPan(
+        state: UIGestureRecognizer.State,
+        translationY: CGFloat,
+        velocityY: CGFloat
+    ) {
+        handleDetailsPan(state: state, translationY: translationY, velocityY: velocityY)
+    }
+
+    // Uses the same gate as the recognizer so a horizontal swipe cannot
+    // pass the test while the real pan still begins.
+    func testingDetailsPanShouldBegin(velocity: CGPoint, touchInsidePanel: Bool) -> Bool {
+        detailsPanShouldBegin(velocity: velocity, touchInsidePanel: touchInsidePanel)
+    }
+
+    // The video area the sheet pushes upward.
+    var testingMediaContainerFrame: CGRect { mediaContainer.frame }
 }
 #endif
 
@@ -556,6 +793,93 @@ private struct VideoPreviewContent: View {
                 isPlaying = (change.newValue ?? 0) > 0
             }
         }
+    }
+}
+
+extension VideoPreviewViewController: UIScrollViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === detailsScrollView, isShowingDetails else { return }
+        // An overscroll past the top of the metadata means the user is
+        // pulling the sheet down. Move it with the finger so closing
+        // feels continuous, matching photo details.
+        let offsetY = scrollView.contentOffset.y
+        guard offsetY < 0 else { return }
+        isInteractivelyClosing = true
+        let pull = -offsetY
+        let height = panelHeight(for: view.bounds.size)
+        guard height > 0 else { return }
+        applyDetailsProgress(min(max(1 - (pull / height), 0), 1))
+    }
+
+    func scrollViewWillEndDragging(
+        _ scrollView: UIScrollView,
+        withVelocity velocity: CGPoint,
+        targetContentOffset: UnsafeMutablePointer<CGPoint>
+    ) {
+        guard scrollView === detailsScrollView, isShowingDetails else { return }
+        // A downward gesture only closes the sheet when the metadata is
+        // already at the top. Otherwise it is normal scrolling.
+        guard scrollView.contentOffset.y <= 0 else { return }
+        let pull = -scrollView.contentOffset.y
+        // Scroll view velocity is points per millisecond, with a downward
+        // drag as negative y. The sheet decision uses points per second
+        // and treats downward as positive.
+        let fingerVelocityY = -velocity.y * 1000
+        let shouldHide = DetailsPanelTransitionDecision.shouldHide(
+            translationY: max(pull, 0),
+            velocityY: fingerVelocityY
+        )
+        if shouldHide {
+            targetContentOffset.pointee = scrollView.contentOffset
+            setDetailsShown(false, animated: true)
+        }
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard scrollView === detailsScrollView else { return }
+        // A pull that did not cross the close threshold snaps back open.
+        if isInteractivelyClosing && isShowingDetails {
+            setDetailsShown(true, animated: true)
+        }
+        isInteractivelyClosing = false
+    }
+}
+
+extension VideoPreviewViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === detailsTogglePanRecognizer,
+              let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+            return true
+        }
+        let insidePanel = detailsPanelView.frame.contains(gestureRecognizer.location(in: view))
+        return detailsPanShouldBegin(
+            velocity: pan.velocity(in: view),
+            touchInsidePanel: insidePanel
+        )
+    }
+
+    // VideoPlayer installs its own pans on the hosted view. They must wait
+    // until this pan fails, or an upward swipe never reaches the sheet.
+    // A horizontal swipe fails this pan immediately, so scrubbing still
+    // runs. Paging and dismiss live on ancestors and are not claimed.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        guard gestureRecognizer === detailsTogglePanRecognizer else { return false }
+        guard let otherView = otherGestureRecognizer.view else { return false }
+        return otherView.isDescendant(of: view)
+    }
+}
+
+private extension CGRect {
+    func interpolated(to target: CGRect, progress: CGFloat) -> CGRect {
+        CGRect(
+            x: origin.x + ((target.origin.x - origin.x) * progress),
+            y: origin.y + ((target.origin.y - origin.y) * progress),
+            width: size.width + ((target.size.width - size.width) * progress),
+            height: size.height + ((target.size.height - size.height) * progress)
+        )
     }
 }
 
