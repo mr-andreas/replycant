@@ -491,8 +491,11 @@ public actor ManifestSyncEngine {
         guard let kind = Self.manifestKind(from: yaml) else {
             throw EncryptionIntegrityError(space: EncryptionLayout.space(from: path) ?? path, path: path, reason: "the manifest has no kind")
         }
-        let spaced = EncryptionLayout.yamlAssigningSpace(EncryptionLayout.space(from: path) ?? "", to: yaml)
-        return try registry.decode(kind: kind, yaml: spaced)
+        return try registry.decode(
+            kind: kind,
+            yaml: yaml,
+            space: EncryptionLayout.space(from: path) ?? ""
+        )
     }
 
     // Extracts the top-level kind field without fully decoding the YAML payload twice.

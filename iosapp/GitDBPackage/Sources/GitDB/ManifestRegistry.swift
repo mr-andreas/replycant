@@ -73,7 +73,7 @@ public final class ManifestRegistry: @unchecked Sendable {
         public let tableName: String
         public let columns: [ManifestColumnDef]
         public let indexes: [ManifestIndexDef]
-        let decode: (String) throws -> any Manifest
+        let decode: (Node) throws -> any Manifest
         let extract: (any Manifest) throws -> [String: ManifestSQLValue]
     }
 
@@ -100,8 +100,8 @@ public final class ManifestRegistry: @unchecked Sendable {
             tableName: tableName,
             columns: builder.columns,
             indexes: builder.indexes,
-            decode: { yaml in
-                try decoder.decode(T.self, from: yaml)
+            decode: { node in
+                try decoder.decode(T.self, from: node)
             },
             extract: { manifest in
                 guard let typed = manifest as? T else {
@@ -115,12 +115,25 @@ public final class ManifestRegistry: @unchecked Sendable {
         lock.unlock()
     }
 
-    // Looks up and decodes one YAML payload by registered kind.
-    func decode(kind: String, yaml: String) throws -> (any Manifest)? {
+    // The path names the space. Setting it on the parsed tree, rather
+    // than splicing a line into the text, works for every YAML layout
+    // a writer might use, including one that already names a space.
+    func decode(kind: String, yaml: String, space: String) throws -> (any Manifest)? {
         lock.lock()
         let registration = byKind[kind]
         lock.unlock()
-        return try registration?.decode(yaml)
+        guard let registration else { return nil }
+        guard var root = try compose(yaml: yaml) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "The manifest YAML was empty."
+            ))
+        }
+        if var metadata = root["metadata"], metadata.mapping != nil {
+            metadata["deviceSpace"] = Node(space)
+            root["metadata"] = metadata
+        }
+        return try registration.decode(root)
     }
 
     // Returns all registrations for table creation and mutation routing.

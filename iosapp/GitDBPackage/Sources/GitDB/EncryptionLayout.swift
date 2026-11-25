@@ -43,26 +43,6 @@ public enum EncryptionLayout {
         }
         return parts[1]
     }
-
-    // Readers take the space from the path, including when an older
-    // file still carries a deviceSpace field or a new file omits it.
-    public static func yamlAssigningSpace(_ space: String, to yaml: String) -> String {
-        var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("deviceSpace:") }) {
-            let indent = lines[index].prefix { $0 == " " }
-            lines[index] = "\(indent)deviceSpace: \(space)"
-            return lines.joined(separator: "\n")
-        }
-        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("name:") }) {
-            // Match the name line's indent. The importer uses four spaces,
-            // and a two-space key there is invalid YAML, so the update
-            // never reaches the timeline.
-            let indent = lines[index].prefix { $0 == " " }
-            lines.insert("\(indent)deviceSpace: \(space)", at: index + 1)
-            return lines.joined(separator: "\n")
-        }
-        return yaml
-    }
 }
 
 // Stops sync when a key set this client opens is not what it claims.

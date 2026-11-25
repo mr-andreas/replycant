@@ -126,4 +126,100 @@ struct ManifestSyncEngineTests {
         #expect(progressEvents.contains { $0.0 == "Reading manifests" })
         #expect(progressEvents.contains { event in event.0 == "Updating database" && event.1 == 1 && event.2 == 1 })
     }
+
+    // The importer writes four-space YAML and leaves the space out.
+    // Sync has to take the space from the path or the update never appears.
+    @Test func fourSpaceImporterManifestTakesSpaceFromPath() async throws {
+        let yaml = """
+        apiVersion: media.replycant.com/v1alpha1
+        kind: Original
+        metadata:
+            name: imp
+        spec:
+            id: imp
+            sha256: sha-imp
+            path: /tmp/imp.jpg
+            filesize: 2048
+            mediaType: photo
+            width: 100
+            height: 100
+            isFavorite: false
+            isHidden: false
+            createdAt: 2024-01-01T00:00:00Z
+        status: {}
+        """
+        let manifest = try await syncOriginal(space: "importer", id: "imp", yaml: yaml)
+        #expect(manifest.metadata.name == "imp")
+        #expect(manifest.metadata.deviceSpace == "importer")
+    }
+
+    // Flow-style metadata has no name line to splice a field onto, so the
+    // space still has to come from the path.
+    @Test func inlineMetadataTakesSpaceFromPath() async throws {
+        let yaml = """
+        apiVersion: media.replycant.com/v1alpha1
+        kind: Original
+        metadata: {name: inl}
+        spec:
+          id: inl
+          sha256: sha-inl
+          path: /tmp/inl.jpg
+          filesize: 2048
+          mediaType: photo
+          width: 100
+          height: 100
+          isFavorite: false
+          isHidden: false
+          createdAt: 2024-01-01T00:00:00Z
+        status: {}
+        """
+        let manifest = try await syncOriginal(space: "phone", id: "inl", yaml: yaml)
+        #expect(manifest.metadata.deviceSpace == "phone")
+    }
+
+    // An older file can still name a space. The path wins, so a copied
+    // manifest cannot be cached under the wrong key set.
+    @Test func staleDeviceSpaceIsReplacedByPath() async throws {
+        let yaml = """
+        apiVersion: media.replycant.com/v1alpha1
+        kind: Original
+        metadata:
+          name: old
+          deviceSpace: other-device
+        spec:
+          id: old
+          sha256: sha-old
+          path: /tmp/old.jpg
+          filesize: 2048
+          mediaType: photo
+          width: 100
+          height: 100
+          isFavorite: false
+          isHidden: false
+          createdAt: 2024-01-01T00:00:00Z
+        status: {}
+        """
+        let manifest = try await syncOriginal(space: "library", id: "old", yaml: yaml)
+        #expect(manifest.metadata.deviceSpace == "library")
+    }
+
+    // Commits one original and reads it back after sync, so tests can
+    // check the space the path assigned.
+    private func syncOriginal(space: String, id: String, yaml: String) async throws -> OriginalManifest {
+        let (repository, database, registry, repoPath, _) = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: repoPath) }
+        let bootstrap = try bootstrapEncryption(in: repository)
+        let path = "encryptionspaces/\(space)/manifests/media.replycant.com/v1alpha1/Original/\(shardName(id)).yaml"
+        try repository.createCommit(
+            message: "seed",
+            files: bootstrap.files + [
+                (path, try encryptManifest(yaml, kek: bootstrap.kek, epoch: bootstrap.epoch)),
+            ]
+        )
+        let engine = ManifestSyncEngine(repository: repository, database: database, registry: registry)
+        try await engine.syncToHead(progressHandler: nil)
+        let table = try await database.tableName(for: OriginalManifest.self)
+        let rows = try await database.query(OriginalManifest.self, sql: "SELECT data FROM \(table)")
+        return try #require(rows.first { $0.id == id })
+    }
 }
