@@ -136,6 +136,7 @@ struct VideoPreviewViewControllerPosterTests {
         let item = AVPlayerItem(url: URL(fileURLWithPath: "/dev/null"))
         let player = AVPlayer(playerItem: item)
         controller.testingInjectPlayerForLifecycle(player)
+        controller.loadViewIfNeeded()
         #expect(!controller.testingRestartRequestedSeekToStart)
         #expect(!controller.testingRestartRequestedPlay)
 
